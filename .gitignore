@@ -1,0 +1,32 @@
+# Build output
+build/
+out/
+cmake-build-*/
+
+# CMake
+CMakeCache.txt
+CMakeFiles/
+CMakeUserPresets.json
+*.cmake.stamp
+
+# Visual Studio
+.vs/
+*.vcxproj.user
+*.sln.docstates
+
+# Compiled
+*.obj
+*.lib
+*.exe
+*.pdb
+*.ilk
+*.exp
+*.dll
+
+# Obsidian workspace state (keep the notes, ignore local UI state)
+.obsidian/workspace*
+.obsidian/cache
+
+# OS
+Thumbs.db
+.DS_Store
