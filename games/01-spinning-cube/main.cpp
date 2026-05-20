@@ -1,6 +1,12 @@
+#include <GLFW/glfw3.h>
 #include <cstdio>
 
 int main() {
-    std::printf("Iron Core Engine - spinning cube (skeleton)\n");
+    if (!glfwInit()) {
+        std::printf("Failed to init GLFW\n");
+        return 1;
+    }
+    std::printf("Iron Core Engine - GLFW %s\n", glfwGetVersionString());
+    glfwTerminate();
     return 0;
 }
