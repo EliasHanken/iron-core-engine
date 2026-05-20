@@ -36,7 +36,7 @@ public:
 
 private:
     Window window_;
-    float fixedStep_;
+    double fixedStep_;
     std::function<void(const FrameTime&)> update_;
     std::function<void()> render_;
 };
