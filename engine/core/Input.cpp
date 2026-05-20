@@ -13,10 +13,12 @@ Input::Input(GLFWwindow* window) : window_(window) {
 }
 
 void Input::update() {
+    static_assert(Input::kKeyCount > GLFW_KEY_LAST,
+                  "Input::kKeyCount must exceed GLFW_KEY_LAST");
     if (!window_) {
         return;
     }
-    for (int key = 0; key < kKeyCount; ++key) {
+    for (int key = GLFW_KEY_SPACE; key <= GLFW_KEY_LAST; ++key) {
         previous_[key] = current_[key];
         current_[key] = glfwGetKey(window_, key) == GLFW_PRESS;
     }
