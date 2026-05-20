@@ -8,3 +8,4 @@ function(iron_add_test name source)
 endfunction()
 
 iron_add_test(test_vec test_vec.cpp)
+iron_add_test(test_mat4 test_mat4.cpp)
