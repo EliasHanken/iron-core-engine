@@ -37,7 +37,7 @@ implemented.
 
 | Decision        | Choice                                              |
 |-----------------|-----------------------------------------------------|
-| Language        | C++ (C++20)                                         |
+| Language        | C++ (C++23)                                         |
 | Build system    | CMake 3.20+                                         |
 | Compiler        | MSVC (Visual Studio Community 2026); no platform locks |
 | Platform        | Windows-first; portable code so Linux/macOS stay open |
