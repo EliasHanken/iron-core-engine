@@ -7,4 +7,4 @@ function(iron_add_test name source)
   add_test(NAME ${name} COMMAND ${name})
 endfunction()
 
-iron_add_test(test_sanity test_sanity.cpp)
+iron_add_test(test_vec test_vec.cpp)
