@@ -1,6 +1,7 @@
 add_library(ironcore STATIC
   core/Log.cpp
   core/Window.cpp
+  core/Input.cpp
   core/Application.cpp
 )
 

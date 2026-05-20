@@ -1,5 +1,6 @@
 #pragma once
 
+#include "core/Input.h"
 #include "core/Time.h"
 #include "core/Window.h"
 
@@ -32,10 +33,12 @@ public:
     void run();
 
     Window& window() { return window_; }
+    Input& input() { return input_; }
     bool valid() const { return window_.valid(); }
 
 private:
     Window window_;
+    Input input_;
     double fixedStep_;
     std::function<void(const FrameTime&)> update_;
     std::function<void()> render_;

@@ -2,6 +2,7 @@
 #include "core/Log.h"
 
 #include <glad/gl.h>
+#include <GLFW/glfw3.h>
 
 int main() {
     iron::Application::Config config;
@@ -11,6 +12,12 @@ int main() {
         iron::Log::error("Application init failed");
         return 1;
     }
+
+    app.setUpdate([&app](const iron::FrameTime&) {
+        if (app.input().keyPressed(GLFW_KEY_ESCAPE)) {
+            glfwSetWindowShouldClose(app.window().handle(), GLFW_TRUE);
+        }
+    });
 
     app.setRender([] {
         glClearColor(0.1f, 0.12f, 0.15f, 1.0f);

@@ -7,6 +7,7 @@ namespace iron {
 
 Application::Application(const Config& config)
     : window_(config.width, config.height, config.title),
+      input_(window_.handle()),
       fixedStep_(static_cast<double>(config.fixedStep)) {}
 
 void Application::run() {
@@ -30,6 +31,7 @@ void Application::run() {
         }
 
         window_.pollEvents();
+        input_.update();
 
         while (accumulator >= fixedStep_) {
             if (update_) {
