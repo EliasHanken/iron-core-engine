@@ -1,20 +1,22 @@
+#include "core/Application.h"
 #include "core/Log.h"
-#include "core/Window.h"
 
 #include <glad/gl.h>
 
 int main() {
-    iron::Window window(960, 540, "Iron Core Engine - Spinning Cube");
-    if (!window.valid()) {
-        iron::Log::error("Window creation failed");
+    iron::Application::Config config;
+    config.title = "Iron Core Engine - Spinning Cube";
+    iron::Application app(config);
+    if (!app.valid()) {
+        iron::Log::error("Application init failed");
         return 1;
     }
 
-    while (!window.shouldClose()) {
-        window.pollEvents();
+    app.setRender([] {
         glClearColor(0.1f, 0.12f, 0.15f, 1.0f);
         glClear(GL_COLOR_BUFFER_BIT);
-        window.swapBuffers();
-    }
+    });
+
+    app.run();
     return 0;
 }
