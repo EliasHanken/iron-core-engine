@@ -8,6 +8,8 @@
 namespace iron {
 
 namespace {
+// GLFW is initialized at most once per process; glfwTerminate() is intentionally
+// omitted because the engine owns GLFW for the process lifetime.
 bool g_glfwInitialized = false;
 
 void framebufferSizeCallback(GLFWwindow*, int w, int h) {
@@ -36,7 +38,7 @@ Window::Window(int width, int height, const std::string& title)
     }
 
     glfwMakeContextCurrent(handle_);
-    if (gladLoadGL(reinterpret_cast<GLADloadfunc>(glfwGetProcAddress)) == 0) {
+    if (gladLoadGL(glfwGetProcAddress) == 0) {
         Log::error("Window: failed to load OpenGL functions");
         glfwDestroyWindow(handle_);
         handle_ = nullptr;
@@ -59,7 +61,9 @@ bool Window::shouldClose() const {
 }
 
 void Window::pollEvents() {
-    glfwPollEvents();
+    if (handle_) {
+        glfwPollEvents();
+    }
 }
 
 void Window::swapBuffers() {
