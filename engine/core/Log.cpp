@@ -7,9 +7,12 @@ namespace iron {
 
 namespace {
 void vlog(std::FILE* out, const char* tag, const char* fmt, va_list args) {
+    va_list copy;
+    va_copy(copy, args);
     std::fprintf(out, "[%s] ", tag);
-    std::vfprintf(out, fmt, args);
+    std::vfprintf(out, fmt, copy);
     std::fputc('\n', out);
+    va_end(copy);
 }
 } // namespace
 
