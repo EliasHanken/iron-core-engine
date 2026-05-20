@@ -1,6 +1,10 @@
 cmake_minimum_required(VERSION 3.20)
 project(IronCoreEngine LANGUAGES CXX)
 
+# Force every target (including FetchContent dependencies) onto the dynamic CRT
+# so they all agree — avoids LNK4098 (LIBCMT vs MSVCRT mismatch).
+set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>DLL")
+
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
@@ -33,6 +37,18 @@ FetchContent_Declare(glad
 
 FetchContent_MakeAvailable(glfw glad)
 glad_add_library(glad_gl_core_33 REPRODUCIBLE API gl:core=3.3)
+
+# glad's cmake/CMakeLists.txt declares cmake_minimum_required(3.12), which
+# predates CMP0091; the generated vcxproj writes an empty <RuntimeLibrary/>
+# tag that blocks both CMAKE_MSVC_RUNTIME_LIBRARY and MSVC_RUNTIME_LIBRARY
+# from taking effect.  Patch the target directly with explicit CL flags so
+# glad is compiled with the dynamic CRT, matching every other target.
+if(MSVC)
+  target_compile_options(glad_gl_core_33 PRIVATE
+    $<$<CONFIG:Debug>:/MDd>
+    $<$<NOT:$<CONFIG:Debug>>:/MD>
+  )
+endif()
 
 add_subdirectory(third_party)
 
