@@ -1,12 +1,13 @@
+#include "core/Log.h"
+
 #include <GLFW/glfw3.h>
-#include <cstdio>
 
 int main() {
     if (!glfwInit()) {
-        std::printf("Failed to init GLFW\n");
+        iron::Log::error("Failed to init GLFW");
         return 1;
     }
-    std::printf("Iron Core Engine - GLFW %s\n", glfwGetVersionString());
+    iron::Log::info("Iron Core Engine - GLFW %s", glfwGetVersionString());
     glfwTerminate();
     return 0;
 }
