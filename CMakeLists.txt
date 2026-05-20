@@ -20,12 +20,14 @@ set(GLFW_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
 FetchContent_Declare(glfw
   GIT_REPOSITORY https://github.com/glfw/glfw.git
   GIT_TAG 3.4
+  GIT_SHALLOW TRUE
 )
 
 # --- glad: OpenGL 3.3 core function loader ---
 FetchContent_Declare(glad
   GIT_REPOSITORY https://github.com/Dav1dde/glad.git
   GIT_TAG v2.0.6
+  GIT_SHALLOW TRUE
   SOURCE_SUBDIR cmake
 )
 
