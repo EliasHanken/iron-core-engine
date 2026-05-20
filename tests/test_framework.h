@@ -20,6 +20,7 @@ inline int g_ironTestFailures = 0;
 inline void iron_check(bool cond, const char* expr, const char* file, int line) {
     if (!cond) {
         std::printf("FAIL: %s  (%s:%d)\n", expr, file, line);
+        std::fflush(stdout);
         ++g_ironTestFailures;
     }
 }
@@ -28,6 +29,7 @@ inline void iron_check_near(float a, float b, const char* expr,
                             const char* file, int line) {
     if (std::fabs(a - b) > 1e-4f) {
         std::printf("FAIL: %s  (%g != %g)  (%s:%d)\n", expr, a, b, file, line);
+        std::fflush(stdout);
         ++g_ironTestFailures;
     }
 }
@@ -35,9 +37,11 @@ inline void iron_check_near(float a, float b, const char* expr,
 inline int iron_test_result() {
     if (g_ironTestFailures == 0) {
         std::printf("OK - all checks passed\n");
+        std::fflush(stdout);
         return 0;
     }
     std::printf("%d check(s) failed\n", g_ironTestFailures);
+    std::fflush(stdout);
     return 1;
 }
 
