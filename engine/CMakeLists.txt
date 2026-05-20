@@ -1,5 +1,6 @@
 add_library(ironcore STATIC
   core/Log.cpp
+  core/Window.cpp
 )
 
 target_include_directories(ironcore PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
