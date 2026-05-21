@@ -49,7 +49,8 @@ uniform float uAmbient;
 void main() {
     vec3 n = normalize(vNormal);
     float diffuse = max(dot(n, -normalize(uLightDir)), 0.0);
-    vec3 lighting = uLightColor * diffuse + vec3(uAmbient);
+    // Ambient shares the light's colour — both stand in for the same sky.
+    vec3 lighting = uLightColor * (diffuse + uAmbient);
     vec4 texel = texture(uTexture, vUV);
     FragColor = vec4(texel.rgb * lighting, texel.a);
 }
@@ -64,6 +65,9 @@ iron::RenderObject makeBox(iron::Vec3 center, iron::Vec3 size,
     obj.texture = texture;
     return obj;
 }
+
+// Vertical field of view for the camera: 60 degrees.
+constexpr float kFovYRadians = 3.14159265f / 3.0f;
 
 }  // namespace
 
@@ -123,7 +127,7 @@ int main() {
     const float aspect = static_cast<float>(app.window().width()) /
                          static_cast<float>(app.window().height());
     const iron::Mat4 projection =
-        iron::perspective(3.14159265f / 3.0f, aspect, 0.1f, 200.0f);
+        iron::perspective(kFovYRadians, aspect, 0.1f, 200.0f);
 
     app.setUpdate([&](const iron::FrameTime& time) {
         iron::Input& input = app.input();
