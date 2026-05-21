@@ -1,45 +1,42 @@
 #pragma once
 
 #include "math/Aabb.h"
+#include "math/Mat4.h"
 #include "math/Ray.h"
 #include "math/Vec.h"
 #include "physics/Rope.h"
+#include "render/Renderer.h"
 
 #include <vector>
 
-namespace iron { class Renderer; }
-
 // The Strandbound rope tool: the player places anchor points on world
-// surfaces and ties / cuts ropes between them. This is game-specific
-// interaction logic, so it lives with the game rather than the engine.
+// surfaces and ties / cuts ropes between them. Game-specific interaction —
+// it lives with the game, not the engine.
 class RopeTool {
 public:
-    // `colliders` are the static world boxes (islands, props, pole) the
-    // aim ray is tested against when placing an anchor.
-    explicit RopeTool(std::vector<iron::Aabb> colliders);
+    // `colliders` are the static world boxes the aim ray is tested against
+    // when placing an anchor. `renderer` is used to create the rope's mesh and
+    // texture; `litShader` is the shader the rope is drawn with.
+    RopeTool(std::vector<iron::Aabb> colliders, iron::Renderer& renderer,
+             iron::ShaderHandle litShader);
 
     // Advance one fixed step. `aim` is the player's aim ray; `playerPos` is
-    // the player's feet position. The three flags are this step's input
-    // edges (true only on the step the button/key went down).
+    // the player's feet position. The three flags are this step's input edges.
     void update(const iron::Ray& aim, iron::Vec3 playerPos,
                 bool placePressed, bool tiePressed, bool cutPressed,
                 float dt);
 
-    // Queue debug lines for anchors, ropes, the tying guide line, and the
-    // aim marker. Call between submitting the scene and flushDebugLines.
-    void draw(iron::Renderer& renderer) const;
+    // Rebuild and draw the rope mesh, and queue the anchor and aim markers as
+    // debug lines. Call between submitting the scene and flushDebugLines.
+    void draw(iron::Renderer& renderer, const iron::Mat4& view,
+              const iron::Mat4& projection) const;
 
 private:
     enum class AimKind { None, Surface, Anchor, Rope };
 
-    // Nearest anchor the aim ray passes through, or -1.
     int pickAnchor(const iron::Ray& aim) const;
-    // Nearest rope the aim ray passes through, or -1; sets outPoint to the
-    // rope point that was hit.
     int pickRope(const iron::Ray& aim, iron::Vec3& outPoint) const;
-    // Nearest surface hit of the aim ray against the colliders.
     bool pickSurface(const iron::Ray& aim, iron::Vec3& outPoint) const;
-    // Recompute what the aim ray currently targets (for the aim marker).
     void refreshAimTarget(const iron::Ray& aim);
 
     std::vector<iron::Aabb> colliders_;
@@ -51,4 +48,8 @@ private:
 
     AimKind aimKind_ = AimKind::None;
     iron::Vec3 aimPoint_{};
+
+    iron::ShaderHandle litShader_ = iron::kInvalidHandle;
+    iron::TextureHandle ropeTexture_ = iron::kInvalidHandle;
+    iron::MeshHandle ropesMesh_ = iron::kInvalidHandle;
 };

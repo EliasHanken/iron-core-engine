@@ -40,6 +40,8 @@ public:
 
     // --- resource creation ---
     virtual MeshHandle createMesh(const MeshData& data) = 0;
+    // Replace the geometry of an existing mesh (for meshes rebuilt per frame).
+    virtual void updateMesh(MeshHandle mesh, const MeshData& data) = 0;
     // RGBA8 pixels, `width * height * 4` bytes, row-major from top-left.
     virtual TextureHandle createTexture(int width, int height,
                                         const unsigned char* rgba) = 0;

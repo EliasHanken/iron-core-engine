@@ -25,4 +25,18 @@ struct MeshData {
 // UVs so every face can be textured. 24 vertices (4 per face), 36 indices.
 MeshData makeCube();
 
+// Appends a box (a cuboid) to `out`: 24 vertices (per-face normals + UVs) and
+// 36 indices, centered at `center` with full extents `size`. Indices are
+// offset so the box references its own vertices when appended to a non-empty
+// MeshData.
+void appendBox(MeshData& out, Vec3 center, Vec3 size);
+
+// Appends a low-poly tube around the polyline `points` to `out`. Each point
+// gets a ring of `sides` vertices at distance `radius`, with outward normals
+// and UVs (U around the ring, V tiling along the rope's length); consecutive
+// rings are stitched into triangles. Does nothing if there are fewer than 2
+// points or fewer than 3 sides.
+void appendTube(MeshData& out, const std::vector<Vec3>& points, float radius,
+                int sides);
+
 } // namespace iron

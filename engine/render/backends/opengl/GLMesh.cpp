@@ -18,12 +18,12 @@ GLMesh::GLMesh(const MeshData& data)
     glBindBuffer(GL_ARRAY_BUFFER, vbo_);
     glBufferData(GL_ARRAY_BUFFER,
                  static_cast<GLsizeiptr>(data.vertices.size() * sizeof(Vertex)),
-                 data.vertices.data(), GL_STATIC_DRAW);
+                 data.vertices.data(), GL_DYNAMIC_DRAW);
 
     glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, ebo_);
     glBufferData(GL_ELEMENT_ARRAY_BUFFER,
                  static_cast<GLsizeiptr>(data.indices.size() * sizeof(std::uint32_t)),
-                 data.indices.data(), GL_STATIC_DRAW);
+                 data.indices.data(), GL_DYNAMIC_DRAW);
 
     // Vertex layout matches struct Vertex: position, normal, uv.
     glEnableVertexAttribArray(0);
@@ -36,6 +36,21 @@ GLMesh::GLMesh(const MeshData& data)
     glVertexAttribPointer(2, 2, GL_FLOAT, GL_FALSE, sizeof(Vertex),
                           reinterpret_cast<void*>(offsetof(Vertex, uv)));
 
+    glBindVertexArray(0);
+}
+
+void GLMesh::update(const MeshData& data) {
+    indexCount_ = static_cast<std::int32_t>(data.indices.size());
+
+    glBindVertexArray(vao_);
+    glBindBuffer(GL_ARRAY_BUFFER, vbo_);
+    glBufferData(GL_ARRAY_BUFFER,
+                 static_cast<GLsizeiptr>(data.vertices.size() * sizeof(Vertex)),
+                 data.vertices.data(), GL_DYNAMIC_DRAW);
+    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, ebo_);
+    glBufferData(GL_ELEMENT_ARRAY_BUFFER,
+                 static_cast<GLsizeiptr>(data.indices.size() * sizeof(std::uint32_t)),
+                 data.indices.data(), GL_DYNAMIC_DRAW);
     glBindVertexArray(0);
 }
 

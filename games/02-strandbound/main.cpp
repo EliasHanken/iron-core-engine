@@ -130,7 +130,7 @@ int main() {
     player.setMoveSpeed(6.0f);
     player.setMouseSensitivity(0.0025f);
 
-    RopeTool ropeTool(colliders);
+    RopeTool ropeTool(colliders, renderer, shader);
 
     app.window().setCursorCaptured(true);
 
@@ -174,7 +174,7 @@ int main() {
             renderer.submit(call, view, projection);
         }
 
-        ropeTool.draw(renderer);
+        ropeTool.draw(renderer, view, projection);
         renderer.flushDebugLines(view, projection);
 
         renderer.endFrame();

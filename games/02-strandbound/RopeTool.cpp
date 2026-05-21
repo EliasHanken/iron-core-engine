@@ -1,22 +1,34 @@
 #include "RopeTool.h"
 
+#include "core/Platform.h"
 #include "physics/VerletPoint.h"
-#include "render/Renderer.h"
+#include "scene/Mesh.h"
 
 #include <cstddef>
 #include <utility>
+#include <vector>
 
 namespace {
 constexpr float kAnchorPickRadius = 0.5f;   // anchors picked as spheres
 constexpr float kRopePickRadius = 0.3f;     // rope points picked as spheres
 constexpr int kRopeSegments = 20;
 constexpr float kSlackFactor = 1.35f;       // rope length vs. anchor span
-constexpr float kMarkerSize = 0.25f;
-constexpr float kMinPlaceDistance = 0.1f;   // ignore surface hits basically at the eye
+constexpr float kMarkerSize = 0.25f;        // aim-marker cross half-length
+constexpr float kMinPlaceDistance = 0.1f;   // ignore surface hits at the eye
+
+constexpr float kRopeRadius = 0.055f;       // visual rope thickness
+constexpr int kRopeSides = 6;               // low-poly tube cross-section
 }  // namespace
 
-RopeTool::RopeTool(std::vector<iron::Aabb> colliders)
-    : colliders_(std::move(colliders)) {}
+RopeTool::RopeTool(std::vector<iron::Aabb> colliders, iron::Renderer& renderer,
+                   iron::ShaderHandle litShader)
+    : colliders_(std::move(colliders)), litShader_(litShader) {
+    // The rope texture ships next to the executable. The rope mesh is created
+    // empty and refreshed every frame in draw(); anchors are drawn as debug
+    // lines, so they need no GPU resources of their own.
+    ropeTexture_ = renderer.loadTexture(iron::executableDir() + "/assets/rope.jpg");
+    ropesMesh_ = renderer.createMesh(iron::MeshData{});
+}
 
 int RopeTool::pickAnchor(const iron::Ray& aim) const {
     int best = -1;
@@ -95,7 +107,6 @@ void RopeTool::update(const iron::Ray& aim, iron::Vec3 playerPos,
                       float dt) {
     playerPos_ = playerPos;
 
-    // Place: drop an anchor on the nearest surface the aim ray hits.
     if (placePressed) {
         iron::Vec3 hit;
         if (pickSurface(aim, hit)) {
@@ -103,8 +114,6 @@ void RopeTool::update(const iron::Ray& aim, iron::Vec3 playerPos,
         }
     }
 
-    // Tie: first click picks the start anchor; second click (a different
-    // anchor) creates a rope spanning the two.
     if (tiePressed) {
         const int anchor = pickAnchor(aim);
         if (anchor >= 0) {
@@ -123,7 +132,6 @@ void RopeTool::update(const iron::Ray& aim, iron::Vec3 playerPos,
         }
     }
 
-    // Cut: remove the whole rope the aim ray hits.
     if (cutPressed) {
         iron::Vec3 unused;
         const int rope = pickRope(aim, unused);
@@ -133,9 +141,8 @@ void RopeTool::update(const iron::Ray& aim, iron::Vec3 playerPos,
         }
     }
 
-    // Advance every rope's Verlet simulation. Each rope was constructed
-    // pinned to its two anchor positions and is never re-synced — this relies
-    // on anchors being static in M4. Revisit if anchors ever become movable.
+    // Anchors are static in this milestone — ropes are constructed pinned to
+    // their anchor positions and never re-synced.
     for (iron::Rope& r : ropes_) {
         r.update(dt);
     }
@@ -143,12 +150,29 @@ void RopeTool::update(const iron::Ray& aim, iron::Vec3 playerPos,
     refreshAimTarget(aim);
 }
 
-void RopeTool::draw(iron::Renderer& renderer) const {
-    const iron::Vec3 anchorColor{0.95f, 0.8f, 0.2f};
-    const iron::Vec3 ropeColor{0.55f, 0.35f, 0.18f};
-    const iron::Vec3 guideColor{0.3f, 0.85f, 0.95f};
+void RopeTool::draw(iron::Renderer& renderer, const iron::Mat4& view,
+                    const iron::Mat4& projection) const {
+    // Rebuild the combined rope tube mesh from every rope's current points.
+    iron::MeshData ropeGeometry;
+    for (const iron::Rope& r : ropes_) {
+        std::vector<iron::Vec3> pts;
+        pts.reserve(r.points().size());
+        for (const iron::VerletPoint& p : r.points()) {
+            pts.push_back(p.position);
+        }
+        iron::appendTube(ropeGeometry, pts, kRopeRadius, kRopeSides);
+    }
+    renderer.updateMesh(ropesMesh_, ropeGeometry);
 
-    // Anchors: a small three-axis cross at each.
+    // Draw the rope tubes through the lit render path.
+    iron::DrawCall ropeCall;
+    ropeCall.mesh = ropesMesh_;
+    ropeCall.shader = litShader_;
+    ropeCall.texture = ropeTexture_;
+    renderer.submit(ropeCall, view, projection);
+
+    // Anchors: a small yellow three-axis cross at each (a crisp point marker).
+    const iron::Vec3 anchorColor{0.95f, 0.8f, 0.2f};
     for (const iron::Vec3& a : anchors_) {
         const float s = kMarkerSize;
         renderer.drawLine(a - iron::Vec3{s, 0.0f, 0.0f},
@@ -159,19 +183,11 @@ void RopeTool::draw(iron::Renderer& renderer) const {
                           a + iron::Vec3{0.0f, 0.0f, s}, anchorColor);
     }
 
-    // Ropes: one debug line per segment.
-    for (const iron::Rope& r : ropes_) {
-        const std::vector<iron::VerletPoint>& pts = r.points();
-        for (std::size_t i = 0; i + 1 < pts.size(); ++i) {
-            renderer.drawLine(pts[i].position, pts[i + 1].position, ropeColor);
-        }
-    }
-
     // While tying: a guide line from the start anchor to the player.
     if (tyingFromAnchor_ >= 0) {
         renderer.drawLine(anchors_[static_cast<std::size_t>(tyingFromAnchor_)],
                           playerPos_ + iron::Vec3{0.0f, 1.0f, 0.0f},
-                          guideColor);
+                          iron::Vec3{0.3f, 0.85f, 0.95f});
     }
 
     // Aim marker: a small cross at the targeted point, coloured by kind.
