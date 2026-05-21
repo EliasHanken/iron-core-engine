@@ -129,7 +129,9 @@ void RopeTool::update(const iron::Ray& aim, iron::Vec3 playerPos,
         }
     }
 
-    // Advance every rope's Verlet simulation.
+    // Advance every rope's Verlet simulation. Each rope was constructed
+    // pinned to its two anchor positions and is never re-synced — this relies
+    // on anchors being static in M4. Revisit if anchors ever become movable.
     for (iron::Rope& r : ropes_) {
         r.update(dt);
     }
