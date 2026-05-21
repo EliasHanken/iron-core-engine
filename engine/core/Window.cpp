@@ -47,6 +47,13 @@ Window::Window(int width, int height, const std::string& title)
 
     glfwSetFramebufferSizeCallback(handle_, framebufferSizeCallback);
     glViewport(0, 0, width, height);
+
+    // Explicitly claim input focus. GLFW requests it on creation, but the OS
+    // can deny focus-stealing when the launching process isn't in front (e.g.
+    // started from a terminal) — leaving the window visible but deaf to the
+    // keyboard until the user clicks it. This makes the request explicit.
+    glfwFocusWindow(handle_);
+
     Log::info("Window: OpenGL %s", reinterpret_cast<const char*>(glGetString(GL_VERSION)));
 }
 
