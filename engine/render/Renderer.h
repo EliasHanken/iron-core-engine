@@ -28,6 +28,11 @@ struct DrawCall {
 // only to this interface; concrete backends (OpenGLRenderer today, others
 // later) implement it. Keeping this surface small is deliberate — it is the
 // contract every future backend must honour.
+//
+// Resource lifetime: resources created here live until the Renderer is
+// destroyed (application-scoped). There is intentionally no per-resource
+// destroy API yet — explicit destruction lands when a game needs to stream
+// resources, and will be added as a deliberate interface change then.
 class Renderer {
 public:
     virtual ~Renderer() = default;
