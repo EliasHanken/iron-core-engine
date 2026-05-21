@@ -25,6 +25,11 @@ void Input::update() {
     prevMouseX_ = mouseX_;
     prevMouseY_ = mouseY_;
     glfwGetCursorPos(window_, &mouseX_, &mouseY_);
+    for (int button = 0; button < kMouseButtonCount; ++button) {
+        previousMouse_[button] = currentMouse_[button];
+        currentMouse_[button] =
+            glfwGetMouseButton(window_, button) == GLFW_PRESS;
+    }
 }
 
 bool Input::keyDown(int key) const {
@@ -41,6 +46,11 @@ bool Input::keyReleased(int key) const {
 
 bool Input::mouseButtonDown(int button) const {
     return window_ && glfwGetMouseButton(window_, button) == GLFW_PRESS;
+}
+
+bool Input::mouseButtonPressed(int button) const {
+    return button >= 0 && button < kMouseButtonCount
+           && currentMouse_[button] && !previousMouse_[button];
 }
 
 } // namespace iron
