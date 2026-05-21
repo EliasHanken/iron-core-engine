@@ -7,6 +7,7 @@ add_library(ironcore STATIC
   scene/Mesh.cpp
   scene/Camera.cpp
   scene/FirstPersonController.cpp
+  physics/Rope.cpp
   render/backends/opengl/GLShader.cpp
   render/backends/opengl/GLMesh.cpp
   render/backends/opengl/GLTexture.cpp

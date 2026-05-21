@@ -2,6 +2,7 @@
 #include "math/Vec.h"
 #include "physics/VerletPoint.h"
 #include "physics/DistanceConstraint.h"
+#include "physics/Rope.h"
 
 using namespace iron;
 
@@ -98,6 +99,36 @@ int main() {
         }
         CHECK_NEAR(length(pts[1].position - pts[0].position), 2.0f);
         CHECK_NEAR(length(pts[2].position - pts[1].position), 2.0f);
+    }
+
+    // A rope has segments + 1 points, and both ends are pinned.
+    {
+        Rope rope(Vec3{0.0f, 0.0f, 0.0f}, Vec3{10.0f, 0.0f, 0.0f}, 4, 10.0f);
+        CHECK(static_cast<int>(rope.points().size()) == 5);
+        CHECK(rope.points().front().pinned);
+        CHECK(rope.points().back().pinned);
+    }
+
+    // The pinned endpoints stay where setEndpoint puts them, even after update.
+    {
+        Rope rope(Vec3{0.0f, 0.0f, 0.0f}, Vec3{10.0f, 0.0f, 0.0f}, 8, 12.0f);
+        rope.setEndpointA(Vec3{1.0f, 5.0f, 0.0f});
+        rope.setEndpointB(Vec3{9.0f, 5.0f, 0.0f});
+        rope.update(1.0f / 60.0f);
+        CHECK_NEAR(rope.points().front().position.x, 1.0f);
+        CHECK_NEAR(rope.points().front().position.y, 5.0f);
+        CHECK_NEAR(rope.points().back().position.x, 9.0f);
+        CHECK_NEAR(rope.points().back().position.y, 5.0f);
+    }
+
+    // A slack rope's interior sags downward under gravity over time.
+    {
+        Rope rope(Vec3{0.0f, 0.0f, 0.0f}, Vec3{10.0f, 0.0f, 0.0f}, 8, 20.0f);
+        const float startY = rope.points()[4].position.y;  // middle point
+        for (int i = 0; i < 30; ++i) {
+            rope.update(1.0f / 60.0f);
+        }
+        CHECK(rope.points()[4].position.y < startY);
     }
 
     return iron_test_result();
