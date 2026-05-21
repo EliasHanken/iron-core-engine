@@ -39,4 +39,12 @@ void appendBox(MeshData& out, Vec3 center, Vec3 size);
 void appendTube(MeshData& out, const std::vector<Vec3>& points, float radius,
                 int sides);
 
+// Appends a torus (a ring) to `out`, centered at `center`, lying in the XZ
+// plane. The major circle has radius `majorRadius`; the tube cross-section has
+// radius `minorRadius`. `majorSegments` / `minorSegments` control resolution.
+// Vertices carry outward normals and UVs. Does nothing if either segment count
+// is below 3 or either radius is non-positive.
+void appendTorus(MeshData& out, Vec3 center, float majorRadius,
+                 float minorRadius, int majorSegments, int minorSegments);
+
 } // namespace iron
