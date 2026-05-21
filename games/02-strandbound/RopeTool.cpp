@@ -18,25 +18,16 @@ constexpr float kMinPlaceDistance = 0.1f;   // ignore surface hits at the eye
 
 constexpr float kRopeRadius = 0.055f;       // visual rope thickness
 constexpr int kRopeSides = 6;               // low-poly tube cross-section
-constexpr float kAnchorMajorRadius = 0.28f; // anchor ring overall radius
-constexpr float kAnchorMinorRadius = 0.06f; // anchor ring tube thickness
-constexpr int kAnchorMajorSegments = 14;    // ring resolution (around)
-constexpr int kAnchorMinorSegments = 6;     // ring resolution (tube)
 }  // namespace
 
 RopeTool::RopeTool(std::vector<iron::Aabb> colliders, iron::Renderer& renderer,
                    iron::ShaderHandle litShader)
     : colliders_(std::move(colliders)), litShader_(litShader) {
-    // The rope texture ships next to the executable; anchors use a 1x1 solid
-    // yellow texture (the lit shader is texture * lighting, so a flat colour
-    // tints the whole cube).
+    // The rope texture ships next to the executable. The rope mesh is created
+    // empty and refreshed every frame in draw(); anchors are drawn as debug
+    // lines, so they need no GPU resources of their own.
     ropeTexture_ = renderer.loadTexture(iron::executableDir() + "/assets/rope.jpg");
-    const unsigned char yellow[4] = {235, 200, 40, 255};
-    anchorTexture_ = renderer.createTexture(1, 1, yellow);
-
-    // Two meshes, created empty and refreshed every frame in draw().
     ropesMesh_ = renderer.createMesh(iron::MeshData{});
-    anchorsMesh_ = renderer.createMesh(iron::MeshData{});
 }
 
 int RopeTool::pickAnchor(const iron::Ray& aim) const {
@@ -173,31 +164,24 @@ void RopeTool::draw(iron::Renderer& renderer, const iron::Mat4& view,
     }
     renderer.updateMesh(ropesMesh_, ropeGeometry);
 
-    // Rebuild the combined anchor mesh — each anchor is a ring. The ring is
-    // raised by its tube radius so it rests on the surface rather than
-    // sinking halfway into it.
-    iron::MeshData anchorGeometry;
-    for (const iron::Vec3& a : anchors_) {
-        const iron::Vec3 ringCenter = a + iron::Vec3{0.0f, kAnchorMinorRadius,
-                                                     0.0f};
-        iron::appendTorus(anchorGeometry, ringCenter, kAnchorMajorRadius,
-                          kAnchorMinorRadius, kAnchorMajorSegments,
-                          kAnchorMinorSegments);
-    }
-    renderer.updateMesh(anchorsMesh_, anchorGeometry);
-
-    // Draw both through the lit render path.
+    // Draw the rope tubes through the lit render path.
     iron::DrawCall ropeCall;
     ropeCall.mesh = ropesMesh_;
     ropeCall.shader = litShader_;
     ropeCall.texture = ropeTexture_;
     renderer.submit(ropeCall, view, projection);
 
-    iron::DrawCall anchorCall;
-    anchorCall.mesh = anchorsMesh_;
-    anchorCall.shader = litShader_;
-    anchorCall.texture = anchorTexture_;
-    renderer.submit(anchorCall, view, projection);
+    // Anchors: a small yellow three-axis cross at each (a crisp point marker).
+    const iron::Vec3 anchorColor{0.95f, 0.8f, 0.2f};
+    for (const iron::Vec3& a : anchors_) {
+        const float s = kMarkerSize;
+        renderer.drawLine(a - iron::Vec3{s, 0.0f, 0.0f},
+                          a + iron::Vec3{s, 0.0f, 0.0f}, anchorColor);
+        renderer.drawLine(a - iron::Vec3{0.0f, s, 0.0f},
+                          a + iron::Vec3{0.0f, s, 0.0f}, anchorColor);
+        renderer.drawLine(a - iron::Vec3{0.0f, 0.0f, s},
+                          a + iron::Vec3{0.0f, 0.0f, s}, anchorColor);
+    }
 
     // While tying: a guide line from the start anchor to the player.
     if (tyingFromAnchor_ >= 0) {

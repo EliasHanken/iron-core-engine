@@ -15,9 +15,8 @@
 class RopeTool {
 public:
     // `colliders` are the static world boxes the aim ray is tested against
-    // when placing an anchor. `renderer` is used to create the tool's own GPU
-    // resources (rope/anchor meshes and textures); `litShader` is the shader
-    // the ropes and anchors are drawn with.
+    // when placing an anchor. `renderer` is used to create the rope's mesh and
+    // texture; `litShader` is the shader the rope is drawn with.
     RopeTool(std::vector<iron::Aabb> colliders, iron::Renderer& renderer,
              iron::ShaderHandle litShader);
 
@@ -27,8 +26,8 @@ public:
                 bool placePressed, bool tiePressed, bool cutPressed,
                 float dt);
 
-    // Rebuild and draw the rope/anchor meshes, and queue the aim marker.
-    // Call between submitting the scene and flushDebugLines.
+    // Rebuild and draw the rope mesh, and queue the anchor and aim markers as
+    // debug lines. Call between submitting the scene and flushDebugLines.
     void draw(iron::Renderer& renderer, const iron::Mat4& view,
               const iron::Mat4& projection) const;
 
@@ -52,7 +51,5 @@ private:
 
     iron::ShaderHandle litShader_ = iron::kInvalidHandle;
     iron::TextureHandle ropeTexture_ = iron::kInvalidHandle;
-    iron::TextureHandle anchorTexture_ = iron::kInvalidHandle;
     iron::MeshHandle ropesMesh_ = iron::kInvalidHandle;
-    iron::MeshHandle anchorsMesh_ = iron::kInvalidHandle;
 };

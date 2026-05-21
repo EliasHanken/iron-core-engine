@@ -114,65 +114,6 @@ void appendTube(MeshData& out, const std::vector<Vec3>& points, float radius,
     }
 }
 
-void appendTorus(MeshData& out, Vec3 center, float majorRadius,
-                 float minorRadius, int majorSegments, int minorSegments) {
-    if (majorSegments < 3 || minorSegments < 3 || majorRadius <= 0.0f
-            || minorRadius <= 0.0f) {
-        return;
-    }
-
-    constexpr float kTwoPi = 6.28318530717958647692f;
-    const auto base = static_cast<std::uint32_t>(out.vertices.size());
-    // Both rings carry a duplicated seam vertex so the UVs wrap cleanly.
-    const int majorVerts = majorSegments + 1;
-    const int minorVerts = minorSegments + 1;
-
-    // --- vertices: a minor ring at each step around the major circle ---
-    for (int i = 0; i < majorVerts; ++i) {
-        const float theta = kTwoPi * static_cast<float>(i)
-                                   / static_cast<float>(majorSegments);
-        // The major circle lies in the XZ plane.
-        const Vec3 majorDir{std::cos(theta), 0.0f, std::sin(theta)};
-        const Vec3 ringCenter = center + majorDir * majorRadius;
-
-        for (int j = 0; j < minorVerts; ++j) {
-            const float phi = kTwoPi * static_cast<float>(j)
-                                     / static_cast<float>(minorSegments);
-            // The minor circle spans the radial (majorDir) and up (Y) axes.
-            const Vec3 offset =
-                majorDir * (std::cos(phi) * minorRadius)
-                + Vec3{0.0f, 1.0f, 0.0f} * (std::sin(phi) * minorRadius);
-            Vertex vert;
-            vert.position = ringCenter + offset;
-            vert.normal = normalize(offset);  // outward from the tube centre
-            vert.uv = Vec2{
-                static_cast<float>(i) / static_cast<float>(majorSegments),
-                static_cast<float>(j) / static_cast<float>(minorSegments)};
-            out.vertices.push_back(vert);
-        }
-    }
-
-    // --- stitch the grid of quads (CCW seen from outside) ---
-    for (int i = 0; i < majorSegments; ++i) {
-        for (int j = 0; j < minorSegments; ++j) {
-            const auto a =
-                base + static_cast<std::uint32_t>(i * minorVerts + j);
-            const auto b =
-                base + static_cast<std::uint32_t>((i + 1) * minorVerts + j);
-            const auto c =
-                base + static_cast<std::uint32_t>((i + 1) * minorVerts + j + 1);
-            const auto d =
-                base + static_cast<std::uint32_t>(i * minorVerts + j + 1);
-            out.indices.push_back(a);
-            out.indices.push_back(b);
-            out.indices.push_back(c);
-            out.indices.push_back(a);
-            out.indices.push_back(c);
-            out.indices.push_back(d);
-        }
-    }
-}
-
 // A unit cube centered at the origin (side length 1) — built from appendBox.
 MeshData makeCube() {
     MeshData data;

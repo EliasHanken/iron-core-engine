@@ -91,39 +91,5 @@ int main() {
         CHECK(m.vertices.empty());
     }
 
-    // appendTorus: vertex/index counts match the segment counts. A torus with
-    // M major and N minor segments has (M+1)*(N+1) vertices (seam-duplicated
-    // in both directions) and M*N*6 indices.
-    {
-        MeshData m;
-        appendTorus(m, Vec3{0.0f, 0.0f, 0.0f}, 1.0f, 0.25f, 12, 6);
-        CHECK(m.vertices.size() == 13 * 7);
-        CHECK(m.indices.size() == 12 * 6 * 6);
-    }
-
-    // Ring vertices lie within majorRadius +/- minorRadius of the centre
-    // (measured in the torus plane), and normals are unit length.
-    {
-        MeshData m;
-        appendTorus(m, Vec3{0.0f, 0.0f, 0.0f}, 2.0f, 0.5f, 16, 8);
-        for (const Vertex& v : m.vertices) {
-            const float planar = std::sqrt(v.position.x * v.position.x
-                                         + v.position.z * v.position.z);
-            CHECK(planar >= 2.0f - 0.5f - 0.01f);
-            CHECK(planar <= 2.0f + 0.5f + 0.01f);
-            CHECK_NEAR(std::sqrt(v.normal.x * v.normal.x
-                               + v.normal.y * v.normal.y
-                               + v.normal.z * v.normal.z), 1.0f);
-        }
-    }
-
-    // Degenerate segment counts append nothing.
-    {
-        MeshData m;
-        appendTorus(m, Vec3{0.0f, 0.0f, 0.0f}, 1.0f, 0.25f, 2, 6);
-        CHECK(m.vertices.empty());
-        CHECK(m.indices.empty());
-    }
-
     return iron_test_result();
 }
