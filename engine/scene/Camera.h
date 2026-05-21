@@ -11,7 +11,13 @@ namespace iron {
 class Camera {
 public:
     void setTarget(Vec3 target) { target_ = target; }
-    void setDistance(float distance) { distance_ = distance; }
+    // Clamped to the same [1, 50] range as zoom(): a distance of 0 would put
+    // the camera on its target and make the view matrix degenerate.
+    void setDistance(float distance) {
+        if (distance < kMinDistance) distance = kMinDistance;
+        if (distance > kMaxDistance) distance = kMaxDistance;
+        distance_ = distance;
+    }
     void setAspect(float aspect) { aspect_ = aspect; }
 
     // Add to the orbit angles, in radians (e.g. from mouse drag).
@@ -24,6 +30,10 @@ public:
     Mat4 projectionMatrix() const;
 
 private:
+    // Orbit-distance bounds, shared by setDistance() and zoom().
+    static constexpr float kMinDistance = 1.0f;
+    static constexpr float kMaxDistance = 50.0f;
+
     Vec3 target_{0.0f, 0.0f, 0.0f};
     float distance_ = 4.0f;
     float yaw_ = 0.0f;     // radians, around world +Y

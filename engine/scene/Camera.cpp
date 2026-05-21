@@ -20,8 +20,8 @@ void Camera::orbit(float deltaYaw, float deltaPitch) {
 
 void Camera::zoom(float factor) {
     distance_ *= factor;
-    if (distance_ < 1.0f) distance_ = 1.0f;
-    if (distance_ > 50.0f) distance_ = 50.0f;
+    if (distance_ < kMinDistance) distance_ = kMinDistance;
+    if (distance_ > kMaxDistance) distance_ = kMaxDistance;
 }
 
 Vec3 Camera::position() const {
