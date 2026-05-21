@@ -20,6 +20,9 @@ public:
 
     void draw() const;
 
+    // Re-upload the mesh's geometry. The vertex layout must be unchanged.
+    void update(const MeshData& data);
+
 private:
     void release();
 

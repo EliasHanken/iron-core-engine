@@ -22,6 +22,15 @@ MeshHandle OpenGLRenderer::createMesh(const MeshData& data) {
     return static_cast<MeshHandle>(meshes_.size());  // index + 1
 }
 
+void OpenGLRenderer::updateMesh(MeshHandle mesh, const MeshData& data) {
+    // Handles are (index + 1); reject anything out of range.
+    if (mesh == kInvalidHandle || mesh > meshes_.size()) {
+        Log::warn("OpenGLRenderer::updateMesh: mesh handle out of range");
+        return;
+    }
+    meshes_[mesh - 1]->update(data);
+}
+
 TextureHandle OpenGLRenderer::createTexture(int width, int height,
                                             const unsigned char* rgba) {
     auto tex = std::make_unique<GLTexture>(width, height, rgba);
