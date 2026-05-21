@@ -7,6 +7,7 @@ add_library(ironcore STATIC
   render/backends/opengl/GLShader.cpp
   render/backends/opengl/GLMesh.cpp
   render/backends/opengl/GLTexture.cpp
+  render/backends/opengl/OpenGLRenderer.cpp
 )
 
 target_include_directories(ironcore PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
