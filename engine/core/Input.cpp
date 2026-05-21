@@ -45,7 +45,9 @@ bool Input::keyReleased(int key) const {
 }
 
 bool Input::mouseButtonDown(int button) const {
-    return window_ && glfwGetMouseButton(window_, button) == GLFW_PRESS;
+    // Reads the per-step snapshot taken in update(), so it stays consistent
+    // with keyDown / mouseButtonPressed rather than polling GLFW live.
+    return button >= 0 && button < kMouseButtonCount && currentMouse_[button];
 }
 
 bool Input::mouseButtonPressed(int button) const {
