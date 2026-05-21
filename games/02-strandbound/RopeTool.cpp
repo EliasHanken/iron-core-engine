@@ -16,9 +16,12 @@ constexpr float kSlackFactor = 1.35f;       // rope length vs. anchor span
 constexpr float kMarkerSize = 0.25f;        // aim-marker cross half-length
 constexpr float kMinPlaceDistance = 0.1f;   // ignore surface hits at the eye
 
-constexpr float kRopeRadius = 0.08f;        // visual rope thickness
+constexpr float kRopeRadius = 0.055f;       // visual rope thickness
 constexpr int kRopeSides = 6;               // low-poly tube cross-section
-constexpr float kAnchorCubeSize = 0.4f;     // anchor marker cube side
+constexpr float kAnchorMajorRadius = 0.28f; // anchor ring overall radius
+constexpr float kAnchorMinorRadius = 0.06f; // anchor ring tube thickness
+constexpr int kAnchorMajorSegments = 14;    // ring resolution (around)
+constexpr int kAnchorMinorSegments = 6;     // ring resolution (tube)
 }  // namespace
 
 RopeTool::RopeTool(std::vector<iron::Aabb> colliders, iron::Renderer& renderer,
@@ -170,12 +173,16 @@ void RopeTool::draw(iron::Renderer& renderer, const iron::Mat4& view,
     }
     renderer.updateMesh(ropesMesh_, ropeGeometry);
 
-    // Rebuild the combined anchor cube mesh.
+    // Rebuild the combined anchor mesh — each anchor is a ring. The ring is
+    // raised by its tube radius so it rests on the surface rather than
+    // sinking halfway into it.
     iron::MeshData anchorGeometry;
-    const iron::Vec3 anchorSize{kAnchorCubeSize, kAnchorCubeSize,
-                                kAnchorCubeSize};
     for (const iron::Vec3& a : anchors_) {
-        iron::appendBox(anchorGeometry, a, anchorSize);
+        const iron::Vec3 ringCenter = a + iron::Vec3{0.0f, kAnchorMinorRadius,
+                                                     0.0f};
+        iron::appendTorus(anchorGeometry, ringCenter, kAnchorMajorRadius,
+                          kAnchorMinorRadius, kAnchorMajorSegments,
+                          kAnchorMinorSegments);
     }
     renderer.updateMesh(anchorsMesh_, anchorGeometry);
 
