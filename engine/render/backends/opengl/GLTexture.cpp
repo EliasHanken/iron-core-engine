@@ -47,6 +47,12 @@ GLTexture::~GLTexture() {
 }
 
 void GLTexture::bind(int unit) const {
+    // Binding an invalid texture would silently attach object 0 and render
+    // black with no GL error — warn instead of failing quietly.
+    if (!id_) {
+        Log::warn("GLTexture::bind called on an invalid texture");
+        return;
+    }
     glActiveTexture(GL_TEXTURE0 + unit);
     glBindTexture(GL_TEXTURE_2D, id_);
 }
