@@ -31,4 +31,12 @@ MeshData makeCube();
 // MeshData.
 void appendBox(MeshData& out, Vec3 center, Vec3 size);
 
+// Appends a low-poly tube around the polyline `points` to `out`. Each point
+// gets a ring of `sides` vertices at distance `radius`, with outward normals
+// and UVs (U around the ring, V tiling along the rope's length); consecutive
+// rings are stitched into triangles. Does nothing if there are fewer than 2
+// points or fewer than 3 sides.
+void appendTube(MeshData& out, const std::vector<Vec3>& points, float radius,
+                int sides);
+
 } // namespace iron

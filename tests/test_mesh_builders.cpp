@@ -2,7 +2,9 @@
 #include "math/Vec.h"
 #include "scene/Mesh.h"
 
+#include <cmath>
 #include <cstdint>
+#include <vector>
 
 using namespace iron;
 
@@ -42,6 +44,44 @@ int main() {
         }
         CHECK_NEAR(minX, 3.0f);
         CHECK_NEAR(maxX, 7.0f);
+    }
+
+    // appendTube over 3 points with 6 sides: 3*6 = 18 vertices,
+    // (3-1)*6*6 = 72 indices.
+    {
+        MeshData m;
+        std::vector<Vec3> pts = {
+            Vec3{0.0f, 0.0f, 0.0f}, Vec3{0.0f, 0.0f, -1.0f},
+            Vec3{0.0f, 0.0f, -2.0f},
+        };
+        appendTube(m, pts, 0.5f, 6);
+        CHECK(m.vertices.size() == 18);
+        CHECK(m.indices.size() == 72);
+    }
+
+    // Tube ring vertices sit at `radius` from the polyline; normals are unit
+    // length and point radially outward.
+    {
+        MeshData m;
+        std::vector<Vec3> pts = {Vec3{0.0f, 0.0f, 0.0f}, Vec3{0.0f, 0.0f, -4.0f}};
+        appendTube(m, pts, 2.0f, 8);
+        for (const Vertex& v : m.vertices) {
+            // The polyline runs along Z, so distance from the Z axis is the radius.
+            CHECK_NEAR(std::sqrt(v.position.x * v.position.x
+                               + v.position.y * v.position.y), 2.0f);
+            CHECK_NEAR(std::sqrt(v.normal.x * v.normal.x
+                               + v.normal.y * v.normal.y
+                               + v.normal.z * v.normal.z), 1.0f);
+        }
+    }
+
+    // Degenerate input (fewer than 2 points) appends nothing.
+    {
+        MeshData m;
+        std::vector<Vec3> one = {Vec3{0.0f, 0.0f, 0.0f}};
+        appendTube(m, one, 1.0f, 6);
+        CHECK(m.vertices.empty());
+        CHECK(m.indices.empty());
     }
 
     return iron_test_result();

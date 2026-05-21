@@ -1,5 +1,6 @@
 #include "scene/Mesh.h"
 
+#include <cmath>
 #include <cstdint>
 
 namespace iron {
@@ -43,6 +44,67 @@ void appendBox(MeshData& out, Vec3 center, Vec3 size) {
         out.indices.push_back(base + 0);
         out.indices.push_back(base + 2);
         out.indices.push_back(base + 3);
+    }
+}
+
+void appendTube(MeshData& out, const std::vector<Vec3>& points, float radius,
+                int sides) {
+    const int pointCount = static_cast<int>(points.size());
+    if (pointCount < 2 || sides < 3) {
+        return;
+    }
+
+    constexpr float kTwoPi = 6.28318530717958647692f;
+    const auto base = static_cast<std::uint32_t>(out.vertices.size());
+
+    // --- ring vertices ---
+    float vCoord = 0.0f;
+    for (int i = 0; i < pointCount; ++i) {
+        // Local rope direction (forward difference; backward at the last point).
+        Vec3 dir = (i + 1 < pointCount) ? points[i + 1] - points[i]
+                                        : points[i] - points[i - 1];
+        const float dirLen = length(dir);
+        dir = (dirLen > 1e-6f) ? dir * (1.0f / dirLen) : Vec3{0.0f, 0.0f, 1.0f};
+
+        // A perpendicular frame. Use world up unless the rope is near-vertical.
+        const Vec3 up = (std::fabs(dir.y) > 0.99f) ? Vec3{1.0f, 0.0f, 0.0f}
+                                                   : Vec3{0.0f, 1.0f, 0.0f};
+        const Vec3 right = normalize(cross(dir, up));
+        const Vec3 ringUp = normalize(cross(right, dir));
+
+        // V advances with arc length so the texture tiles down the rope.
+        if (i > 0) {
+            vCoord += length(points[i] - points[i - 1]) / (2.0f * radius);
+        }
+
+        for (int s = 0; s < sides; ++s) {
+            const float angle = kTwoPi * static_cast<float>(s)
+                                       / static_cast<float>(sides);
+            const Vec3 offset = right * (std::cos(angle) * radius)
+                              + ringUp * (std::sin(angle) * radius);
+            Vertex vert;
+            vert.position = points[i] + offset;
+            vert.normal = normalize(offset);  // radially outward
+            vert.uv = Vec2{static_cast<float>(s) / static_cast<float>(sides),
+                           vCoord};
+            out.vertices.push_back(vert);
+        }
+    }
+
+    // --- stitch consecutive rings (CCW seen from outside) ---
+    for (int i = 0; i + 1 < pointCount; ++i) {
+        const auto ring0 = base + static_cast<std::uint32_t>(i * sides);
+        const auto ring1 = base + static_cast<std::uint32_t>((i + 1) * sides);
+        for (int s = 0; s < sides; ++s) {
+            const auto s0 = static_cast<std::uint32_t>(s);
+            const auto s1 = static_cast<std::uint32_t>((s + 1) % sides);
+            out.indices.push_back(ring0 + s0);
+            out.indices.push_back(ring1 + s0);
+            out.indices.push_back(ring1 + s1);
+            out.indices.push_back(ring0 + s0);
+            out.indices.push_back(ring1 + s1);
+            out.indices.push_back(ring0 + s1);
+        }
     }
 }
 
