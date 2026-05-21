@@ -2,6 +2,7 @@
 
 #include "math/Mat4.h"
 #include "math/Vec.h"
+#include "render/Light.h"
 #include "scene/Mesh.h"
 
 #include <cstdint>
@@ -51,7 +52,8 @@ public:
                                       const std::string& fragmentSrc) = 0;
 
     // --- per-frame ---
-    virtual void beginFrame(Vec3 clearColor) = 0;
+    // The directional light applies to every object drawn this frame.
+    virtual void beginFrame(Vec3 clearColor, const DirectionalLight& light) = 0;
     // The camera supplies view + projection; each DrawCall supplies its model.
     virtual void submit(const DrawCall& call, const Mat4& view,
                         const Mat4& projection) = 0;

@@ -24,7 +24,7 @@ public:
     ShaderHandle createShader(const std::string& vertexSrc,
                               const std::string& fragmentSrc) override;
 
-    void beginFrame(Vec3 clearColor) override;
+    void beginFrame(Vec3 clearColor, const DirectionalLight& light) override;
     void submit(const DrawCall& call, const Mat4& view,
                 const Mat4& projection) override;
     void endFrame() override;
@@ -36,6 +36,7 @@ private:
     std::vector<std::unique_ptr<GLTexture>> textures_;
     std::vector<std::unique_ptr<GLShader>> shaders_;
     TextureHandle fallbackTexture_ = kInvalidHandle;
+    DirectionalLight light_{};
 };
 
 } // namespace iron

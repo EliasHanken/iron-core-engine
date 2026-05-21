@@ -54,7 +54,8 @@ ShaderHandle OpenGLRenderer::createShader(const std::string& vertexSrc,
     return static_cast<ShaderHandle>(shaders_.size());
 }
 
-void OpenGLRenderer::beginFrame(Vec3 clearColor) {
+void OpenGLRenderer::beginFrame(Vec3 clearColor, const DirectionalLight& light) {
+    light_ = light;
     glClearColor(clearColor.x, clearColor.y, clearColor.z, 1.0f);
     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 }
@@ -75,6 +76,9 @@ void OpenGLRenderer::submit(const DrawCall& call, const Mat4& view,
     shader.setMat4("uView", view);
     shader.setMat4("uProjection", projection);
     shader.setInt("uTexture", 0);
+    shader.setVec3("uLightDir", light_.direction);
+    shader.setVec3("uLightColor", light_.color);
+    shader.setFloat("uAmbient", light_.ambient);
 
     TextureHandle tex = call.texture;
     if (tex == kInvalidHandle) {
