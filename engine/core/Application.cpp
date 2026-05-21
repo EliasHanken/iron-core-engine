@@ -31,9 +31,13 @@ void Application::run() {
         }
 
         window_.pollEvents();
-        input_.update();
 
         while (accumulator >= fixedStep_) {
+            // Sample input once per fixed step, in lockstep with update_.
+            // Polling it once per frame instead would drop key-press edges
+            // on frames that happen to run zero fixed steps (common when the
+            // frame rate is higher than the fixed-step rate).
+            input_.update();
             if (update_) {
                 FrameTime t;
                 t.deltaSeconds = static_cast<float>(fixedStep_);
