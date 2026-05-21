@@ -2,6 +2,7 @@
 #include "core/Log.h"
 #include "core/Platform.h"
 #include "math/Transform.h"
+#include "physics/Rope.h"
 #include "render/Light.h"
 #include "render/backends/opengl/OpenGLRenderer.h"
 #include "scene/FirstPersonController.h"
@@ -9,6 +10,7 @@
 #include "scene/Scene.h"
 
 #include <GLFW/glfw3.h>
+#include <cstddef>
 
 namespace {
 
@@ -73,7 +75,7 @@ constexpr float kFovYRadians = 3.14159265f / 3.0f;
 
 int main() {
     iron::Application::Config config;
-    config.title = "Iron Core Engine - Strandbound (M2)";
+    config.title = "Iron Core Engine - Strandbound (M3)";
     iron::Application app(config);
     if (!app.valid()) {
         iron::Log::error("Application init failed");
@@ -114,6 +116,9 @@ int main() {
     scene.objects.push_back(makeBox(iron::Vec3{0.0f, -0.5f, -45.0f},
                                     iron::Vec3{18.0f, 1.0f, 18.0f},
                                     cube, texture));  // far island
+    scene.objects.push_back(makeBox(iron::Vec3{5.0f, 2.0f, 0.0f},
+                                    iron::Vec3{0.4f, 4.0f, 0.4f},
+                                    cube, texture));  // rope pole
 
     iron::FirstPersonController player;
     player.setGroundHeight(0.0f);            // island top
@@ -121,6 +126,16 @@ int main() {
     player.setPosition(iron::Vec3{0.0f, 0.0f, 7.0f});
     player.setMoveSpeed(6.0f);
     player.setMouseSensitivity(0.0025f);
+
+    // The rope hangs from the top of the pole; its other end follows the
+    // player. kRopeLength exceeds the pole-to-player distance, so the rope
+    // carries slack and visibly dangles. More segments = a smoother curve.
+    constexpr int kRopeSegments = 24;
+    constexpr float kRopeLength = 16.0f;
+    const iron::Vec3 poleTop{5.0f, 4.0f, 0.0f};
+    const iron::Vec3 playerAnchorStart =
+        player.position() + iron::Vec3{0.0f, 1.0f, 0.0f};
+    iron::Rope rope(poleTop, playerAnchorStart, kRopeSegments, kRopeLength);
 
     app.window().setCursorCaptured(true);
 
@@ -144,6 +159,13 @@ int main() {
         ci.mouseDY = static_cast<float>(input.mouseDeltaY());
 
         player.update(ci, time.deltaSeconds);
+
+        // The rope's fixed end stays on the pole; its free end rides with the
+        // player at roughly waist height. time.deltaSeconds here is always the
+        // loop's fixed step — the Verlet simulation relies on a constant dt.
+        rope.setEndpointA(poleTop);
+        rope.setEndpointB(player.position() + iron::Vec3{0.0f, 1.0f, 0.0f});
+        rope.update(time.deltaSeconds);
     });
 
     app.setRender([&] {
@@ -157,6 +179,16 @@ int main() {
             call.model = obj.transform;
             renderer.submit(call, view, projection);
         }
+
+        // Draw the rope as one debug line per segment.
+        const std::vector<iron::VerletPoint>& ropePoints = rope.points();
+        for (std::size_t i = 0; i + 1 < ropePoints.size(); ++i) {
+            renderer.drawLine(ropePoints[i].position,
+                              ropePoints[i + 1].position,
+                              iron::Vec3{0.55f, 0.35f, 0.18f});
+        }
+        renderer.flushDebugLines(view, projection);
+
         renderer.endFrame();
     });
 

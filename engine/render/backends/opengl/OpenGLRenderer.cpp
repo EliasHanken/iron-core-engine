@@ -95,6 +95,14 @@ void OpenGLRenderer::endFrame() {
     // Buffer swap is owned by Window; nothing to flush here yet.
 }
 
+void OpenGLRenderer::drawLine(Vec3 a, Vec3 b, Vec3 color) {
+    debugLines_.addLine(a, b, color);
+}
+
+void OpenGLRenderer::flushDebugLines(const Mat4& view, const Mat4& projection) {
+    debugLines_.flush(view, projection);
+}
+
 void OpenGLRenderer::setViewport(int width, int height) {
     glViewport(0, 0, width, height);
 }

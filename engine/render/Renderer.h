@@ -59,6 +59,12 @@ public:
                         const Mat4& projection) = 0;
     virtual void endFrame() = 0;
 
+    // --- debug drawing ---
+    // Queue a coloured 3D line segment for the current frame.
+    virtual void drawLine(Vec3 a, Vec3 b, Vec3 color) = 0;
+    // Draw all queued debug lines (depth-tested) and clear the queue.
+    virtual void flushDebugLines(const Mat4& view, const Mat4& projection) = 0;
+
     // Call when the framebuffer is resized.
     virtual void setViewport(int width, int height) = 0;
 };
