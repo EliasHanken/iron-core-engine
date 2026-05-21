@@ -2,6 +2,7 @@
 #include "core/Log.h"
 #include "core/Platform.h"
 #include "math/Transform.h"
+#include "physics/Rope.h"
 #include "render/Light.h"
 #include "render/backends/opengl/OpenGLRenderer.h"
 #include "scene/FirstPersonController.h"
@@ -9,6 +10,7 @@
 #include "scene/Scene.h"
 
 #include <GLFW/glfw3.h>
+#include <cstddef>
 
 namespace {
 
@@ -114,6 +116,9 @@ int main() {
     scene.objects.push_back(makeBox(iron::Vec3{0.0f, -0.5f, -45.0f},
                                     iron::Vec3{18.0f, 1.0f, 18.0f},
                                     cube, texture));  // far island
+    scene.objects.push_back(makeBox(iron::Vec3{5.0f, 2.0f, 0.0f},
+                                    iron::Vec3{0.4f, 4.0f, 0.4f},
+                                    cube, texture));  // rope pole
 
     iron::FirstPersonController player;
     player.setGroundHeight(0.0f);            // island top
@@ -121,6 +126,14 @@ int main() {
     player.setPosition(iron::Vec3{0.0f, 0.0f, 7.0f});
     player.setMoveSpeed(6.0f);
     player.setMouseSensitivity(0.0025f);
+
+    // The rope hangs from the top of the pole; its other end follows the
+    // player. ropeLength (16) exceeds the pole-to-player distance, so the
+    // rope carries slack and visibly dangles.
+    const iron::Vec3 poleTop{5.0f, 4.0f, 0.0f};
+    const iron::Vec3 playerAnchorStart =
+        player.position() + iron::Vec3{0.0f, 1.0f, 0.0f};
+    iron::Rope rope(poleTop, playerAnchorStart, 24, 16.0f);
 
     app.window().setCursorCaptured(true);
 
@@ -144,6 +157,12 @@ int main() {
         ci.mouseDY = static_cast<float>(input.mouseDeltaY());
 
         player.update(ci, time.deltaSeconds);
+
+        // The rope's fixed end stays on the pole; its free end rides with the
+        // player at roughly waist height.
+        rope.setEndpointA(poleTop);
+        rope.setEndpointB(player.position() + iron::Vec3{0.0f, 1.0f, 0.0f});
+        rope.update(time.deltaSeconds);
     });
 
     app.setRender([&] {
@@ -157,6 +176,16 @@ int main() {
             call.model = obj.transform;
             renderer.submit(call, view, projection);
         }
+
+        // Draw the rope as one debug line per segment.
+        const std::vector<iron::VerletPoint>& ropePoints = rope.points();
+        for (std::size_t i = 0; i + 1 < ropePoints.size(); ++i) {
+            renderer.drawLine(ropePoints[i].position,
+                              ropePoints[i + 1].position,
+                              iron::Vec3{0.55f, 0.35f, 0.18f});
+        }
+        renderer.flushDebugLines(view, projection);
+
         renderer.endFrame();
     });
 
