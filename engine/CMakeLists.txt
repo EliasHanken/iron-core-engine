@@ -3,6 +3,7 @@ add_library(ironcore STATIC
   core/Window.cpp
   core/Input.cpp
   core/Application.cpp
+  render/backends/opengl/GLShader.cpp
 )
 
 target_include_directories(ironcore PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
