@@ -12,6 +12,7 @@ constexpr float kRopePickRadius = 0.3f;     // rope points picked as spheres
 constexpr int kRopeSegments = 20;
 constexpr float kSlackFactor = 1.35f;       // rope length vs. anchor span
 constexpr float kMarkerSize = 0.25f;
+constexpr float kMinPlaceDistance = 0.1f;   // ignore surface hits basically at the eye
 }  // namespace
 
 RopeTool::RopeTool(std::vector<iron::Aabb> colliders)
@@ -53,7 +54,10 @@ bool RopeTool::pickSurface(const iron::Ray& aim, iron::Vec3& outPoint) const {
     bool found = false;
     for (const iron::Aabb& box : colliders_) {
         float t = 0.0f;
-        if (iron::intersectRayAabb(aim, box, t) && t < bestT) {
+        // Skip hits at ~t=0: those happen when the player's eye is inside a
+        // box, and would place an anchor floating at the eye position.
+        if (iron::intersectRayAabb(aim, box, t) && t > kMinPlaceDistance
+                && t < bestT) {
             bestT = t;
             found = true;
         }

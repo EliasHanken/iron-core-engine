@@ -131,9 +131,10 @@ The `02-strandbound` game splits into two translation units:
 **`RopeTool` owns:**
 - `std::vector<Vec3> anchors` — placed anchor positions.
 - `std::vector<Rope> ropes` — completed ropes, each spanning two anchors.
-- The interaction state: *idle*, or *tying* — a rope-in-progress that started
-  at one anchor, with its free end following the player. The state records
-  the start-anchor index and the in-progress `Rope`.
+- The interaction state: *idle*, or *tying* — recorded simply as the
+  start-anchor index (or -1 when idle). A `Rope` is only created once *both*
+  anchors are known; while tying, the in-progress connection is shown as a
+  plain guide line, not a simulated rope.
 - The static scene colliders — a `std::vector<Aabb>` handed in by the game at
   construction, used for surface-placement raycasts.
 
@@ -142,22 +143,23 @@ position, the per-step input edges, and `dt`:**
 - **Place** (right-click edge): raycast the aim ray against the scene
   `Aabb`s; at the nearest hit, append a new anchor at the hit point.
 - **Tie** (left-click edge): raycast against the anchor spheres for the
-  nearest anchor. If *idle*, begin *tying* — record the anchor and create a
-  rope-in-progress from it whose free end will follow the player. If already
-  *tying*, pin the in-progress rope's free end to this second anchor and move
-  the finished rope into `ropes`. Tying onto the start anchor again, or onto
-  nothing, is a no-op.
+  nearest anchor. If *idle*, begin *tying* — just record the start-anchor
+  index. If already *tying* and a *different* anchor is hit, create a `Rope`
+  spanning the two anchors (its natural length is the anchor distance times a
+  slack factor, so it dangles) and append it to `ropes`; return to *idle*.
+  Tying onto the start anchor again, or onto nothing, is a no-op.
 - **Cut** (C-key edge): raycast against every rope's points; if a rope is
   hit, erase it.
-- Advance physics: set the in-progress rope's free endpoint to the player
-  (waist height) and `update` it; `update` every completed rope. (Completed
-  ropes have both endpoints pinned at fixed anchor positions, so they simply
-  hang — M3 physics.)
+- Advance physics: `update` every completed rope. (Completed ropes have both
+  endpoints pinned at fixed anchor positions, so they simply hang — M3
+  physics. There is no in-progress rope to simulate.)
 
 **`draw` (called in render):**
 - Each anchor as a small debug-drawn marker (a short three-axis cross).
-- Every rope — completed and in-progress — as debug lines, one per segment
-  (reusing M3's rope drawing).
+- Every completed rope as debug lines, one per segment (reusing M3's rope
+  drawing).
+- While tying, a straight guide line from the start anchor to the player, so
+  the player sees the pending connection.
 - An **aim indicator**: a marker at the current raycast hit point, colored by
   what the current aim would act on (surface / anchor / rope / nothing). This
   is world-space debug-draw — M4 needs no HUD.
