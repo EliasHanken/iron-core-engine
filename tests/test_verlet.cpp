@@ -1,6 +1,7 @@
 #include "test_framework.h"
 #include "math/Vec.h"
 #include "physics/VerletPoint.h"
+#include "physics/DistanceConstraint.h"
 
 using namespace iron;
 
@@ -44,6 +45,59 @@ int main() {
         p.pinned = true;
         integrate(p, Vec3{0.0f, -10.0f, 0.0f}, 1.0f);
         CHECK_NEAR(p.position.y, 5.0f);
+    }
+
+    // A stretched constraint pulls two free points back to rest length,
+    // each moving equally toward the centre.
+    {
+        std::vector<VerletPoint> pts(2);
+        pts[0].position = Vec3{0.0f, 0.0f, 0.0f};
+        pts[1].position = Vec3{10.0f, 0.0f, 0.0f};
+        DistanceConstraint c{0, 1, 4.0f};
+        satisfy(c, pts);
+        CHECK_NEAR(length(pts[1].position - pts[0].position), 4.0f);
+        CHECK_NEAR(pts[0].position.x, 3.0f);
+        CHECK_NEAR(pts[1].position.x, 7.0f);
+    }
+
+    // A compressed constraint pushes two free points apart to rest length.
+    {
+        std::vector<VerletPoint> pts(2);
+        pts[0].position = Vec3{0.0f, 0.0f, 0.0f};
+        pts[1].position = Vec3{1.0f, 0.0f, 0.0f};
+        DistanceConstraint c{0, 1, 5.0f};
+        satisfy(c, pts);
+        CHECK_NEAR(length(pts[1].position - pts[0].position), 5.0f);
+    }
+
+    // With one endpoint pinned, only the free point moves — by the full
+    // correction — and the pinned point stays exactly put.
+    {
+        std::vector<VerletPoint> pts(2);
+        pts[0].position = Vec3{0.0f, 0.0f, 0.0f};
+        pts[0].pinned = true;
+        pts[1].position = Vec3{10.0f, 0.0f, 0.0f};
+        DistanceConstraint c{0, 1, 4.0f};
+        satisfy(c, pts);
+        CHECK_NEAR(pts[0].position.x, 0.0f);
+        CHECK_NEAR(pts[1].position.x, 4.0f);
+    }
+
+    // Iterating a chain of constraints converges every segment to rest length.
+    {
+        std::vector<VerletPoint> pts(3);
+        pts[0].position = Vec3{0.0f, 0.0f, 0.0f};
+        pts[0].pinned = true;
+        pts[1].position = Vec3{5.0f, 0.0f, 0.0f};
+        pts[2].position = Vec3{20.0f, 0.0f, 0.0f};
+        DistanceConstraint c01{0, 1, 2.0f};
+        DistanceConstraint c12{1, 2, 2.0f};
+        for (int i = 0; i < 50; ++i) {
+            satisfy(c01, pts);
+            satisfy(c12, pts);
+        }
+        CHECK_NEAR(length(pts[1].position - pts[0].position), 2.0f);
+        CHECK_NEAR(length(pts[2].position - pts[1].position), 2.0f);
     }
 
     return iron_test_result();
