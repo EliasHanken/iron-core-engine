@@ -1,8 +1,10 @@
+#include "RopeTool.h"
+
 #include "core/Application.h"
 #include "core/Log.h"
 #include "core/Platform.h"
+#include "math/Aabb.h"
 #include "math/Transform.h"
-#include "physics/Rope.h"
 #include "render/Light.h"
 #include "render/backends/opengl/OpenGLRenderer.h"
 #include "scene/FirstPersonController.h"
@@ -10,7 +12,8 @@
 #include "scene/Scene.h"
 
 #include <GLFW/glfw3.h>
-#include <cstddef>
+
+#include <vector>
 
 namespace {
 
@@ -28,16 +31,13 @@ out vec3 vNormal;
 out vec2 vUV;
 
 void main() {
-    // mat3(uModel) is the correct normal transform for uniform scaling,
-    // which is all this milestone uses.
     vNormal = mat3(uModel) * aNormal;
     vUV = aUV;
     gl_Position = uProjection * uView * uModel * vec4(aPos, 1.0);
 }
 )";
 
-// Fragment shader: Lambert diffuse from one directional light + ambient,
-// modulating the texture.
+// Fragment shader: Lambert diffuse from one directional light + ambient.
 const char* kFragmentShader = R"(#version 330 core
 in vec3 vNormal;
 in vec2 vUV;
@@ -51,31 +51,36 @@ uniform float uAmbient;
 void main() {
     vec3 n = normalize(vNormal);
     float diffuse = max(dot(n, -normalize(uLightDir)), 0.0);
-    // Ambient shares the light's colour — both stand in for the same sky.
     vec3 lighting = uLightColor * (diffuse + uAmbient);
     vec4 texel = texture(uTexture, vUV);
     FragColor = vec4(texel.rgb * lighting, texel.a);
 }
 )";
 
-// Builds a box render object: a unit cube translated and scaled into place.
-iron::RenderObject makeBox(iron::Vec3 center, iron::Vec3 size,
-                           iron::MeshHandle mesh, iron::TextureHandle texture) {
+// Vertical field of view for the camera: 60 degrees.
+constexpr float kFovYRadians = 3.14159265f / 3.0f;
+
+// One solid box in the world: its centre and full size.
+struct BoxDef {
+    iron::Vec3 center;
+    iron::Vec3 size;
+};
+
+// A unit cube scaled and translated into place.
+iron::RenderObject makeBox(const BoxDef& def, iron::MeshHandle mesh,
+                           iron::TextureHandle texture) {
     iron::RenderObject obj;
-    obj.transform = iron::translation(center) * iron::scaling(size);
+    obj.transform = iron::translation(def.center) * iron::scaling(def.size);
     obj.mesh = mesh;
     obj.texture = texture;
     return obj;
 }
 
-// Vertical field of view for the camera: 60 degrees.
-constexpr float kFovYRadians = 3.14159265f / 3.0f;
-
 }  // namespace
 
 int main() {
     iron::Application::Config config;
-    config.title = "Iron Core Engine - Strandbound (M3)";
+    config.title = "Iron Core Engine - Strandbound (M4)";
     iron::Application app(config);
     if (!app.valid()) {
         iron::Log::error("Application init failed");
@@ -94,48 +99,38 @@ int main() {
         return 1;
     }
 
-    // Build the world. The island is a wide flat box whose top sits at y = 0;
-    // props rest on top of it; a second island sits across a gap.
+    // The solid geometry of the level: a home island, props, a far island,
+    // and a pole. One BoxDef list builds both the render objects and the
+    // collider list the RopeTool raycasts against.
+    const BoxDef boxes[] = {
+        {{0.0f, -0.5f, 0.0f},  {20.0f, 1.0f, 20.0f}},  // home island
+        {{2.0f, 0.5f, -3.0f},  {1.0f, 1.0f, 1.0f}},    // prop
+        {{-3.0f, 1.0f, -1.0f}, {1.0f, 2.0f, 1.0f}},    // prop (taller)
+        {{-1.0f, 0.75f, 4.0f}, {1.5f, 1.5f, 1.5f}},    // prop
+        {{0.0f, -0.5f, -45.0f},{18.0f, 1.0f, 18.0f}},  // far island
+        {{5.0f, 2.0f, 0.0f},   {0.4f, 4.0f, 0.4f}},    // pole
+    };
+
     iron::Scene scene;
     scene.light.direction = iron::Vec3{-0.4f, -1.0f, -0.3f};
     scene.light.color = iron::Vec3{1.0f, 0.97f, 0.9f};
     scene.light.ambient = 0.25f;
 
-    scene.objects.push_back(makeBox(iron::Vec3{0.0f, -0.5f, 0.0f},
-                                    iron::Vec3{20.0f, 1.0f, 20.0f},
-                                    cube, texture));  // home island
-    scene.objects.push_back(makeBox(iron::Vec3{2.0f, 0.5f, -3.0f},
-                                    iron::Vec3{1.0f, 1.0f, 1.0f},
-                                    cube, texture));  // prop
-    scene.objects.push_back(makeBox(iron::Vec3{-3.0f, 1.0f, -1.0f},
-                                    iron::Vec3{1.0f, 2.0f, 1.0f},
-                                    cube, texture));  // prop (taller)
-    scene.objects.push_back(makeBox(iron::Vec3{-1.0f, 0.75f, 4.0f},
-                                    iron::Vec3{1.5f, 1.5f, 1.5f},
-                                    cube, texture));  // prop
-    scene.objects.push_back(makeBox(iron::Vec3{0.0f, -0.5f, -45.0f},
-                                    iron::Vec3{18.0f, 1.0f, 18.0f},
-                                    cube, texture));  // far island
-    scene.objects.push_back(makeBox(iron::Vec3{5.0f, 2.0f, 0.0f},
-                                    iron::Vec3{0.4f, 4.0f, 0.4f},
-                                    cube, texture));  // rope pole
+    std::vector<iron::Aabb> colliders;
+    for (const BoxDef& def : boxes) {
+        scene.objects.push_back(makeBox(def, cube, texture));
+        const iron::Vec3 half = def.size * 0.5f;
+        colliders.push_back(iron::Aabb{def.center - half, def.center + half});
+    }
 
     iron::FirstPersonController player;
-    player.setGroundHeight(0.0f);            // island top
+    player.setGroundHeight(0.0f);
     player.setEyeHeight(1.7f);
     player.setPosition(iron::Vec3{0.0f, 0.0f, 7.0f});
     player.setMoveSpeed(6.0f);
     player.setMouseSensitivity(0.0025f);
 
-    // The rope hangs from the top of the pole; its other end follows the
-    // player. kRopeLength exceeds the pole-to-player distance, so the rope
-    // carries slack and visibly dangles. More segments = a smoother curve.
-    constexpr int kRopeSegments = 24;
-    constexpr float kRopeLength = 16.0f;
-    const iron::Vec3 poleTop{5.0f, 4.0f, 0.0f};
-    const iron::Vec3 playerAnchorStart =
-        player.position() + iron::Vec3{0.0f, 1.0f, 0.0f};
-    iron::Rope rope(poleTop, playerAnchorStart, kRopeSegments, kRopeLength);
+    RopeTool ropeTool(colliders);
 
     app.window().setCursorCaptured(true);
 
@@ -157,15 +152,14 @@ int main() {
         if (input.keyDown(GLFW_KEY_A)) ci.strafe -= 1.0f;
         ci.mouseDX = static_cast<float>(input.mouseDeltaX());
         ci.mouseDY = static_cast<float>(input.mouseDeltaY());
-
         player.update(ci, time.deltaSeconds);
 
-        // The rope's fixed end stays on the pole; its free end rides with the
-        // player at roughly waist height. time.deltaSeconds here is always the
-        // loop's fixed step — the Verlet simulation relies on a constant dt.
-        rope.setEndpointA(poleTop);
-        rope.setEndpointB(player.position() + iron::Vec3{0.0f, 1.0f, 0.0f});
-        rope.update(time.deltaSeconds);
+        // Rope tool: right-click places an anchor, left-click ties, C cuts.
+        const bool place = input.mouseButtonPressed(GLFW_MOUSE_BUTTON_RIGHT);
+        const bool tie = input.mouseButtonPressed(GLFW_MOUSE_BUTTON_LEFT);
+        const bool cut = input.keyPressed(GLFW_KEY_C);
+        ropeTool.update(player.aimRay(), player.position(), place, tie, cut,
+                        time.deltaSeconds);
     });
 
     app.setRender([&] {
@@ -180,13 +174,7 @@ int main() {
             renderer.submit(call, view, projection);
         }
 
-        // Draw the rope as one debug line per segment.
-        const std::vector<iron::VerletPoint>& ropePoints = rope.points();
-        for (std::size_t i = 0; i + 1 < ropePoints.size(); ++i) {
-            renderer.drawLine(ropePoints[i].position,
-                              ropePoints[i + 1].position,
-                              iron::Vec3{0.55f, 0.35f, 0.18f});
-        }
+        ropeTool.draw(renderer);
         renderer.flushDebugLines(view, projection);
 
         renderer.endFrame();

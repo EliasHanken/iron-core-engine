@@ -1,5 +1,6 @@
 #include "test_framework.h"
 #include "math/Mat4.h"
+#include "math/Ray.h"
 #include "math/Vec.h"
 #include "scene/FirstPersonController.h"
 
@@ -142,6 +143,21 @@ int main() {
         const float dx = c.position().x;
         const float dz = c.position().z;
         CHECK_NEAR(std::sqrt(dx * dx + dz * dz), 1.0f);
+    }
+
+    // aimRay starts at the eye position and points along the look direction.
+    {
+        FirstPersonController c;
+        c.setPosition(Vec3{2.0f, 0.0f, 5.0f});
+        c.setEyeHeight(1.5f);
+        // Default yaw = 0, pitch = 0 looks toward -Z.
+        Ray r = c.aimRay();
+        CHECK_NEAR(r.origin.x, 2.0f);
+        CHECK_NEAR(r.origin.y, 1.5f);
+        CHECK_NEAR(r.origin.z, 5.0f);
+        CHECK_NEAR(r.direction.x, 0.0f);
+        CHECK_NEAR(r.direction.y, 0.0f);
+        CHECK_NEAR(r.direction.z, -1.0f);
     }
 
     return iron_test_result();

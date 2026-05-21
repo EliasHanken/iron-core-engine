@@ -1,6 +1,7 @@
 #pragma once
 
 #include "math/Mat4.h"
+#include "math/Ray.h"
 #include "math/Vec.h"
 
 namespace iron {
@@ -27,6 +28,9 @@ public:
 
     Mat4 viewMatrix() const;
     Vec3 eyePosition() const;
+
+    // The ray from the eye along the current look direction — the player's aim.
+    Ray aimRay() const;
 
     void setPosition(Vec3 position) { position_ = position; }
     void setGroundHeight(float y) { groundHeight_ = y; }
