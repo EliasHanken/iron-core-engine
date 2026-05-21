@@ -30,15 +30,32 @@ int main() {
     CHECK_NEAR(r2.x, 0.0f);
     CHECK_NEAR(r2.y, 1.0f);
 
-    // A unit quaternion stays unit length after normalize.
-    Quat n = rz.normalized();
-    CHECK_NEAR(n.length(), 1.0f);
+    // 90 degrees about X turns +Y into +Z (exercises the x/y terms of the
+    // math, which the Z-only tests above never touch).
+    Quat rx = Quat::fromAxisAngle(Vec3{1.0f, 0.0f, 0.0f}, pi / 2.0f);
+    Vec3 rxy = rx.rotate(Vec3{0.0f, 1.0f, 0.0f});
+    CHECK_NEAR(rxy.x, 0.0f);
+    CHECK_NEAR(rxy.y, 0.0f);
+    CHECK_NEAR(rxy.z, 1.0f);
 
-    // toMat4 agrees with rotate().
-    Mat4 m = rz.toMat4();
-    Vec4 mr = m * Vec4{1.0f, 0.0f, 0.0f, 1.0f};
-    CHECK_NEAR(mr.x, 0.0f);
-    CHECK_NEAR(mr.y, 1.0f);
+    // Composition is NOT commutative: Z-then-X differs from X-then-Z.
+    Vec3 zThenX = (rx * rz).rotate(Vec3{0.0f, 1.0f, 0.0f});
+    Vec3 xThenZ = (rz * rx).rotate(Vec3{0.0f, 1.0f, 0.0f});
+    CHECK(std::fabs(zThenX.x - xThenZ.x) > 0.1f ||
+          std::fabs(zThenX.y - xThenZ.y) > 0.1f ||
+          std::fabs(zThenX.z - xThenZ.z) > 0.1f);
+
+    // normalized() actually rescales a non-unit quaternion to unit length.
+    Quat nonUnit{1.0f, 2.0f, 3.0f, 4.0f};
+    CHECK_NEAR(nonUnit.normalized().length(), 1.0f);
+
+    // toMat4 agrees with rotate(), checked on the X-axis case so the
+    // off-diagonal matrix entries are genuinely exercised.
+    Mat4 mx = rx.toMat4();
+    Vec4 mxr = mx * Vec4{0.0f, 1.0f, 0.0f, 1.0f};
+    CHECK_NEAR(mxr.x, 0.0f);
+    CHECK_NEAR(mxr.y, 0.0f);
+    CHECK_NEAR(mxr.z, 1.0f);
 
     return iron_test_result();
 }

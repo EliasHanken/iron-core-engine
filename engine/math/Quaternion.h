@@ -13,7 +13,7 @@ namespace iron {
 struct Quat {
     float x = 0.0f, y = 0.0f, z = 0.0f, w = 1.0f;
 
-    static Quat identity() { return Quat{0.0f, 0.0f, 0.0f, 1.0f}; }
+    static constexpr Quat identity() { return Quat{0.0f, 0.0f, 0.0f, 1.0f}; }
 
     // Rotation of `angleRadians` about a (not necessarily unit) axis.
     static Quat fromAxisAngle(Vec3 axis, float angleRadians) {
@@ -35,10 +35,13 @@ struct Quat {
     }
 
     // Rotate a vector by this quaternion: v' = q * v * q^-1, expanded.
+    // The expansion is only exact for a unit quaternion, so we normalize
+    // first — matching toMat4() and guarding against composition drift.
     Vec3 rotate(Vec3 v) const {
-        const Vec3 u{x, y, z};
+        const Quat q = normalized();
+        const Vec3 u{q.x, q.y, q.z};
         const Vec3 t = cross(u, v) * 2.0f;
-        return v + t * w + cross(u, t);
+        return v + t * q.w + cross(u, t);
     }
 
     // Equivalent rotation as a column-major 4x4 matrix.
@@ -63,7 +66,7 @@ struct Quat {
 };
 
 // Composition: (a * b) applies b first, then a — same convention as Mat4.
-inline Quat operator*(const Quat& a, const Quat& b) {
+constexpr Quat operator*(const Quat& a, const Quat& b) {
     return Quat{
         a.w * b.x + a.x * b.w + a.y * b.z - a.z * b.y,
         a.w * b.y - a.x * b.z + a.y * b.w + a.z * b.x,
