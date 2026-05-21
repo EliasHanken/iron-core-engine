@@ -10,7 +10,7 @@ namespace iron {
 // Builders for the standard transform and projection matrices. All return
 // column-major Mat4 ready to upload to a shader.
 
-inline Mat4 translation(Vec3 t) {
+inline constexpr Mat4 translation(Vec3 t) {
     Mat4 m = Mat4::identity();
     m.at(0, 3) = t.x;
     m.at(1, 3) = t.y;
@@ -18,7 +18,7 @@ inline Mat4 translation(Vec3 t) {
     return m;
 }
 
-inline Mat4 scaling(Vec3 s) {
+inline constexpr Mat4 scaling(Vec3 s) {
     Mat4 m = Mat4::identity();
     m.at(0, 0) = s.x;
     m.at(1, 1) = s.y;
@@ -53,6 +53,9 @@ inline Mat4 rotationZ(float radians) {
 // View matrix: transforms world space into camera space. The camera sits at
 // `eye`, looks toward `center`, with `up` giving roll. Right-handed: the
 // camera looks down its local -Z.
+//
+// Precondition: `up` must not be parallel to the eye->center direction. If it
+// is, cross(forward, up) is zero and the result is a degenerate matrix.
 inline Mat4 lookAt(Vec3 eye, Vec3 center, Vec3 up) {
     const Vec3 forward = normalize(center - eye);
     const Vec3 right = normalize(cross(forward, up));
