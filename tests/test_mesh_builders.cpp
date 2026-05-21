@@ -46,8 +46,8 @@ int main() {
         CHECK_NEAR(maxX, 7.0f);
     }
 
-    // appendTube over 3 points with 6 sides: 3*6 = 18 vertices,
-    // (3-1)*6*6 = 72 indices.
+    // appendTube over 3 points with 6 sides: 3*(6+1) = 21 vertices (each ring
+    // has a duplicated seam vertex), (3-1)*6*6 = 72 indices.
     {
         MeshData m;
         std::vector<Vec3> pts = {
@@ -55,7 +55,7 @@ int main() {
             Vec3{0.0f, 0.0f, -2.0f},
         };
         appendTube(m, pts, 0.5f, 6);
-        CHECK(m.vertices.size() == 18);
+        CHECK(m.vertices.size() == 21);
         CHECK(m.indices.size() == 72);
     }
 
@@ -75,13 +75,20 @@ int main() {
         }
     }
 
-    // Degenerate input (fewer than 2 points) appends nothing.
+    // Degenerate inputs append nothing: fewer than 2 points, fewer than 3
+    // sides, or a non-positive radius.
     {
         MeshData m;
         std::vector<Vec3> one = {Vec3{0.0f, 0.0f, 0.0f}};
         appendTube(m, one, 1.0f, 6);
         CHECK(m.vertices.empty());
         CHECK(m.indices.empty());
+
+        std::vector<Vec3> two = {Vec3{0.0f, 0.0f, 0.0f}, Vec3{0.0f, 0.0f, -1.0f}};
+        appendTube(m, two, 1.0f, 2);     // too few sides
+        CHECK(m.vertices.empty());
+        appendTube(m, two, 0.0f, 6);     // non-positive radius
+        CHECK(m.vertices.empty());
     }
 
     return iron_test_result();

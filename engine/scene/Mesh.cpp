@@ -50,12 +50,16 @@ void appendBox(MeshData& out, Vec3 center, Vec3 size) {
 void appendTube(MeshData& out, const std::vector<Vec3>& points, float radius,
                 int sides) {
     const int pointCount = static_cast<int>(points.size());
-    if (pointCount < 2 || sides < 3) {
+    if (pointCount < 2 || sides < 3 || radius <= 0.0f) {
         return;
     }
 
     constexpr float kTwoPi = 6.28318530717958647692f;
     const auto base = static_cast<std::uint32_t>(out.vertices.size());
+    // Each ring has sides + 1 vertices: the last duplicates the first
+    // position but carries U = 1, so the wrap-around quad's texture does not
+    // run backwards across the seam.
+    const int ringVertexCount = sides + 1;
 
     // --- ring vertices ---
     float vCoord = 0.0f;
@@ -77,7 +81,7 @@ void appendTube(MeshData& out, const std::vector<Vec3>& points, float radius,
             vCoord += length(points[i] - points[i - 1]) / (2.0f * radius);
         }
 
-        for (int s = 0; s < sides; ++s) {
+        for (int s = 0; s <= sides; ++s) {
             const float angle = kTwoPi * static_cast<float>(s)
                                        / static_cast<float>(sides);
             const Vec3 offset = right * (std::cos(angle) * radius)
@@ -93,11 +97,13 @@ void appendTube(MeshData& out, const std::vector<Vec3>& points, float radius,
 
     // --- stitch consecutive rings (CCW seen from outside) ---
     for (int i = 0; i + 1 < pointCount; ++i) {
-        const auto ring0 = base + static_cast<std::uint32_t>(i * sides);
-        const auto ring1 = base + static_cast<std::uint32_t>((i + 1) * sides);
+        const auto ring0 =
+            base + static_cast<std::uint32_t>(i * ringVertexCount);
+        const auto ring1 =
+            base + static_cast<std::uint32_t>((i + 1) * ringVertexCount);
         for (int s = 0; s < sides; ++s) {
             const auto s0 = static_cast<std::uint32_t>(s);
-            const auto s1 = static_cast<std::uint32_t>((s + 1) % sides);
+            const auto s1 = static_cast<std::uint32_t>(s + 1);
             out.indices.push_back(ring0 + s0);
             out.indices.push_back(ring1 + s0);
             out.indices.push_back(ring1 + s1);
