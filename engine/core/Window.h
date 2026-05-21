@@ -23,6 +23,9 @@ public:
     void pollEvents();
     void swapBuffers();
 
+    // Captured = cursor hidden and locked to the window (for mouse-look).
+    void setCursorCaptured(bool captured);
+
     int width() const { return width_; }
     int height() const { return height_; }
     GLFWwindow* handle() const { return handle_; }

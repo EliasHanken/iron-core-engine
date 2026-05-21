@@ -93,7 +93,7 @@ int main() {
     });
 
     app.setRender([&] {
-        renderer.beginFrame(iron::Vec3{0.1f, 0.12f, 0.15f});
+        renderer.beginFrame(iron::Vec3{0.1f, 0.12f, 0.15f}, iron::DirectionalLight{});
 
         // Model transform: spin about Y, tilt slightly about X.
         const iron::Mat4 model =

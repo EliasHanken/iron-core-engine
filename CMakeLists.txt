@@ -54,4 +54,5 @@ add_subdirectory(third_party)
 
 add_subdirectory(engine)
 add_subdirectory(games/01-spinning-cube)
+add_subdirectory(games/02-strandbound)
 add_subdirectory(tests)

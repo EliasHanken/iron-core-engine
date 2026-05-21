@@ -23,6 +23,7 @@ public:
 
     void setMat4(const char* name, const Mat4& m) const;
     void setInt(const char* name, int value) const;
+    void setFloat(const char* name, float value) const;
     void setVec3(const char* name, Vec3 v) const;
 
 private:
