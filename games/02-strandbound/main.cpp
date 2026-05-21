@@ -75,7 +75,7 @@ constexpr float kFovYRadians = 3.14159265f / 3.0f;
 
 int main() {
     iron::Application::Config config;
-    config.title = "Iron Core Engine - Strandbound (M2)";
+    config.title = "Iron Core Engine - Strandbound (M3)";
     iron::Application app(config);
     if (!app.valid()) {
         iron::Log::error("Application init failed");
@@ -128,12 +128,14 @@ int main() {
     player.setMouseSensitivity(0.0025f);
 
     // The rope hangs from the top of the pole; its other end follows the
-    // player. ropeLength (16) exceeds the pole-to-player distance, so the
-    // rope carries slack and visibly dangles.
+    // player. kRopeLength exceeds the pole-to-player distance, so the rope
+    // carries slack and visibly dangles. More segments = a smoother curve.
+    constexpr int kRopeSegments = 24;
+    constexpr float kRopeLength = 16.0f;
     const iron::Vec3 poleTop{5.0f, 4.0f, 0.0f};
     const iron::Vec3 playerAnchorStart =
         player.position() + iron::Vec3{0.0f, 1.0f, 0.0f};
-    iron::Rope rope(poleTop, playerAnchorStart, 24, 16.0f);
+    iron::Rope rope(poleTop, playerAnchorStart, kRopeSegments, kRopeLength);
 
     app.window().setCursorCaptured(true);
 
@@ -159,7 +161,8 @@ int main() {
         player.update(ci, time.deltaSeconds);
 
         // The rope's fixed end stays on the pole; its free end rides with the
-        // player at roughly waist height.
+        // player at roughly waist height. time.deltaSeconds here is always the
+        // loop's fixed step — the Verlet simulation relies on a constant dt.
         rope.setEndpointA(poleTop);
         rope.setEndpointB(player.position() + iron::Vec3{0.0f, 1.0f, 0.0f});
         rope.update(time.deltaSeconds);
