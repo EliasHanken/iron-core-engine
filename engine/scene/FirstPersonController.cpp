@@ -59,6 +59,10 @@ Vec3 FirstPersonController::eyePosition() const {
     return Vec3{position_.x, position_.y + eyeHeight_, position_.z};
 }
 
+Ray FirstPersonController::aimRay() const {
+    return Ray{eyePosition(), forwardDir()};
+}
+
 Mat4 FirstPersonController::viewMatrix() const {
     const Vec3 eye = eyePosition();
     return lookAt(eye, eye + forwardDir(), Vec3{0.0f, 1.0f, 0.0f});
