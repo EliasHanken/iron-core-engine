@@ -101,5 +101,48 @@ int main() {
         CHECK_NEAR(p.y, 0.0f);
     }
 
+    // Pitch is clamped away from straight down (the lower clamp).
+    {
+        FirstPersonController c;
+        c.setMouseSensitivity(0.01f);
+        ControllerInput in;
+        in.mouseDY = 100000.0f;  // a huge downward look
+        c.update(in, 0.016f);
+        CHECK(c.pitch() > -pi / 2.0f);  // never reaches straight down
+        CHECK(c.pitch() < -1.5f);       // but does clamp close to it
+    }
+
+    // After rotating yaw 90 degrees, "forward" moves along the new facing.
+    {
+        FirstPersonController c;
+        c.setPosition(Vec3{0.0f, 0.0f, 0.0f});
+        c.setGroundHeight(0.0f);
+        c.setMoveSpeed(10.0f);
+        c.setMouseSensitivity(1.0f);
+        ControllerInput yawInput;
+        yawInput.mouseDX = pi / 2.0f;  // rotate yaw by 90 degrees
+        c.update(yawInput, 0.0f);      // dt = 0: only the rotation applies
+        ControllerInput moveInput;
+        moveInput.forward = 1.0f;
+        c.update(moveInput, 0.1f);
+        CHECK_NEAR(c.position().x, -1.0f);  // forward now points along -X
+        CHECK_NEAR(c.position().z, 0.0f);
+    }
+
+    // Diagonal input (forward + strafe) is normalized — not sqrt(2) faster.
+    {
+        FirstPersonController c;
+        c.setPosition(Vec3{0.0f, 0.0f, 0.0f});
+        c.setGroundHeight(0.0f);
+        c.setMoveSpeed(10.0f);
+        ControllerInput in;
+        in.forward = 1.0f;
+        in.strafe = 1.0f;
+        c.update(in, 0.1f);
+        const float dx = c.position().x;
+        const float dz = c.position().z;
+        CHECK_NEAR(std::sqrt(dx * dx + dz * dz), 1.0f);
+    }
+
     return iron_test_result();
 }
