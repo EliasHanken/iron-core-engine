@@ -52,6 +52,9 @@ GLShader::GLShader(const std::string& vertexSrc, const std::string& fragmentSrc)
         program_ = 0;
     }
 
+    // The stage objects are no longer needed once linked (or once link
+    // failed) — the program keeps its own linked copy. Release them on
+    // both paths.
     glDeleteShader(vs);
     glDeleteShader(fs);
 }
@@ -66,17 +69,24 @@ void GLShader::bind() const {
     glUseProgram(program_);
 }
 
+// Setting a uniform on an invalid (unlinked) program is a logic error that
+// GL would silently ignore. Guard so it stays an obvious no-op rather than a
+// confusing "the matrix didn't upload" mystery.
+
 void GLShader::setMat4(const char* name, const Mat4& m) const {
+    if (!program_) return;
     const GLint loc = glGetUniformLocation(program_, name);
     // Mat4 is column-major already, so transpose = GL_FALSE.
     glUniformMatrix4fv(loc, 1, GL_FALSE, m.m);
 }
 
 void GLShader::setInt(const char* name, int value) const {
+    if (!program_) return;
     glUniform1i(glGetUniformLocation(program_, name), value);
 }
 
 void GLShader::setVec3(const char* name, Vec3 v) const {
+    if (!program_) return;
     glUniform3f(glGetUniformLocation(program_, name), v.x, v.y, v.z);
 }
 
