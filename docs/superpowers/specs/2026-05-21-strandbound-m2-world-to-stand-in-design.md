@@ -70,8 +70,11 @@ A single **directional light** plus an **ambient** term, evaluated per fragment
 as Lambert diffuse and modulated by the object's texture:
 
 ```
-litColor = textureColor * (ambient + max(dot(N, -lightDir), 0) * lightColor)
+litColor = textureColor * lightColor * (ambient + max(dot(N, -lightDir), 0))
 ```
+
+The ambient term is multiplied by `lightColor` along with the diffuse term, so
+a tinted light tints the fill light too (both stand in for the same sky).
 
 - The `Vertex` struct already carries a `normal`, so no mesh changes are
   needed.
