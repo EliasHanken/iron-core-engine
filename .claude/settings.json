@@ -1,0 +1,8 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(ctest --test-dir build *)",
+      "Bash(dir *)"
+    ]
+  }
+}
