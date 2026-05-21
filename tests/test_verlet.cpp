@@ -131,5 +131,33 @@ int main() {
         CHECK(rope.points()[4].position.y < startY);
     }
 
+    // The rope stays numerically stable over a long run — it does not
+    // explode or diverge (Verlet integration can blow up if it is unstable).
+    {
+        Rope rope(Vec3{0.0f, 0.0f, 0.0f}, Vec3{8.0f, 0.0f, 0.0f}, 16, 14.0f);
+        for (int i = 0; i < 600; ++i) {  // ~10 seconds at 60 Hz
+            rope.update(1.0f / 60.0f);
+        }
+        for (const VerletPoint& p : rope.points()) {
+            CHECK(p.position.y > -100.0f);  // has not diverged downward
+            CHECK(p.position.y < 100.0f);   // has not diverged upward
+        }
+    }
+
+    // A rope built between non-axis-aligned endpoints is constructed
+    // correctly: right point count, both ends pinned, endpoints exactly placed.
+    {
+        Rope rope(Vec3{0.0f, 5.0f, 0.0f}, Vec3{10.0f, 0.0f, 5.0f}, 6, 18.0f);
+        CHECK(static_cast<int>(rope.points().size()) == 7);
+        CHECK(rope.points().front().pinned);
+        CHECK(rope.points().back().pinned);
+        CHECK_NEAR(rope.points().front().position.x, 0.0f);
+        CHECK_NEAR(rope.points().front().position.y, 5.0f);
+        CHECK_NEAR(rope.points().front().position.z, 0.0f);
+        CHECK_NEAR(rope.points().back().position.x, 10.0f);
+        CHECK_NEAR(rope.points().back().position.y, 0.0f);
+        CHECK_NEAR(rope.points().back().position.z, 5.0f);
+    }
+
     return iron_test_result();
 }
