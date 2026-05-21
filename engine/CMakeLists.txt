@@ -4,6 +4,7 @@ add_library(ironcore STATIC
   core/Input.cpp
   core/Application.cpp
   scene/Mesh.cpp
+  scene/Camera.cpp
   render/backends/opengl/GLShader.cpp
   render/backends/opengl/GLMesh.cpp
   render/backends/opengl/GLTexture.cpp
