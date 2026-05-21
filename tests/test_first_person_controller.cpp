@@ -34,14 +34,14 @@ int main() {
         CHECK_NEAR(c.position().z, 0.0f);
     }
 
-    // Mouse movement in X increases yaw.
+    // Mouse movement to the right turns the view right (yaw decreases).
     {
         FirstPersonController c;
         c.setMouseSensitivity(0.01f);
         ControllerInput in;
         in.mouseDX = 10.0f;
         c.update(in, 0.016f);
-        CHECK_NEAR(c.yaw(), 0.1f);  // 10 px * 0.01 rad/px
+        CHECK_NEAR(c.yaw(), -0.1f);  // 10 px * 0.01 rad/px, turning right
     }
 
     // Pitch is clamped away from straight up.
@@ -112,7 +112,7 @@ int main() {
         CHECK(c.pitch() < -1.5f);       // but does clamp close to it
     }
 
-    // After rotating yaw 90 degrees, "forward" moves along the new facing.
+    // After turning the view 90 degrees right, "forward" moves along +X.
     {
         FirstPersonController c;
         c.setPosition(Vec3{0.0f, 0.0f, 0.0f});
@@ -120,12 +120,12 @@ int main() {
         c.setMoveSpeed(10.0f);
         c.setMouseSensitivity(1.0f);
         ControllerInput yawInput;
-        yawInput.mouseDX = pi / 2.0f;  // rotate yaw by 90 degrees
+        yawInput.mouseDX = pi / 2.0f;  // turn 90 degrees to the right
         c.update(yawInput, 0.0f);      // dt = 0: only the rotation applies
         ControllerInput moveInput;
         moveInput.forward = 1.0f;
         c.update(moveInput, 0.1f);
-        CHECK_NEAR(c.position().x, -1.0f);  // forward now points along -X
+        CHECK_NEAR(c.position().x, 1.0f);  // forward now points along +X
         CHECK_NEAR(c.position().z, 0.0f);
     }
 

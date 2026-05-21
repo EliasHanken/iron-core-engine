@@ -30,8 +30,9 @@ Vec3 FirstPersonController::horizontalRight() const {
 }
 
 void FirstPersonController::update(const ControllerInput& input, float dt) {
-    // Mouse look. Moving the mouse up the screen (negative dy) looks up.
-    yaw_ += input.mouseDX * mouseSensitivity_;
+    // Mouse look. Moving the mouse right (positive dx) turns the view right,
+    // and moving it up the screen (negative dy) looks up.
+    yaw_ -= input.mouseDX * mouseSensitivity_;
     pitch_ -= input.mouseDY * mouseSensitivity_;
     if (pitch_ > kPitchLimit) pitch_ = kPitchLimit;
     if (pitch_ < -kPitchLimit) pitch_ = -kPitchLimit;
