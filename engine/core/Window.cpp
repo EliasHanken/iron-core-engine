@@ -79,4 +79,12 @@ void Window::swapBuffers() {
     }
 }
 
+void Window::setCursorCaptured(bool captured) {
+    if (!handle_) {
+        return;
+    }
+    glfwSetInputMode(handle_, GLFW_CURSOR,
+                     captured ? GLFW_CURSOR_DISABLED : GLFW_CURSOR_NORMAL);
+}
+
 } // namespace iron
