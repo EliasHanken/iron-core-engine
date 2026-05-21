@@ -1,5 +1,6 @@
 #include "core/Application.h"
 #include "core/Log.h"
+#include "core/Platform.h"
 #include "math/Transform.h"
 #include "render/backends/opengl/OpenGLRenderer.h"
 #include "scene/Camera.h"
@@ -56,8 +57,10 @@ int main() {
     const iron::MeshHandle cube = renderer.createMesh(iron::makeCube());
     const iron::ShaderHandle shader =
         renderer.createShader(kVertexShader, kFragmentShader);
+    // Resolve the asset next to the executable, so the game runs the same
+    // regardless of the working directory it was launched from.
     const iron::TextureHandle texture =
-        renderer.loadTexture("assets/crate.jpg");
+        renderer.loadTexture(iron::executableDir() + "/assets/crate.jpg");
     if (shader == iron::kInvalidHandle) {
         iron::Log::error("Shader failed to compile; aborting");
         return 1;

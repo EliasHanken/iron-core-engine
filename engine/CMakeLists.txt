@@ -2,6 +2,7 @@ add_library(ironcore STATIC
   core/Log.cpp
   core/Window.cpp
   core/Input.cpp
+  core/Platform.cpp
   core/Application.cpp
   scene/Mesh.cpp
   scene/Camera.cpp
