@@ -30,6 +30,11 @@ Rope::Rope(Vec3 endA, Vec3 endB, int segments, float ropeLength) {
     }
 }
 
+// These move only `position`. `previousPosition` is left stale, which is
+// harmless while the endpoints stay pinned (integration skips pinned points).
+// TODO(M4): when an endpoint can be unpinned (cut/released rope), decide
+// whether the freed end should keep its drag momentum or start at rest, and
+// set previousPosition accordingly here.
 void Rope::setEndpointA(Vec3 position) {
     points_.front().position = position;
 }
