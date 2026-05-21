@@ -1,6 +1,7 @@
 #pragma once
 
 #include "render/Renderer.h"
+#include "render/backends/opengl/GLDebugLines.h"
 #include "render/backends/opengl/GLMesh.h"
 #include "render/backends/opengl/GLShader.h"
 #include "render/backends/opengl/GLTexture.h"
@@ -29,6 +30,9 @@ public:
                 const Mat4& projection) override;
     void endFrame() override;
 
+    void drawLine(Vec3 a, Vec3 b, Vec3 color) override;
+    void flushDebugLines(const Mat4& view, const Mat4& projection) override;
+
     void setViewport(int width, int height) override;
 
 private:
@@ -37,6 +41,7 @@ private:
     std::vector<std::unique_ptr<GLShader>> shaders_;
     TextureHandle fallbackTexture_ = kInvalidHandle;
     DirectionalLight light_{};
+    GLDebugLines debugLines_;
 };
 
 } // namespace iron
