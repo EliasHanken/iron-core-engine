@@ -62,6 +62,12 @@ void GLDebugLines::flush(const Mat4& view, const Mat4& projection) {
     if (vertices_.empty()) {
         return;
     }
+    // If the debug shader failed to build there is nothing to draw with —
+    // still clear the queue so it does not grow without bound.
+    if (!shader_.isValid()) {
+        vertices_.clear();
+        return;
+    }
 
     shader_.bind();
     shader_.setMat4("uViewProjection", projection * view);
