@@ -61,7 +61,12 @@ void OpenGLRenderer::beginFrame(Vec3 clearColor) {
 
 void OpenGLRenderer::submit(const DrawCall& call, const Mat4& view,
                             const Mat4& projection) {
-    if (call.mesh == kInvalidHandle || call.shader == kInvalidHandle) {
+    // Handles are (index + 1), so a valid handle is in [1, vector size].
+    // Reject anything outside that range — a stale or foreign handle would
+    // otherwise index a vector out of bounds (undefined behaviour).
+    if (call.mesh == kInvalidHandle || call.mesh > meshes_.size() ||
+        call.shader == kInvalidHandle || call.shader > shaders_.size()) {
+        Log::warn("OpenGLRenderer::submit: mesh/shader handle out of range");
         return;
     }
     const GLShader& shader = *shaders_[call.shader - 1];
@@ -75,7 +80,7 @@ void OpenGLRenderer::submit(const DrawCall& call, const Mat4& view,
     if (tex == kInvalidHandle) {
         tex = fallbackTexture_;
     }
-    if (tex != kInvalidHandle) {
+    if (tex != kInvalidHandle && tex <= textures_.size()) {
         textures_[tex - 1]->bind(0);
     }
 
