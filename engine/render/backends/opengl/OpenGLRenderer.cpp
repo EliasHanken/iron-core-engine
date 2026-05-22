@@ -24,7 +24,7 @@ void main() {}
 )";
 
 constexpr int kShadowResolution = 2048;
-constexpr float kShadowBias = 0.003f;
+constexpr float kShadowBias = 0.0005f;
 }  // namespace
 
 namespace iron {
@@ -133,7 +133,7 @@ Mat4 OpenGLRenderer::computeLightViewProj() const {
     const Mat4 view = lookAt(eye, shadowCenter_, up);
     const Mat4 proj = orthographic(-shadowRadius_, shadowRadius_,
                                    -shadowRadius_, shadowRadius_,
-                                   0.1f, shadowRadius_ * 4.0f);
+                                   shadowRadius_ * 0.5f, shadowRadius_ * 3.5f);
     return proj * view;
 }
 
