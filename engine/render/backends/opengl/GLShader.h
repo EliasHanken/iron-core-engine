@@ -25,6 +25,7 @@ public:
     void setInt(const char* name, int value) const;
     void setFloat(const char* name, float value) const;
     void setVec3(const char* name, Vec3 v) const;
+    void setVec2(const char* name, Vec2 v) const;
 
 private:
     std::uint32_t program_ = 0;

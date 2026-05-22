@@ -16,6 +16,7 @@ add_library(ironcore STATIC
   render/backends/opengl/GLTexture.cpp
   render/backends/opengl/OpenGLRenderer.cpp
   render/backends/opengl/GLDebugLines.cpp
+  render/backends/opengl/GLHud.cpp
 )
 
 target_include_directories(ironcore PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
