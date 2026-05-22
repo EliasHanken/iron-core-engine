@@ -1,4 +1,5 @@
 #include "RopeTool.h"
+#include "RopeWalker.h"
 
 #include "core/Application.h"
 #include "core/Log.h"
@@ -15,7 +16,9 @@
 
 #include <GLFW/glfw3.h>
 
+#include <cmath>
 #include <cstddef>
+#include <random>
 #include <string>
 #include <vector>
 
@@ -80,6 +83,15 @@ iron::RenderObject makeBox(const BoxDef& def, iron::MeshHandle mesh,
     return obj;
 }
 
+// M5 player state.
+enum class PlayerState { Walking, Traversing, Won };
+
+// Where the player (re)spawns: the home-island start.
+constexpr iron::Vec3 kStartPos{0.0f, 0.0f, 7.0f};
+
+// How close (horizontally) the player must be to a rope end to mount it.
+constexpr float kMountRadius = 1.6f;
+
 // Builds a `size`x`size` RGBA crosshair image: a white plus-sign on
 // transparency.
 std::vector<unsigned char> makeCrosshairPixels(int size) {
@@ -106,7 +118,7 @@ std::vector<unsigned char> makeCrosshairPixels(int size) {
 
 int main() {
     iron::Application::Config config;
-    config.title = "Iron Core Engine - Strandbound (M4)";
+    config.title = "Iron Core Engine - Strandbound (M5)";
     iron::Application app(config);
     if (!app.valid()) {
         iron::Log::error("Application init failed");
@@ -158,6 +170,19 @@ int main() {
 
     RopeTool ropeTool(colliders, renderer, shader);
 
+    // Footing: only the two islands provide solid ground. The far island is
+    // also the win target.
+    const std::vector<iron::Aabb> islandColliders = {colliders[0],
+                                                     colliders[4]};
+    const std::vector<iron::Aabb> farIsland = {colliders[4]};
+
+    PlayerState state = PlayerState::Walking;
+    RopeWalker ropeWalker;
+    int traversedRope = -1;
+
+    std::mt19937 rng{std::random_device{}()};
+    std::uniform_real_distribution<float> driftDist(-1.0f, 1.0f);
+
     // HUD: a built-in font atlas, a procedural crosshair, and three elements.
     const iron::BuiltinFontAtlas fontAtlas = iron::builtinFontAtlas();
     const iron::TextureHandle fontTexture = renderer.createTexture(
@@ -190,6 +215,29 @@ int main() {
                    static_cast<float>(kCrosshairSize)},
         crosshairTexture, iron::Vec4{1.0f, 1.0f, 1.0f, 0.85f});
 
+    // Lean meter: a track panel plus a fill panel, bottom-centre. Hidden
+    // until the player is traversing a rope.
+    constexpr float kMeterW = 240.0f;
+    constexpr float kMeterH = 18.0f;
+    const float meterX = static_cast<float>(screenW) / 2.0f - kMeterW / 2.0f;
+    const float meterY = static_cast<float>(screenH) - 70.0f;
+    const iron::HudId meterTrack = hud.addPanel(
+        iron::Vec2{meterX, meterY}, iron::Vec2{kMeterW, kMeterH},
+        iron::Vec4{0.0f, 0.0f, 0.0f, 0.55f});
+    const iron::HudId meterFill = hud.addPanel(
+        iron::Vec2{meterX, meterY}, iron::Vec2{0.0f, kMeterH},
+        iron::Vec4{0.3f, 0.8f, 0.2f, 0.9f});
+    hud.setVisible(meterTrack, false);
+    hud.setVisible(meterFill, false);
+
+    // Win label, centred. 20 chars at scale 3 (8px glyphs) is 480px wide.
+    const iron::HudId winLabel = hud.addText(
+        "You crossed the gap!",
+        iron::Vec2{static_cast<float>(screenW) / 2.0f - 240.0f,
+                   static_cast<float>(screenH) / 2.0f - 12.0f},
+        3.0f, iron::Vec4{1.0f, 1.0f, 0.4f, 1.0f});
+    hud.setVisible(winLabel, false);
+
     app.window().setCursorCaptured(true);
 
     const float aspect = static_cast<float>(app.window().width()) /
@@ -202,27 +250,94 @@ int main() {
         if (input.keyPressed(GLFW_KEY_ESCAPE)) {
             glfwSetWindowShouldClose(app.window().handle(), GLFW_TRUE);
         }
+        const float dt = time.deltaSeconds;
 
-        iron::ControllerInput ci;
-        if (input.keyDown(GLFW_KEY_W)) ci.forward += 1.0f;
-        if (input.keyDown(GLFW_KEY_S)) ci.forward -= 1.0f;
-        if (input.keyDown(GLFW_KEY_D)) ci.strafe += 1.0f;
-        if (input.keyDown(GLFW_KEY_A)) ci.strafe -= 1.0f;
-        ci.mouseDX = static_cast<float>(input.mouseDeltaX());
-        ci.mouseDY = static_cast<float>(input.mouseDeltaY());
-        player.update(ci, time.deltaSeconds);
+        if (state == PlayerState::Walking) {
+            iron::ControllerInput ci;
+            if (input.keyDown(GLFW_KEY_W)) ci.forward += 1.0f;
+            if (input.keyDown(GLFW_KEY_S)) ci.forward -= 1.0f;
+            if (input.keyDown(GLFW_KEY_D)) ci.strafe += 1.0f;
+            if (input.keyDown(GLFW_KEY_A)) ci.strafe -= 1.0f;
+            ci.mouseDX = static_cast<float>(input.mouseDeltaX());
+            ci.mouseDY = static_cast<float>(input.mouseDeltaY());
+            player.update(ci, dt);
 
-        // Rope tool: right-click places an anchor, left-click ties, C cuts.
-        const bool place = input.mouseButtonPressed(GLFW_MOUSE_BUTTON_RIGHT);
-        const bool tie = input.mouseButtonPressed(GLFW_MOUSE_BUTTON_LEFT);
-        const bool cut = input.keyPressed(GLFW_KEY_C);
-        ropeTool.update(player.aimRay(), player.position(), place, tie, cut,
-                        time.deltaSeconds);
+            const bool place =
+                input.mouseButtonPressed(GLFW_MOUSE_BUTTON_RIGHT);
+            const bool tie = input.mouseButtonPressed(GLFW_MOUSE_BUTTON_LEFT);
+            const bool cut = input.keyPressed(GLFW_KEY_C);
+            // ropeTool.update is called only here (Walking) — ropes_ is never
+            // mutated while Traversing, so traversedRope stays valid.
+            ropeTool.update(player.aimRay(), player.position(), place, tie,
+                            cut, dt);
+
+            // Footing: stepping off solid ground respawns the player.
+            if (!hasFooting(player.position().x, player.position().z,
+                            islandColliders)) {
+                player.setPosition(kStartPos);
+            }
+
+            // Mounting: stepping onto a rope end starts a traversal.
+            bool atStart = true;
+            const int rope = findMountRope(player.position(),
+                                           ropeTool.ropes(), kMountRadius,
+                                           atStart);
+            if (rope >= 0) {
+                traversedRope = rope;
+                ropeWalker.begin(ropeTool.ropes()[static_cast<std::size_t>(
+                                     rope)],
+                                 atStart, player.yaw(), player.pitch());
+                ropeTool.clearAimTarget();
+                state = PlayerState::Traversing;
+            }
+        } else if (state == PlayerState::Traversing) {
+            float forward = 0.0f;
+            if (input.keyDown(GLFW_KEY_W)) forward += 1.0f;
+            if (input.keyDown(GLFW_KEY_S)) forward -= 1.0f;
+            float steer = 0.0f;
+            if (input.keyDown(GLFW_KEY_D)) steer += 1.0f;
+            if (input.keyDown(GLFW_KEY_A)) steer -= 1.0f;
+            const float mdx = static_cast<float>(input.mouseDeltaX());
+            const float mdy = static_cast<float>(input.mouseDeltaY());
+
+            const RopeWalker::Result result = ropeWalker.step(
+                forward, steer, mdx, mdy, driftDist(rng), dt,
+                ropeTool.ropes()[static_cast<std::size_t>(traversedRope)],
+                farIsland);
+
+            if (result == RopeWalker::Result::Won) {
+                player.setPosition(ropeWalker.exitFeet());
+                state = PlayerState::Won;
+            } else if (result == RopeWalker::Result::Fell) {
+                player.setPosition(kStartPos);
+                state = PlayerState::Walking;
+            } else if (result == RopeWalker::Result::Dismounted) {
+                player.setPosition(ropeWalker.exitFeet());
+                state = PlayerState::Walking;
+            }
+        }
+        // PlayerState::Won — terminal; only Escape (handled above) responds.
+
+        // HUD: the lean meter tracks the traversal; the win label shows on Won.
+        const bool traversing = (state == PlayerState::Traversing);
+        hud.setVisible(meterTrack, traversing);
+        hud.setVisible(meterFill, traversing);
+        if (traversing) {
+            const float mag = std::fabs(ropeWalker.lean());  // 0..1
+            hud.setSize(meterFill,
+                        iron::Vec2{kMeterW * mag, kMeterH});
+            hud.setColor(meterFill,
+                         iron::Vec4{0.3f + 0.6f * mag, 0.8f - 0.6f * mag,
+                                    0.2f, 0.9f});
+        }
+        hud.setVisible(winLabel, state == PlayerState::Won);
     });
 
     app.setRender([&] {
         renderer.beginFrame(iron::Vec3{0.5f, 0.7f, 0.9f}, scene.light);
-        const iron::Mat4 view = player.viewMatrix();
+        const iron::Mat4 view = (state == PlayerState::Traversing)
+                                    ? ropeWalker.viewMatrix()
+                                    : player.viewMatrix();
         for (const iron::RenderObject& obj : scene.objects) {
             iron::DrawCall call;
             call.mesh = obj.mesh;

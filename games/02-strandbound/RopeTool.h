@@ -35,6 +35,13 @@ public:
     int anchorCount() const { return static_cast<int>(anchors_.size()); }
     int ropeCount() const { return static_cast<int>(ropes_.size()); }
 
+    // The live ropes — for RopeWalker to read endpoints and points.
+    const std::vector<iron::Rope>& ropes() const { return ropes_; }
+
+    // Clears the aim marker — call when the player stops aiming (e.g. on
+    // mounting a rope, when the rope tool is suspended).
+    void clearAimTarget() { aimKind_ = AimKind::None; }
+
 private:
     enum class AimKind { None, Surface, Anchor, Rope };
 
