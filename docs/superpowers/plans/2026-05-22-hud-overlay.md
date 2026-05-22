@@ -1476,6 +1476,93 @@ EOF
 
 ---
 
+## Task 8: Crisp textures for the HUD font
+
+Added after the final review found the bitmap font rendered soft: `GLTexture`
+applies `GL_LINEAR` + mipmaps to every texture, blurring the pixel-art font
+atlas. Hand-built raw-RGBA textures (`createTexture`) should sample exactly
+(`GL_NEAREST`); loaded image files (`loadTexture`, photographic) stay linear.
+
+**Files:**
+- Modify: `engine/render/backends/opengl/GLTexture.h`
+- Modify: `engine/render/backends/opengl/GLTexture.cpp`
+
+- [ ] **Step 1: Give `GLTexture::uploadRGBA` a filter mode**
+
+In `GLTexture.h`, in the private section, add a nested enum and change the
+`uploadRGBA` declaration:
+
+```cpp
+    // Texture sampling mode. Nearest for hand-built pixel data (crisp);
+    // Linear (with mipmaps) for loaded photographic image files.
+    enum class Filter { Linear, Nearest };
+
+    void uploadRGBA(int width, int height, const unsigned char* rgba,
+                    Filter filter);
+```
+
+- [ ] **Step 2: Implement the two filter paths in `GLTexture.cpp`**
+
+Replace the body of `uploadRGBA` so it takes the `Filter` argument:
+
+```cpp
+void GLTexture::uploadRGBA(int width, int height, const unsigned char* rgba,
+                           Filter filter) {
+    glGenTextures(1, &id_);
+    glBindTexture(GL_TEXTURE_2D, id_);
+
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_REPEAT);
+
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, width, height, 0,
+                 GL_RGBA, GL_UNSIGNED_BYTE, rgba);
+
+    if (filter == Filter::Nearest) {
+        // Pixel-exact sampling for hand-built textures (the HUD font atlas,
+        // icons). No mipmaps: HUD textures are drawn at or above 1:1.
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+    } else {
+        // Smooth, mipmapped sampling for photographic image assets.
+        glGenerateMipmap(GL_TEXTURE_2D);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER,
+                        GL_LINEAR_MIPMAP_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    }
+
+    glBindTexture(GL_TEXTURE_2D, 0);
+}
+```
+
+Update the two callers:
+- The raw-RGBA constructor `GLTexture(int, int, const unsigned char*)` calls
+  `uploadRGBA(width, height, rgba, Filter::Nearest);`
+- The file constructor `GLTexture(const std::string&)` calls
+  `uploadRGBA(w, h, pixels, Filter::Linear);`
+
+- [ ] **Step 3: Build and test**
+
+Run: `cmake --build build` then `ctest --test-dir build -C Debug --output-on-failure`
+Expected: clean build, 10/10 tests pass.
+
+- [ ] **Step 4: Commit**
+
+```bash
+git add engine/render/backends/opengl/GLTexture.h engine/render/backends/opengl/GLTexture.cpp
+git commit -m "$(cat <<'EOF'
+Render hand-built textures with nearest filtering
+
+createTexture (raw RGBA) now samples with GL_NEAREST so the HUD font
+atlas and crosshair render as crisp pixels; loaded image files keep
+linear + mipmap filtering.
+
+Co-Authored-By: Claude Opus 4.7 <noreply@anthropic.com>
+EOF
+)"
+```
+
+---
+
 ## Done
 
-After Task 7, the HUD subsystem is complete: an engine-level retained HUD with text/panel/image elements, a built-in procedural font, a screen-space OpenGL pass, and the Strandbound game using all three element types. All pure layout code is unit-tested (10 tests total). Hand off to `superpowers:finishing-a-development-branch`.
+After Task 8, the HUD subsystem is complete: an engine-level retained HUD with text/panel/image elements, a built-in procedural font (crisp), a screen-space OpenGL pass, and the Strandbound game using all three element types. All pure layout code is unit-tested (10 tests total). Hand off to `superpowers:finishing-a-development-branch`.
