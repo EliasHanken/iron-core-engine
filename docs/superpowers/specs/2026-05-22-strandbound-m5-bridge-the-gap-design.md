@@ -168,9 +168,11 @@ On `Won`, the win HUD label is shown and the demo is complete.
 
 While `Traversing`, `RopeWalker` produces the view matrix instead of the
 `FirstPersonController`: camera position is the sampled rope point + eye
-height; yaw / pitch come from the mouse; **roll** comes from `lean`. The
-engine's camera view-matrix construction gains a **roll angle** so this is a
-clean engine capability rather than a hand-rolled matrix in the game.
+height; yaw / pitch come from the mouse; **roll** comes from `lean`. `RopeWalker`
+builds the view matrix with the engine's existing `lookAt` (the same call
+`FirstPersonController::viewMatrix` uses) by passing an **up vector tilted
+about the view axis** by the roll angle — `up·cos(roll) + right·sin(roll)`. No
+engine camera change is needed; the roll is pure game-side math.
 
 ### 5. HUD additions
 
@@ -191,27 +193,25 @@ flagged this as the expected M5 need).
 
 ### Engine additions (summary)
 
-- **Camera roll** — the view-matrix path gains a roll angle.
-- **`Hud::setSize(HudId, Vec2)`** — resize a retained HUD element.
+- **`Hud::setSize(HudId, Vec2)`** — resize a retained HUD element (for the
+  lean meter).
 
-Both are small, general, and reusable. Everything else is game-side.
+That is the only engine change — small, general, reusable. The camera roll
+and everything else are game-side, built on existing engine primitives
+(`lookAt`, raycasting, `Rope`, the HUD).
 
 ### File layout
 
 ```
-engine/scene/Camera.h, Camera.cpp (or FirstPersonController)  camera roll angle   (modified)
-engine/ui/Hud.h, Hud.cpp                                       setSize mutator     (modified)
-games/02-strandbound/RopeWalker.h, RopeWalker.cpp              traversal + lean    (new)
-games/02-strandbound/RopeTool.h                                expose the rope list to RopeWalker (modified)
+engine/ui/Hud.h, Hud.cpp                          setSize mutator                    (modified)
+games/02-strandbound/RopeWalker.h, RopeWalker.cpp  traversal helpers + RopeWalker     (new)
+games/02-strandbound/RopeTool.h                    expose the rope list to RopeWalker (modified)
 games/02-strandbound/main.cpp        player state, footing query, respawn, win, HUD wiring (modified)
-tests/test_hud.cpp                                             setSize test        (modified)
-tests/test_rope_walker.cpp           lean integration / t-advance / footing / state tests (new)
-tests/CMakeLists.txt                                           register the test   (modified)
-docs/engine/strandbound-m5.md  (or docs/game/...)              concept note        (new)
+tests/test_hud.cpp                                 setSize test                       (modified)
+tests/test_rope_walker.cpp           helper + RopeWalker state-machine tests          (new)
+tests/CMakeLists.txt                               register the test                 (modified)
+docs/engine/strandbound-m5.md                      concept note                       (new)
 ```
-
-The exact engine file for the roll angle (`Camera` vs `FirstPersonController`)
-is settled when the implementation plan is written, after reading those files.
 
 ## Testing
 
