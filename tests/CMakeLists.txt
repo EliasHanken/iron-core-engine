@@ -28,3 +28,14 @@ target_include_directories(test_rope_walker PRIVATE
   ${CMAKE_CURRENT_SOURCE_DIR}
   ${CMAKE_SOURCE_DIR}/games/02-strandbound)
 add_test(NAME test_rope_walker COMMAND test_rope_walker)
+
+# test_rope_thrower compiles the game-side RopeThrower.cpp directly, since it
+# is not part of the ironcore library.
+add_executable(test_rope_thrower
+  test_rope_thrower.cpp
+  ${CMAKE_SOURCE_DIR}/games/02-strandbound/RopeThrower.cpp)
+target_link_libraries(test_rope_thrower PRIVATE ironcore)
+target_include_directories(test_rope_thrower PRIVATE
+  ${CMAKE_CURRENT_SOURCE_DIR}
+  ${CMAKE_SOURCE_DIR}/games/02-strandbound)
+add_test(NAME test_rope_thrower COMMAND test_rope_thrower)

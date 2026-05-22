@@ -1,4 +1,4 @@
-add_executable(strandbound main.cpp RopeTool.cpp RopeWalker.cpp)
+add_executable(strandbound main.cpp RopeTool.cpp RopeThrower.cpp RopeWalker.cpp)
 target_link_libraries(strandbound PRIVATE ironcore)
 
 add_custom_command(TARGET strandbound POST_BUILD

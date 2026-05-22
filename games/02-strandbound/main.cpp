@@ -1,4 +1,5 @@
 #include "RopeTool.h"
+#include "RopeThrower.h"
 #include "RopeWalker.h"
 
 #include "core/Application.h"
@@ -118,7 +119,7 @@ std::vector<unsigned char> makeCrosshairPixels(int size) {
 
 int main() {
     iron::Application::Config config;
-    config.title = "Iron Core Engine - Strandbound (M5)";
+    config.title = "Iron Core Engine - Strandbound (M6)";
     iron::Application app(config);
     if (!app.valid()) {
         iron::Log::error("Application init failed");
@@ -168,7 +169,8 @@ int main() {
     player.setMoveSpeed(6.0f);
     player.setMouseSensitivity(0.0025f);
 
-    RopeTool ropeTool(colliders, renderer, shader);
+    RopeTool ropeTool(renderer, shader);
+    RopeThrower ropeThrower;
 
     // Footing: only the two islands provide solid ground. The far island is
     // also the win target.
@@ -202,13 +204,13 @@ int main() {
     const int screenH = app.window().height();
 
     iron::Hud hud;
-    // A dark backing panel behind the readout: wide enough for the longest
-    // readout string at scale 2.0, with 8px padding around the 16px text.
-    hud.addPanel(iron::Vec2{8.0f, 8.0f}, iron::Vec2{408.0f, 32.0f},
+    // A dark backing panel behind the rope-count readout.
+    hud.addPanel(iron::Vec2{8.0f, 8.0f}, iron::Vec2{160.0f, 32.0f},
                  iron::Vec4{0.0f, 0.0f, 0.0f, 0.55f});
-    // The status readout (text); its id is kept so it can be updated.
+    // The rope-count readout (text); its id is kept so it can be updated.
     const iron::HudId readout = hud.addText(
-        "Anchors: 0   Ropes: 0", iron::Vec2{16.0f, 16.0f}, 2.0f,
+        "Ropes: " + std::to_string(ropeTool.ropesAvailable()),
+        iron::Vec2{16.0f, 16.0f}, 2.0f,
         iron::Vec4{1.0f, 1.0f, 1.0f, 1.0f});
     // A crosshair image centred on screen.
     hud.addImage(
@@ -232,6 +234,21 @@ int main() {
         iron::Vec4{0.3f, 0.8f, 0.2f, 0.9f});
     hud.setVisible(meterTrack, false);
     hud.setVisible(meterFill, false);
+
+    // Charge bar: a track panel plus a fill panel, bottom-centre, shown only
+    // while a throw is charging.
+    constexpr float kChargeW = 240.0f;
+    constexpr float kChargeH = 18.0f;
+    const float chargeX = static_cast<float>(screenW) / 2.0f - kChargeW / 2.0f;
+    const float chargeY = static_cast<float>(screenH) - 104.0f;
+    const iron::HudId chargeTrack = hud.addPanel(
+        iron::Vec2{chargeX, chargeY}, iron::Vec2{kChargeW, kChargeH},
+        iron::Vec4{0.0f, 0.0f, 0.0f, 0.55f});
+    const iron::HudId chargeFill = hud.addPanel(
+        iron::Vec2{chargeX, chargeY}, iron::Vec2{0.0f, kChargeH},
+        iron::Vec4{0.95f, 0.75f, 0.2f, 0.9f});
+    hud.setVisible(chargeTrack, false);
+    hud.setVisible(chargeFill, false);
 
     // Win label, centred. 20 chars at scale 3 (8px glyphs) is 480px wide.
     const iron::HudId winLabel = hud.addText(
@@ -265,14 +282,19 @@ int main() {
             ci.mouseDY = static_cast<float>(input.mouseDeltaY());
             player.update(ci, dt);
 
-            const bool place =
-                input.mouseButtonPressed(GLFW_MOUSE_BUTTON_RIGHT);
-            const bool tie = input.mouseButtonPressed(GLFW_MOUSE_BUTTON_LEFT);
-            const bool cut = input.keyPressed(GLFW_KEY_C);
+            // Rope throwing: hold left-click to charge, release to throw.
+            const iron::Ray aim = player.aimRay();
+            const RopeThrower::Event throwEvent = ropeThrower.update(
+                input.mouseButtonDown(GLFW_MOUSE_BUTTON_LEFT),
+                ropeTool.ropesAvailable() > 0, aim.origin, aim.direction,
+                player.position(), colliders, dt);
+            if (throwEvent == RopeThrower::Event::Landed) {
+                ropeTool.addRope(ropeThrower.ropeNearEnd(),
+                                 ropeThrower.ropeFarEnd());
+            }
             // ropeTool.update is called only here (Walking) — ropes_ is never
             // mutated while Traversing, so traversedRope stays valid.
-            ropeTool.update(player.aimRay(), player.position(), place, tie,
-                            cut, dt);
+            ropeTool.update(aim, input.keyPressed(GLFW_KEY_C), dt);
 
             // Footing: stepping off solid ground respawns the player.
             if (!hasFooting(player.position().x, player.position().z,
@@ -294,7 +316,7 @@ int main() {
                     ropeWalker.begin(
                         ropeTool.ropes()[static_cast<std::size_t>(rope)],
                         atStart, player.yaw(), player.pitch());
-                    ropeTool.clearAimTarget();
+                    ropeThrower.cancel();  // drop any pending throw
                     state = PlayerState::Traversing;
                 }
             }
@@ -340,6 +362,17 @@ int main() {
                                     0.2f, 0.9f});
         }
         hud.setVisible(winLabel, state == PlayerState::Won);
+
+        // Charge bar: visible only while a throw is charging; fill tracks
+        // the charge level.
+        const bool charging =
+            (ropeThrower.state() == RopeThrower::State::Charging);
+        hud.setVisible(chargeTrack, charging);
+        hud.setVisible(chargeFill, charging);
+        if (charging) {
+            hud.setSize(chargeFill, iron::Vec2{kChargeW * ropeThrower.charge(),
+                                               kChargeH});
+        }
     });
 
     app.setRender([&] {
@@ -357,12 +390,25 @@ int main() {
         }
 
         ropeTool.draw(renderer, view, projection);
+
+        // The thrown rope-end in flight: a small orange cross.
+        if (ropeThrower.state() == RopeThrower::State::InFlight) {
+            const iron::Vec3 p = ropeThrower.projectilePosition();
+            const float s = 0.2f;
+            const iron::Vec3 c{1.0f, 0.5f, 0.1f};
+            renderer.drawLine(p - iron::Vec3{s, 0.0f, 0.0f},
+                              p + iron::Vec3{s, 0.0f, 0.0f}, c);
+            renderer.drawLine(p - iron::Vec3{0.0f, s, 0.0f},
+                              p + iron::Vec3{0.0f, s, 0.0f}, c);
+            renderer.drawLine(p - iron::Vec3{0.0f, 0.0f, s},
+                              p + iron::Vec3{0.0f, 0.0f, s}, c);
+        }
+
         renderer.flushDebugLines(view, projection);
 
         // Refresh the readout, then draw the HUD on top of the 3D scene.
         hud.setText(readout,
-                    "Anchors: " + std::to_string(ropeTool.anchorCount()) +
-                        "   Ropes: " + std::to_string(ropeTool.ropeCount()));
+                    "Ropes: " + std::to_string(ropeTool.ropesAvailable()));
         renderer.drawHud(hud.build(font, renderer.whiteTexture()),
                          screenW, screenH);
 
