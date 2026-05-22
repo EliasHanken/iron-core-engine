@@ -23,7 +23,7 @@ const char* kDepthFragmentSrc = R"(#version 330 core
 void main() {}
 )";
 
-constexpr int kShadowResolution = 2048;
+constexpr int kShadowResolution = 4096;
 constexpr float kShadowBias = 0.0005f;
 }  // namespace
 

@@ -64,7 +64,8 @@ uniform vec3 uLightColor;
 uniform float uAmbient;
 uniform float uShadowBias;
 
-// 1.0 = lit, 0.0 = in shadow.
+// 1.0 = lit, 0.0 = in shadow. PCF: average a 3x3 grid of depth samples so
+// the shadow edge is soft rather than stair-stepped.
 float shadowFactor() {
     vec3 proj = vLightSpacePos.xyz / vLightSpacePos.w;
     proj = proj * 0.5 + 0.5;  // [-1,1] -> [0,1]
@@ -74,8 +75,16 @@ float shadowFactor() {
     if (proj.x < 0.0 || proj.x > 1.0 || proj.y < 0.0 || proj.y > 1.0) {
         return 1.0;  // outside the shadow map: lit
     }
-    float stored = texture(uShadowMap, proj.xy).r;
-    return (proj.z - uShadowBias > stored) ? 0.0 : 1.0;
+    vec2 texel = 1.0 / vec2(textureSize(uShadowMap, 0));
+    float sum = 0.0;
+    for (int y = -1; y <= 1; ++y) {
+        for (int x = -1; x <= 1; ++x) {
+            float stored =
+                texture(uShadowMap, proj.xy + vec2(x, y) * texel).r;
+            sum += (proj.z - uShadowBias > stored) ? 0.0 : 1.0;
+        }
+    }
+    return sum / 9.0;
 }
 
 void main() {
@@ -196,7 +205,7 @@ int main() {
     RopeThrower ropeThrower;
 
     // The shadow map must cover the whole level — both islands and the gap.
-    renderer.setShadowBounds(iron::Vec3{0.0f, 0.0f, -22.0f}, 45.0f);
+    renderer.setShadowBounds(iron::Vec3{0.0f, 0.0f, -22.0f}, 36.0f);
 
     // Footing: only the two islands provide solid ground. The far island is
     // also the win target.

@@ -23,15 +23,15 @@ Debug lines and the HUD are overlays: the game draws them after `endFrame`.
    (`orthographic()`) aimed along the light direction, sized to a settable
    scene-bounds sphere (`setShadowBounds`).
 2. **Lit pass.** The scene is rendered normally to the screen. The lit shader
-   transforms each fragment into the light's space, samples the shadow map's
-   stored depth, and darkens the diffuse term where the fragment is farther
-   from the light than the stored depth (plus a small bias to avoid acne).
-   Ambient is unaffected, so shadowed surfaces are dim, not black.
+   transforms each fragment into the light's space and tests it against the
+   shadow map's stored depth (plus a small bias to avoid acne). The test is a
+   3x3 PCF average, so the shadow edge is soft rather than stair-stepped, and
+   it darkens only the diffuse term — ambient is unaffected, so shadowed
+   surfaces are dim, not black.
 
 ## Limitations / future work
 
-Hard shadows only (one depth sample per fragment) — PCF soft edges are a
-follow-up. One directional light. A single shadow map with a fixed
+One directional light. A single shadow map with a fixed
 scene-covering frustum — no cascades. Point-light and spotlight shadows, and
 reflections (which reuse this render-to-texture machinery), are future
 milestones.
