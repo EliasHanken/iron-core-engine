@@ -85,4 +85,21 @@ inline Mat4 perspective(float fovYRadians, float aspect, float nearZ, float farZ
     return m;
 }
 
+// Orthographic projection. Maps the axis-aligned box [left,right] x
+// [bottom,top] x [-far,-near] (right-handed, looking down -Z) into OpenGL clip
+// space with every axis in [-1, 1]. Used for a directional light's shadow
+// projection. Matches the convention of lookAt / perspective.
+inline Mat4 orthographic(float left, float right, float bottom, float top,
+                         float nearZ, float farZ) {
+    Mat4 m;  // all zeros
+    m.at(0, 0) = 2.0f / (right - left);
+    m.at(1, 1) = 2.0f / (top - bottom);
+    m.at(2, 2) = -2.0f / (farZ - nearZ);
+    m.at(0, 3) = -(right + left) / (right - left);
+    m.at(1, 3) = -(top + bottom) / (top - bottom);
+    m.at(2, 3) = -(farZ + nearZ) / (farZ - nearZ);
+    m.at(3, 3) = 1.0f;
+    return m;
+}
+
 } // namespace iron

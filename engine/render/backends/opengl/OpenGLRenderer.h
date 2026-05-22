@@ -5,6 +5,7 @@
 #include "render/backends/opengl/GLHud.h"
 #include "render/backends/opengl/GLMesh.h"
 #include "render/backends/opengl/GLShader.h"
+#include "render/backends/opengl/GLShadowMap.h"
 #include "render/backends/opengl/GLTexture.h"
 
 #include <memory>
@@ -28,10 +29,11 @@ public:
     ShaderHandle createShader(const std::string& vertexSrc,
                               const std::string& fragmentSrc) override;
 
-    void beginFrame(Vec3 clearColor, const DirectionalLight& light) override;
-    void submit(const DrawCall& call, const Mat4& view,
-                const Mat4& projection) override;
+    void beginFrame(Vec3 clearColor, const DirectionalLight& light,
+                    const Mat4& view, const Mat4& projection) override;
+    void submit(const DrawCall& call) override;
     void endFrame() override;
+    void setShadowBounds(Vec3 center, float radius) override;
 
     void drawLine(Vec3 a, Vec3 b, Vec3 color) override;
     void flushDebugLines(const Mat4& view, const Mat4& projection) override;
@@ -46,9 +48,19 @@ private:
     std::vector<std::unique_ptr<GLShader>> shaders_;
     TextureHandle fallbackTexture_ = kInvalidHandle;
     DirectionalLight light_{};
+    std::vector<DrawCall> frameCalls_;
+    Vec3 clearColor_{};
+    Mat4 view_ = Mat4::identity();
+    Mat4 projection_ = Mat4::identity();
     GLDebugLines debugLines_;
     GLHud hud_;
     TextureHandle whiteTexture_ = kInvalidHandle;
+    GLShadowMap shadowMap_;
+    GLShader depthShader_;
+    Vec3 shadowCenter_{0.0f, 0.0f, 0.0f};
+    float shadowRadius_ = 50.0f;
+
+    Mat4 computeLightViewProj() const;
 };
 
 } // namespace iron

@@ -26,10 +26,8 @@ public:
     void update(const iron::Ray& aim, bool cutPressed, float dt);
 
     // Rebuild and draw the rope tube mesh, and queue an endpoint marker at
-    // each rope end as debug lines. Call between submitting the scene and
-    // flushDebugLines.
-    void draw(iron::Renderer& renderer, const iron::Mat4& view,
-              const iron::Mat4& projection) const;
+    // each rope end as debug lines. Call between beginFrame and endFrame.
+    void draw(iron::Renderer& renderer) const;
 
     // Ropes the player can still deploy — for the HUD readout.
     int ropesAvailable() const { return ropesAvailable_; }

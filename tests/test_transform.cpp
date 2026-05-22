@@ -81,5 +81,27 @@ int main() {
     Vec4 farClip = proj * Vec4{0.0f, 0.0f, -100.0f, 1.0f};
     CHECK_NEAR(farClip.z / farClip.w, 1.0f);
 
+    // orthographic maps the box to NDC. Box: x,y in [-10,10], near=1,
+    // far=100; view space looks down -Z.
+    {
+        Mat4 ortho = orthographic(-10.0f, 10.0f, -10.0f, 10.0f, 1.0f, 100.0f);
+        // Centre of the box maps to the NDC origin in x and y.
+        Vec4 centre = ortho * Vec4{0.0f, 0.0f, -50.5f, 1.0f};
+        CHECK_NEAR(centre.x, 0.0f);
+        CHECK_NEAR(centre.y, 0.0f);
+        CHECK_NEAR(centre.z, 0.0f);
+        // Right/top edge maps to +1, +1.
+        Vec4 corner = ortho * Vec4{10.0f, 10.0f, -1.0f, 1.0f};
+        CHECK_NEAR(corner.x, 1.0f);
+        CHECK_NEAR(corner.y, 1.0f);
+        // The near plane maps to NDC z = -1, the far plane to z = +1.
+        Vec4 nearP = ortho * Vec4{0.0f, 0.0f, -1.0f, 1.0f};
+        CHECK_NEAR(nearP.z, -1.0f);
+        Vec4 farP = ortho * Vec4{0.0f, 0.0f, -100.0f, 1.0f};
+        CHECK_NEAR(farP.z, 1.0f);
+        // Orthographic keeps w = 1 (no perspective divide).
+        CHECK_NEAR(corner.w, 1.0f);
+    }
+
     return iron_test_result();
 }

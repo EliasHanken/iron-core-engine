@@ -93,18 +93,20 @@ int main() {
     });
 
     app.setRender([&] {
-        renderer.beginFrame(iron::Vec3{0.1f, 0.12f, 0.15f}, iron::DirectionalLight{});
-
         // Model transform: spin about Y, tilt slightly about X.
         const iron::Mat4 model =
             iron::rotationY(spin) * iron::rotationX(spin * 0.5f);
+
+        renderer.beginFrame(iron::Vec3{0.1f, 0.12f, 0.15f},
+                            iron::DirectionalLight{}, camera.viewMatrix(),
+                            camera.projectionMatrix());
 
         iron::DrawCall call;
         call.mesh = cube;
         call.shader = shader;
         call.texture = texture;
         call.model = model;
-        renderer.submit(call, camera.viewMatrix(), camera.projectionMatrix());
+        renderer.submit(call);
 
         renderer.endFrame();
     });

@@ -25,7 +25,8 @@
 
 namespace {
 
-// Vertex shader: MVP transform; passes the world-space normal and UV through.
+// Vertex shader: MVP transform; passes world-space normal, UV, and the
+// light-space position (for the shadow lookup) through.
 const char* kVertexShader = R"(#version 330 core
 layout(location = 0) in vec3 aPos;
 layout(location = 1) in vec3 aNormal;
@@ -34,32 +35,63 @@ layout(location = 2) in vec2 aUV;
 uniform mat4 uModel;
 uniform mat4 uView;
 uniform mat4 uProjection;
+uniform mat4 uLightViewProj;
 
 out vec3 vNormal;
 out vec2 vUV;
+out vec4 vLightSpacePos;
 
 void main() {
     vNormal = mat3(uModel) * aNormal;
     vUV = aUV;
+    vLightSpacePos = uLightViewProj * uModel * vec4(aPos, 1.0);
     gl_Position = uProjection * uView * uModel * vec4(aPos, 1.0);
 }
 )";
 
-// Fragment shader: Lambert diffuse from one directional light + ambient.
+// Fragment shader: Lambert diffuse from one directional light + ambient, with
+// the diffuse term darkened where the fragment is in shadow.
 const char* kFragmentShader = R"(#version 330 core
 in vec3 vNormal;
 in vec2 vUV;
+in vec4 vLightSpacePos;
 out vec4 FragColor;
 
 uniform sampler2D uTexture;
+uniform sampler2D uShadowMap;
 uniform vec3 uLightDir;
 uniform vec3 uLightColor;
 uniform float uAmbient;
+uniform float uShadowBias;
+
+// 1.0 = lit, 0.0 = in shadow. PCF: average a 3x3 grid of depth samples so
+// the shadow edge is soft rather than stair-stepped.
+float shadowFactor() {
+    vec3 proj = vLightSpacePos.xyz / vLightSpacePos.w;
+    proj = proj * 0.5 + 0.5;  // [-1,1] -> [0,1]
+    if (proj.z > 1.0) {
+        return 1.0;  // beyond the shadow map's far plane: lit
+    }
+    if (proj.x < 0.0 || proj.x > 1.0 || proj.y < 0.0 || proj.y > 1.0) {
+        return 1.0;  // outside the shadow map: lit
+    }
+    vec2 texel = 1.0 / vec2(textureSize(uShadowMap, 0));
+    float sum = 0.0;
+    for (int y = -1; y <= 1; ++y) {
+        for (int x = -1; x <= 1; ++x) {
+            float stored =
+                texture(uShadowMap, proj.xy + vec2(x, y) * texel).r;
+            sum += (proj.z - uShadowBias > stored) ? 0.0 : 1.0;
+        }
+    }
+    return sum / 9.0;
+}
 
 void main() {
     vec3 n = normalize(vNormal);
     float diffuse = max(dot(n, -normalize(uLightDir)), 0.0);
-    vec3 lighting = uLightColor * (diffuse + uAmbient);
+    float shadow = shadowFactor();
+    vec3 lighting = uLightColor * (diffuse * shadow + uAmbient);
     vec4 texel = texture(uTexture, vUV);
     FragColor = vec4(texel.rgb * lighting, texel.a);
 }
@@ -171,6 +203,9 @@ int main() {
 
     RopeTool ropeTool(renderer, shader);
     RopeThrower ropeThrower;
+
+    // The shadow map must cover the whole level — both islands and the gap.
+    renderer.setShadowBounds(iron::Vec3{0.0f, 0.0f, -22.0f}, 36.0f);
 
     // Footing: only the two islands provide solid ground. The far island is
     // also the win target.
@@ -376,21 +411,23 @@ int main() {
     });
 
     app.setRender([&] {
-        renderer.beginFrame(iron::Vec3{0.5f, 0.7f, 0.9f}, scene.light);
         const iron::Mat4 view = (state == PlayerState::Traversing)
                                     ? ropeWalker.viewMatrix()
                                     : player.viewMatrix();
+        renderer.beginFrame(iron::Vec3{0.5f, 0.7f, 0.9f}, scene.light, view,
+                            projection);
         for (const iron::RenderObject& obj : scene.objects) {
             iron::DrawCall call;
             call.mesh = obj.mesh;
             call.shader = shader;
             call.texture = obj.texture;
             call.model = obj.transform;
-            renderer.submit(call, view, projection);
+            renderer.submit(call);
         }
+        ropeTool.draw(renderer);
+        renderer.endFrame();
 
-        ropeTool.draw(renderer, view, projection);
-
+        // Overlays, drawn on top of the finished lit scene.
         // The thrown rope-end in flight: a small orange cross.
         if (ropeThrower.state() == RopeThrower::State::InFlight) {
             const iron::Vec3 p = ropeThrower.projectilePosition();
@@ -403,16 +440,12 @@ int main() {
             renderer.drawLine(p - iron::Vec3{0.0f, 0.0f, s},
                               p + iron::Vec3{0.0f, 0.0f, s}, c);
         }
-
         renderer.flushDebugLines(view, projection);
 
-        // Refresh the readout, then draw the HUD on top of the 3D scene.
         hud.setText(readout,
                     "Ropes: " + std::to_string(ropeTool.ropesAvailable()));
         renderer.drawHud(hud.build(font, renderer.whiteTexture()),
                          screenW, screenH);
-
-        renderer.endFrame();
     });
 
     app.run();

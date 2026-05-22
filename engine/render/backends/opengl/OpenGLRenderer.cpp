@@ -1,12 +1,37 @@
 #include "render/backends/opengl/OpenGLRenderer.h"
 
 #include "core/Log.h"
+#include "math/Transform.h"
 
 #include <glad/gl.h>
 
+#include <cmath>
+
+namespace {
+// The shadow pass renders only depth. The vertex stage transforms by the
+// light's view-projection; the fragment stage is empty (GL writes depth).
+const char* kDepthVertexSrc = R"(#version 330 core
+layout(location = 0) in vec3 aPos;
+uniform mat4 uLightViewProj;
+uniform mat4 uModel;
+void main() {
+    gl_Position = uLightViewProj * uModel * vec4(aPos, 1.0);
+}
+)";
+
+const char* kDepthFragmentSrc = R"(#version 330 core
+void main() {}
+)";
+
+constexpr int kShadowResolution = 4096;
+constexpr float kShadowBias = 0.0005f;
+}  // namespace
+
 namespace iron {
 
-OpenGLRenderer::OpenGLRenderer() {
+OpenGLRenderer::OpenGLRenderer()
+    : shadowMap_(kShadowResolution),
+      depthShader_(kDepthVertexSrc, kDepthFragmentSrc) {
     glEnable(GL_DEPTH_TEST);
 
     // A 2x2 magenta/black checker used when a real texture fails to load.
@@ -72,14 +97,16 @@ ShaderHandle OpenGLRenderer::createShader(const std::string& vertexSrc,
     return static_cast<ShaderHandle>(shaders_.size());
 }
 
-void OpenGLRenderer::beginFrame(Vec3 clearColor, const DirectionalLight& light) {
+void OpenGLRenderer::beginFrame(Vec3 clearColor, const DirectionalLight& light,
+                                const Mat4& view, const Mat4& projection) {
+    clearColor_ = clearColor;
     light_ = light;
-    glClearColor(clearColor.x, clearColor.y, clearColor.z, 1.0f);
-    glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+    view_ = view;
+    projection_ = projection;
+    frameCalls_.clear();
 }
 
-void OpenGLRenderer::submit(const DrawCall& call, const Mat4& view,
-                            const Mat4& projection) {
+void OpenGLRenderer::submit(const DrawCall& call) {
     // Handles are (index + 1), so a valid handle is in [1, vector size].
     // Reject anything outside that range — a stale or foreign handle would
     // otherwise index a vector out of bounds (undefined behaviour).
@@ -88,29 +115,83 @@ void OpenGLRenderer::submit(const DrawCall& call, const Mat4& view,
         Log::warn("OpenGLRenderer::submit: mesh/shader handle out of range");
         return;
     }
-    const GLShader& shader = *shaders_[call.shader - 1];
-    shader.bind();
-    shader.setMat4("uModel", call.model);
-    shader.setMat4("uView", view);
-    shader.setMat4("uProjection", projection);
-    shader.setInt("uTexture", 0);
-    shader.setVec3("uLightDir", light_.direction);
-    shader.setVec3("uLightColor", light_.color);
-    shader.setFloat("uAmbient", light_.ambient);
+    frameCalls_.push_back(call);
+}
 
-    TextureHandle tex = call.texture;
-    if (tex == kInvalidHandle) {
-        tex = fallbackTexture_;
-    }
-    if (tex != kInvalidHandle && tex <= textures_.size()) {
-        textures_[tex - 1]->bind(0);
-    }
+void OpenGLRenderer::setShadowBounds(Vec3 center, float radius) {
+    shadowCenter_ = center;
+    shadowRadius_ = radius;
+}
 
-    meshes_[call.mesh - 1]->draw();
+Mat4 OpenGLRenderer::computeLightViewProj() const {
+    // The directional light's "camera": an orthographic box aimed along the
+    // light direction, sized to enclose the shadow bounds sphere.
+    Vec3 dir = normalize(light_.direction);
+    const Vec3 up = (std::fabs(dir.y) > 0.99f) ? Vec3{0.0f, 0.0f, 1.0f}
+                                               : Vec3{0.0f, 1.0f, 0.0f};
+    const Vec3 eye = shadowCenter_ - dir * (shadowRadius_ * 2.0f);
+    const Mat4 view = lookAt(eye, shadowCenter_, up);
+    const Mat4 proj = orthographic(-shadowRadius_, shadowRadius_,
+                                   -shadowRadius_, shadowRadius_,
+                                   shadowRadius_ * 0.5f, shadowRadius_ * 3.5f);
+    return proj * view;
 }
 
 void OpenGLRenderer::endFrame() {
-    // Buffer swap is owned by Window; nothing to flush here yet.
+    const Mat4 lightViewProj = computeLightViewProj();
+
+    // --- Pass 1: render scene depth from the light into the shadow map ---
+    GLint savedViewport[4];
+    glGetIntegerv(GL_VIEWPORT, savedViewport);
+
+    shadowMap_.bindForWriting();
+    glViewport(0, 0, shadowMap_.resolution(), shadowMap_.resolution());
+    glClear(GL_DEPTH_BUFFER_BIT);
+    depthShader_.bind();
+    depthShader_.setMat4("uLightViewProj", lightViewProj);
+    for (const DrawCall& call : frameCalls_) {
+        depthShader_.setMat4("uModel", call.model);
+        meshes_[call.mesh - 1]->draw();
+    }
+
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    glViewport(savedViewport[0], savedViewport[1], savedViewport[2],
+               savedViewport[3]);
+
+    // --- Pass 2: the lit scene, sampling the shadow map ---
+    glClearColor(clearColor_.x, clearColor_.y, clearColor_.z, 1.0f);
+    glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+    for (const DrawCall& call : frameCalls_) {
+        const GLShader& shader = *shaders_[call.shader - 1];
+        shader.bind();
+        shader.setMat4("uModel", call.model);
+        shader.setMat4("uView", view_);
+        shader.setMat4("uProjection", projection_);
+        shader.setMat4("uLightViewProj", lightViewProj);
+        shader.setInt("uTexture", 0);
+        shader.setInt("uShadowMap", 1);
+        shader.setFloat("uShadowBias", kShadowBias);
+        shader.setVec3("uLightDir", light_.direction);
+        shader.setVec3("uLightColor", light_.color);
+        shader.setFloat("uAmbient", light_.ambient);
+
+        TextureHandle tex = call.texture;
+        if (tex == kInvalidHandle) {
+            tex = fallbackTexture_;
+        }
+        if (tex != kInvalidHandle && tex <= textures_.size()) {
+            textures_[tex - 1]->bind(0);
+        }
+        shadowMap_.bindDepthTexture(1);
+
+        meshes_[call.mesh - 1]->draw();
+    }
+
+    // Leave unit 1 unbound — the shadow map is the renderer's; overlays
+    // (HUD, debug lines) must not inherit it. Leave unit 0 active.
+    glActiveTexture(GL_TEXTURE1);
+    glBindTexture(GL_TEXTURE_2D, 0);
+    glActiveTexture(GL_TEXTURE0);
 }
 
 void OpenGLRenderer::drawLine(Vec3 a, Vec3 b, Vec3 color) {
