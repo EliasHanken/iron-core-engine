@@ -130,7 +130,6 @@ Replace that span with:
 #include "math/Mat4.h"
 #include "math/Vec.h"
 #include "render/Handles.h"
-#include "render/HudBatch.h"
 #include "render/Light.h"
 #include "scene/Mesh.h"
 
@@ -139,7 +138,7 @@ Replace that span with:
 namespace iron {
 ```
 
-Leave the rest of the file (the `DrawCall` struct, the `Renderer` class) unchanged for now — `whiteTexture()` and `drawHud()` are added in Task 5.
+Leave the rest of the file (the `DrawCall` struct, the `Renderer` class) unchanged for now — `whiteTexture()` and `drawHud()` (and the `HudBatch.h` include they need) are added in Task 5.
 
 - [ ] **Step 4: Build and verify nothing broke**
 
@@ -957,7 +956,13 @@ Add the screen-space draw path. `GLHud` is the OpenGL 2D pass (its own shader + 
 
 - [ ] **Step 1: Add `whiteTexture()` and `drawHud()` to the `Renderer` RHI**
 
-In `engine/render/Renderer.h`, inside `class Renderer`, after the existing `loadTexture` declaration (in the `--- resource creation ---` group), add:
+In `engine/render/Renderer.h`, add the HudBatch include to the include block (after `#include "render/Handles.h"`):
+
+```cpp
+#include "render/HudBatch.h"
+```
+
+Then, inside `class Renderer`, after the existing `loadTexture` declaration (in the `--- resource creation ---` group), add:
 
 ```cpp
     // A built-in 1x1 opaque-white texture. Handy as the texture for a

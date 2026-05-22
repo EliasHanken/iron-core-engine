@@ -2,20 +2,13 @@
 
 #include "math/Mat4.h"
 #include "math/Vec.h"
+#include "render/Handles.h"
 #include "render/Light.h"
 #include "scene/Mesh.h"
 
-#include <cstdint>
 #include <string>
 
 namespace iron {
-
-// Opaque handles into the renderer's resource tables. 0 is "invalid".
-using MeshHandle = std::uint32_t;
-using TextureHandle = std::uint32_t;
-using ShaderHandle = std::uint32_t;
-
-inline constexpr std::uint32_t kInvalidHandle = 0;
 
 // One thing to draw: a mesh, a shader, a texture, and a model matrix.
 struct DrawCall {
