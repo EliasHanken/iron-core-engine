@@ -7,24 +7,36 @@
 
 namespace iron {
 
-void GLTexture::uploadRGBA(int width, int height, const unsigned char* rgba) {
+void GLTexture::uploadRGBA(int width, int height, const unsigned char* rgba,
+                           Filter filter) {
     glGenTextures(1, &id_);
     glBindTexture(GL_TEXTURE_2D, id_);
 
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_REPEAT);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
 
     glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, width, height, 0,
                  GL_RGBA, GL_UNSIGNED_BYTE, rgba);
-    glGenerateMipmap(GL_TEXTURE_2D);
+
+    if (filter == Filter::Nearest) {
+        // Pixel-exact sampling for hand-built textures (the HUD font atlas,
+        // icons). No mipmaps: HUD textures are drawn at or above 1:1.
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+    } else {
+        // Smooth, mipmapped sampling for photographic image assets.
+        glGenerateMipmap(GL_TEXTURE_2D);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER,
+                        GL_LINEAR_MIPMAP_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    }
+
     glBindTexture(GL_TEXTURE_2D, 0);
 }
 
 GLTexture::GLTexture(int width, int height, const unsigned char* rgba) {
     if (width > 0 && height > 0 && rgba != nullptr) {
-        uploadRGBA(width, height, rgba);
+        uploadRGBA(width, height, rgba, Filter::Nearest);
     }
 }
 
@@ -36,7 +48,7 @@ GLTexture::GLTexture(const std::string& path) {
         Log::error("GLTexture: failed to load '%s'", path.c_str());
         return;
     }
-    uploadRGBA(w, h, pixels);
+    uploadRGBA(w, h, pixels, Filter::Linear);
     stbi_image_free(pixels);
 }
 

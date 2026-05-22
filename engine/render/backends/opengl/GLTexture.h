@@ -23,7 +23,12 @@ public:
     void bind(int unit) const;
 
 private:
-    void uploadRGBA(int width, int height, const unsigned char* rgba);
+    // Texture sampling mode. Nearest for hand-built pixel data (crisp);
+    // Linear (with mipmaps) for loaded photographic image files.
+    enum class Filter { Linear, Nearest };
+
+    void uploadRGBA(int width, int height, const unsigned char* rgba,
+                    Filter filter);
 
     std::uint32_t id_ = 0;
 };
