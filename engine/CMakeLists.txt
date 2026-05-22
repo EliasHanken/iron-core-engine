@@ -7,12 +7,16 @@ add_library(ironcore STATIC
   scene/Mesh.cpp
   scene/Camera.cpp
   scene/FirstPersonController.cpp
+  ui/BitmapFont.cpp
+  ui/BuiltinFont.cpp
+  ui/Hud.cpp
   physics/Rope.cpp
   render/backends/opengl/GLShader.cpp
   render/backends/opengl/GLMesh.cpp
   render/backends/opengl/GLTexture.cpp
   render/backends/opengl/OpenGLRenderer.cpp
   render/backends/opengl/GLDebugLines.cpp
+  render/backends/opengl/GLHud.cpp
 )
 
 target_include_directories(ironcore PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})

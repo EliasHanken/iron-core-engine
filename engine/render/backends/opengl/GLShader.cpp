@@ -95,4 +95,9 @@ void GLShader::setVec3(const char* name, Vec3 v) const {
     glUniform3f(glGetUniformLocation(program_, name), v.x, v.y, v.z);
 }
 
+void GLShader::setVec2(const char* name, Vec2 v) const {
+    if (!program_) return;
+    glUniform2f(glGetUniformLocation(program_, name), v.x, v.y);
+}
+
 } // namespace iron

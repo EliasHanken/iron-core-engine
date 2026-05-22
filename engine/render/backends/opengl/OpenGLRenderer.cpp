@@ -15,6 +15,11 @@ OpenGLRenderer::OpenGLRenderer() {
         0, 0, 0, 255,       255, 0, 255, 255,
     };
     fallbackTexture_ = createTexture(2, 2, fallback);
+
+    // A 1x1 opaque-white texture so solid-colour HUD quads can reuse the
+    // textured HUD shader (sample white, tint by vertex colour).
+    const unsigned char white[4] = {255, 255, 255, 255};
+    whiteTexture_ = createTexture(1, 1, white);
 }
 
 MeshHandle OpenGLRenderer::createMesh(const MeshData& data) {
@@ -39,6 +44,10 @@ TextureHandle OpenGLRenderer::createTexture(int width, int height,
     }
     textures_.push_back(std::move(tex));
     return static_cast<TextureHandle>(textures_.size());
+}
+
+TextureHandle OpenGLRenderer::whiteTexture() const {
+    return whiteTexture_;
 }
 
 TextureHandle OpenGLRenderer::loadTexture(const std::string& path) {
@@ -110,6 +119,40 @@ void OpenGLRenderer::drawLine(Vec3 a, Vec3 b, Vec3 color) {
 
 void OpenGLRenderer::flushDebugLines(const Mat4& view, const Mat4& projection) {
     debugLines_.flush(view, projection);
+}
+
+void OpenGLRenderer::drawHud(const HudBatch& batch, int framebufferWidth,
+                             int framebufferHeight) {
+    if (batch.empty()) {
+        return;
+    }
+
+    // HUD draws on top of everything: no depth test, alpha-blended.
+    glDisable(GL_DEPTH_TEST);
+    glDepthMask(GL_FALSE);
+    glEnable(GL_BLEND);
+    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+
+    hud_.begin(framebufferWidth, framebufferHeight);
+    for (const HudDrawGroup& group : batch) {
+        if (group.vertices.empty()) {
+            continue;
+        }
+        // Bind the group's texture to unit 0; fall back to white if invalid.
+        TextureHandle tex = group.texture;
+        if (tex == kInvalidHandle || tex > textures_.size()) {
+            tex = whiteTexture_;
+        }
+        if (tex != kInvalidHandle && tex <= textures_.size()) {
+            textures_[tex - 1]->bind(0);
+        }
+        hud_.drawGroup(group.vertices);
+    }
+    hud_.end();
+
+    glDisable(GL_BLEND);
+    glDepthMask(GL_TRUE);
+    glEnable(GL_DEPTH_TEST);
 }
 
 void OpenGLRenderer::setViewport(int width, int height) {

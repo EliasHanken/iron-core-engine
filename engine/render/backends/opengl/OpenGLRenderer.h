@@ -2,6 +2,7 @@
 
 #include "render/Renderer.h"
 #include "render/backends/opengl/GLDebugLines.h"
+#include "render/backends/opengl/GLHud.h"
 #include "render/backends/opengl/GLMesh.h"
 #include "render/backends/opengl/GLShader.h"
 #include "render/backends/opengl/GLTexture.h"
@@ -23,6 +24,7 @@ public:
     TextureHandle createTexture(int width, int height,
                                 const unsigned char* rgba) override;
     TextureHandle loadTexture(const std::string& path) override;
+    TextureHandle whiteTexture() const override;
     ShaderHandle createShader(const std::string& vertexSrc,
                               const std::string& fragmentSrc) override;
 
@@ -33,6 +35,8 @@ public:
 
     void drawLine(Vec3 a, Vec3 b, Vec3 color) override;
     void flushDebugLines(const Mat4& view, const Mat4& projection) override;
+    void drawHud(const HudBatch& batch, int framebufferWidth,
+                 int framebufferHeight) override;
 
     void setViewport(int width, int height) override;
 
@@ -43,6 +47,8 @@ private:
     TextureHandle fallbackTexture_ = kInvalidHandle;
     DirectionalLight light_{};
     GLDebugLines debugLines_;
+    GLHud hud_;
+    TextureHandle whiteTexture_ = kInvalidHandle;
 };
 
 } // namespace iron

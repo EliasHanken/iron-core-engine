@@ -2,20 +2,14 @@
 
 #include "math/Mat4.h"
 #include "math/Vec.h"
+#include "render/Handles.h"
+#include "render/HudBatch.h"
 #include "render/Light.h"
 #include "scene/Mesh.h"
 
-#include <cstdint>
 #include <string>
 
 namespace iron {
-
-// Opaque handles into the renderer's resource tables. 0 is "invalid".
-using MeshHandle = std::uint32_t;
-using TextureHandle = std::uint32_t;
-using ShaderHandle = std::uint32_t;
-
-inline constexpr std::uint32_t kInvalidHandle = 0;
 
 // One thing to draw: a mesh, a shader, a texture, and a model matrix.
 struct DrawCall {
@@ -48,6 +42,8 @@ public:
     // Loads an image file (PNG/JPG) into a texture. Returns kInvalidHandle on
     // failure.
     virtual TextureHandle loadTexture(const std::string& path) = 0;
+    // A built-in 1x1 opaque-white texture, handy for solid-colour quads.
+    virtual TextureHandle whiteTexture() const = 0;
     // Compiles + links a shader from GLSL source. Returns kInvalidHandle on
     // failure.
     virtual ShaderHandle createShader(const std::string& vertexSrc,
@@ -66,6 +62,12 @@ public:
     virtual void drawLine(Vec3 a, Vec3 b, Vec3 color) = 0;
     // Draw all queued debug lines (depth-tested) and clear the queue.
     virtual void flushDebugLines(const Mat4& view, const Mat4& projection) = 0;
+
+    // --- HUD ---
+    // Draw a screen-space HUD batch on top of the current frame, sized to the
+    // given framebuffer dimensions. Call after the 3D scene, before endFrame.
+    virtual void drawHud(const HudBatch& batch, int framebufferWidth,
+                         int framebufferHeight) = 0;
 
     // Call when the framebuffer is resized.
     virtual void setViewport(int width, int height) = 0;
