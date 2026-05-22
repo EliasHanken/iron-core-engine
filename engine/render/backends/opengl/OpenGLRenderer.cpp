@@ -72,14 +72,16 @@ ShaderHandle OpenGLRenderer::createShader(const std::string& vertexSrc,
     return static_cast<ShaderHandle>(shaders_.size());
 }
 
-void OpenGLRenderer::beginFrame(Vec3 clearColor, const DirectionalLight& light) {
+void OpenGLRenderer::beginFrame(Vec3 clearColor, const DirectionalLight& light,
+                                const Mat4& view, const Mat4& projection) {
+    clearColor_ = clearColor;
     light_ = light;
-    glClearColor(clearColor.x, clearColor.y, clearColor.z, 1.0f);
-    glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+    view_ = view;
+    projection_ = projection;
+    frameCalls_.clear();
 }
 
-void OpenGLRenderer::submit(const DrawCall& call, const Mat4& view,
-                            const Mat4& projection) {
+void OpenGLRenderer::submit(const DrawCall& call) {
     // Handles are (index + 1), so a valid handle is in [1, vector size].
     // Reject anything outside that range — a stale or foreign handle would
     // otherwise index a vector out of bounds (undefined behaviour).
@@ -88,29 +90,34 @@ void OpenGLRenderer::submit(const DrawCall& call, const Mat4& view,
         Log::warn("OpenGLRenderer::submit: mesh/shader handle out of range");
         return;
     }
-    const GLShader& shader = *shaders_[call.shader - 1];
-    shader.bind();
-    shader.setMat4("uModel", call.model);
-    shader.setMat4("uView", view);
-    shader.setMat4("uProjection", projection);
-    shader.setInt("uTexture", 0);
-    shader.setVec3("uLightDir", light_.direction);
-    shader.setVec3("uLightColor", light_.color);
-    shader.setFloat("uAmbient", light_.ambient);
-
-    TextureHandle tex = call.texture;
-    if (tex == kInvalidHandle) {
-        tex = fallbackTexture_;
-    }
-    if (tex != kInvalidHandle && tex <= textures_.size()) {
-        textures_[tex - 1]->bind(0);
-    }
-
-    meshes_[call.mesh - 1]->draw();
+    frameCalls_.push_back(call);
 }
 
 void OpenGLRenderer::endFrame() {
-    // Buffer swap is owned by Window; nothing to flush here yet.
+    glClearColor(clearColor_.x, clearColor_.y, clearColor_.z, 1.0f);
+    glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+
+    for (const DrawCall& call : frameCalls_) {
+        const GLShader& shader = *shaders_[call.shader - 1];
+        shader.bind();
+        shader.setMat4("uModel", call.model);
+        shader.setMat4("uView", view_);
+        shader.setMat4("uProjection", projection_);
+        shader.setInt("uTexture", 0);
+        shader.setVec3("uLightDir", light_.direction);
+        shader.setVec3("uLightColor", light_.color);
+        shader.setFloat("uAmbient", light_.ambient);
+
+        TextureHandle tex = call.texture;
+        if (tex == kInvalidHandle) {
+            tex = fallbackTexture_;
+        }
+        if (tex != kInvalidHandle && tex <= textures_.size()) {
+            textures_[tex - 1]->bind(0);
+        }
+
+        meshes_[call.mesh - 1]->draw();
+    }
 }
 
 void OpenGLRenderer::drawLine(Vec3 a, Vec3 b, Vec3 color) {

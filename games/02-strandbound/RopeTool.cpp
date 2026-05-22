@@ -67,8 +67,7 @@ void RopeTool::update(const iron::Ray& aim, bool cutPressed, float dt) {
     }
 }
 
-void RopeTool::draw(iron::Renderer& renderer, const iron::Mat4& view,
-                    const iron::Mat4& projection) const {
+void RopeTool::draw(iron::Renderer& renderer) const {
     // Rebuild the combined rope tube mesh from every rope's current points.
     iron::MeshData ropeGeometry;
     for (const iron::Rope& r : ropes_) {
@@ -85,7 +84,7 @@ void RopeTool::draw(iron::Renderer& renderer, const iron::Mat4& view,
     ropeCall.mesh = ropesMesh_;
     ropeCall.shader = litShader_;
     ropeCall.texture = ropeTexture_;
-    renderer.submit(ropeCall, view, projection);
+    renderer.submit(ropeCall);
 
     // A small yellow cross at each rope's two endpoints — the mount points.
     const iron::Vec3 markerColor{0.95f, 0.8f, 0.2f};

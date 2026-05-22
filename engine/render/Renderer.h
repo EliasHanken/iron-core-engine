@@ -50,11 +50,15 @@ public:
                                       const std::string& fragmentSrc) = 0;
 
     // --- per-frame ---
-    // The directional light applies to every object drawn this frame.
-    virtual void beginFrame(Vec3 clearColor, const DirectionalLight& light) = 0;
-    // The camera supplies view + projection; each DrawCall supplies its model.
-    virtual void submit(const DrawCall& call, const Mat4& view,
-                        const Mat4& projection) = 0;
+    // Begins a frame: records the clear colour, the directional light, and the
+    // camera (view + projection). Submitted draw calls are buffered until
+    // endFrame.
+    virtual void beginFrame(Vec3 clearColor, const DirectionalLight& light,
+                            const Mat4& view, const Mat4& projection) = 0;
+    // Records one draw call for this frame. Each DrawCall supplies its model
+    // matrix; the camera comes from beginFrame.
+    virtual void submit(const DrawCall& call) = 0;
+    // Renders every buffered draw call for the frame.
     virtual void endFrame() = 0;
 
     // --- debug drawing ---
@@ -64,8 +68,9 @@ public:
     virtual void flushDebugLines(const Mat4& view, const Mat4& projection) = 0;
 
     // --- HUD ---
-    // Draw a screen-space HUD batch on top of the current frame, sized to the
-    // given framebuffer dimensions. Call after the 3D scene, before endFrame.
+    // Draw a screen-space HUD batch on top of the finished frame, sized to the
+    // given framebuffer dimensions. Call after endFrame (the HUD is an overlay
+    // composited on top of the rendered scene).
     virtual void drawHud(const HudBatch& batch, int framebufferWidth,
                          int framebufferHeight) = 0;
 

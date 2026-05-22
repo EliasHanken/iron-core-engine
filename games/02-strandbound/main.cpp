@@ -376,21 +376,23 @@ int main() {
     });
 
     app.setRender([&] {
-        renderer.beginFrame(iron::Vec3{0.5f, 0.7f, 0.9f}, scene.light);
         const iron::Mat4 view = (state == PlayerState::Traversing)
                                     ? ropeWalker.viewMatrix()
                                     : player.viewMatrix();
+        renderer.beginFrame(iron::Vec3{0.5f, 0.7f, 0.9f}, scene.light, view,
+                            projection);
         for (const iron::RenderObject& obj : scene.objects) {
             iron::DrawCall call;
             call.mesh = obj.mesh;
             call.shader = shader;
             call.texture = obj.texture;
             call.model = obj.transform;
-            renderer.submit(call, view, projection);
+            renderer.submit(call);
         }
+        ropeTool.draw(renderer);
+        renderer.endFrame();
 
-        ropeTool.draw(renderer, view, projection);
-
+        // Overlays, drawn on top of the finished lit scene.
         // The thrown rope-end in flight: a small orange cross.
         if (ropeThrower.state() == RopeThrower::State::InFlight) {
             const iron::Vec3 p = ropeThrower.projectilePosition();
@@ -403,16 +405,12 @@ int main() {
             renderer.drawLine(p - iron::Vec3{0.0f, 0.0f, s},
                               p + iron::Vec3{0.0f, 0.0f, s}, c);
         }
-
         renderer.flushDebugLines(view, projection);
 
-        // Refresh the readout, then draw the HUD on top of the 3D scene.
         hud.setText(readout,
                     "Ropes: " + std::to_string(ropeTool.ropesAvailable()));
         renderer.drawHud(hud.build(font, renderer.whiteTexture()),
                          screenW, screenH);
-
-        renderer.endFrame();
     });
 
     app.run();
