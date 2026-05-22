@@ -38,6 +38,14 @@ public:
     iron::Vec3 ropeNearEnd() const { return nearEnd_; }
     iron::Vec3 ropeFarEnd() const { return farEnd_; }
 
+    // Abandon any charge or in-flight throw, returning to Idle. Used when the
+    // player mounts a rope — a pending throw is dropped (it never landed, so
+    // the rope pool is unaffected).
+    void cancel() {
+        state_ = State::Idle;
+        charge_ = 0.0f;
+    }
+
 private:
     State state_ = State::Idle;
     float charge_ = 0.0f;

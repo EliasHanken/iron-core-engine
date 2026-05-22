@@ -1,6 +1,5 @@
 #pragma once
 
-#include "math/Aabb.h"
 #include "math/Mat4.h"
 #include "math/Ray.h"
 #include "math/Vec.h"
@@ -9,56 +8,43 @@
 
 #include <vector>
 
-// The Strandbound rope tool: the player places anchor points on world
-// surfaces and ties / cuts ropes between them. Game-specific interaction —
-// it lives with the game, not the engine.
+// The Strandbound rope collection: it owns the tied ropes, draws them, holds a
+// finite pool of ropes the player can still deploy, and handles cutting. Ropes
+// are created by RopeThrower (a thrown rope that landed) via addRope.
+// Game-specific — it lives with the game, not the engine.
 class RopeTool {
 public:
-    // `colliders` are the static world boxes the aim ray is tested against
-    // when placing an anchor. `renderer` is used to create the rope's mesh and
-    // texture; `litShader` is the shader the rope is drawn with.
-    RopeTool(std::vector<iron::Aabb> colliders, iron::Renderer& renderer,
-             iron::ShaderHandle litShader);
+    RopeTool(iron::Renderer& renderer, iron::ShaderHandle litShader);
 
-    // Advance one fixed step. `aim` is the player's aim ray; `playerPos` is
-    // the player's feet position. The three flags are this step's input edges.
-    void update(const iron::Ray& aim, iron::Vec3 playerPos,
-                bool placePressed, bool tiePressed, bool cutPressed,
-                float dt);
+    // Adds a rope between two world points if the pool is non-empty: builds a
+    // slack Rope, spends one from the pool, and returns true. Returns false
+    // and adds nothing when the pool is empty.
+    bool addRope(iron::Vec3 nearEnd, iron::Vec3 farEnd);
 
-    // Rebuild and draw the rope mesh, and queue the anchor and aim markers as
-    // debug lines. Call between submitting the scene and flushDebugLines.
+    // Advance one fixed step: if `cutPressed`, cut the rope under `aim` (which
+    // refunds it to the pool); then step every rope's physics.
+    void update(const iron::Ray& aim, bool cutPressed, float dt);
+
+    // Rebuild and draw the rope tube mesh, and queue an endpoint marker at
+    // each rope end as debug lines. Call between submitting the scene and
+    // flushDebugLines.
     void draw(iron::Renderer& renderer, const iron::Mat4& view,
               const iron::Mat4& projection) const;
 
-    // Number of placed anchors / live ropes — for HUD readouts.
-    int anchorCount() const { return static_cast<int>(anchors_.size()); }
-    int ropeCount() const { return static_cast<int>(ropes_.size()); }
+    // Ropes the player can still deploy — for the HUD readout.
+    int ropesAvailable() const { return ropesAvailable_; }
 
     // The live ropes — for RopeWalker to read endpoints and points.
     const std::vector<iron::Rope>& ropes() const { return ropes_; }
 
-    // Clears the aim marker — call when the player stops aiming (e.g. on
-    // mounting a rope, when the rope tool is suspended).
-    void clearAimTarget() { aimKind_ = AimKind::None; }
-
 private:
-    enum class AimKind { None, Surface, Anchor, Rope };
+    // Index of the rope whose points the aim ray passes nearest, or -1.
+    int pickRope(const iron::Ray& aim) const;
 
-    int pickAnchor(const iron::Ray& aim) const;
-    int pickRope(const iron::Ray& aim, iron::Vec3& outPoint) const;
-    bool pickSurface(const iron::Ray& aim, iron::Vec3& outPoint) const;
-    void refreshAimTarget(const iron::Ray& aim);
-
-    std::vector<iron::Aabb> colliders_;
-    std::vector<iron::Vec3> anchors_;
     std::vector<iron::Rope> ropes_;
-
-    int tyingFromAnchor_ = -1;        // anchor index being tied from, or -1
-    iron::Vec3 playerPos_{};          // cached, for drawing the tying guide
-
-    AimKind aimKind_ = AimKind::None;
-    iron::Vec3 aimPoint_{};
+    // Invariant: ropesAvailable_ + ropes_.size() == kStartingRopes — addRope
+    // spends one, a cut refunds one.
+    int ropesAvailable_;
 
     iron::ShaderHandle litShader_ = iron::kInvalidHandle;
     iron::TextureHandle ropeTexture_ = iron::kInvalidHandle;
