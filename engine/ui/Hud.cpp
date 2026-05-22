@@ -83,6 +83,12 @@ void Hud::setColor(HudId id, Vec4 color) {
     }
 }
 
+void Hud::setSize(HudId id, Vec2 size) {
+    if (Element* e = get(id)) {
+        e->size = size;
+    }
+}
+
 void Hud::setVisible(HudId id, bool visible) {
     if (Element* e = get(id)) {
         e->visible = visible;

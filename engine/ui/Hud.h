@@ -29,6 +29,7 @@ public:
     void setText(HudId id, std::string text);
     void setPosition(HudId id, Vec2 position);
     void setColor(HudId id, Vec4 color);
+    void setSize(HudId id, Vec2 size);
     void setVisible(HudId id, bool visible);
 
     // Builds the screen-space quad batch for the current visible elements.

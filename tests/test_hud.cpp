@@ -139,5 +139,23 @@ int main() {
         CHECK(totalVertices(batch) == 6);  // the panel is unaffected
     }
 
+    // setSize changes a panel's quad extent.
+    {
+        Hud hud;
+        const HudId p = hud.addPanel(Vec2{0, 0}, Vec2{10, 10}, Vec4{1,1,1,1});
+        hud.setSize(p, Vec2{40, 20});
+        const HudBatch batch = hud.build(font, kWhite);
+        const HudDrawGroup* g = groupFor(batch, kWhite);
+        CHECK(g != nullptr);
+        float maxX = 0.0f;
+        float maxY = 0.0f;
+        for (const HudVertex& v : g->vertices) {
+            if (v.position.x > maxX) maxX = v.position.x;
+            if (v.position.y > maxY) maxY = v.position.y;
+        }
+        CHECK_NEAR(maxX, 40.0f);
+        CHECK_NEAR(maxY, 20.0f);
+    }
+
     return iron_test_result();
 }
