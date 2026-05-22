@@ -31,6 +31,10 @@ public:
     void draw(iron::Renderer& renderer, const iron::Mat4& view,
               const iron::Mat4& projection) const;
 
+    // Number of placed anchors / live ropes — for HUD readouts.
+    int anchorCount() const { return static_cast<int>(anchors_.size()); }
+    int ropeCount() const { return static_cast<int>(ropes_.size()); }
+
 private:
     enum class AimKind { None, Surface, Anchor, Rope };
 

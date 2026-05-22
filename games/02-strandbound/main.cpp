@@ -10,9 +10,13 @@
 #include "scene/FirstPersonController.h"
 #include "scene/Mesh.h"
 #include "scene/Scene.h"
+#include "ui/BuiltinFont.h"
+#include "ui/Hud.h"
 
 #include <GLFW/glfw3.h>
 
+#include <cstddef>
+#include <string>
 #include <vector>
 
 namespace {
@@ -76,6 +80,28 @@ iron::RenderObject makeBox(const BoxDef& def, iron::MeshHandle mesh,
     return obj;
 }
 
+// Builds a `size`x`size` RGBA crosshair image: a white plus-sign on
+// transparency.
+std::vector<unsigned char> makeCrosshairPixels(int size) {
+    std::vector<unsigned char> px(static_cast<std::size_t>(size) * size * 4, 0);
+    const int mid = size / 2;
+    for (int y = 0; y < size; ++y) {
+        for (int x = 0; x < size; ++x) {
+            const bool onCross = (x == mid) || (y == mid);
+            if (!onCross) {
+                continue;
+            }
+            const std::size_t i =
+                (static_cast<std::size_t>(y) * size + x) * 4;
+            px[i + 0] = 255;
+            px[i + 1] = 255;
+            px[i + 2] = 255;
+            px[i + 3] = 255;
+        }
+    }
+    return px;
+}
+
 }  // namespace
 
 int main() {
@@ -132,6 +158,38 @@ int main() {
 
     RopeTool ropeTool(colliders, renderer, shader);
 
+    // HUD: a built-in font atlas, a procedural crosshair, and three elements.
+    const iron::BuiltinFontAtlas fontAtlas = iron::builtinFontAtlas();
+    const iron::TextureHandle fontTexture = renderer.createTexture(
+        fontAtlas.width, fontAtlas.height, fontAtlas.rgba.data());
+    const iron::BitmapFont font = iron::builtinFont(fontTexture);
+
+    constexpr int kCrosshairSize = 17;
+    const std::vector<unsigned char> crosshairPixels =
+        makeCrosshairPixels(kCrosshairSize);
+    const iron::TextureHandle crosshairTexture = renderer.createTexture(
+        kCrosshairSize, kCrosshairSize, crosshairPixels.data());
+
+    const int screenW = app.window().width();
+    const int screenH = app.window().height();
+
+    iron::Hud hud;
+    // A dark backing panel behind the readout: wide enough for the longest
+    // readout string at scale 2.0, with 8px padding around the 16px text.
+    hud.addPanel(iron::Vec2{8.0f, 8.0f}, iron::Vec2{408.0f, 32.0f},
+                 iron::Vec4{0.0f, 0.0f, 0.0f, 0.55f});
+    // The status readout (text); its id is kept so it can be updated.
+    const iron::HudId readout = hud.addText(
+        "Anchors: 0   Ropes: 0", iron::Vec2{16.0f, 16.0f}, 2.0f,
+        iron::Vec4{1.0f, 1.0f, 1.0f, 1.0f});
+    // A crosshair image centred on screen.
+    hud.addImage(
+        iron::Vec2{static_cast<float>(screenW) / 2.0f - kCrosshairSize / 2.0f,
+                   static_cast<float>(screenH) / 2.0f - kCrosshairSize / 2.0f},
+        iron::Vec2{static_cast<float>(kCrosshairSize),
+                   static_cast<float>(kCrosshairSize)},
+        crosshairTexture, iron::Vec4{1.0f, 1.0f, 1.0f, 0.85f});
+
     app.window().setCursorCaptured(true);
 
     const float aspect = static_cast<float>(app.window().width()) /
@@ -176,6 +234,13 @@ int main() {
 
         ropeTool.draw(renderer, view, projection);
         renderer.flushDebugLines(view, projection);
+
+        // Refresh the readout, then draw the HUD on top of the 3D scene.
+        hud.setText(readout,
+                    "Anchors: " + std::to_string(ropeTool.anchorCount()) +
+                        "   Ropes: " + std::to_string(ropeTool.ropeCount()));
+        renderer.drawHud(hud.build(font, renderer.whiteTexture()),
+                         screenW, screenH);
 
         renderer.endFrame();
     });
