@@ -179,6 +179,9 @@ int main() {
     PlayerState state = PlayerState::Walking;
     RopeWalker ropeWalker;
     int traversedRope = -1;
+    // After a dismount, suppress re-mounting briefly so the player can walk
+    // off the anchor instead of being instantly re-mounted.
+    float remountCooldown = 0.0f;
 
     std::mt19937 rng{std::random_device{}()};
     std::uniform_real_distribution<float> driftDist(-1.0f, 1.0f);
@@ -277,18 +280,23 @@ int main() {
                 player.setPosition(kStartPos);
             }
 
-            // Mounting: stepping onto a rope end starts a traversal.
-            bool atStart = true;
-            const int rope = findMountRope(player.position(),
-                                           ropeTool.ropes(), kMountRadius,
-                                           atStart);
-            if (rope >= 0) {
-                traversedRope = rope;
-                ropeWalker.begin(ropeTool.ropes()[static_cast<std::size_t>(
-                                     rope)],
-                                 atStart, player.yaw(), player.pitch());
-                ropeTool.clearAimTarget();
-                state = PlayerState::Traversing;
+            // Mounting: stepping onto a rope end starts a traversal — but not
+            // while the post-dismount cooldown is still running.
+            if (remountCooldown > 0.0f) {
+                remountCooldown -= dt;
+            } else {
+                bool atStart = true;
+                const int rope = findMountRope(player.position(),
+                                               ropeTool.ropes(), kMountRadius,
+                                               atStart);
+                if (rope >= 0) {
+                    traversedRope = rope;
+                    ropeWalker.begin(
+                        ropeTool.ropes()[static_cast<std::size_t>(rope)],
+                        atStart, player.yaw(), player.pitch());
+                    ropeTool.clearAimTarget();
+                    state = PlayerState::Traversing;
+                }
             }
         } else if (state == PlayerState::Traversing) {
             float forward = 0.0f;
@@ -314,6 +322,7 @@ int main() {
             } else if (result == RopeWalker::Result::Dismounted) {
                 player.setPosition(ropeWalker.exitFeet());
                 state = PlayerState::Walking;
+                remountCooldown = 0.5f;  // seconds — let the player step away
             }
         }
         // PlayerState::Won — terminal; only Escape (handled above) responds.
