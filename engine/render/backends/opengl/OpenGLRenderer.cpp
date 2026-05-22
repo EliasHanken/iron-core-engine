@@ -1,12 +1,37 @@
 #include "render/backends/opengl/OpenGLRenderer.h"
 
 #include "core/Log.h"
+#include "math/Transform.h"
 
 #include <glad/gl.h>
 
+#include <cmath>
+
+namespace {
+// The shadow pass renders only depth. The vertex stage transforms by the
+// light's view-projection; the fragment stage is empty (GL writes depth).
+const char* kDepthVertexSrc = R"(#version 330 core
+layout(location = 0) in vec3 aPos;
+uniform mat4 uLightViewProj;
+uniform mat4 uModel;
+void main() {
+    gl_Position = uLightViewProj * uModel * vec4(aPos, 1.0);
+}
+)";
+
+const char* kDepthFragmentSrc = R"(#version 330 core
+void main() {}
+)";
+
+constexpr int kShadowResolution = 2048;
+constexpr float kShadowBias = 0.003f;
+}  // namespace
+
 namespace iron {
 
-OpenGLRenderer::OpenGLRenderer() {
+OpenGLRenderer::OpenGLRenderer()
+    : shadowMap_(kShadowResolution),
+      depthShader_(kDepthVertexSrc, kDepthFragmentSrc) {
     glEnable(GL_DEPTH_TEST);
 
     // A 2x2 magenta/black checker used when a real texture fails to load.
@@ -93,17 +118,59 @@ void OpenGLRenderer::submit(const DrawCall& call) {
     frameCalls_.push_back(call);
 }
 
+void OpenGLRenderer::setShadowBounds(Vec3 center, float radius) {
+    shadowCenter_ = center;
+    shadowRadius_ = radius;
+}
+
+Mat4 OpenGLRenderer::computeLightViewProj() const {
+    // The directional light's "camera": an orthographic box aimed along the
+    // light direction, sized to enclose the shadow bounds sphere.
+    Vec3 dir = normalize(light_.direction);
+    const Vec3 up = (std::fabs(dir.y) > 0.99f) ? Vec3{0.0f, 0.0f, 1.0f}
+                                               : Vec3{0.0f, 1.0f, 0.0f};
+    const Vec3 eye = shadowCenter_ - dir * (shadowRadius_ * 2.0f);
+    const Mat4 view = lookAt(eye, shadowCenter_, up);
+    const Mat4 proj = orthographic(-shadowRadius_, shadowRadius_,
+                                   -shadowRadius_, shadowRadius_,
+                                   0.1f, shadowRadius_ * 4.0f);
+    return proj * view;
+}
+
 void OpenGLRenderer::endFrame() {
+    const Mat4 lightViewProj = computeLightViewProj();
+
+    // --- Pass 1: render scene depth from the light into the shadow map ---
+    GLint savedViewport[4];
+    glGetIntegerv(GL_VIEWPORT, savedViewport);
+
+    shadowMap_.bindForWriting();
+    glViewport(0, 0, shadowMap_.resolution(), shadowMap_.resolution());
+    glClear(GL_DEPTH_BUFFER_BIT);
+    depthShader_.bind();
+    depthShader_.setMat4("uLightViewProj", lightViewProj);
+    for (const DrawCall& call : frameCalls_) {
+        depthShader_.setMat4("uModel", call.model);
+        meshes_[call.mesh - 1]->draw();
+    }
+
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    glViewport(savedViewport[0], savedViewport[1], savedViewport[2],
+               savedViewport[3]);
+
+    // --- Pass 2: the lit scene, sampling the shadow map ---
     glClearColor(clearColor_.x, clearColor_.y, clearColor_.z, 1.0f);
     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
-
     for (const DrawCall& call : frameCalls_) {
         const GLShader& shader = *shaders_[call.shader - 1];
         shader.bind();
         shader.setMat4("uModel", call.model);
         shader.setMat4("uView", view_);
         shader.setMat4("uProjection", projection_);
+        shader.setMat4("uLightViewProj", lightViewProj);
         shader.setInt("uTexture", 0);
+        shader.setInt("uShadowMap", 1);
+        shader.setFloat("uShadowBias", kShadowBias);
         shader.setVec3("uLightDir", light_.direction);
         shader.setVec3("uLightColor", light_.color);
         shader.setFloat("uAmbient", light_.ambient);
@@ -115,6 +182,7 @@ void OpenGLRenderer::endFrame() {
         if (tex != kInvalidHandle && tex <= textures_.size()) {
             textures_[tex - 1]->bind(0);
         }
+        shadowMap_.bindDepthTexture(1);
 
         meshes_[call.mesh - 1]->draw();
     }

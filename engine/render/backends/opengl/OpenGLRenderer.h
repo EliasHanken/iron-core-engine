@@ -5,6 +5,7 @@
 #include "render/backends/opengl/GLHud.h"
 #include "render/backends/opengl/GLMesh.h"
 #include "render/backends/opengl/GLShader.h"
+#include "render/backends/opengl/GLShadowMap.h"
 #include "render/backends/opengl/GLTexture.h"
 
 #include <memory>
@@ -32,6 +33,7 @@ public:
                     const Mat4& view, const Mat4& projection) override;
     void submit(const DrawCall& call) override;
     void endFrame() override;
+    void setShadowBounds(Vec3 center, float radius) override;
 
     void drawLine(Vec3 a, Vec3 b, Vec3 color) override;
     void flushDebugLines(const Mat4& view, const Mat4& projection) override;
@@ -53,6 +55,12 @@ private:
     GLDebugLines debugLines_;
     GLHud hud_;
     TextureHandle whiteTexture_ = kInvalidHandle;
+    GLShadowMap shadowMap_;
+    GLShader depthShader_;
+    Vec3 shadowCenter_{0.0f, 0.0f, 0.0f};
+    float shadowRadius_ = 50.0f;
+
+    Mat4 computeLightViewProj() const;
 };
 
 } // namespace iron

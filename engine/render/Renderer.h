@@ -61,6 +61,11 @@ public:
     // Renders every buffered draw call for the frame.
     virtual void endFrame() = 0;
 
+    // Sets the world-space sphere (centre + radius) the directional light's
+    // shadow map must cover. A game calls this once with bounds enclosing its
+    // scene.
+    virtual void setShadowBounds(Vec3 center, float radius) = 0;
+
     // --- debug drawing ---
     // Queue a coloured 3D line segment for the current frame.
     virtual void drawLine(Vec3 a, Vec3 b, Vec3 color) = 0;
