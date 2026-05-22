@@ -39,3 +39,48 @@ float advanceParam(float t, float input, float walkSpeed, float ropeLength,
 // point, false if it is the last.
 int findMountRope(iron::Vec3 playerFeet, const std::vector<iron::Rope>& ropes,
                   float radius, bool& outAtStart);
+
+// An active tightrope traversal. Constructed once and reused: begin() starts a
+// crossing, step() advances it. Holds no reference to the rope — the rope is
+// re-supplied each step.
+class RopeWalker {
+public:
+    // The result of a step (or the state begin() leaves the walker in).
+    enum class Result { Traversing, Dismounted, Fell, Won };
+
+    // Start traversing `rope`. `atStart` true means the player mounted at the
+    // rope's first point (t=0 there, t=1 at the last point); false means the
+    // last point (the t axis is reversed). `yaw`/`pitch` seed the look
+    // direction from the player's current facing.
+    void begin(const iron::Rope& rope, bool atStart, float yaw, float pitch);
+
+    // Advance one fixed step. `forward` (-1..+1) moves along the rope, `steer`
+    // (-1..+1) counter-steers the lean, `mouseDX`/`mouseDY` turn the look,
+    // `driftRandom` (-1..+1) is this step's random lean perturbation.
+    // `rope` is the rope being traversed; `farIsland` holds the AABB(s) that
+    // count as the winning island.
+    Result step(float forward, float steer, float mouseDX, float mouseDY,
+                float driftRandom, float dt, const iron::Rope& rope,
+                const std::vector<iron::Aabb>& farIsland);
+
+    float lean() const { return lean_; }  // |lean| < 1 while traversing; HUD meter
+    iron::Mat4 viewMatrix() const;                   // camera, including roll
+    iron::Vec3 exitFeet() const { return exitFeet_; }  // where to drop the player
+
+private:
+    // The interpolated rope point at the current t_ (no eye-height offset).
+    iron::Vec3 sampleRope(const iron::Rope& rope) const;
+    // The rope's mounted-end / far-end point, accounting for atStart_.
+    iron::Vec3 mountEndPoint(const iron::Rope& rope) const;
+    iron::Vec3 farEndPoint(const iron::Rope& rope) const;
+
+    float t_ = 0.0f;
+    bool atStart_ = true;
+    float lean_ = 0.0f;
+    float timeOnRope_ = 0.0f;
+    float ropeLength_ = 1.0f;
+    float yaw_ = 0.0f;
+    float pitch_ = 0.0f;
+    iron::Vec3 eye_{};
+    iron::Vec3 exitFeet_{};
+};
