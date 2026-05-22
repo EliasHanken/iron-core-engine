@@ -8,6 +8,7 @@ add_library(ironcore STATIC
   scene/Camera.cpp
   scene/FirstPersonController.cpp
   ui/BitmapFont.cpp
+  ui/BuiltinFont.cpp
   physics/Rope.cpp
   render/backends/opengl/GLShader.cpp
   render/backends/opengl/GLMesh.cpp
