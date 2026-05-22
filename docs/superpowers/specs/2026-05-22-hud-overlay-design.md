@@ -40,11 +40,12 @@ the Strandbound-specific HUD content stays in the game.
 - An engine-level retained-mode `Hud` class owning HUD elements.
 - Three element types: `HudText`, `HudPanel`, `HudImage`.
 - A `BitmapFont` (fixed 16×16 ASCII grid) and pure glyph/text layout.
+- A **built-in 8×8 bitmap font**: embedded public-domain glyph data plus a
+  procedural atlas generator — no external font asset, no download.
 - A screen-space 2D render pass in the RHI + OpenGL backend (`GLHud`).
 - A built-in 1×1 white texture on the renderer (so panels reuse the textured
   shader path).
 - Strandbound uses the HUD: a crosshair, a status readout, a backing panel.
-- A downloaded CC0 bitmap-font texture, committed as a game asset.
 
 ### Out of scope (deliberate)
 
@@ -58,6 +59,9 @@ the Strandbound-specific HUD content stays in the game.
   position; `\n` starts a new line. No centring, no word wrap.
 - **Input / interactivity** — the HUD is display-only. No buttons, no hit
   testing.
+- **Window-resize tracking** — the engine does not track a resized framebuffer
+  size today (the GLFW callback only calls `glViewport`). The game passes a
+  fixed size to `drawHud`. Live-resize support is a separate concern.
 - **Any M5 gameplay** — the second island, walkable ropes, the win condition
   are M5, brainstormed after this milestone ships.
 
@@ -67,8 +71,8 @@ the Strandbound-specific HUD content stays in the game.
 
 Pixels, origin **top-left**, x increasing right, y increasing down — the
 conventional UI convention. An element's `position` is its top-left corner.
-The 2D pass builds an orthographic projection from the **current framebuffer
-size** every frame, so the HUD survives a window resize.
+The 2D pass builds an orthographic projection from the framebuffer width and
+height **passed to `drawHud`** each frame; the game supplies the size it knows.
 
 Colours are `Vec4` RGBA. Alpha lets a panel sit semi-transparently behind text.
 
@@ -109,6 +113,17 @@ For a 16×16 grid, character code `c` maps to cell `(c % columns, c / columns)`.
 A pure function `glyphUv(const BitmapFont&, unsigned char c)` returns that
 cell's UV rectangle (min and max UV).
 
+**The built-in font.** The engine ships one font so the HUD works out of the
+box. `engine/ui/BuiltinFont.{h,cpp}` embeds a public-domain 8×8 glyph table
+(the `font8x8_basic` set — 128 ASCII glyphs, 8 bytes each, one byte per row,
+LSB = leftmost pixel; public domain). A pure function builds a **128×128 RGBA
+atlas** — a 16×16 grid of 8×8-pixel cells — by rasterizing each glyph (set bit
+→ opaque white, clear bit → transparent black): `BuiltinFontAtlas
+builtinFontAtlas()` returns `{ std::vector<unsigned char> rgba; int width;
+int height; }`. The game uploads it with `createTexture` and constructs the
+matching `BitmapFont` (columns 16, rows 16, glyph 8×8) via
+`builtinFont(TextureHandle atlas)`. No external font file, no download.
+
 `Hud::build(const BitmapFont&, TextureHandle whiteTexture)` is the heart of the
 milestone — pure CPU code, no GL calls:
 
@@ -139,11 +154,12 @@ one shader path: `fragColor = texture(atlas, uv) · vertexColor`.
 
 - `TextureHandle whiteTexture() const` — a built-in 1×1 white RGBA texture
   created during renderer construction.
-- `void drawHud(const HudBatch& batch)` — draws the batch as a screen-space
-  overlay.
+- `void drawHud(const HudBatch& batch, int framebufferWidth,
+  int framebufferHeight)` — draws the batch as a screen-space overlay, sized to
+  the given framebuffer dimensions.
 
 Frame order: the game, each frame, submits the 3D scene, flushes debug lines,
-then calls `drawHud(hud.build(font, renderer.whiteTexture()))`, then
+then calls `drawHud(hud.build(font, renderer.whiteTexture()), w, h)`, then
 `endFrame()`. `drawHud` must run before `endFrame` swaps buffers.
 
 **OpenGL backend** — a new `GLHud`, mirroring `GLDebugLines`:
@@ -170,37 +186,40 @@ during `OpenGLRenderer` construction.
 So the milestone is visually verifiable (M5 is not built yet), the Strandbound
 game creates a `Hud` and exercises all three element types:
 
-- A **crosshair** `HudImage` at screen centre.
+- A **crosshair** `HudImage` at screen centre, drawn from a small procedural
+  texture (a white plus-sign rasterized into an RGBA buffer in game code and
+  uploaded via `createTexture`). This exercises `HudImage` with a non-font
+  texture and needs no asset file.
 - A **status readout** `HudText` — `Anchors: N   Ropes: M` — its string
   refreshed each frame from the `RopeTool`'s counts.
 - A **panel** behind the readout for legibility (a semi-transparent dark
   rectangle).
 
-The game loads the font texture and constructs the `BitmapFont`, owns the
-`Hud`, updates the readout each frame, and calls `renderer.drawHud(...)` after
-the 3D scene.
+The game builds the font atlas via `builtinFontAtlas()` + `createTexture`,
+constructs the `BitmapFont` via `builtinFont(...)`, owns the `Hud`, updates the
+readout each frame, and calls `renderer.drawHud(...)` after the 3D scene.
 
-The crosshair and font textures are downloaded CC0 images committed under
-`games/02-strandbound/assets/` — now LFS-tracked. The game's existing
-`POST_BUILD` step copies the whole `assets/` folder next to the executable.
+No new binary assets are added — the font and crosshair are both generated in
+code.
 
 ### File layout
 
 ```
-engine/ui/Hud.h, Hud.cpp                        retained elements + build()       (new)
-engine/ui/BitmapFont.h, BitmapFont.cpp          font metrics + glyphUv            (new)
-engine/render/HudBatch.h                        HudVertex/HudDrawGroup/HudBatch   (new)
-engine/render/Renderer.h                        whiteTexture() + drawHud()        (modified)
-engine/render/backends/opengl/GLHud.h, .cpp     2D quad pass                      (new)
-engine/render/backends/opengl/OpenGLRenderer.h, .cpp  drawHud + white texture     (modified)
-engine/CMakeLists.txt                           register new engine sources       (modified)
-games/02-strandbound/assets/font.png            CC0 bitmap font (LFS)             (new)
-games/02-strandbound/assets/crosshair.png       CC0 crosshair image (LFS)         (new)
-games/02-strandbound/main.cpp                   create Hud; crosshair + readout   (modified)
-tests/test_bitmap_font.cpp                      glyphUv / grid tests              (new)
-tests/test_hud.cpp                              build() / element tests           (new)
-tests/CMakeLists.txt                            register both tests               (modified)
-docs/engine/hud.md                              concept note                      (new)
+engine/render/Handles.h                         handle typedefs (extracted)       (new)
+engine/render/HudBatch.h                         HudVertex/HudDrawGroup/HudBatch   (new)
+engine/render/Renderer.h                         include Handles.h; whiteTexture/drawHud (modified)
+engine/ui/BitmapFont.h, BitmapFont.cpp           font metrics + glyphUv            (new)
+engine/ui/BuiltinFont.h, BuiltinFont.cpp         embedded 8×8 font + atlas builder (new)
+engine/ui/Hud.h, Hud.cpp                         retained elements + build()       (new)
+engine/render/backends/opengl/GLHud.h, .cpp      2D quad pass                      (new)
+engine/render/backends/opengl/OpenGLRenderer.h, .cpp  drawHud + white texture      (modified)
+engine/CMakeLists.txt                            register new engine sources       (modified)
+games/02-strandbound/RopeTool.h                  anchorCount() / ropeCount()       (modified)
+games/02-strandbound/main.cpp                    create Hud; crosshair + readout   (modified)
+tests/test_bitmap_font.cpp                       glyphUv + builtin-atlas tests     (new)
+tests/test_hud.cpp                               build() / element tests           (new)
+tests/CMakeLists.txt                             register both tests               (modified)
+docs/engine/hud.md                               concept note                      (new)
 ```
 
 ## Testing
@@ -228,9 +247,9 @@ earlier milestones' rendering was.
 
 Launch `games/02-strandbound`. A crosshair sits at screen centre, a text
 readout shows the live anchor and rope counts on a backing panel, and all of it
-draws crisply on top of the 3D scene without depth-fighting it. Resizing the
-window keeps the HUD anchored correctly. Placing, tying, and cutting still work
-and the readout updates. `Escape` quits. All unit tests pass.
+draws crisply on top of the 3D scene without depth-fighting it. Placing, tying,
+and cutting still work and the readout updates. `Escape` quits. All unit tests
+pass.
 
 ## Conventions
 
