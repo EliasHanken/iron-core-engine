@@ -89,6 +89,7 @@ int main() {
         Vec4 centre = ortho * Vec4{0.0f, 0.0f, -50.5f, 1.0f};
         CHECK_NEAR(centre.x, 0.0f);
         CHECK_NEAR(centre.y, 0.0f);
+        CHECK_NEAR(centre.z, 0.0f);
         // Right/top edge maps to +1, +1.
         Vec4 corner = ortho * Vec4{10.0f, 10.0f, -1.0f, 1.0f};
         CHECK_NEAR(corner.x, 1.0f);

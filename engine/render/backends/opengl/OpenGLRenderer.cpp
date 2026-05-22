@@ -186,6 +186,12 @@ void OpenGLRenderer::endFrame() {
 
         meshes_[call.mesh - 1]->draw();
     }
+
+    // Leave unit 1 unbound — the shadow map is the renderer's; overlays
+    // (HUD, debug lines) must not inherit it. Leave unit 0 active.
+    glActiveTexture(GL_TEXTURE1);
+    glBindTexture(GL_TEXTURE_2D, 0);
+    glActiveTexture(GL_TEXTURE0);
 }
 
 void OpenGLRenderer::drawLine(Vec3 a, Vec3 b, Vec3 color) {
