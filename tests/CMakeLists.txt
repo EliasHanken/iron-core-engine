@@ -17,3 +17,14 @@ iron_add_test(test_ray test_ray.cpp)
 iron_add_test(test_mesh_builders test_mesh_builders.cpp)
 iron_add_test(test_bitmap_font test_bitmap_font.cpp)
 iron_add_test(test_hud test_hud.cpp)
+
+# test_rope_walker compiles the game-side RopeWalker.cpp directly, since it is
+# not part of the ironcore library.
+add_executable(test_rope_walker
+  test_rope_walker.cpp
+  ${CMAKE_SOURCE_DIR}/games/02-strandbound/RopeWalker.cpp)
+target_link_libraries(test_rope_walker PRIVATE ironcore)
+target_include_directories(test_rope_walker PRIVATE
+  ${CMAKE_CURRENT_SOURCE_DIR}
+  ${CMAKE_SOURCE_DIR}/games/02-strandbound)
+add_test(NAME test_rope_walker COMMAND test_rope_walker)
