@@ -1,6 +1,7 @@
 #pragma once
 
 #include "render/Renderer.h"
+#include "render/backends/opengl/GLCubemap.h"
 #include "render/backends/opengl/GLDebugLines.h"
 #include "render/backends/opengl/GLHud.h"
 #include "render/backends/opengl/GLMesh.h"
@@ -8,6 +9,7 @@
 #include "render/backends/opengl/GLShadowMap.h"
 #include "render/backends/opengl/GLTexture.h"
 
+#include <array>
 #include <memory>
 #include <vector>
 
@@ -28,6 +30,10 @@ public:
     TextureHandle whiteTexture() const override;
     ShaderHandle createShader(const std::string& vertexSrc,
                               const std::string& fragmentSrc) override;
+    CubemapHandle createCubemap(
+        int width, int height,
+        std::array<const unsigned char*, 6> faces) override;
+    void setSkybox(CubemapHandle sky) override;
 
     void beginFrame(Vec3 clearColor, const DirectionalLight& light,
                     std::span<const PointLight> pointLights,
@@ -47,6 +53,8 @@ private:
     std::vector<std::unique_ptr<GLMesh>> meshes_;
     std::vector<std::unique_ptr<GLTexture>> textures_;
     std::vector<std::unique_ptr<GLShader>> shaders_;
+    std::vector<std::unique_ptr<GLCubemap>> cubemaps_;
+    CubemapHandle skybox_ = kInvalidHandle;
     TextureHandle fallbackTexture_ = kInvalidHandle;
     DirectionalLight light_{};
     std::vector<PointLight> pointLights_;

@@ -7,6 +7,7 @@
 #include "render/Light.h"
 #include "scene/Mesh.h"
 
+#include <array>
 #include <span>
 #include <string>
 
@@ -59,6 +60,17 @@ public:
     // failure.
     virtual ShaderHandle createShader(const std::string& vertexSrc,
                                       const std::string& fragmentSrc) = 0;
+
+    // Creates a cubemap texture from six RGBA face arrays. Each face is
+    // `width * height * 4` bytes. Face order: +X, -X, +Y, -Y, +Z, -Z.
+    // Returns kInvalidHandle if any face is null or dimensions invalid.
+    virtual CubemapHandle createCubemap(
+        int width, int height,
+        std::array<const unsigned char*, 6> faces) = 0;
+
+    // Registers a cubemap as the skybox for subsequent frames. Pass
+    // kInvalidHandle to disable the skybox.
+    virtual void setSkybox(CubemapHandle sky) = 0;
 
     // --- per-frame ---
     // Begins a frame: records the clear colour, the directional sun, the

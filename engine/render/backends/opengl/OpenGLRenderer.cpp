@@ -98,6 +98,21 @@ ShaderHandle OpenGLRenderer::createShader(const std::string& vertexSrc,
     return static_cast<ShaderHandle>(shaders_.size());
 }
 
+CubemapHandle OpenGLRenderer::createCubemap(
+    int width, int height,
+    std::array<const unsigned char*, 6> faces) {
+    auto cubemap = std::make_unique<GLCubemap>(width, height, faces);
+    if (!cubemap->isValid()) {
+        return kInvalidHandle;
+    }
+    cubemaps_.push_back(std::move(cubemap));
+    return static_cast<CubemapHandle>(cubemaps_.size());
+}
+
+void OpenGLRenderer::setSkybox(CubemapHandle sky) {
+    skybox_ = sky;
+}
+
 void OpenGLRenderer::beginFrame(Vec3 clearColor, const DirectionalLight& light,
                                 std::span<const PointLight> pointLights,
                                 const Mat4& view, const Mat4& projection) {
