@@ -447,6 +447,10 @@ int main() {
     const int screenW = app.window().width();
     const int screenH = app.window().height();
 
+    // Inform the renderer of the viewport size so it can upload uScreenSize
+    // for the planar reflection's screen-space UV calculation.
+    renderer.setViewport(screenW, screenH);
+
     iron::Hud hud;
     // A dark backing panel behind the rope-count readout.
     hud.addPanel(iron::Vec2{8.0f, 8.0f}, iron::Vec2{160.0f, 32.0f},
