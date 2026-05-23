@@ -17,6 +17,8 @@
 
 #include <GLFW/glfw3.h>
 
+#include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstddef>
 #include <random>
@@ -42,6 +44,7 @@ out vec3 vWorldPos;
 out vec3 vNormal;
 out vec2 vUV;
 out vec4 vLightSpacePos;
+out vec3 vViewPos;                         // NEW
 
 void main() {
     vec4 worldPos4 = uModel * vec4(aPos, 1.0);
@@ -49,7 +52,9 @@ void main() {
     vNormal = mat3(uModel) * aNormal;
     vUV = aUV;
     vLightSpacePos = uLightViewProj * worldPos4;
-    gl_Position = uProjection * uView * worldPos4;
+    vec4 viewPos4 = uView * worldPos4;     // NEW (reuse worldPos4)
+    vViewPos = viewPos4.xyz;               // NEW
+    gl_Position = uProjection * viewPos4;  // reuse viewPos4
 }
 )";
 
@@ -62,6 +67,7 @@ in vec3 vWorldPos;
 in vec3 vNormal;
 in vec2 vUV;
 in vec4 vLightSpacePos;
+in vec3 vViewPos;                          // NEW
 out vec4 FragColor;
 
 uniform sampler2D uTexture;
@@ -80,6 +86,8 @@ struct PointLight {
 uniform PointLight uPointLights[16];
 uniform int uPointLightCount;
 uniform vec3 uEmissive;
+uniform vec3 uFogColor;                    // NEW
+uniform float uFogDensity;                 // NEW
 
 // 1.0 = lit, 0.0 = in shadow. PCF: average a 3x3 grid of depth samples so
 // the shadow edge is soft rather than stair-stepped.
@@ -126,8 +134,13 @@ void main() {
     }
 
     vec4 texel = texture(uTexture, vUV);
-    // Emissive added on top of the lit albedo. Texture alpha preserved.
-    FragColor = vec4(texel.rgb * lighting + uEmissive, texel.a);
+    vec3 litColor = texel.rgb * lighting + uEmissive;
+    // Distance fog. View-space length equals world-space distance because
+    // the view matrix doesn't scale.
+    float distFromCamera = length(vViewPos);
+    float fogFactor = 1.0 - exp(-uFogDensity * distFromCamera);
+    vec3 finalColor = mix(litColor, uFogColor, fogFactor);
+    FragColor = vec4(finalColor, texel.a);
 }
 )";
 
@@ -158,6 +171,81 @@ constexpr iron::Vec3 kStartPos{0.0f, 0.0f, 7.0f};
 
 // How close (horizontally) the player must be to a rope end to mount it.
 constexpr float kMountRadius = 1.6f;
+
+constexpr int kSkyFaceSize = 256;
+
+// Generates one face of the sunset cubemap. `face` is the OpenGL face
+// index: 0=+X, 1=-X, 2=+Y, 3=-Y, 4=+Z, 5=-Z. Writes
+// kSkyFaceSize*kSkyFaceSize*4 RGBA bytes into `pixels`.
+//
+// Sunset palette: deep blue at zenith, warm magenta in the middle,
+// glowing orange at the horizon. Side faces get a vertical gradient;
+// the top is pure zenith blue; the bottom is dark warm ground.
+void generateSunsetFace(int face, std::vector<unsigned char>& pixels) {
+    pixels.assign(kSkyFaceSize * kSkyFaceSize * 4, 0);
+
+    const iron::Vec3 cZenith{0.10f, 0.18f, 0.40f};   // deep blue
+    const iron::Vec3 cMid   {0.85f, 0.45f, 0.45f};   // warm magenta
+    const iron::Vec3 cHoriz {1.00f, 0.55f, 0.30f};   // glowing orange
+    const iron::Vec3 cGround{0.20f, 0.12f, 0.10f};   // dark warm
+
+    for (int y = 0; y < kSkyFaceSize; ++y) {
+        for (int x = 0; x < kSkyFaceSize; ++x) {
+            // Convert (x, y) into a direction on this face. Each face
+            // is the unit cube face: u, v in [-1, 1].
+            const float u = 2.0f * (x + 0.5f) / kSkyFaceSize - 1.0f;
+            const float v = 2.0f * (y + 0.5f) / kSkyFaceSize - 1.0f;
+            iron::Vec3 dir;
+            switch (face) {
+                case 0: dir = { 1.0f, -v,   -u};   break;  // +X
+                case 1: dir = {-1.0f, -v,    u};   break;  // -X
+                case 2: dir = { u,    1.0f,  v};   break;  // +Y
+                case 3: dir = { u,   -1.0f, -v};   break;  // -Y
+                case 4: dir = { u,   -v,    1.0f}; break;  // +Z
+                case 5: dir = {-u,   -v,   -1.0f}; break;  // -Z
+            }
+            const float len = std::sqrt(dir.x*dir.x + dir.y*dir.y + dir.z*dir.z);
+            dir = {dir.x/len, dir.y/len, dir.z/len};
+
+            // Vertical position in the sky: dir.y in [-1, 1].
+            const float skyY = dir.y;
+            iron::Vec3 color;
+            if (skyY >= 0.0f) {
+                // Above the horizon: blend mid -> zenith as y goes 0 -> 1.
+                const float t = skyY;            // 0 at horizon, 1 at zenith
+                const float horizMid = std::min(t * 2.0f, 1.0f);  // horizon->mid in first half
+                const float midZen   = std::max((t - 0.5f) * 2.0f, 0.0f); // mid->zenith in second half
+                iron::Vec3 a = {
+                    cHoriz.x + (cMid.x - cHoriz.x) * horizMid,
+                    cHoriz.y + (cMid.y - cHoriz.y) * horizMid,
+                    cHoriz.z + (cMid.z - cHoriz.z) * horizMid,
+                };
+                color = {
+                    a.x + (cZenith.x - a.x) * midZen,
+                    a.y + (cZenith.y - a.y) * midZen,
+                    a.z + (cZenith.z - a.z) * midZen,
+                };
+            } else {
+                // Below the horizon: blend horizon -> ground as y goes 0 -> -1.
+                const float t = -skyY;           // 0 at horizon, 1 at nadir
+                color = {
+                    cHoriz.x + (cGround.x - cHoriz.x) * t,
+                    cHoriz.y + (cGround.y - cHoriz.y) * t,
+                    cHoriz.z + (cGround.z - cHoriz.z) * t,
+                };
+            }
+
+            const int idx = (y * kSkyFaceSize + x) * 4;
+            pixels[idx + 0] = static_cast<unsigned char>(
+                std::clamp(color.x * 255.0f, 0.0f, 255.0f));
+            pixels[idx + 1] = static_cast<unsigned char>(
+                std::clamp(color.y * 255.0f, 0.0f, 255.0f));
+            pixels[idx + 2] = static_cast<unsigned char>(
+                std::clamp(color.z * 255.0f, 0.0f, 255.0f));
+            pixels[idx + 3] = 255;
+        }
+    }
+}
 
 // Builds a `size`x`size` RGBA crosshair image: a white plus-sign on
 // transparency.
@@ -194,6 +282,22 @@ int main() {
 
     iron::OpenGLRenderer renderer;
 
+    // Build the sunset cubemap procedurally (no external assets needed
+    // for this milestone; loadCubemap from disk is a follow-up task).
+    std::vector<unsigned char> faceData[6];
+    std::array<const unsigned char*, 6> facePtrs{};
+    for (int i = 0; i < 6; ++i) {
+        generateSunsetFace(i, faceData[i]);
+        facePtrs[i] = faceData[i].data();
+    }
+    iron::CubemapHandle skybox = renderer.createCubemap(
+        kSkyFaceSize, kSkyFaceSize, facePtrs);
+    renderer.setSkybox(skybox);
+    if (skybox == iron::kInvalidHandle) {
+        iron::Log::warn("Sunset cubemap creation failed; sky will be"
+                        " the clear colour");
+    }
+
     const iron::MeshHandle cube = renderer.createMesh(iron::makeCube());
     const iron::ShaderHandle shader =
         renderer.createShader(kVertexShader, kFragmentShader);
@@ -220,6 +324,8 @@ int main() {
     scene.light.direction = iron::Vec3{-0.4f, -1.0f, -0.3f};
     scene.light.color = iron::Vec3{1.0f, 0.97f, 0.9f};
     scene.light.ambient = 0.15f;
+    scene.fog.color = iron::Vec3{0.85f, 0.55f, 0.4f};
+    scene.fog.density = 0.025f;
 
     // Three point lights:
     //   [0] Home lantern  — warm, hovers above the home island near the start.
@@ -496,7 +602,8 @@ int main() {
                                     ? ropeWalker.viewMatrix()
                                     : player.viewMatrix();
         renderer.beginFrame(iron::Vec3{0.5f, 0.7f, 0.9f}, scene.light,
-                            scene.pointLights,
+                            std::span<const iron::PointLight>(scene.pointLights),
+                            scene.fog,
                             view, projection);
         for (const iron::RenderObject& obj : scene.objects) {
             iron::DrawCall call;

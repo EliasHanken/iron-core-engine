@@ -58,6 +58,37 @@ For visible light sources (a lantern bulb, a torch flame), set a non-zero
 adds the emissive term on top of the lit albedo, so the bulb glows regardless
 of incoming light.
 
+## Atmosphere
+
+The engine adds two atmospheric pieces on top of the lighting model.
+
+**Distance fog** blends each lit fragment toward a fog colour with
+weight `1 - exp(-density * distance)`. Picking `density` is how you
+author fog reach: small values mean far visibility, larger values mean
+the world fades into mist. This makes scale and distance *legible* —
+the bridge gap reads as far away because the far island is fog-tinted,
+not because it's small on screen.
+
+**Cubemap skybox** is a real `GL_TEXTURE_CUBE_MAP` sampled in a
+fragment shader that renders a unit cube at the camera position. The
+view matrix's translation is stripped so the sky never moves with the
+player; only rotation affects what's seen. The skybox is drawn at
+`gl_FragDepth = 1.0` (the far plane) so all geometry renders on top of
+it. The sun, clouds, and any other sky detail are part of the painted
+cubemap.
+
+**Horizon fog blend.** Both pieces meet at the horizon: the skybox
+fragment shader also blends toward the fog colour where the view
+direction's vertical component is small (`abs(dir.y)` close to zero).
+This dissolves the otherwise-sharp edge where geometry meets sky into a
+soft band — the trick that makes a fogged scene look "atmospheric"
+rather than "bolted on."
+
+Together, fog density, fog colour, and the cubemap's horizon tint
+should be authored as a set so they coordinate. A future milestone can
+add a screen-space fog post-pass (useful once bloom or tonemapping
+exists) and image-based lighting from the cubemap.
+
 ## Normals and scaling
 
 The normal must be rotated into world space along with the object. The vertex

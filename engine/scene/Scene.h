@@ -1,6 +1,7 @@
 #pragma once
 
 #include "math/Mat4.h"
+#include "render/Fog.h"
 #include "render/Light.h"
 #include "render/Renderer.h"  // for MeshHandle, TextureHandle, kInvalidHandle
 
@@ -17,11 +18,12 @@ struct RenderObject {
 };
 
 // A drawable world: a flat list of objects plus the lights they are lit
-// by — one directional sun, plus zero or more point lights.
+// by — one directional sun, plus zero or more point lights — plus optional fog.
 struct Scene {
     std::vector<RenderObject> objects;
     DirectionalLight light;
     std::vector<PointLight> pointLights;
+    Fog fog;                       // density = 0 by default; fog is disabled
 };
 
 } // namespace iron

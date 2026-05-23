@@ -1,13 +1,16 @@
 #pragma once
 
 #include "render/Renderer.h"
+#include "render/backends/opengl/GLCubemap.h"
 #include "render/backends/opengl/GLDebugLines.h"
+#include "render/backends/opengl/GLSkybox.h"
 #include "render/backends/opengl/GLHud.h"
 #include "render/backends/opengl/GLMesh.h"
 #include "render/backends/opengl/GLShader.h"
 #include "render/backends/opengl/GLShadowMap.h"
 #include "render/backends/opengl/GLTexture.h"
 
+#include <array>
 #include <memory>
 #include <vector>
 
@@ -28,9 +31,14 @@ public:
     TextureHandle whiteTexture() const override;
     ShaderHandle createShader(const std::string& vertexSrc,
                               const std::string& fragmentSrc) override;
+    CubemapHandle createCubemap(
+        int width, int height,
+        const std::array<const unsigned char*, 6>& faces) override;
+    void setSkybox(CubemapHandle sky) override;
 
     void beginFrame(Vec3 clearColor, const DirectionalLight& light,
                     std::span<const PointLight> pointLights,
+                    const Fog& fog,
                     const Mat4& view, const Mat4& projection) override;
     void submit(const DrawCall& call) override;
     void endFrame() override;
@@ -47,15 +55,19 @@ private:
     std::vector<std::unique_ptr<GLMesh>> meshes_;
     std::vector<std::unique_ptr<GLTexture>> textures_;
     std::vector<std::unique_ptr<GLShader>> shaders_;
+    std::vector<std::unique_ptr<GLCubemap>> cubemaps_;
+    CubemapHandle skybox_ = kInvalidHandle;
     TextureHandle fallbackTexture_ = kInvalidHandle;
     DirectionalLight light_{};
     std::vector<PointLight> pointLights_;
+    Fog fog_{};
     std::vector<DrawCall> frameCalls_;
     Vec3 clearColor_{};
     Mat4 view_ = Mat4::identity();
     Mat4 projection_ = Mat4::identity();
     GLDebugLines debugLines_;
     GLHud hud_;
+    GLSkybox skybox_pass_;
     TextureHandle whiteTexture_ = kInvalidHandle;
     GLShadowMap shadowMap_;
     GLShader depthShader_;

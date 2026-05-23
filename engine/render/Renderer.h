@@ -2,11 +2,13 @@
 
 #include "math/Mat4.h"
 #include "math/Vec.h"
+#include "render/Fog.h"
 #include "render/Handles.h"
 #include "render/HudBatch.h"
 #include "render/Light.h"
 #include "scene/Mesh.h"
 
+#include <array>
 #include <span>
 #include <string>
 
@@ -60,12 +62,25 @@ public:
     virtual ShaderHandle createShader(const std::string& vertexSrc,
                                       const std::string& fragmentSrc) = 0;
 
+    // Creates a cubemap texture from six RGBA face arrays. Each face is
+    // `width * height * 4` bytes. Face order: +X, -X, +Y, -Y, +Z, -Z.
+    // Returns kInvalidHandle if any face is null or dimensions invalid.
+    virtual CubemapHandle createCubemap(
+        int width, int height,
+        const std::array<const unsigned char*, 6>& faces) = 0;
+
+    // Registers a cubemap as the skybox for subsequent frames. Pass
+    // kInvalidHandle to disable the skybox.
+    virtual void setSkybox(CubemapHandle sky) = 0;
+
     // --- per-frame ---
     // Begins a frame: records the clear colour, the directional sun, the
-    // per-frame point lights (capped to kMaxPointLights), and the camera
-    // (view + projection). Submitted draw calls are buffered until endFrame.
+    // per-frame point lights (capped to kMaxPointLights), the fog, and the
+    // camera (view + projection). Submitted draw calls are buffered until
+    // endFrame.
     virtual void beginFrame(Vec3 clearColor, const DirectionalLight& light,
                             std::span<const PointLight> pointLights,
+                            const Fog& fog,
                             const Mat4& view, const Mat4& projection) = 0;
     // Records one draw call for this frame. Each DrawCall supplies its model
     // matrix; the camera comes from beginFrame.

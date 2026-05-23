@@ -26,6 +26,7 @@ void main() {}
 
 constexpr int kShadowResolution = 4096;
 constexpr float kShadowBias = 0.0005f;
+constexpr float kHorizonFogBand = 0.25f;
 }  // namespace
 
 namespace iron {
@@ -98,11 +99,33 @@ ShaderHandle OpenGLRenderer::createShader(const std::string& vertexSrc,
     return static_cast<ShaderHandle>(shaders_.size());
 }
 
+CubemapHandle OpenGLRenderer::createCubemap(
+    int width, int height,
+    const std::array<const unsigned char*, 6>& faces) {
+    auto cubemap = std::make_unique<GLCubemap>(width, height, faces);
+    if (!cubemap->isValid()) {
+        Log::warn("OpenGLRenderer::createCubemap failed");
+        return kInvalidHandle;
+    }
+    cubemaps_.push_back(std::move(cubemap));
+    return static_cast<CubemapHandle>(cubemaps_.size());
+}
+
+void OpenGLRenderer::setSkybox(CubemapHandle sky) {
+    if (sky != kInvalidHandle && sky > cubemaps_.size()) {
+        Log::warn("OpenGLRenderer::setSkybox: handle out of range");
+        return;
+    }
+    skybox_ = sky;
+}
+
 void OpenGLRenderer::beginFrame(Vec3 clearColor, const DirectionalLight& light,
                                 std::span<const PointLight> pointLights,
+                                const Fog& fog,
                                 const Mat4& view, const Mat4& projection) {
     clearColor_ = clearColor;
     light_ = light;
+    fog_ = fog;
     view_ = view;
     projection_ = projection;
     frameCalls_.clear();
@@ -197,6 +220,10 @@ void OpenGLRenderer::endFrame() {
             shader.setPointLight(name.c_str(), pointLights_[i]);
         }
 
+        // Per-frame fog (uploaded per draw, mirroring the sun-uniform pattern).
+        shader.setVec3("uFogColor", fog_.color);
+        shader.setFloat("uFogDensity", fog_.density);
+
         // Per-draw emissive.
         shader.setVec3("uEmissive", call.emissive);
 
@@ -217,6 +244,12 @@ void OpenGLRenderer::endFrame() {
     glActiveTexture(GL_TEXTURE1);
     glBindTexture(GL_TEXTURE_2D, 0);
     glActiveTexture(GL_TEXTURE0);
+
+    // --- Pass 3: skybox (only if one is registered) ---
+    if (skybox_ != kInvalidHandle && skybox_ <= cubemaps_.size()) {
+        skybox_pass_.draw(view_, projection_, *cubemaps_[skybox_ - 1],
+                          fog_.color, kHorizonFogBand);
+    }
 }
 
 void OpenGLRenderer::drawLine(Vec3 a, Vec3 b, Vec3 color) {
