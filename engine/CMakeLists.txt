@@ -20,6 +20,7 @@ add_library(ironcore STATIC
   render/backends/opengl/GLDebugLines.cpp
   render/backends/opengl/GLHud.cpp
   render/backends/opengl/GLShadowMap.cpp
+  render/ReflectionPlane.cpp
 )
 
 target_include_directories(ironcore PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
