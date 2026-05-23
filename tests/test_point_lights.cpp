@@ -47,7 +47,9 @@ int main() {
         CHECK_NEAR(c.z, 0.0f);
     }
 
-    // 4. Distance = range/2: contribution is between 0 and the max.
+    // 4. Distance = range/2: falloff is exactly 0.5.
+    // Math: t = 2.5/5 = 0.5, smoothstep = 0.5^2*(3 - 2*0.5) = 0.25*2 = 0.5,
+    // falloff = 1 - 0.5 = 0.5. lambert = 1 (normal perfectly aligned), intensity = 1.
     {
         PointLight light;
         light.position = Vec3{2.5f, 0.0f, 0.0f}; // half of range 5
@@ -57,11 +59,9 @@ int main() {
         Vec3 fragPos{0.0f, 0.0f, 0.0f};
         Vec3 normal{1.0f, 0.0f, 0.0f}; // facing the light
         Vec3 c = pointLightContribution(light, fragPos, normal);
-        // Strictly between 0 (cull) and 1 (full intensity, full lambert,
-        // full falloff — only happens at dist = 0 with normal aligned).
-        CHECK(c.x > 0.0f && c.x < 1.0f);
-        CHECK(c.y > 0.0f && c.y < 1.0f);
-        CHECK(c.z > 0.0f && c.z < 1.0f);
+        CHECK_NEAR(c.x, 0.5f);
+        CHECK_NEAR(c.y, 0.5f);
+        CHECK_NEAR(c.z, 0.5f);
     }
 
     // 5. Normal facing away from the light: contribution is zero.
@@ -75,6 +75,38 @@ int main() {
         Vec3 normal{-1.0f, 0.0f, 0.0f}; // facing AWAY from the light
         Vec3 c = pointLightContribution(light, fragPos, normal);
         CHECK_NEAR(c.x, 0.0f);
+        CHECK_NEAR(c.y, 0.0f);
+        CHECK_NEAR(c.z, 0.0f);
+    }
+
+    // 6. Intensity scales the result: intensity=2 at half-range gives 1.0
+    // (double of test 4's 0.5).
+    {
+        PointLight light;
+        light.position = Vec3{2.5f, 0.0f, 0.0f};
+        light.range = 5.0f;
+        light.intensity = 2.0f;
+        light.color = Vec3{1.0f, 1.0f, 1.0f};
+        Vec3 fragPos{0.0f, 0.0f, 0.0f};
+        Vec3 normal{1.0f, 0.0f, 0.0f};
+        Vec3 c = pointLightContribution(light, fragPos, normal);
+        CHECK_NEAR(c.x, 1.0f);
+        CHECK_NEAR(c.y, 1.0f);
+        CHECK_NEAR(c.z, 1.0f);
+    }
+
+    // 7. Color modulates per channel: pure-red light produces only a red
+    // contribution (green and blue channels are zero).
+    {
+        PointLight light;
+        light.position = Vec3{2.5f, 0.0f, 0.0f};
+        light.range = 5.0f;
+        light.intensity = 1.0f;
+        light.color = Vec3{1.0f, 0.0f, 0.0f};
+        Vec3 fragPos{0.0f, 0.0f, 0.0f};
+        Vec3 normal{1.0f, 0.0f, 0.0f};
+        Vec3 c = pointLightContribution(light, fragPos, normal);
+        CHECK_NEAR(c.x, 0.5f);
         CHECK_NEAR(c.y, 0.0f);
         CHECK_NEAR(c.z, 0.0f);
     }
