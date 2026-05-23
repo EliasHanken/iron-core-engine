@@ -128,7 +128,12 @@ void appendTube(MeshData& out, const std::vector<Vec3>& points, float radius,
             vert.normal = normalize(offset);  // radially outward
             vert.uv = Vec2{static_cast<float>(s) / static_cast<float>(sides),
                            vCoord};
-            vert.tangent = dir;  // along-length direction; U increases along V
+            // Along-length direction. NOTE: for a tube UV layout where U
+            // wraps around the ring and V tiles along length, the strict
+            // TBN tangent is the circumferential direction; `dir` is the
+            // bitangent. Acceptable today because ropes don't sample a
+            // normal map; revisit when they do.
+            vert.tangent = dir;
             out.vertices.push_back(vert);
         }
     }
