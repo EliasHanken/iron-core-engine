@@ -24,12 +24,18 @@ constexpr int kMaxPointLights = 16;
 // `emissive` is added on top of lighting in the lit fragment shader —
 // use it for visible light sources (lantern bulbs, glowing crystals).
 // Default (0,0,0) means "no glow", indistinguishable from before.
+// `reflectivity` (0 = matte, 1 = mirror) controls reflection intensity.
+// `useReflectionPlane` selects the reflection source: true = planar
+// render-to-texture, false = cubemap. Both default to their zero values
+// so every existing draw call keeps its current behaviour.
 struct DrawCall {
     MeshHandle mesh = kInvalidHandle;
     ShaderHandle shader = kInvalidHandle;
     TextureHandle texture = kInvalidHandle;
     Mat4 model = Mat4::identity();
     Vec3 emissive{0.0f, 0.0f, 0.0f};
+    float reflectivity = 0.0f;        // 0 = matte, 1 = mirror
+    bool useReflectionPlane = false;  // true: sample planar RTT; false: cubemap
 };
 
 // Render Hardware Interface: a graphics-API-agnostic renderer. Game code talks

@@ -18,6 +18,7 @@ iron_add_test(test_mesh_builders test_mesh_builders.cpp)
 iron_add_test(test_bitmap_font test_bitmap_font.cpp)
 iron_add_test(test_hud test_hud.cpp)
 iron_add_test(test_point_lights test_point_lights.cpp)
+iron_add_test(test_reflection test_reflection.cpp)
 
 # test_rope_walker compiles the game-side RopeWalker.cpp directly, since it is
 # not part of the ironcore library.
