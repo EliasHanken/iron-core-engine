@@ -11,12 +11,21 @@
 
 namespace iron {
 
+// Maximum point lights uploaded to the lit shader per frame. The lit
+// fragment shader declares a uniform array of this size. Extras passed
+// to beginFrame are silently dropped (and logged once per frame in debug).
+constexpr int kMaxPointLights = 16;
+
 // One thing to draw: a mesh, a shader, a texture, and a model matrix.
+// `emissive` is added on top of lighting in the lit fragment shader —
+// use it for visible light sources (lantern bulbs, glowing crystals).
+// Default (0,0,0) means "no glow", indistinguishable from before.
 struct DrawCall {
     MeshHandle mesh = kInvalidHandle;
     ShaderHandle shader = kInvalidHandle;
     TextureHandle texture = kInvalidHandle;
     Mat4 model = Mat4::identity();
+    Vec3 emissive{0.0f, 0.0f, 0.0f};
 };
 
 // Render Hardware Interface: a graphics-API-agnostic renderer. Game code talks
