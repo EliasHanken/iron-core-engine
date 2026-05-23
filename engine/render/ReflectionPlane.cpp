@@ -10,7 +10,7 @@ Mat4 reflectionMatrix(const ReflectionPlane& plane) {
     const float ny = plane.normal.y;
     const float nz = plane.normal.z;
 
-    Mat4 m;  // default-constructed: all zeros
+    Mat4 m = {};  // zero-init: we fill every non-zero entry explicitly below
     m.at(0, 0) = 1.0f - 2.0f * nx * nx;
     m.at(0, 1) = -2.0f * nx * ny;
     m.at(0, 2) = -2.0f * nx * nz;

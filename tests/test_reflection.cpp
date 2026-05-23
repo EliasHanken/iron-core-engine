@@ -1,3 +1,8 @@
+// NOTE: this test file is intentionally not registered in CMake until
+// Task 3 of the reflections milestone — test 6 below references
+// DrawCall::reflectivity and DrawCall::useReflectionPlane which are
+// added in that task. Once Task 3 lands, this file is wired into the
+// build via tests/CMakeLists.txt.
 #include "test_framework.h"
 #include "math/Mat4.h"
 #include "math/Vec.h"
@@ -59,16 +64,20 @@ int main() {
         CHECK_NEAR(p.z, 4.0f);
     }
 
-    // 5. A point above and its reflection are equidistant from the plane.
+    // 5. Non-axis-aligned plane: normal = (1,1,0)/sqrt(2), d = 0.
+    //    Reflecting (1, 0, 0) should give (0, -1, 0) (the +X axis maps
+    //    to the -Y axis across the plane x + y = 0). Exercises the
+    //    off-diagonal nx*ny terms that axis-aligned tests miss.
     {
+        const float invSqrt2 = 0.70710678f;
         ReflectionPlane plane;
-        plane.normal = Vec3{0.0f, 1.0f, 0.0f};
-        plane.d = -3.0f;
+        plane.normal = Vec3{invSqrt2, invSqrt2, 0.0f};
+        plane.d = 0.0f;
         Mat4 M = reflectionMatrix(plane);
-        Vec4 above = Vec4{0.0f, 5.0f, 0.0f, 1.0f};        // 8 above y=-3
-        Vec4 below = M * above;
-        CHECK_NEAR(above.y - (-3.0f), 8.0f);
-        CHECK_NEAR((-3.0f) - below.y, 8.0f);
+        Vec4 p = M * Vec4{1.0f, 0.0f, 0.0f, 1.0f};
+        CHECK_NEAR(p.x, 0.0f);
+        CHECK_NEAR(p.y, -1.0f);
+        CHECK_NEAR(p.z, 0.0f);
     }
 
     // 6. DrawCall reflection defaults.
