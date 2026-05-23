@@ -58,6 +58,15 @@ public:
     virtual TextureHandle loadTexture(const std::string& path) = 0;
     // A built-in 1x1 opaque-white texture, handy for solid-colour quads.
     virtual TextureHandle whiteTexture() const = 0;
+    // A built-in 1x1 "flat normal" texture (RGB 128,128,255 = +Z in tangent
+    // space). Bound to the normal-map sampler when a draw's material doesn't
+    // set normalMap, so the shader's TBN sample returns the geometric normal
+    // unchanged.
+    virtual TextureHandle flatNormalTexture() const = 0;
+    // A built-in 1x1 "no specular" texture (RGB 0,0,0). Bound when a draw's
+    // material doesn't set specularMap, so the shader's spec contribution
+    // is zero.
+    virtual TextureHandle noSpecularTexture() const = 0;
     // Compiles + links a shader from GLSL source. Returns kInvalidHandle on
     // failure.
     virtual ShaderHandle createShader(const std::string& vertexSrc,

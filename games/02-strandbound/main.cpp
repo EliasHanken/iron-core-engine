@@ -8,6 +8,7 @@
 #include "math/Aabb.h"
 #include "math/Transform.h"
 #include "render/Light.h"
+#include "render/ProceduralTextures.h"
 #include "render/backends/opengl/OpenGLRenderer.h"
 #include "scene/FirstPersonController.h"
 #include "scene/Mesh.h"
@@ -34,6 +35,7 @@ const char* kVertexShader = R"(#version 330 core
 layout(location = 0) in vec3 aPos;
 layout(location = 1) in vec3 aNormal;
 layout(location = 2) in vec2 aUV;
+layout(location = 3) in vec3 aTangent;
 
 uniform mat4 uModel;
 uniform mat4 uView;
@@ -45,11 +47,13 @@ out vec3 vNormal;
 out vec2 vUV;
 out vec4 vLightSpacePos;
 out vec3 vViewPos;                         // NEW
+out vec3 vTangent;
 
 void main() {
     vec4 worldPos4 = uModel * vec4(aPos, 1.0);
     vWorldPos = worldPos4.xyz;
     vNormal = mat3(uModel) * aNormal;
+    vTangent = mat3(uModel) * aTangent;
     vUV = aUV;
     vLightSpacePos = uLightViewProj * worldPos4;
     vec4 viewPos4 = uView * worldPos4;     // NEW (reuse worldPos4)
@@ -68,6 +72,7 @@ in vec3 vNormal;
 in vec2 vUV;
 in vec4 vLightSpacePos;
 in vec3 vViewPos;                          // NEW
+in vec3 vTangent;
 out vec4 FragColor;
 
 uniform sampler2D uTexture;
@@ -95,6 +100,9 @@ uniform float uUvScale;
 uniform int uUseReflectionPlane;
 uniform vec2 uScreenSize;
 uniform vec3 uCameraPos;
+uniform sampler2D uNormalMap;
+uniform sampler2D uSpecularMap;
+uniform float uSpecPower;
 
 // 1.0 = lit, 0.0 = in shadow. PCF: average a 3x3 grid of depth samples so
 // the shadow edge is soft rather than stair-stepped.
@@ -120,12 +128,25 @@ float shadowFactor() {
 }
 
 void main() {
-    vec3 n = normalize(vNormal);
-    float diffuse = max(dot(n, -normalize(uLightDir)), 0.0);
-    float shadow = shadowFactor();
-    vec3 lighting = uLightColor * (diffuse * shadow + uAmbient);
+    vec3 N = normalize(vNormal);
+    vec3 T = normalize(vTangent);
+    vec3 B = cross(N, T);
+    mat3 TBN = mat3(T, B, N);
+    vec3 tangentNormal = texture(uNormalMap, vUV * uUvScale).rgb * 2.0 - 1.0;
+    vec3 perturbedN = normalize(TBN * tangentNormal);
 
-    // Per-point-light contribution.
+    vec3 V = normalize(uCameraPos - vWorldPos);
+    float specMask = texture(uSpecularMap, vUV * uUvScale).r;
+
+    // Sun (directional light) with Blinn-Phong specular.
+    vec3 L = -normalize(uLightDir);
+    vec3 H = normalize(L + V);
+    float sunDiff = max(dot(perturbedN, L), 0.0);
+    float sunSpec = pow(max(dot(perturbedN, H), 0.0), uSpecPower);
+    vec3 lighting = uLightColor * (sunDiff * shadowFactor() + uAmbient
+                  + sunSpec * specMask);
+
+    // Per-point-light contribution with Blinn-Phong specular.
     for (int i = 0; i < uPointLightCount; ++i) {
         vec3 toLight = uPointLights[i].position - vWorldPos;
         float dist = length(toLight);
@@ -133,11 +154,13 @@ void main() {
         // from normalize(0)). Matches CPU mirror in PointLightMath.h.
         if (dist < 0.0001 || dist >= uPointLights[i].range) continue;
 
-        vec3 L = toLight / dist;
-        float lambert = max(dot(n, L), 0.0);
+        vec3 Lp = toLight / dist;
         float falloff = 1.0 - smoothstep(0.0, uPointLights[i].range, dist);
-        lighting += uPointLights[i].color * uPointLights[i].intensity
-                  * lambert * falloff;
+        float diffuse = max(dot(perturbedN, Lp), 0.0);
+        vec3 Hp = normalize(Lp + V);
+        float spec = pow(max(dot(perturbedN, Hp), 0.0), uSpecPower);
+        lighting += uPointLights[i].color * uPointLights[i].intensity * falloff
+                  * (diffuse + spec * specMask);
     }
 
     vec4 texel = texture(uTexture, vUV * uUvScale);
@@ -334,6 +357,14 @@ int main() {
         return 1;
     }
 
+    const auto woodNormalPixels = iron::generateWoodNormalMap(256, 8);
+    const iron::TextureHandle woodNormalTex =
+        renderer.createTexture(256, 256, woodNormalPixels.data());
+
+    const auto metalSpecPixels = iron::generateMetalSpecularMap(256);
+    const iron::TextureHandle metalSpecTex =
+        renderer.createTexture(256, 256, metalSpecPixels.data());
+
     // The solid geometry of the level: a home island, props, a far island,
     // and a pole. One BoxDef list builds both the render objects and the
     // collider list the RopeTool raycasts against.
@@ -345,6 +376,10 @@ int main() {
         {{0.0f, -0.5f, -45.0f},{18.0f, 1.0f, 18.0f}},  // far island
         {{5.0f, 2.0f, 0.0f},   {0.4f, 4.0f, 0.4f}},    // pole
     };
+    // Index of the polished pole in `boxes[]` / `scene.objects` — used to
+    // decide which surface gets the metal specular map. If you reorder
+    // boxes[], update this.
+    constexpr std::size_t kPoleIndex = 5;
 
     iron::Scene scene;
     scene.light.direction = iron::Vec3{-0.4f, -1.0f, -0.3f};
@@ -645,7 +680,8 @@ int main() {
                             std::span<const iron::PointLight>(scene.pointLights),
                             scene.fog,
                             view, projection);
-        for (const iron::RenderObject& obj : scene.objects) {
+        for (std::size_t i = 0; i < scene.objects.size(); ++i) {
+            const iron::RenderObject& obj = scene.objects[i];
             iron::DrawCall call;
             call.mesh = obj.mesh;
             call.shader = shader;
@@ -653,6 +689,14 @@ int main() {
             call.model = obj.transform;
             call.material.reflectivity = 0.08f;
             call.material.useReflectionPlane = false;
+            // Islands and props: wood normal map (plank groove detail).
+            call.material.normalMap = woodNormalTex;
+            // Pole: additionally gets the metal spec map and a higher
+            // specPower for a polished-wood highlight.
+            if (i == kPoleIndex) {
+                call.material.specularMap = metalSpecTex;
+                call.material.specPower = 64.0f;
+            }
             renderer.submit(call);
         }
         // Visible bulb for each point light: a small emissive cube at the

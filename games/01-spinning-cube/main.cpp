@@ -16,15 +16,18 @@ const char* kVertexShader = R"(#version 330 core
 layout(location = 0) in vec3 aPos;
 layout(location = 1) in vec3 aNormal;
 layout(location = 2) in vec2 aUV;
+layout(location = 3) in vec3 aTangent;
 
 uniform mat4 uModel;
 uniform mat4 uView;
 uniform mat4 uProjection;
 
 out vec2 vUV;
+out vec3 vTangent;
 
 void main() {
     vUV = aUV;
+    vTangent = mat3(uModel) * aTangent;
     gl_Position = uProjection * uView * uModel * vec4(aPos, 1.0);
 }
 )";
@@ -34,6 +37,7 @@ void main() {
 // silently no-op; the cube stays unlit textured.
 const char* kFragmentShader = R"(#version 330 core
 in vec2 vUV;
+in vec3 vTangent;
 out vec4 FragColor;
 
 uniform sampler2D uTexture;
@@ -60,6 +64,9 @@ uniform float uUvScale;
 uniform int uUseReflectionPlane;
 uniform vec2 uScreenSize;
 uniform vec3 uCameraPos;
+uniform sampler2D uNormalMap;
+uniform sampler2D uSpecularMap;
+uniform float uSpecPower;
 // (declared but unused — cube stays unlit textured)
 
 void main() {

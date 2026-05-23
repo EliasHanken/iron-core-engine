@@ -142,6 +142,35 @@ fine detail without geometry) and **specular maps + a specular lighting
 term** (bright highlights from glossy patches). Both naturally live on
 `Material`.
 
+## Normal maps and specular
+
+**Normal maps** perturb the shading normal per fragment so flat geometry
+looks bumpy. Each mesh vertex carries a `tangent` direction (the U axis
+of its UV layout); the fragment shader builds a TBN matrix from
+`(tangent, cross(normal, tangent), normal)`, samples the normal map (a
+texture whose RGB encodes a vector in tangent space, decoded as
+`rgb * 2 - 1`), and transforms the sampled normal into world space. All
+the lighting math (sun, point lights, shadows) uses this perturbed
+normal. Default `Material{}` has `normalMap = kInvalidHandle`, and the
+renderer binds a 1×1 flat-normal fallback (`RGB 128,128,255` = +Z in
+tangent space), so undecorated surfaces look identical to before.
+
+**Specular highlights** are Blinn-Phong: for each light, the half-vector
+`H = normalize(L + V)` between the light direction and view direction is
+dotted with the (perturbed) normal, raised to `uSpecPower`, and added to
+the lighting on top of the diffuse term. `Material::specularMap` (a
+greyscale texture sampled on R) masks the highlight per fragment so only
+"glossy patches" reflect brightly; `Material::specPower` (default 32)
+controls the tightness — higher means smaller, sharper highlights.
+
+Together: a wood plank with a normal map and no spec map shows grooved
+diffuse shading; a metal pole with both shows grooves *and* a tight
+highlight that tracks the sun and lanterns.
+
+Future milestones may add PBR (roughness/metalness), parallax mapping,
+or per-light specular tuning. For now: Blinn-Phong, one exponent per
+draw, one greyscale mask.
+
 ## Normals and scaling
 
 The normal must be rotated into world space along with the object. The vertex
