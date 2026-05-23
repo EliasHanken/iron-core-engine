@@ -372,6 +372,7 @@ void OpenGLRenderer::endFrame() {
         // Per-draw reflectivity. uUseReflectionPlane is forced to 0 when no
         // plane is set so reflective surfaces fall back to cubemap.
         shader.setFloat("uReflectivity", call.material.reflectivity);
+        shader.setFloat("uUvScale", call.material.uvScale);
         const int effectiveUsePlane =
             (call.material.useReflectionPlane && reflectionPlane_.has_value()) ? 1 : 0;
         shader.setInt("uUseReflectionPlane", effectiveUsePlane);

@@ -91,6 +91,7 @@ uniform float uFogDensity;                 // NEW
 uniform samplerCube uSkyCubemap;
 uniform sampler2D uReflectionTexture;
 uniform float uReflectivity;
+uniform float uUvScale;
 uniform int uUseReflectionPlane;
 uniform vec2 uScreenSize;
 uniform vec3 uCameraPos;
@@ -139,7 +140,7 @@ void main() {
                   * lambert * falloff;
     }
 
-    vec4 texel = texture(uTexture, vUV);
+    vec4 texel = texture(uTexture, vUV * uUvScale);
     vec3 litColor = texel.rgb * lighting + uEmissive;
     // Distance fog. View-space length equals world-space distance because
     // the view matrix doesn't scale.
@@ -669,6 +670,7 @@ int main() {
         water.model = iron::translation(iron::Vec3{0.0f, -3.0f, 0.0f});
         water.material.reflectivity = 0.85f;
         water.material.useReflectionPlane = true;
+        water.material.uvScale = 0.0f;
         renderer.submit(water);
 
         renderer.endFrame();

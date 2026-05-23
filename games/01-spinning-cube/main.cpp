@@ -56,13 +56,14 @@ uniform float uFogDensity;
 uniform samplerCube uSkyCubemap;
 uniform sampler2D uReflectionTexture;
 uniform float uReflectivity;
+uniform float uUvScale;
 uniform int uUseReflectionPlane;
 uniform vec2 uScreenSize;
 uniform vec3 uCameraPos;
 // (declared but unused — cube stays unlit textured)
 
 void main() {
-    FragColor = texture(uTexture, vUV);
+    FragColor = texture(uTexture, vUV * uUvScale);
 }
 )";
 
