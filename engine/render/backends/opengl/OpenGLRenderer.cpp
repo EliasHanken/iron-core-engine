@@ -100,9 +100,10 @@ ShaderHandle OpenGLRenderer::createShader(const std::string& vertexSrc,
 
 CubemapHandle OpenGLRenderer::createCubemap(
     int width, int height,
-    std::array<const unsigned char*, 6> faces) {
+    const std::array<const unsigned char*, 6>& faces) {
     auto cubemap = std::make_unique<GLCubemap>(width, height, faces);
     if (!cubemap->isValid()) {
+        Log::warn("OpenGLRenderer::createCubemap failed");
         return kInvalidHandle;
     }
     cubemaps_.push_back(std::move(cubemap));
@@ -110,6 +111,10 @@ CubemapHandle OpenGLRenderer::createCubemap(
 }
 
 void OpenGLRenderer::setSkybox(CubemapHandle sky) {
+    if (sky != kInvalidHandle && sky > cubemaps_.size()) {
+        Log::warn("OpenGLRenderer::setSkybox: handle out of range");
+        return;
+    }
     skybox_ = sky;
 }
 

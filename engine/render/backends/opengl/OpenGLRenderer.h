@@ -32,7 +32,7 @@ public:
                               const std::string& fragmentSrc) override;
     CubemapHandle createCubemap(
         int width, int height,
-        std::array<const unsigned char*, 6> faces) override;
+        const std::array<const unsigned char*, 6>& faces) override;
     void setSkybox(CubemapHandle sky) override;
 
     void beginFrame(Vec3 clearColor, const DirectionalLight& light,

@@ -66,7 +66,7 @@ public:
     // Returns kInvalidHandle if any face is null or dimensions invalid.
     virtual CubemapHandle createCubemap(
         int width, int height,
-        std::array<const unsigned char*, 6> faces) = 0;
+        const std::array<const unsigned char*, 6>& faces) = 0;
 
     // Registers a cubemap as the skybox for subsequent frames. Pass
     // kInvalidHandle to disable the skybox.
