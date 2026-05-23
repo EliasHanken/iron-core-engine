@@ -118,6 +118,13 @@ void GLSkybox::draw(const Mat4& view, const Mat4& projection,
     glDrawArrays(GL_TRIANGLES, 0, 36);
     glBindVertexArray(0);
 
+    // Unbind the cubemap on unit 0 so a stale GL_TEXTURE_CUBE_MAP binding
+    // doesn't surprise a future pass that samples that unit. (The lit
+    // pass next frame rebinds a GL_TEXTURE_2D here, which is a different
+    // target slot, so this is hygiene rather than fixing a current bug.)
+    glActiveTexture(GL_TEXTURE0);
+    glBindTexture(GL_TEXTURE_CUBE_MAP, 0);
+
     // Restore state.
     glDepthFunc(savedDepthFunc);
     glDepthMask(savedDepthMask);
