@@ -173,12 +173,19 @@ struct BoxDef {
     iron::Vec3 size;
 };
 
-// A unit cube scaled and translated into place.
-iron::RenderObject makeBox(const BoxDef& def, iron::MeshHandle mesh,
+// Build a fresh box mesh at the requested world-space size. We DON'T share
+// a unit cube and scale via the model matrix any more, because that would
+// keep the mesh's UVs at 0..1 — and the Materials milestone changed
+// appendBox to emit world-space-extent UVs precisely so textures tile
+// naturally on large faces. Per-instance meshes are cheap (24 verts each)
+// and Strandbound only has a handful of boxes.
+iron::RenderObject makeBox(const BoxDef& def, iron::Renderer& renderer,
                            iron::TextureHandle texture) {
+    iron::MeshData data;
+    iron::appendBox(data, iron::Vec3{0.0f, 0.0f, 0.0f}, def.size);
     iron::RenderObject obj;
-    obj.transform = iron::translation(def.center) * iron::scaling(def.size);
-    obj.mesh = mesh;
+    obj.transform = iron::translation(def.center);
+    obj.mesh = renderer.createMesh(data);
     obj.texture = texture;
     return obj;
 }
@@ -318,7 +325,6 @@ int main() {
                         " the clear colour");
     }
 
-    const iron::MeshHandle cube = renderer.createMesh(iron::makeCube());
     const iron::ShaderHandle shader =
         renderer.createShader(kVertexShader, kFragmentShader);
     const iron::TextureHandle texture =
@@ -381,7 +387,7 @@ int main() {
 
     std::vector<iron::Aabb> colliders;
     for (const BoxDef& def : boxes) {
-        scene.objects.push_back(makeBox(def, cube, texture));
+        scene.objects.push_back(makeBox(def, renderer, texture));
         const iron::Vec3 half = def.size * 0.5f;
         colliders.push_back(iron::Aabb{def.center - half, def.center + half});
     }
