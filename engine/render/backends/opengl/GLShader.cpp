@@ -100,4 +100,16 @@ void GLShader::setVec2(const char* name, Vec2 v) const {
     glUniform2f(glGetUniformLocation(program_, name), v.x, v.y);
 }
 
+void GLShader::setPointLight(const char* name, const PointLight& light) const {
+    // Build "<name>.position", "<name>.color", etc. The expected uniform
+    // array sizes are small (max 16 lights * 4 fields = 64 lookups per
+    // frame), so the per-call string concatenation is fine. If profiling
+    // ever shows this hot, we can cache uniform locations.
+    std::string base(name);
+    setVec3((base + ".position").c_str(), light.position);
+    setVec3((base + ".color").c_str(), light.color);
+    setFloat((base + ".intensity").c_str(), light.intensity);
+    setFloat((base + ".range").c_str(), light.range);
+}
+
 } // namespace iron

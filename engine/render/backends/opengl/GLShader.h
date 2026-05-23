@@ -2,6 +2,7 @@
 
 #include "math/Mat4.h"
 #include "math/Vec.h"
+#include "render/Light.h"
 
 #include <cstdint>
 #include <string>
@@ -26,6 +27,11 @@ public:
     void setFloat(const char* name, float value) const;
     void setVec3(const char* name, Vec3 v) const;
     void setVec2(const char* name, Vec2 v) const;
+
+    // Sets the 4 sub-uniforms of a PointLight struct uniform: name + ".position",
+    // name + ".color", name + ".intensity", name + ".range". Used to upload
+    // the lit shader's uPointLights[i] array elements.
+    void setPointLight(const char* name, const PointLight& light) const;
 
 private:
     std::uint32_t program_ = 0;
