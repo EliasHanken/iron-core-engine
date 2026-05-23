@@ -188,6 +188,18 @@ void OpenGLRenderer::endFrame() {
         shader.setVec3("uLightColor", light_.color);
         shader.setFloat("uAmbient", light_.ambient);
 
+        // Upload per-frame point lights. The shader declares a fixed array of
+        // size kMaxPointLights; we set only as many as we have. (Unset slots
+        // are never read because uPointLightCount limits the loop.)
+        shader.setInt("uPointLightCount", static_cast<int>(pointLights_.size()));
+        for (std::size_t i = 0; i < pointLights_.size(); ++i) {
+            std::string name = "uPointLights[" + std::to_string(i) + "]";
+            shader.setPointLight(name.c_str(), pointLights_[i]);
+        }
+
+        // Per-draw emissive.
+        shader.setVec3("uEmissive", call.emissive);
+
         TextureHandle tex = call.texture;
         if (tex == kInvalidHandle) {
             tex = fallbackTexture_;
