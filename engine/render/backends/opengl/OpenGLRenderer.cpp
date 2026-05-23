@@ -25,15 +25,73 @@ void main() {}
 )";
 
 constexpr int kShadowResolution = 4096;
+constexpr int kReflectionResolution = 1024;
 constexpr float kShadowBias = 0.0005f;
 constexpr float kHorizonFogBand = 0.25f;
+
+const char* kReflectionVertexShader = R"(#version 330 core
+layout(location = 0) in vec3 aPos;
+layout(location = 1) in vec3 aNormal;
+layout(location = 2) in vec2 aUV;
+uniform mat4 uModel;
+uniform mat4 uReflectionView;
+uniform mat4 uProjection;
+uniform vec4 uClipPlane;
+out vec3 vWorldPos;
+out vec3 vNormal;
+out vec2 vUV;
+void main() {
+    vec4 worldPos4 = uModel * vec4(aPos, 1.0);
+    vWorldPos = worldPos4.xyz;
+    vNormal = mat3(uModel) * aNormal;
+    vUV = aUV;
+    gl_ClipDistance[0] = dot(worldPos4.xyz, uClipPlane.xyz) + uClipPlane.w;
+    gl_Position = uProjection * uReflectionView * worldPos4;
+}
+)";
+
+const char* kReflectionFragmentShader = R"(#version 330 core
+in vec3 vWorldPos;
+in vec3 vNormal;
+in vec2 vUV;
+out vec4 FragColor;
+uniform sampler2D uTexture;
+uniform vec3 uLightDir;
+uniform vec3 uLightColor;
+uniform float uAmbient;
+void main() {
+    vec3 n = normalize(vNormal);
+    float diffuse = max(dot(n, -normalize(uLightDir)), 0.0);
+    vec3 lighting = uLightColor * (diffuse + uAmbient);
+    vec4 texel = texture(uTexture, vUV);
+    FragColor = vec4(texel.rgb * lighting, texel.a);
+}
+)";
+
+// Extract the camera world position from a rigid view matrix (rotation
+// + translation, no scale). For view = R * T(-camPos), the camera
+// position is -R^T * (translation column).
+iron::Vec3 extractCameraPosition(const iron::Mat4& view) {
+    const float tx = view.at(0, 3);
+    const float ty = view.at(1, 3);
+    const float tz = view.at(2, 3);
+    return iron::Vec3{
+        -(view.at(0, 0) * tx + view.at(1, 0) * ty + view.at(2, 0) * tz),
+        -(view.at(0, 1) * tx + view.at(1, 1) * ty + view.at(2, 1) * tz),
+        -(view.at(0, 2) * tx + view.at(1, 2) * ty + view.at(2, 2) * tz),
+    };
+}
+
 }  // namespace
 
 namespace iron {
 
 OpenGLRenderer::OpenGLRenderer()
     : shadowMap_(kShadowResolution),
-      depthShader_(kDepthVertexSrc, kDepthFragmentSrc) {
+      depthShader_(kDepthVertexSrc, kDepthFragmentSrc),
+      reflectionTarget_(kReflectionResolution),
+      reflectionShader_(kReflectionVertexShader, kReflectionFragmentShader),
+      hud_() {
     glEnable(GL_DEPTH_TEST);
 
     // A 2x2 magenta/black checker used when a real texture fails to load.
@@ -47,6 +105,15 @@ OpenGLRenderer::OpenGLRenderer()
     // textured HUD shader (sample white, tint by vertex colour).
     const unsigned char white[4] = {255, 255, 255, 255};
     whiteTexture_ = createTexture(1, 1, white);
+
+    if (!reflectionTarget_.isValid()) {
+        Log::warn("OpenGLRenderer: reflection target failed to initialise; "
+                  "planar reflections will be skipped");
+    }
+    if (!reflectionShader_.isValid()) {
+        Log::warn("OpenGLRenderer: reflection shader failed to compile; "
+                  "planar reflections will be skipped");
+    }
 }
 
 MeshHandle OpenGLRenderer::createMesh(const MeshData& data) {
@@ -140,6 +207,8 @@ void OpenGLRenderer::beginFrame(Vec3 clearColor, const DirectionalLight& light,
     } else {
         pointLights_.assign(pointLights.begin(), pointLights.end());
     }
+
+    cameraPos_ = extractCameraPosition(view_);
 }
 
 void OpenGLRenderer::submit(const DrawCall& call) {
@@ -157,6 +226,17 @@ void OpenGLRenderer::submit(const DrawCall& call) {
 void OpenGLRenderer::setShadowBounds(Vec3 center, float radius) {
     shadowCenter_ = center;
     shadowRadius_ = radius;
+}
+
+void OpenGLRenderer::setReflectionPlane(Vec3 normal, float d) {
+    ReflectionPlane plane;
+    plane.normal = normal;
+    plane.d = d;
+    reflectionPlane_ = plane;
+}
+
+void OpenGLRenderer::disableReflectionPlane() {
+    reflectionPlane_.reset();
 }
 
 Mat4 OpenGLRenderer::computeLightViewProj() const {
@@ -194,7 +274,63 @@ void OpenGLRenderer::endFrame() {
     glViewport(savedViewport[0], savedViewport[1], savedViewport[2],
                savedViewport[3]);
 
-    // --- Pass 2: the lit scene, sampling the shadow map ---
+    // --- Pass 2: planar reflection (if a plane is set) ---
+    if (reflectionPlane_.has_value() &&
+        reflectionTarget_.isValid() &&
+        reflectionShader_.isValid()) {
+
+        const ReflectionPlane& plane = *reflectionPlane_;
+        const Mat4 mirror = reflectionMatrix(plane);
+        const Mat4 reflectionView = view_ * mirror;
+
+        // Clip-plane vector: (normal, -d). The vertex shader does
+        // dot(pos, n) + w which is positive for points on the same side
+        // as the normal — discard the rest.
+        const Vec4 clipPlane{plane.normal.x, plane.normal.y, plane.normal.z,
+                             -plane.d};
+
+        GLint savedViewport2[4];
+        glGetIntegerv(GL_VIEWPORT, savedViewport2);
+
+        reflectionTarget_.bindForWriting();
+        glViewport(0, 0, reflectionTarget_.resolution(),
+                   reflectionTarget_.resolution());
+        glClearColor(clearColor_.x, clearColor_.y, clearColor_.z, 1.0f);
+        glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+
+        glEnable(GL_CLIP_DISTANCE0);
+
+        reflectionShader_.bind();
+        reflectionShader_.setMat4("uReflectionView", reflectionView);
+        reflectionShader_.setMat4("uProjection", projection_);
+        reflectionShader_.setVec3("uLightDir", light_.direction);
+        reflectionShader_.setVec3("uLightColor", light_.color);
+        reflectionShader_.setFloat("uAmbient", light_.ambient);
+        reflectionShader_.setVec4("uClipPlane", clipPlane);
+        reflectionShader_.setInt("uTexture", 0);
+
+        for (const DrawCall& call : frameCalls_) {
+            if (call.useReflectionPlane) continue;  // skip water itself
+            reflectionShader_.setMat4("uModel", call.model);
+
+            TextureHandle tex = call.texture;
+            if (tex == kInvalidHandle) {
+                tex = fallbackTexture_;
+            }
+            if (tex != kInvalidHandle && tex <= textures_.size()) {
+                textures_[tex - 1]->bind(0);
+            }
+
+            meshes_[call.mesh - 1]->draw();
+        }
+
+        glDisable(GL_CLIP_DISTANCE0);
+        glBindFramebuffer(GL_FRAMEBUFFER, 0);
+        glViewport(savedViewport2[0], savedViewport2[1],
+                   savedViewport2[2], savedViewport2[3]);
+    }
+
+    // --- Pass 3: the lit scene, sampling the shadow map ---
     glClearColor(clearColor_.x, clearColor_.y, clearColor_.z, 1.0f);
     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
     for (const DrawCall& call : frameCalls_) {
@@ -227,6 +363,30 @@ void OpenGLRenderer::endFrame() {
         // Per-draw emissive.
         shader.setVec3("uEmissive", call.emissive);
 
+        // Reflection uniforms — per-frame, but uploaded per-draw to match the
+        // existing sun/fog pattern.
+        shader.setVec3("uCameraPos", cameraPos_);
+        shader.setVec2("uScreenSize", Vec2{static_cast<float>(viewportWidth_),
+                                           static_cast<float>(viewportHeight_)});
+
+        // Per-draw reflectivity. uUseReflectionPlane is forced to 0 when no
+        // plane is set so reflective surfaces fall back to cubemap.
+        shader.setFloat("uReflectivity", call.reflectivity);
+        const int effectiveUsePlane =
+            (call.useReflectionPlane && reflectionPlane_.has_value()) ? 1 : 0;
+        shader.setInt("uUseReflectionPlane", effectiveUsePlane);
+
+        // Bind the cubemap (if any) to unit 2 and the reflection RTT to unit 3.
+        shader.setInt("uSkyCubemap", 2);
+        shader.setInt("uReflectionTexture", 3);
+
+        if (skybox_ != kInvalidHandle && skybox_ <= cubemaps_.size()) {
+            cubemaps_[skybox_ - 1]->bind(2);
+        }
+        if (reflectionPlane_.has_value() && reflectionTarget_.isValid()) {
+            reflectionTarget_.bindColorTexture(3);
+        }
+
         TextureHandle tex = call.texture;
         if (tex == kInvalidHandle) {
             tex = fallbackTexture_;
@@ -243,9 +403,13 @@ void OpenGLRenderer::endFrame() {
     // (HUD, debug lines) must not inherit it. Leave unit 0 active.
     glActiveTexture(GL_TEXTURE1);
     glBindTexture(GL_TEXTURE_2D, 0);
+    glActiveTexture(GL_TEXTURE2);
+    glBindTexture(GL_TEXTURE_CUBE_MAP, 0);
+    glActiveTexture(GL_TEXTURE3);
+    glBindTexture(GL_TEXTURE_2D, 0);
     glActiveTexture(GL_TEXTURE0);
 
-    // --- Pass 3: skybox (only if one is registered) ---
+    // --- Pass 4: skybox (only if one is registered) ---
     if (skybox_ != kInvalidHandle && skybox_ <= cubemaps_.size()) {
         skybox_pass_.draw(view_, projection_, *cubemaps_[skybox_ - 1],
                           fog_.color, kHorizonFogBand);
@@ -295,6 +459,8 @@ void OpenGLRenderer::drawHud(const HudBatch& batch, int framebufferWidth,
 }
 
 void OpenGLRenderer::setViewport(int width, int height) {
+    viewportWidth_ = width;
+    viewportHeight_ = height;
     glViewport(0, 0, width, height);
 }
 

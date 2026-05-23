@@ -84,6 +84,8 @@ void RopeTool::draw(iron::Renderer& renderer) const {
     ropeCall.mesh = ropesMesh_;
     ropeCall.shader = litShader_;
     ropeCall.texture = ropeTexture_;
+    ropeCall.reflectivity = 0.08f;
+    ropeCall.useReflectionPlane = false;
     renderer.submit(ropeCall);
 
     // A small yellow cross at each rope's two endpoints — the mount points.

@@ -27,6 +27,7 @@ public:
     void setInt(const char* name, int value) const;
     void setFloat(const char* name, float value) const;
     void setVec3(const char* name, Vec3 v) const;
+    void setVec4(const char* name, Vec4 v) const;
     void setVec2(const char* name, Vec2 v) const;
 
     // Sets the 4 sub-uniforms of a PointLight struct uniform: name + ".position",

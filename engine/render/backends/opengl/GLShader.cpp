@@ -96,6 +96,12 @@ void GLShader::setVec3(const char* name, Vec3 v) const {
     glUniform3f(glGetUniformLocation(program_, name), v.x, v.y, v.z);
 }
 
+void GLShader::setVec4(const char* name, Vec4 v) const {
+    if (!program_) return;
+    const GLint loc = glGetUniformLocation(program_, name);
+    glUniform4f(loc, v.x, v.y, v.z, v.w);
+}
+
 void GLShader::setVec2(const char* name, Vec2 v) const {
     if (!program_) return;
     glUniform2f(glGetUniformLocation(program_, name), v.x, v.y);

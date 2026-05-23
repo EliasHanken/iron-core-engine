@@ -121,4 +121,42 @@ MeshData makeCube() {
     return data;
 }
 
+void appendQuad(MeshData& out, Vec3 center, Vec2 size, Vec3 normal) {
+    // Pick an in-plane "u" axis. Try +X first (most common for ground
+    // planes); if normal is parallel to +X, fall back to +Y. Project
+    // the hint into the plane and normalise.
+    Vec3 uHint = (std::fabs(normal.x) < 0.99f) ? Vec3{1.0f, 0.0f, 0.0f}
+                                               : Vec3{0.0f, 1.0f, 0.0f};
+    const float along = dot(uHint, normal);
+    Vec3 u = uHint - normal * along;
+    const float ulen = std::sqrt(dot(u, u));
+    u = (ulen > 1e-6f) ? u * (1.0f / ulen) : Vec3{1.0f, 0.0f, 0.0f};
+    // v is in-plane, perpendicular to u; (u, v, normal) is right-handed.
+    Vec3 v = cross(normal, u);
+
+    const float hx = size.x * 0.5f;
+    const float hy = size.y * 0.5f;
+
+    // Four corners, CCW seen from +normal: -u-v, +u-v, +u+v, -u+v
+    Vec3 p0 = center + u * (-hx) + v * (-hy);
+    Vec3 p1 = center + u * ( hx) + v * (-hy);
+    Vec3 p2 = center + u * ( hx) + v * ( hy);
+    Vec3 p3 = center + u * (-hx) + v * ( hy);
+
+    const std::uint32_t base = static_cast<std::uint32_t>(out.vertices.size());
+
+    out.vertices.push_back(Vertex{p0, normal, Vec2{0.0f, 0.0f}});
+    out.vertices.push_back(Vertex{p1, normal, Vec2{1.0f, 0.0f}});
+    out.vertices.push_back(Vertex{p2, normal, Vec2{1.0f, 1.0f}});
+    out.vertices.push_back(Vertex{p3, normal, Vec2{0.0f, 1.0f}});
+
+    // Two triangles: (0, 1, 2) and (0, 2, 3).
+    out.indices.push_back(base + 0);
+    out.indices.push_back(base + 1);
+    out.indices.push_back(base + 2);
+    out.indices.push_back(base + 0);
+    out.indices.push_back(base + 2);
+    out.indices.push_back(base + 3);
+}
+
 } // namespace iron

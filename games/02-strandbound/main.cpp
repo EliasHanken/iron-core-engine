@@ -88,6 +88,12 @@ uniform int uPointLightCount;
 uniform vec3 uEmissive;
 uniform vec3 uFogColor;                    // NEW
 uniform float uFogDensity;                 // NEW
+uniform samplerCube uSkyCubemap;
+uniform sampler2D uReflectionTexture;
+uniform float uReflectivity;
+uniform int uUseReflectionPlane;
+uniform vec2 uScreenSize;
+uniform vec3 uCameraPos;
 
 // 1.0 = lit, 0.0 = in shadow. PCF: average a 3x3 grid of depth samples so
 // the shadow edge is soft rather than stair-stepped.
@@ -140,6 +146,19 @@ void main() {
     float distFromCamera = length(vViewPos);
     float fogFactor = 1.0 - exp(-uFogDensity * distFromCamera);
     vec3 finalColor = mix(litColor, uFogColor, fogFactor);
+    if (uReflectivity > 0.0) {
+        vec3 reflectColor;
+        if (uUseReflectionPlane == 1) {
+            vec2 reflectUV = gl_FragCoord.xy / uScreenSize;
+            reflectColor = texture(uReflectionTexture, reflectUV).rgb;
+        } else {
+            vec3 viewDir = normalize(vWorldPos - uCameraPos);
+            vec3 reflectDir = reflect(viewDir, normalize(vNormal));
+            reflectColor = texture(uSkyCubemap, reflectDir).rgb;
+        }
+        finalColor = mix(finalColor, reflectColor, uReflectivity);
+    }
+
     FragColor = vec4(finalColor, texel.a);
 }
 )";
@@ -387,6 +406,16 @@ int main() {
     // The shadow map must cover the whole level — both islands and the gap.
     renderer.setShadowBounds(iron::Vec3{0.0f, 0.0f, -22.0f}, 36.0f);
 
+    // Water plane at y = -3, below the floating islands.
+    renderer.setReflectionPlane(iron::Vec3{0.0f, 1.0f, 0.0f}, -3.0f);
+
+    iron::MeshData waterData;
+    iron::appendQuad(waterData,
+                     iron::Vec3{0.0f, 0.0f, 0.0f},   // local origin
+                     iron::Vec2{60.0f, 60.0f},        // 60x60 spans all islands
+                     iron::Vec3{0.0f, 1.0f, 0.0f});   // upward-facing
+    const iron::MeshHandle waterMesh = renderer.createMesh(waterData);
+
     // Footing: only the two islands provide solid ground. The far island is
     // also the win target.
     const std::vector<iron::Aabb> islandColliders = {colliders[0],
@@ -417,6 +446,10 @@ int main() {
 
     const int screenW = app.window().width();
     const int screenH = app.window().height();
+
+    // Inform the renderer of the viewport size so it can upload uScreenSize
+    // for the planar reflection's screen-space UV calculation.
+    renderer.setViewport(screenW, screenH);
 
     iron::Hud hud;
     // A dark backing panel behind the rope-count readout.
@@ -611,6 +644,8 @@ int main() {
             call.shader = shader;
             call.texture = obj.texture;
             call.model = obj.transform;
+            call.reflectivity = 0.08f;
+            call.useReflectionPlane = false;
             renderer.submit(call);
         }
         // Visible bulb for each point light: a small emissive cube at the
@@ -625,6 +660,17 @@ int main() {
             renderer.submit(bulb);
         }
         ropeTool.draw(renderer);
+
+        // Water plane: reflects the planar RTT.
+        iron::DrawCall water;
+        water.mesh = waterMesh;
+        water.shader = shader;
+        water.texture = renderer.whiteTexture();
+        water.model = iron::translation(iron::Vec3{0.0f, -3.0f, 0.0f});
+        water.reflectivity = 0.85f;
+        water.useReflectionPlane = true;
+        renderer.submit(water);
+
         renderer.endFrame();
 
         // Overlays, drawn on top of the finished lit scene.

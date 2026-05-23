@@ -39,4 +39,13 @@ void appendBox(MeshData& out, Vec3 center, Vec3 size);
 void appendTube(MeshData& out, const std::vector<Vec3>& points, float radius,
                 int sides);
 
+// Appends a single flat quad to `out`. size.x and size.y are the two
+// in-plane dimensions. The in-plane axes are derived from `normal`: u
+// is the +X world axis projected onto the plane (or +Y if normal is
+// near-parallel to +X), and v = cross(normal, u). For normal={0,1,0}
+// this gives u=+X and v=-Z. All four vertices share `normal` and UVs
+// span 0..1 across the quad (u→s, v→t). Two triangles, CCW seen from
+// +normal.
+void appendQuad(MeshData& out, Vec3 center, Vec2 size, Vec3 normal);
+
 } // namespace iron

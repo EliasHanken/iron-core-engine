@@ -89,6 +89,37 @@ should be authored as a set so they coordinate. A future milestone can
 add a screen-space fog post-pass (useful once bloom or tonemapping
 exists) and image-based lighting from the cubemap.
 
+## Reflections
+
+Two complementary reflection mechanisms share one material API.
+`DrawCall::reflectivity` (0..1) decides how much reflected colour is
+mixed on top of the fogged lit colour; `DrawCall::useReflectionPlane`
+decides where the reflected colour comes from.
+
+**Cubemap environment reflections** (`useReflectionPlane = false`) sample
+the active sky cubemap based on the reflected view direction
+(`reflect(viewDir, normal)`). Every surface picks up a hint of the sky —
+on the sunset Strandbound scene this manifests as a warm orange glaze.
+Cheap (one extra texture sample) and runs everywhere automatically.
+
+**Planar reflections** (`useReflectionPlane = true`) sample a separate
+off-screen render target in screen space. Once per frame, the renderer
+mirrors the camera across a single registered world-space plane and
+re-renders the scene with a clip plane that discards everything below
+the mirror surface. The mirrored render runs through a simplified
+shader (sun + ambient + texture only — no shadows, no point lights, no
+fog, no emissive, no recursion) so it's cheap relative to the full lit
+pass. Reflective surfaces above the plane sample this RTT to show real
+geometry. Strandbound uses one plane for water around the floating
+islands.
+
+The two mechanisms cooperate: a surface that fails to find planar
+reflections (no plane set, or the plane is invalid) falls back
+automatically to the cubemap. Future milestones may add Fresnel
+(view-angle-dependent reflectivity), roughness (blurred reflections),
+or multiple planes — for now, one plane, one reflectivity scalar per
+draw call.
+
 ## Normals and scaling
 
 The normal must be rotated into world space along with the object. The vertex

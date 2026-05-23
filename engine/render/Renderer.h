@@ -6,6 +6,7 @@
 #include "render/Handles.h"
 #include "render/HudBatch.h"
 #include "render/Light.h"
+#include "render/ReflectionPlane.h"
 #include "scene/Mesh.h"
 
 #include <array>
@@ -24,12 +25,18 @@ constexpr int kMaxPointLights = 16;
 // `emissive` is added on top of lighting in the lit fragment shader —
 // use it for visible light sources (lantern bulbs, glowing crystals).
 // Default (0,0,0) means "no glow", indistinguishable from before.
+// `reflectivity` (0 = matte, 1 = mirror) controls reflection intensity.
+// `useReflectionPlane` selects the reflection source: true = planar
+// render-to-texture, false = cubemap. Both default to their zero values
+// so every existing draw call keeps its current behaviour.
 struct DrawCall {
     MeshHandle mesh = kInvalidHandle;
     ShaderHandle shader = kInvalidHandle;
     TextureHandle texture = kInvalidHandle;
     Mat4 model = Mat4::identity();
     Vec3 emissive{0.0f, 0.0f, 0.0f};
+    float reflectivity = 0.0f;        // 0 = matte, 1 = mirror
+    bool useReflectionPlane = false;  // true: sample planar RTT; false: cubemap
 };
 
 // Render Hardware Interface: a graphics-API-agnostic renderer. Game code talks
@@ -92,6 +99,16 @@ public:
     // shadow map must cover. A game calls this once with bounds enclosing its
     // scene.
     virtual void setShadowBounds(Vec3 center, float radius) = 0;
+
+    // Sets the world-space reflection plane. The renderer will run an extra
+    // planar reflection pass per frame using a camera mirrored across this
+    // plane; any DrawCall with useReflectionPlane=true samples the resulting
+    // texture in screen space. `normal` must be unit length.
+    virtual void setReflectionPlane(Vec3 normal, float d) = 0;
+
+    // Disables the planar reflection pass. Reflective DrawCalls with
+    // useReflectionPlane=true will then sample the cubemap as a fallback.
+    virtual void disableReflectionPlane() = 0;
 
     // --- debug drawing ---
     // Queue a coloured 3D line segment for the current frame.
