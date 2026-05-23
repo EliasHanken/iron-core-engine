@@ -6,6 +6,7 @@
 #include "render/Handles.h"
 #include "render/HudBatch.h"
 #include "render/Light.h"
+#include "render/ReflectionPlane.h"
 #include "scene/Mesh.h"
 
 #include <array>
@@ -98,6 +99,16 @@ public:
     // shadow map must cover. A game calls this once with bounds enclosing its
     // scene.
     virtual void setShadowBounds(Vec3 center, float radius) = 0;
+
+    // Sets the world-space reflection plane. The renderer will run an extra
+    // planar reflection pass per frame using a camera mirrored across this
+    // plane; any DrawCall with useReflectionPlane=true samples the resulting
+    // texture in screen space. `normal` must be unit length.
+    virtual void setReflectionPlane(Vec3 normal, float d) = 0;
+
+    // Disables the planar reflection pass. Reflective DrawCalls with
+    // useReflectionPlane=true will then sample the cubemap as a fallback.
+    virtual void disableReflectionPlane() = 0;
 
     // --- debug drawing ---
     // Queue a coloured 3D line segment for the current frame.

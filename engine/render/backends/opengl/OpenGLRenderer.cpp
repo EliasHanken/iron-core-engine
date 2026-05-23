@@ -159,6 +159,17 @@ void OpenGLRenderer::setShadowBounds(Vec3 center, float radius) {
     shadowRadius_ = radius;
 }
 
+void OpenGLRenderer::setReflectionPlane(Vec3 normal, float d) {
+    ReflectionPlane plane;
+    plane.normal = normal;
+    plane.d = d;
+    reflectionPlane_ = plane;
+}
+
+void OpenGLRenderer::disableReflectionPlane() {
+    reflectionPlane_.reset();
+}
+
 Mat4 OpenGLRenderer::computeLightViewProj() const {
     // The directional light's "camera": an orthographic box aimed along the
     // light direction, sized to enclose the shadow bounds sphere.

@@ -12,6 +12,7 @@
 
 #include <array>
 #include <memory>
+#include <optional>
 #include <vector>
 
 namespace iron {
@@ -43,6 +44,8 @@ public:
     void submit(const DrawCall& call) override;
     void endFrame() override;
     void setShadowBounds(Vec3 center, float radius) override;
+    void setReflectionPlane(Vec3 normal, float d) override;
+    void disableReflectionPlane() override;
 
     void drawLine(Vec3 a, Vec3 b, Vec3 color) override;
     void flushDebugLines(const Mat4& view, const Mat4& projection) override;
@@ -73,6 +76,7 @@ private:
     GLShader depthShader_;
     Vec3 shadowCenter_{0.0f, 0.0f, 0.0f};
     float shadowRadius_ = 50.0f;
+    std::optional<ReflectionPlane> reflectionPlane_;
 
     Mat4 computeLightViewProj() const;
 };
