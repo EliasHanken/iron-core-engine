@@ -642,10 +642,10 @@ int main() {
             iron::DrawCall call;
             call.mesh = obj.mesh;
             call.shader = shader;
-            call.texture = obj.texture;
+            call.material.texture = obj.texture;
             call.model = obj.transform;
-            call.reflectivity = 0.08f;
-            call.useReflectionPlane = false;
+            call.material.reflectivity = 0.08f;
+            call.material.useReflectionPlane = false;
             renderer.submit(call);
         }
         // Visible bulb for each point light: a small emissive cube at the
@@ -654,9 +654,9 @@ int main() {
             iron::DrawCall bulb;
             bulb.mesh    = bulbMesh;
             bulb.shader  = shader;
-            bulb.texture = renderer.whiteTexture();
+            bulb.material.texture = renderer.whiteTexture();
             bulb.model   = iron::translation(light.position);
-            bulb.emissive = light.color;
+            bulb.material.emissive = light.color;
             renderer.submit(bulb);
         }
         ropeTool.draw(renderer);
@@ -665,10 +665,10 @@ int main() {
         iron::DrawCall water;
         water.mesh = waterMesh;
         water.shader = shader;
-        water.texture = renderer.whiteTexture();
+        water.material.texture = renderer.whiteTexture();
         water.model = iron::translation(iron::Vec3{0.0f, -3.0f, 0.0f});
-        water.reflectivity = 0.85f;
-        water.useReflectionPlane = true;
+        water.material.reflectivity = 0.85f;
+        water.material.useReflectionPlane = true;
         renderer.submit(water);
 
         renderer.endFrame();

@@ -133,7 +133,7 @@ int main() {
         iron::DrawCall call;
         call.mesh = cube;
         call.shader = shader;
-        call.texture = texture;
+        call.material.texture = texture;
         call.model = model;
         renderer.submit(call);
 
