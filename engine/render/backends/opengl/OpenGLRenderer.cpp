@@ -107,7 +107,7 @@ void OpenGLRenderer::beginFrame(Vec3 clearColor, const DirectionalLight& light,
     projection_ = projection;
     frameCalls_.clear();
 
-    // Cap the list at kMaxPointLights; warn once per frame on overflow.
+    // Cap the list at kMaxPointLights; warn every frame an overflow happens.
     pointLights_.clear();
     if (pointLights.size() > static_cast<std::size_t>(kMaxPointLights)) {
         Log::warn("OpenGLRenderer: %zu point lights submitted, capping at %d",

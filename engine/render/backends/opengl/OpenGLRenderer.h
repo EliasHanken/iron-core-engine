@@ -9,7 +9,6 @@
 #include "render/backends/opengl/GLTexture.h"
 
 #include <memory>
-#include <span>
 #include <vector>
 
 namespace iron {

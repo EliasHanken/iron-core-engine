@@ -14,7 +14,8 @@ namespace iron {
 
 // Maximum point lights uploaded to the lit shader per frame. The lit
 // fragment shader declares a uniform array of this size. Extras passed
-// to beginFrame are silently dropped (and logged once per frame in debug).
+// to beginFrame are silently dropped (the renderer logs a warning each
+// overflow frame).
 constexpr int kMaxPointLights = 16;
 
 // One thing to draw: a mesh, a shader, a texture, and a model matrix.
