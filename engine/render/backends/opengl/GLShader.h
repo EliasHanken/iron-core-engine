@@ -8,6 +8,8 @@
 
 namespace iron {
 
+struct PointLight;
+
 // Compiles and links a GLSL vertex + fragment shader into a GL program.
 // On failure, isValid() is false and the compile/link error is logged.
 class GLShader {
@@ -26,6 +28,11 @@ public:
     void setFloat(const char* name, float value) const;
     void setVec3(const char* name, Vec3 v) const;
     void setVec2(const char* name, Vec2 v) const;
+
+    // Sets the 4 sub-uniforms of a PointLight struct uniform: name + ".position",
+    // name + ".color", name + ".intensity", name + ".range". Used to upload
+    // the lit shader's uPointLights[i] array elements.
+    void setPointLight(const char* name, const PointLight& light) const;
 
 private:
     std::uint32_t program_ = 0;

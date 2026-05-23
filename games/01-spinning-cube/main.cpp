@@ -7,6 +7,7 @@
 #include "scene/Mesh.h"
 
 #include <GLFW/glfw3.h>
+#include <span>
 
 namespace {
 
@@ -28,12 +29,27 @@ void main() {
 }
 )";
 
-// Fragment shader: sample the texture.
+// Fragment shader: sample the texture. New point-light/emissive uniforms
+// declared so the renderer's uploads find targets; the cube stays unlit.
 const char* kFragmentShader = R"(#version 330 core
 in vec2 vUV;
 out vec4 FragColor;
 
 uniform sampler2D uTexture;
+
+// New uniforms for the multi-light + emissive lit-pass uploads. The
+// spinning-cube shader does not actually use them (it stays unlit
+// textured); they exist so the renderer's per-frame uniform uploads
+// target real shader locations rather than silently no-op.
+struct PointLight {
+    vec3 position;
+    vec3 color;
+    float intensity;
+    float range;
+};
+uniform PointLight uPointLights[16];
+uniform int uPointLightCount;
+uniform vec3 uEmissive;
 
 void main() {
     FragColor = texture(uTexture, vUV);
@@ -98,7 +114,9 @@ int main() {
             iron::rotationY(spin) * iron::rotationX(spin * 0.5f);
 
         renderer.beginFrame(iron::Vec3{0.1f, 0.12f, 0.15f},
-                            iron::DirectionalLight{}, camera.viewMatrix(),
+                            iron::DirectionalLight{},
+                            std::span<const iron::PointLight>{},
+                            camera.viewMatrix(),
                             camera.projectionMatrix());
 
         iron::DrawCall call;

@@ -16,11 +16,12 @@ struct RenderObject {
     TextureHandle texture = kInvalidHandle;
 };
 
-// A drawable world: a flat list of objects plus the light they are lit by.
-// Deliberately not an entity-component system — just a struct and a vector.
+// A drawable world: a flat list of objects plus the lights they are lit
+// by — one directional sun, plus zero or more point lights.
 struct Scene {
     std::vector<RenderObject> objects;
     DirectionalLight light;
+    std::vector<PointLight> pointLights;
 };
 
 } // namespace iron

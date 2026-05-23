@@ -7,16 +7,27 @@
 #include "render/Light.h"
 #include "scene/Mesh.h"
 
+#include <span>
 #include <string>
 
 namespace iron {
 
+// Maximum point lights uploaded to the lit shader per frame. The lit
+// fragment shader declares a uniform array of this size. Extras passed
+// to beginFrame are silently dropped (the renderer logs a warning each
+// overflow frame).
+constexpr int kMaxPointLights = 16;
+
 // One thing to draw: a mesh, a shader, a texture, and a model matrix.
+// `emissive` is added on top of lighting in the lit fragment shader —
+// use it for visible light sources (lantern bulbs, glowing crystals).
+// Default (0,0,0) means "no glow", indistinguishable from before.
 struct DrawCall {
     MeshHandle mesh = kInvalidHandle;
     ShaderHandle shader = kInvalidHandle;
     TextureHandle texture = kInvalidHandle;
     Mat4 model = Mat4::identity();
+    Vec3 emissive{0.0f, 0.0f, 0.0f};
 };
 
 // Render Hardware Interface: a graphics-API-agnostic renderer. Game code talks
@@ -50,10 +61,11 @@ public:
                                       const std::string& fragmentSrc) = 0;
 
     // --- per-frame ---
-    // Begins a frame: records the clear colour, the directional light, and the
-    // camera (view + projection). Submitted draw calls are buffered until
-    // endFrame.
+    // Begins a frame: records the clear colour, the directional sun, the
+    // per-frame point lights (capped to kMaxPointLights), and the camera
+    // (view + projection). Submitted draw calls are buffered until endFrame.
     virtual void beginFrame(Vec3 clearColor, const DirectionalLight& light,
+                            std::span<const PointLight> pointLights,
                             const Mat4& view, const Mat4& projection) = 0;
     // Records one draw call for this frame. Each DrawCall supplies its model
     // matrix; the camera comes from beginFrame.

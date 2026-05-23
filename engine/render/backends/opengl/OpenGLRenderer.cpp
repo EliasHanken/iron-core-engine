@@ -6,6 +6,7 @@
 #include <glad/gl.h>
 
 #include <cmath>
+#include <cstddef>
 
 namespace {
 // The shadow pass renders only depth. The vertex stage transforms by the
@@ -98,12 +99,24 @@ ShaderHandle OpenGLRenderer::createShader(const std::string& vertexSrc,
 }
 
 void OpenGLRenderer::beginFrame(Vec3 clearColor, const DirectionalLight& light,
+                                std::span<const PointLight> pointLights,
                                 const Mat4& view, const Mat4& projection) {
     clearColor_ = clearColor;
     light_ = light;
     view_ = view;
     projection_ = projection;
     frameCalls_.clear();
+
+    // Cap the list at kMaxPointLights; warn every frame an overflow happens.
+    pointLights_.clear();
+    if (pointLights.size() > static_cast<std::size_t>(kMaxPointLights)) {
+        Log::warn("OpenGLRenderer: %zu point lights submitted, capping at %d",
+                  pointLights.size(), kMaxPointLights);
+        pointLights_.assign(pointLights.begin(),
+                            pointLights.begin() + kMaxPointLights);
+    } else {
+        pointLights_.assign(pointLights.begin(), pointLights.end());
+    }
 }
 
 void OpenGLRenderer::submit(const DrawCall& call) {
@@ -174,6 +187,18 @@ void OpenGLRenderer::endFrame() {
         shader.setVec3("uLightDir", light_.direction);
         shader.setVec3("uLightColor", light_.color);
         shader.setFloat("uAmbient", light_.ambient);
+
+        // Upload per-frame point lights. The shader declares a fixed array of
+        // size kMaxPointLights; we set only as many as we have. (Unset slots
+        // are never read because uPointLightCount limits the loop.)
+        shader.setInt("uPointLightCount", static_cast<int>(pointLights_.size()));
+        for (std::size_t i = 0; i < pointLights_.size(); ++i) {
+            std::string name = "uPointLights[" + std::to_string(i) + "]";
+            shader.setPointLight(name.c_str(), pointLights_[i]);
+        }
+
+        // Per-draw emissive.
+        shader.setVec3("uEmissive", call.emissive);
 
         TextureHandle tex = call.texture;
         if (tex == kInvalidHandle) {

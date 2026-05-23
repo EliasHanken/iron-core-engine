@@ -30,6 +30,7 @@ public:
                               const std::string& fragmentSrc) override;
 
     void beginFrame(Vec3 clearColor, const DirectionalLight& light,
+                    std::span<const PointLight> pointLights,
                     const Mat4& view, const Mat4& projection) override;
     void submit(const DrawCall& call) override;
     void endFrame() override;
@@ -48,6 +49,7 @@ private:
     std::vector<std::unique_ptr<GLShader>> shaders_;
     TextureHandle fallbackTexture_ = kInvalidHandle;
     DirectionalLight light_{};
+    std::vector<PointLight> pointLights_;
     std::vector<DrawCall> frameCalls_;
     Vec3 clearColor_{};
     Mat4 view_ = Mat4::identity();

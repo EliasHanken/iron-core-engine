@@ -1,6 +1,7 @@
 #include "render/backends/opengl/GLShader.h"
 
 #include "core/Log.h"
+#include "render/Light.h"
 
 #include <glad/gl.h>
 
@@ -98,6 +99,19 @@ void GLShader::setVec3(const char* name, Vec3 v) const {
 void GLShader::setVec2(const char* name, Vec2 v) const {
     if (!program_) return;
     glUniform2f(glGetUniformLocation(program_, name), v.x, v.y);
+}
+
+void GLShader::setPointLight(const char* name, const PointLight& light) const {
+    if (!program_) return;
+    // Build "<name>.position", "<name>.color", etc. The expected uniform
+    // array sizes are small (max 16 lights * 4 fields = 64 lookups per
+    // frame), so the per-call string concatenation is fine. If profiling
+    // ever shows this hot, we can cache uniform locations.
+    std::string base(name);
+    setVec3((base + ".position").c_str(), light.position);
+    setVec3((base + ".color").c_str(), light.color);
+    setFloat((base + ".intensity").c_str(), light.intensity);
+    setFloat((base + ".range").c_str(), light.range);
 }
 
 } // namespace iron
