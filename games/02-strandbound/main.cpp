@@ -8,6 +8,7 @@
 #include "math/Aabb.h"
 #include "math/Transform.h"
 #include "render/Light.h"
+#include "render/ProceduralTextures.h"
 #include "render/backends/opengl/OpenGLRenderer.h"
 #include "scene/FirstPersonController.h"
 #include "scene/Mesh.h"
@@ -356,6 +357,14 @@ int main() {
         return 1;
     }
 
+    const auto woodNormalPixels = iron::generateWoodNormalMap(256, 8);
+    const iron::TextureHandle woodNormalTex =
+        renderer.createTexture(256, 256, woodNormalPixels.data());
+
+    const auto metalSpecPixels = iron::generateMetalSpecularMap(256);
+    const iron::TextureHandle metalSpecTex =
+        renderer.createTexture(256, 256, metalSpecPixels.data());
+
     // The solid geometry of the level: a home island, props, a far island,
     // and a pole. One BoxDef list builds both the render objects and the
     // collider list the RopeTool raycasts against.
@@ -367,6 +376,10 @@ int main() {
         {{0.0f, -0.5f, -45.0f},{18.0f, 1.0f, 18.0f}},  // far island
         {{5.0f, 2.0f, 0.0f},   {0.4f, 4.0f, 0.4f}},    // pole
     };
+    // Index of the polished pole in `boxes[]` / `scene.objects` — used to
+    // decide which surface gets the metal specular map. If you reorder
+    // boxes[], update this.
+    constexpr std::size_t kPoleIndex = 5;
 
     iron::Scene scene;
     scene.light.direction = iron::Vec3{-0.4f, -1.0f, -0.3f};
@@ -667,7 +680,8 @@ int main() {
                             std::span<const iron::PointLight>(scene.pointLights),
                             scene.fog,
                             view, projection);
-        for (const iron::RenderObject& obj : scene.objects) {
+        for (std::size_t i = 0; i < scene.objects.size(); ++i) {
+            const iron::RenderObject& obj = scene.objects[i];
             iron::DrawCall call;
             call.mesh = obj.mesh;
             call.shader = shader;
@@ -675,6 +689,14 @@ int main() {
             call.model = obj.transform;
             call.material.reflectivity = 0.08f;
             call.material.useReflectionPlane = false;
+            // Islands and props: wood normal map (plank groove detail).
+            call.material.normalMap = woodNormalTex;
+            // Pole: additionally gets the metal spec map and a higher
+            // specPower for a polished-wood highlight.
+            if (i == kPoleIndex) {
+                call.material.specularMap = metalSpecTex;
+                call.material.specPower = 64.0f;
+            }
             renderer.submit(call);
         }
         // Visible bulb for each point light: a small emissive cube at the
