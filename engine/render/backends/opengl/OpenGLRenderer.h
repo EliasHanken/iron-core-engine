@@ -31,6 +31,8 @@ public:
                                 const unsigned char* rgba) override;
     TextureHandle loadTexture(const std::string& path) override;
     TextureHandle whiteTexture() const override;
+    TextureHandle flatNormalTexture() const override;
+    TextureHandle noSpecularTexture() const override;
     ShaderHandle createShader(const std::string& vertexSrc,
                               const std::string& fragmentSrc) override;
     CubemapHandle createCubemap(
@@ -73,6 +75,8 @@ private:
     GLHud hud_;
     GLSkybox skybox_pass_;
     TextureHandle whiteTexture_ = kInvalidHandle;
+    TextureHandle flatNormalTexture_ = kInvalidHandle;
+    TextureHandle noSpecularTexture_ = kInvalidHandle;
     GLShadowMap shadowMap_;
     GLShader depthShader_;
     GLReflectionTarget reflectionTarget_;

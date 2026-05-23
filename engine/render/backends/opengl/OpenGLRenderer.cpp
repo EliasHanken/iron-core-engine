@@ -106,6 +106,15 @@ OpenGLRenderer::OpenGLRenderer()
     const unsigned char white[4] = {255, 255, 255, 255};
     whiteTexture_ = createTexture(1, 1, white);
 
+    {
+        const unsigned char flatNormalPixels[4] = {128, 128, 255, 255};
+        flatNormalTexture_ = createTexture(1, 1, flatNormalPixels);
+    }
+    {
+        const unsigned char noSpecPixels[4] = {0, 0, 0, 255};
+        noSpecularTexture_ = createTexture(1, 1, noSpecPixels);
+    }
+
     if (!reflectionTarget_.isValid()) {
         Log::warn("OpenGLRenderer: reflection target failed to initialise; "
                   "planar reflections will be skipped");
@@ -142,6 +151,14 @@ TextureHandle OpenGLRenderer::createTexture(int width, int height,
 
 TextureHandle OpenGLRenderer::whiteTexture() const {
     return whiteTexture_;
+}
+
+TextureHandle OpenGLRenderer::flatNormalTexture() const {
+    return flatNormalTexture_;
+}
+
+TextureHandle OpenGLRenderer::noSpecularTexture() const {
+    return noSpecularTexture_;
 }
 
 TextureHandle OpenGLRenderer::loadTexture(const std::string& path) {

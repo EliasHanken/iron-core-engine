@@ -15,6 +15,9 @@ struct Material {
     float reflectivity = 0.0f;
     bool useReflectionPlane = false;
     float uvScale = 1.0f;  // multiplies sampled UV; >1 = tile more times
+    TextureHandle normalMap = kInvalidHandle;
+    TextureHandle specularMap = kInvalidHandle;
+    float specPower = 32.0f;
 };
 
 } // namespace iron
