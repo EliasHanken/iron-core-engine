@@ -120,9 +120,11 @@ void OpenGLRenderer::setSkybox(CubemapHandle sky) {
 
 void OpenGLRenderer::beginFrame(Vec3 clearColor, const DirectionalLight& light,
                                 std::span<const PointLight> pointLights,
+                                const Fog& fog,
                                 const Mat4& view, const Mat4& projection) {
     clearColor_ = clearColor;
     light_ = light;
+    fog_ = fog;
     view_ = view;
     projection_ = projection;
     frameCalls_.clear();
@@ -216,6 +218,10 @@ void OpenGLRenderer::endFrame() {
             std::string name = "uPointLights[" + std::to_string(i) + "]";
             shader.setPointLight(name.c_str(), pointLights_[i]);
         }
+
+        // Per-frame fog (uploaded per draw, mirroring the sun-uniform pattern).
+        shader.setVec3("uFogColor", fog_.color);
+        shader.setFloat("uFogDensity", fog_.density);
 
         // Per-draw emissive.
         shader.setVec3("uEmissive", call.emissive);

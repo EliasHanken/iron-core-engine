@@ -37,6 +37,7 @@ public:
 
     void beginFrame(Vec3 clearColor, const DirectionalLight& light,
                     std::span<const PointLight> pointLights,
+                    const Fog& fog,
                     const Mat4& view, const Mat4& projection) override;
     void submit(const DrawCall& call) override;
     void endFrame() override;
@@ -58,6 +59,7 @@ private:
     TextureHandle fallbackTexture_ = kInvalidHandle;
     DirectionalLight light_{};
     std::vector<PointLight> pointLights_;
+    Fog fog_{};
     std::vector<DrawCall> frameCalls_;
     Vec3 clearColor_{};
     Mat4 view_ = Mat4::identity();

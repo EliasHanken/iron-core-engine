@@ -496,7 +496,8 @@ int main() {
                                     ? ropeWalker.viewMatrix()
                                     : player.viewMatrix();
         renderer.beginFrame(iron::Vec3{0.5f, 0.7f, 0.9f}, scene.light,
-                            scene.pointLights,
+                            std::span<const iron::PointLight>(scene.pointLights),
+                            scene.fog,
                             view, projection);
         for (const iron::RenderObject& obj : scene.objects) {
             iron::DrawCall call;

@@ -29,18 +29,19 @@ void main() {
 }
 )";
 
-// Fragment shader: sample the texture. New point-light/emissive uniforms
-// declared so the renderer's uploads find targets; the cube stays unlit.
+// Fragment shader: sample the texture. Lit-pass uniforms declared so the
+// renderer's per-frame uploads target real shader locations rather than
+// silently no-op; the cube stays unlit textured.
 const char* kFragmentShader = R"(#version 330 core
 in vec2 vUV;
 out vec4 FragColor;
 
 uniform sampler2D uTexture;
 
-// New uniforms for the multi-light + emissive lit-pass uploads. The
-// spinning-cube shader does not actually use them (it stays unlit
-// textured); they exist so the renderer's per-frame uniform uploads
-// target real shader locations rather than silently no-op.
+// Uniforms for the lit-pass uploads. The spinning-cube shader does not
+// actually use them (it stays unlit textured); they exist so the
+// renderer's per-frame uniform uploads target real shader locations
+// rather than silently no-op.
 struct PointLight {
     vec3 position;
     vec3 color;
@@ -50,6 +51,8 @@ struct PointLight {
 uniform PointLight uPointLights[16];
 uniform int uPointLightCount;
 uniform vec3 uEmissive;
+uniform vec3 uFogColor;
+uniform float uFogDensity;
 
 void main() {
     FragColor = texture(uTexture, vUV);
@@ -116,6 +119,7 @@ int main() {
         renderer.beginFrame(iron::Vec3{0.1f, 0.12f, 0.15f},
                             iron::DirectionalLight{},
                             std::span<const iron::PointLight>{},
+                            iron::Fog{},
                             camera.viewMatrix(),
                             camera.projectionMatrix());
 
