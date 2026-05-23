@@ -168,5 +168,21 @@ int main() {
         }
     }
 
+    // appendBox produces non-zero tangents on every vertex, orthogonal to normal.
+    {
+        MeshData m;
+        appendBox(m, Vec3{0.0f, 0.0f, 0.0f}, Vec3{2.0f, 2.0f, 2.0f});
+        for (const auto& v : m.vertices) {
+            const float tlen = std::sqrt(v.tangent.x*v.tangent.x +
+                                          v.tangent.y*v.tangent.y +
+                                          v.tangent.z*v.tangent.z);
+            CHECK(tlen > 0.5f);  // non-zero, near unit length
+            const float dotTN = v.tangent.x*v.normal.x +
+                                v.tangent.y*v.normal.y +
+                                v.tangent.z*v.normal.z;
+            CHECK_NEAR(dotTN, 0.0f);
+        }
+    }
+
     return iron_test_result();
 }

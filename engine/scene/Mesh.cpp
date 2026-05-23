@@ -39,11 +39,30 @@ void appendBox(MeshData& out, Vec3 center, Vec3 size) {
         {size.x, size.y},  // -Z
     };
 
+    // Per-face tangent: the world-space direction in which U increases.
+    // Derived by inspecting the corner winding and UV assignment above:
+    //   +X: corners vary in Z, UV[0..1] go 0..uExt as z goes +→- ... wait,
+    //       corner[0]=(z=-0.5), corner[1]=(z=+0.5) → U increases with +Z.
+    //   -X: corner[0]=(z=+0.5), corner[1]=(z=-0.5) → U increases with -Z.
+    //   +Y: corner[0]=(x=-0.5), corner[1]=(x=+0.5) → U increases with +X.
+    //   -Y: corner[0]=(x=-0.5), corner[1]=(x=+0.5) → U increases with +X.
+    //   +Z: corner[0]=(x=-0.5), corner[1]=(x=+0.5) → U increases with +X.
+    //   -Z: corner[0]=(x=+0.5), corner[1]=(x=-0.5) → U increases with -X.
+    const Vec3 faceTangents[6] = {
+        { 0.0f, 0.0f,  1.0f},  // +X: U axis is +Z
+        { 0.0f, 0.0f, -1.0f},  // -X: U axis is -Z
+        { 1.0f, 0.0f,  0.0f},  // +Y: U axis is +X
+        { 1.0f, 0.0f,  0.0f},  // -Y: U axis is +X
+        { 1.0f, 0.0f,  0.0f},  // +Z: U axis is +X
+        {-1.0f, 0.0f,  0.0f},  // -Z: U axis is -X
+    };
+
     for (int fi = 0; fi < 6; ++fi) {
         const Face& face = faces[fi];
         const float uExt = faceExtents[fi].x;
         const float vExt = faceExtents[fi].y;
         const Vec2 uvs[4] = {{0.0f, 0.0f}, {uExt, 0.0f}, {uExt, vExt}, {0.0f, vExt}};
+        const Vec3 tangent = faceTangents[fi];
 
         const auto base = static_cast<std::uint32_t>(out.vertices.size());
         for (int i = 0; i < 4; ++i) {
@@ -53,7 +72,7 @@ void appendBox(MeshData& out, Vec3 center, Vec3 size) {
                 center.y + c.y * size.y,
                 center.z + c.z * size.z,
             };
-            out.vertices.push_back(Vertex{position, face.normal, uvs[i]});
+            out.vertices.push_back(Vertex{position, face.normal, uvs[i], tangent});
         }
         // Two triangles per quad: (0,1,2) and (0,2,3).
         out.indices.push_back(base + 0);
@@ -109,6 +128,7 @@ void appendTube(MeshData& out, const std::vector<Vec3>& points, float radius,
             vert.normal = normalize(offset);  // radially outward
             vert.uv = Vec2{static_cast<float>(s) / static_cast<float>(sides),
                            vCoord};
+            vert.tangent = dir;  // along-length direction; U increases along V
             out.vertices.push_back(vert);
         }
     }
@@ -163,10 +183,10 @@ void appendQuad(MeshData& out, Vec3 center, Vec2 size, Vec3 normal) {
 
     const std::uint32_t base = static_cast<std::uint32_t>(out.vertices.size());
 
-    out.vertices.push_back(Vertex{p0, normal, Vec2{0.0f,   0.0f}});
-    out.vertices.push_back(Vertex{p1, normal, Vec2{size.x, 0.0f}});
-    out.vertices.push_back(Vertex{p2, normal, Vec2{size.x, size.y}});
-    out.vertices.push_back(Vertex{p3, normal, Vec2{0.0f,   size.y}});
+    out.vertices.push_back(Vertex{p0, normal, Vec2{0.0f,   0.0f},   u});
+    out.vertices.push_back(Vertex{p1, normal, Vec2{size.x, 0.0f},   u});
+    out.vertices.push_back(Vertex{p2, normal, Vec2{size.x, size.y}, u});
+    out.vertices.push_back(Vertex{p3, normal, Vec2{0.0f,   size.y}, u});
 
     // Two triangles: (0, 1, 2) and (0, 2, 3).
     out.indices.push_back(base + 0);

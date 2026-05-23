@@ -25,7 +25,7 @@ GLMesh::GLMesh(const MeshData& data)
                  static_cast<GLsizeiptr>(data.indices.size() * sizeof(std::uint32_t)),
                  data.indices.data(), GL_DYNAMIC_DRAW);
 
-    // Vertex layout matches struct Vertex: position, normal, uv.
+    // Vertex layout matches struct Vertex: position, normal, uv, tangent.
     glEnableVertexAttribArray(0);
     glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, sizeof(Vertex),
                           reinterpret_cast<void*>(offsetof(Vertex, position)));
@@ -35,6 +35,9 @@ GLMesh::GLMesh(const MeshData& data)
     glEnableVertexAttribArray(2);
     glVertexAttribPointer(2, 2, GL_FLOAT, GL_FALSE, sizeof(Vertex),
                           reinterpret_cast<void*>(offsetof(Vertex, uv)));
+    glEnableVertexAttribArray(3);
+    glVertexAttribPointer(3, 3, GL_FLOAT, GL_FALSE, sizeof(Vertex),
+                          reinterpret_cast<void*>(offsetof(Vertex, tangent)));
 
     glBindVertexArray(0);
 }

@@ -7,11 +7,13 @@
 
 namespace iron {
 
-// One vertex of a renderable mesh: position, normal, and texture coordinate.
+// One vertex of a renderable mesh: position, normal, texture coordinate, and
+// tangent (the in-plane direction matching the U axis of the UV layout).
 struct Vertex {
     Vec3 position;
     Vec3 normal;
     Vec2 uv;
+    Vec3 tangent;
 };
 
 // CPU-side mesh: vertices plus an index list describing triangles. Uploaded to
