@@ -6,8 +6,8 @@
 namespace iron {
 
 // Wraps a GL_TEXTURE_CUBE_MAP. Six RGBA8 face textures (all the same
-// size); GL_CLAMP_TO_EDGE on S/T/R; linear min/mag filtering. Face
-// order matches OpenGL: +X, -X, +Y, -Y, +Z, -Z.
+// size, square); GL_CLAMP_TO_EDGE on S/T/R; linear min/mag filtering.
+// Face order matches OpenGL: +X, -X, +Y, -Y, +Z, -Z.
 class GLCubemap {
 public:
     // Uploads six faces. Each face is `width * height * 4` bytes RGBA.

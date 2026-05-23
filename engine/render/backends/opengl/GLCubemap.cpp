@@ -19,6 +19,10 @@ GLCubemap::GLCubemap(int width, int height,
         Log::error("GLCubemap: invalid dimensions %dx%d", width, height);
         return;
     }
+    if (width != height) {
+        Log::error("GLCubemap: faces must be square, got %dx%d", width, height);
+        return;
+    }
 
     glGenTextures(1, &id_);
     glBindTexture(GL_TEXTURE_CUBE_MAP, id_);
