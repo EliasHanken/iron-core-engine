@@ -2,12 +2,13 @@
 
 #include "math/Mat4.h"
 #include "math/Vec.h"
-#include "render/Light.h"
 
 #include <cstdint>
 #include <string>
 
 namespace iron {
+
+struct PointLight;
 
 // Compiles and links a GLSL vertex + fragment shader into a GL program.
 // On failure, isValid() is false and the compile/link error is logged.

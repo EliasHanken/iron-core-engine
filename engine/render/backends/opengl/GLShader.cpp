@@ -1,6 +1,7 @@
 #include "render/backends/opengl/GLShader.h"
 
 #include "core/Log.h"
+#include "render/Light.h"
 
 #include <glad/gl.h>
 
@@ -101,6 +102,7 @@ void GLShader::setVec2(const char* name, Vec2 v) const {
 }
 
 void GLShader::setPointLight(const char* name, const PointLight& light) const {
+    if (!program_) return;
     // Build "<name>.position", "<name>.color", etc. The expected uniform
     // array sizes are small (max 16 lights * 4 fields = 64 lookups per
     // frame), so the per-call string concatenation is fine. If profiling
