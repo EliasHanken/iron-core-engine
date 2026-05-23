@@ -68,6 +68,20 @@ void main() {
 }
 )";
 
+// Extract the camera world position from a rigid view matrix (rotation
+// + translation, no scale). For view = R * T(-camPos), the camera
+// position is -R^T * (translation column).
+iron::Vec3 extractCameraPosition(const iron::Mat4& view) {
+    const float tx = view.at(0, 3);
+    const float ty = view.at(1, 3);
+    const float tz = view.at(2, 3);
+    return iron::Vec3{
+        -(view.at(0, 0) * tx + view.at(1, 0) * ty + view.at(2, 0) * tz),
+        -(view.at(0, 1) * tx + view.at(1, 1) * ty + view.at(2, 1) * tz),
+        -(view.at(0, 2) * tx + view.at(1, 2) * ty + view.at(2, 2) * tz),
+    };
+}
+
 }  // namespace
 
 namespace iron {
@@ -193,6 +207,8 @@ void OpenGLRenderer::beginFrame(Vec3 clearColor, const DirectionalLight& light,
     } else {
         pointLights_.assign(pointLights.begin(), pointLights.end());
     }
+
+    cameraPos_ = extractCameraPosition(view_);
 }
 
 void OpenGLRenderer::submit(const DrawCall& call) {
@@ -347,6 +363,30 @@ void OpenGLRenderer::endFrame() {
         // Per-draw emissive.
         shader.setVec3("uEmissive", call.emissive);
 
+        // Reflection uniforms — per-frame, but uploaded per-draw to match the
+        // existing sun/fog pattern.
+        shader.setVec3("uCameraPos", cameraPos_);
+        shader.setVec2("uScreenSize", Vec2{static_cast<float>(viewportWidth_),
+                                           static_cast<float>(viewportHeight_)});
+
+        // Per-draw reflectivity. uUseReflectionPlane is forced to 0 when no
+        // plane is set so reflective surfaces fall back to cubemap.
+        shader.setFloat("uReflectivity", call.reflectivity);
+        const int effectiveUsePlane =
+            (call.useReflectionPlane && reflectionPlane_.has_value()) ? 1 : 0;
+        shader.setInt("uUseReflectionPlane", effectiveUsePlane);
+
+        // Bind the cubemap (if any) to unit 2 and the reflection RTT to unit 3.
+        shader.setInt("uSkyCubemap", 2);
+        shader.setInt("uReflectionTexture", 3);
+
+        if (skybox_ != kInvalidHandle && skybox_ <= cubemaps_.size()) {
+            cubemaps_[skybox_ - 1]->bind(2);
+        }
+        if (reflectionPlane_.has_value() && reflectionTarget_.isValid()) {
+            reflectionTarget_.bindColorTexture(3);
+        }
+
         TextureHandle tex = call.texture;
         if (tex == kInvalidHandle) {
             tex = fallbackTexture_;
@@ -362,6 +402,10 @@ void OpenGLRenderer::endFrame() {
     // Leave unit 1 unbound — the shadow map is the renderer's; overlays
     // (HUD, debug lines) must not inherit it. Leave unit 0 active.
     glActiveTexture(GL_TEXTURE1);
+    glBindTexture(GL_TEXTURE_2D, 0);
+    glActiveTexture(GL_TEXTURE2);
+    glBindTexture(GL_TEXTURE_CUBE_MAP, 0);
+    glActiveTexture(GL_TEXTURE3);
     glBindTexture(GL_TEXTURE_2D, 0);
     glActiveTexture(GL_TEXTURE0);
 
@@ -415,6 +459,8 @@ void OpenGLRenderer::drawHud(const HudBatch& batch, int framebufferWidth,
 }
 
 void OpenGLRenderer::setViewport(int width, int height) {
+    viewportWidth_ = width;
+    viewportHeight_ = height;
     glViewport(0, 0, width, height);
 }
 

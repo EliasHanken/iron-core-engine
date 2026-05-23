@@ -80,6 +80,9 @@ private:
     Vec3 shadowCenter_{0.0f, 0.0f, 0.0f};
     float shadowRadius_ = 50.0f;
     std::optional<ReflectionPlane> reflectionPlane_;
+    Vec3 cameraPos_{};
+    int viewportWidth_ = 0;
+    int viewportHeight_ = 0;
 
     Mat4 computeLightViewProj() const;
 };
