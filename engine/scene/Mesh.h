@@ -39,4 +39,11 @@ void appendBox(MeshData& out, Vec3 center, Vec3 size);
 void appendTube(MeshData& out, const std::vector<Vec3>& points, float radius,
                 int sides);
 
+// Appends a single flat quad to `out`. The quad has size `size.x` along
+// the local X axis and `size.y` along the local Z axis (a top-facing
+// rectangle if `normal` is {0,1,0}). All four vertices share `normal`
+// and UVs span 0..1 across the quad. Two triangles, CCW seen from
+// +normal.
+void appendQuad(MeshData& out, Vec3 center, Vec2 size, Vec3 normal);
+
 } // namespace iron
