@@ -1,8 +1,3 @@
-// NOTE: this test file is intentionally not registered in CMake until
-// Task 3 of the reflections milestone — test 6 below references
-// DrawCall::reflectivity and DrawCall::useReflectionPlane which are
-// added in that task. Once Task 3 lands, this file is wired into the
-// build via tests/CMakeLists.txt.
 #include "test_framework.h"
 #include "math/Mat4.h"
 #include "math/Vec.h"
