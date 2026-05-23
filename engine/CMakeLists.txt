@@ -20,6 +20,7 @@ add_library(ironcore STATIC
   render/backends/opengl/GLDebugLines.cpp
   render/backends/opengl/GLHud.cpp
   render/backends/opengl/GLShadowMap.cpp
+  render/backends/opengl/GLReflectionTarget.cpp
   render/ReflectionPlane.cpp
 )
 
