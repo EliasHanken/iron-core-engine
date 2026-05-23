@@ -46,6 +46,24 @@ int main() {
         CHECK_NEAR(maxX, 7.0f);
     }
 
+    // appendBox writes world-space-extent UVs so textures tile rather than
+    // stretch. For size {4,2,1} the per-face UV maxes are:
+    //   +X/-X: (size.z=1, size.y=2)  →  max V contributes 2
+    //   +Y/-Y: (size.x=4, size.z=1)  →  max U contributes 4
+    //   +Z/-Z: (size.x=4, size.y=2)  →  max U=4, max V=2
+    // So the largest U across all 24 verts is 4, largest V is 2.
+    {
+        MeshData m;
+        appendBox(m, Vec3{0.0f, 0.0f, 0.0f}, Vec3{4.0f, 2.0f, 1.0f});
+        float maxU = 0.0f, maxV = 0.0f;
+        for (const auto& v : m.vertices) {
+            if (v.uv.x > maxU) maxU = v.uv.x;
+            if (v.uv.y > maxV) maxV = v.uv.y;
+        }
+        CHECK_NEAR(maxU, 4.0f);
+        CHECK_NEAR(maxV, 2.0f);
+    }
+
     // appendTube over 3 points with 6 sides: 3*(6+1) = 21 vertices (each ring
     // has a duplicated seam vertex), (3-1)*6*6 = 72 indices.
     {

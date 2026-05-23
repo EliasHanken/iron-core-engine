@@ -24,9 +24,27 @@ void appendBox(MeshData& out, Vec3 center, Vec3 size) {
         {{ 0, 0,-1}, {{ 0.5f,-0.5f,-0.5f},{-0.5f,-0.5f,-0.5f},{-0.5f, 0.5f,-0.5f},{ 0.5f, 0.5f,-0.5f}}},
     };
 
-    const Vec2 uvs[4] = {{0, 0}, {1, 0}, {1, 1}, {0, 1}};
+    // Per-face UV extents in world units: U and V span the face's two
+    // in-plane dimensions so textures tile rather than stretch.
+    // Face order matches the `faces` array above:
+    //   0(+X),1(-X): in-plane axes are Z and Y → (size.z, size.y)
+    //   2(+Y),3(-Y): in-plane axes are X and Z → (size.x, size.z)
+    //   4(+Z),5(-Z): in-plane axes are X and Y → (size.x, size.y)
+    const Vec2 faceExtents[6] = {
+        {size.z, size.y},  // +X
+        {size.z, size.y},  // -X
+        {size.x, size.z},  // +Y
+        {size.x, size.z},  // -Y
+        {size.x, size.y},  // +Z
+        {size.x, size.y},  // -Z
+    };
 
-    for (const Face& face : faces) {
+    for (int fi = 0; fi < 6; ++fi) {
+        const Face& face = faces[fi];
+        const float uExt = faceExtents[fi].x;
+        const float vExt = faceExtents[fi].y;
+        const Vec2 uvs[4] = {{0.0f, 0.0f}, {uExt, 0.0f}, {uExt, vExt}, {0.0f, vExt}};
+
         const auto base = static_cast<std::uint32_t>(out.vertices.size());
         for (int i = 0; i < 4; ++i) {
             const Vec3 c = face.corners[i];
@@ -145,10 +163,10 @@ void appendQuad(MeshData& out, Vec3 center, Vec2 size, Vec3 normal) {
 
     const std::uint32_t base = static_cast<std::uint32_t>(out.vertices.size());
 
-    out.vertices.push_back(Vertex{p0, normal, Vec2{0.0f, 0.0f}});
-    out.vertices.push_back(Vertex{p1, normal, Vec2{1.0f, 0.0f}});
-    out.vertices.push_back(Vertex{p2, normal, Vec2{1.0f, 1.0f}});
-    out.vertices.push_back(Vertex{p3, normal, Vec2{0.0f, 1.0f}});
+    out.vertices.push_back(Vertex{p0, normal, Vec2{0.0f,   0.0f}});
+    out.vertices.push_back(Vertex{p1, normal, Vec2{size.x, 0.0f}});
+    out.vertices.push_back(Vertex{p2, normal, Vec2{size.x, size.y}});
+    out.vertices.push_back(Vertex{p3, normal, Vec2{0.0f,   size.y}});
 
     // Two triangles: (0, 1, 2) and (0, 2, 3).
     out.indices.push_back(base + 0);
