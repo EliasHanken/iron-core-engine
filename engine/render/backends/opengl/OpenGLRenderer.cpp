@@ -409,7 +409,7 @@ void OpenGLRenderer::endFrame() {
     glBindTexture(GL_TEXTURE_2D, 0);
     glActiveTexture(GL_TEXTURE0);
 
-    // --- Pass 3: skybox (only if one is registered) ---
+    // --- Pass 4: skybox (only if one is registered) ---
     if (skybox_ != kInvalidHandle && skybox_ <= cubemaps_.size()) {
         skybox_pass_.draw(view_, projection_, *cubemaps_[skybox_ - 1],
                           fog_.color, kHorizonFogBand);
