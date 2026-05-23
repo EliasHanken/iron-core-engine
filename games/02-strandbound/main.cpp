@@ -26,8 +26,8 @@
 
 namespace {
 
-// Vertex shader: MVP transform; passes world-space normal, UV, and the
-// light-space position (for the shadow lookup) through.
+// Vertex shader: MVP transform; passes world-space position, normal, UV, and
+// the light-space position (for the shadow lookup) through.
 const char* kVertexShader = R"(#version 330 core
 layout(location = 0) in vec3 aPos;
 layout(location = 1) in vec3 aNormal;
@@ -38,21 +38,27 @@ uniform mat4 uView;
 uniform mat4 uProjection;
 uniform mat4 uLightViewProj;
 
+out vec3 vWorldPos;
 out vec3 vNormal;
 out vec2 vUV;
 out vec4 vLightSpacePos;
 
 void main() {
+    vec4 worldPos4 = uModel * vec4(aPos, 1.0);
+    vWorldPos = worldPos4.xyz;
     vNormal = mat3(uModel) * aNormal;
     vUV = aUV;
-    vLightSpacePos = uLightViewProj * uModel * vec4(aPos, 1.0);
-    gl_Position = uProjection * uView * uModel * vec4(aPos, 1.0);
+    vLightSpacePos = uLightViewProj * worldPos4;
+    gl_Position = uProjection * uView * worldPos4;
 }
 )";
 
-// Fragment shader: Lambert diffuse from one directional light + ambient, with
-// the diffuse term darkened where the fragment is in shadow.
+// Fragment shader: Lambert diffuse from one directional light + ambient plus
+// per-point-light contributions, with the directional diffuse term darkened
+// where the fragment is in shadow. Emissive is added on top for visible
+// light sources (e.g. the lantern bulbs).
 const char* kFragmentShader = R"(#version 330 core
+in vec3 vWorldPos;
 in vec3 vNormal;
 in vec2 vUV;
 in vec4 vLightSpacePos;
@@ -64,6 +70,16 @@ uniform vec3 uLightDir;
 uniform vec3 uLightColor;
 uniform float uAmbient;
 uniform float uShadowBias;
+
+struct PointLight {
+    vec3 position;
+    vec3 color;
+    float intensity;
+    float range;
+};
+uniform PointLight uPointLights[16];
+uniform int uPointLightCount;
+uniform vec3 uEmissive;
 
 // 1.0 = lit, 0.0 = in shadow. PCF: average a 3x3 grid of depth samples so
 // the shadow edge is soft rather than stair-stepped.
@@ -93,8 +109,25 @@ void main() {
     float diffuse = max(dot(n, -normalize(uLightDir)), 0.0);
     float shadow = shadowFactor();
     vec3 lighting = uLightColor * (diffuse * shadow + uAmbient);
+
+    // Per-point-light contribution.
+    for (int i = 0; i < uPointLightCount; ++i) {
+        vec3 toLight = uPointLights[i].position - vWorldPos;
+        float dist = length(toLight);
+        // Cull: outside range OR degenerate zero-distance (avoid NaN
+        // from normalize(0)). Matches CPU mirror in PointLightMath.h.
+        if (dist < 0.0001 || dist >= uPointLights[i].range) continue;
+
+        vec3 L = toLight / dist;
+        float lambert = max(dot(n, L), 0.0);
+        float falloff = 1.0 - smoothstep(0.0, uPointLights[i].range, dist);
+        lighting += uPointLights[i].color * uPointLights[i].intensity
+                  * lambert * falloff;
+    }
+
     vec4 texel = texture(uTexture, vUV);
-    FragColor = vec4(texel.rgb * lighting, texel.a);
+    // Emissive added on top of the lit albedo. Texture alpha preserved.
+    FragColor = vec4(texel.rgb * lighting + uEmissive, texel.a);
 }
 )";
 
@@ -186,7 +219,39 @@ int main() {
     iron::Scene scene;
     scene.light.direction = iron::Vec3{-0.4f, -1.0f, -0.3f};
     scene.light.color = iron::Vec3{1.0f, 0.97f, 0.9f};
-    scene.light.ambient = 0.25f;
+    scene.light.ambient = 0.15f;
+
+    // Three point lights:
+    //   [0] Home lantern  — warm, hovers above the home island near the start.
+    //       Home island top is at y=0; place 1 unit above.
+    //   [1] Bridge marker — cool, hovers above the pole top (pole top at y=4).
+    //       Pole center is {5, 2, 0}; top at y=4; place 0.5 above = y=4.5.
+    //   [2] Far-island goal — bright warm, above the centre of the far island.
+    //       Far island top is at y=0; place 1 unit above.
+    {
+        iron::PointLight home;
+        home.position  = iron::Vec3{0.0f, 1.0f, 5.0f};
+        home.color     = iron::Vec3{1.0f, 0.7f, 0.35f};
+        home.intensity = 1.5f;
+        home.range     = 8.0f;
+        scene.pointLights.push_back(home);
+    }
+    {
+        iron::PointLight bridge;
+        bridge.position  = iron::Vec3{5.0f, 4.5f, 0.0f};
+        bridge.color     = iron::Vec3{0.35f, 0.6f, 1.0f};
+        bridge.intensity = 1.2f;
+        bridge.range     = 6.0f;
+        scene.pointLights.push_back(bridge);
+    }
+    {
+        iron::PointLight goal;
+        goal.position  = iron::Vec3{0.0f, 1.0f, -45.0f};
+        goal.color     = iron::Vec3{1.0f, 0.85f, 0.55f};
+        goal.intensity = 2.0f;
+        goal.range     = 10.0f;
+        scene.pointLights.push_back(goal);
+    }
 
     std::vector<iron::Aabb> colliders;
     for (const BoxDef& def : boxes) {
@@ -201,6 +266,14 @@ int main() {
     player.setPosition(iron::Vec3{0.0f, 0.0f, 7.0f});
     player.setMoveSpeed(6.0f);
     player.setMouseSensitivity(0.0025f);
+
+    // A small cube used as the visible bulb for each point light. Shared across
+    // all three sources; positioned at each light's position each frame.
+    iron::MeshData bulbData;
+    iron::appendBox(bulbData,
+                    iron::Vec3{0.0f, 0.0f, 0.0f},
+                    iron::Vec3{0.3f, 0.3f, 0.3f});
+    const iron::MeshHandle bulbMesh = renderer.createMesh(bulbData);
 
     RopeTool ropeTool(renderer, shader);
     RopeThrower ropeThrower;
@@ -412,11 +485,18 @@ int main() {
     });
 
     app.setRender([&] {
+        // Per-frame flicker: different frequencies and phases so the three
+        // lights don't pulse in sync.
+        const float t = static_cast<float>(glfwGetTime());
+        scene.pointLights[0].intensity = 1.5f + 0.10f * std::sin(t * 7.0f);
+        scene.pointLights[1].intensity = 1.2f + 0.07f * std::sin(t * 5.3f + 1.7f);
+        scene.pointLights[2].intensity = 2.0f + 0.12f * std::sin(t * 4.1f + 0.9f);
+
         const iron::Mat4 view = (state == PlayerState::Traversing)
                                     ? ropeWalker.viewMatrix()
                                     : player.viewMatrix();
         renderer.beginFrame(iron::Vec3{0.5f, 0.7f, 0.9f}, scene.light,
-                            std::span<const iron::PointLight>{},
+                            scene.pointLights,
                             view, projection);
         for (const iron::RenderObject& obj : scene.objects) {
             iron::DrawCall call;
@@ -425,6 +505,17 @@ int main() {
             call.texture = obj.texture;
             call.model = obj.transform;
             renderer.submit(call);
+        }
+        // Visible bulb for each point light: a small emissive cube at the
+        // light's position, tinted in the light's colour.
+        for (const iron::PointLight& light : scene.pointLights) {
+            iron::DrawCall bulb;
+            bulb.mesh    = bulbMesh;
+            bulb.shader  = shader;
+            bulb.texture = renderer.whiteTexture();
+            bulb.model   = iron::translation(light.position);
+            bulb.emissive = light.color;
+            renderer.submit(bulb);
         }
         ropeTool.draw(renderer);
         renderer.endFrame();
