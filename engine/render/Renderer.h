@@ -6,6 +6,7 @@
 #include "render/Handles.h"
 #include "render/HudBatch.h"
 #include "render/Light.h"
+#include "render/Material.h"
 #include "render/ReflectionPlane.h"
 #include "scene/Mesh.h"
 
@@ -21,22 +22,15 @@ namespace iron {
 // overflow frame).
 constexpr int kMaxPointLights = 16;
 
-// One thing to draw: a mesh, a shader, a texture, and a model matrix.
-// `emissive` is added on top of lighting in the lit fragment shader —
-// use it for visible light sources (lantern bulbs, glowing crystals).
-// Default (0,0,0) means "no glow", indistinguishable from before.
-// `reflectivity` (0 = matte, 1 = mirror) controls reflection intensity.
-// `useReflectionPlane` selects the reflection source: true = planar
-// render-to-texture, false = cubemap. Both default to their zero values
-// so every existing draw call keeps its current behaviour.
+// One thing to draw: a mesh, a shader, a model matrix, and a material.
+// All per-surface properties (texture, emissive glow, reflectivity, UV tiling)
+// live on the embedded Material so they can be composed and reused independently
+// of the draw mechanics (mesh, shader, transform).
 struct DrawCall {
     MeshHandle mesh = kInvalidHandle;
     ShaderHandle shader = kInvalidHandle;
-    TextureHandle texture = kInvalidHandle;
     Mat4 model = Mat4::identity();
-    Vec3 emissive{0.0f, 0.0f, 0.0f};
-    float reflectivity = 0.0f;        // 0 = matte, 1 = mirror
-    bool useReflectionPlane = false;  // true: sample planar RTT; false: cubemap
+    Material material{};
 };
 
 // Render Hardware Interface: a graphics-API-agnostic renderer. Game code talks
@@ -102,12 +96,12 @@ public:
 
     // Sets the world-space reflection plane. The renderer will run an extra
     // planar reflection pass per frame using a camera mirrored across this
-    // plane; any DrawCall with useReflectionPlane=true samples the resulting
-    // texture in screen space. `normal` must be unit length.
+    // plane; any DrawCall with material.useReflectionPlane=true samples the
+    // resulting texture in screen space. `normal` must be unit length.
     virtual void setReflectionPlane(Vec3 normal, float d) = 0;
 
     // Disables the planar reflection pass. Reflective DrawCalls with
-    // useReflectionPlane=true will then sample the cubemap as a fallback.
+    // material.useReflectionPlane=true will then sample the cubemap as a fallback.
     virtual void disableReflectionPlane() = 0;
 
     // --- debug drawing ---

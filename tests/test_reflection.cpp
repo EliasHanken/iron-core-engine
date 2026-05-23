@@ -75,11 +75,11 @@ int main() {
         CHECK_NEAR(p.z, 0.0f);
     }
 
-    // 6. DrawCall reflection defaults.
+    // 6. DrawCall material reflection defaults.
     {
         DrawCall d;
-        CHECK_NEAR(d.reflectivity, 0.0f);
-        CHECK(d.useReflectionPlane == false);
+        CHECK_NEAR(d.material.reflectivity, 0.0f);
+        CHECK(d.material.useReflectionPlane == false);
     }
 
     return iron_test_result();

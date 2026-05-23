@@ -91,6 +91,7 @@ uniform float uFogDensity;                 // NEW
 uniform samplerCube uSkyCubemap;
 uniform sampler2D uReflectionTexture;
 uniform float uReflectivity;
+uniform float uUvScale;
 uniform int uUseReflectionPlane;
 uniform vec2 uScreenSize;
 uniform vec3 uCameraPos;
@@ -139,7 +140,7 @@ void main() {
                   * lambert * falloff;
     }
 
-    vec4 texel = texture(uTexture, vUV);
+    vec4 texel = texture(uTexture, vUV * uUvScale);
     vec3 litColor = texel.rgb * lighting + uEmissive;
     // Distance fog. View-space length equals world-space distance because
     // the view matrix doesn't scale.
@@ -172,12 +173,19 @@ struct BoxDef {
     iron::Vec3 size;
 };
 
-// A unit cube scaled and translated into place.
-iron::RenderObject makeBox(const BoxDef& def, iron::MeshHandle mesh,
+// Build a fresh box mesh at the requested world-space size. We DON'T share
+// a unit cube and scale via the model matrix any more, because that would
+// keep the mesh's UVs at 0..1 — and the Materials milestone changed
+// appendBox to emit world-space-extent UVs precisely so textures tile
+// naturally on large faces. Per-instance meshes are cheap (24 verts each)
+// and Strandbound only has a handful of boxes.
+iron::RenderObject makeBox(const BoxDef& def, iron::Renderer& renderer,
                            iron::TextureHandle texture) {
+    iron::MeshData data;
+    iron::appendBox(data, iron::Vec3{0.0f, 0.0f, 0.0f}, def.size);
     iron::RenderObject obj;
-    obj.transform = iron::translation(def.center) * iron::scaling(def.size);
-    obj.mesh = mesh;
+    obj.transform = iron::translation(def.center);
+    obj.mesh = renderer.createMesh(data);
     obj.texture = texture;
     return obj;
 }
@@ -317,7 +325,6 @@ int main() {
                         " the clear colour");
     }
 
-    const iron::MeshHandle cube = renderer.createMesh(iron::makeCube());
     const iron::ShaderHandle shader =
         renderer.createShader(kVertexShader, kFragmentShader);
     const iron::TextureHandle texture =
@@ -380,7 +387,7 @@ int main() {
 
     std::vector<iron::Aabb> colliders;
     for (const BoxDef& def : boxes) {
-        scene.objects.push_back(makeBox(def, cube, texture));
+        scene.objects.push_back(makeBox(def, renderer, texture));
         const iron::Vec3 half = def.size * 0.5f;
         colliders.push_back(iron::Aabb{def.center - half, def.center + half});
     }
@@ -642,10 +649,10 @@ int main() {
             iron::DrawCall call;
             call.mesh = obj.mesh;
             call.shader = shader;
-            call.texture = obj.texture;
+            call.material.texture = obj.texture;
             call.model = obj.transform;
-            call.reflectivity = 0.08f;
-            call.useReflectionPlane = false;
+            call.material.reflectivity = 0.08f;
+            call.material.useReflectionPlane = false;
             renderer.submit(call);
         }
         // Visible bulb for each point light: a small emissive cube at the
@@ -654,9 +661,9 @@ int main() {
             iron::DrawCall bulb;
             bulb.mesh    = bulbMesh;
             bulb.shader  = shader;
-            bulb.texture = renderer.whiteTexture();
+            bulb.material.texture = renderer.whiteTexture();
             bulb.model   = iron::translation(light.position);
-            bulb.emissive = light.color;
+            bulb.material.emissive = light.color;
             renderer.submit(bulb);
         }
         ropeTool.draw(renderer);
@@ -665,10 +672,11 @@ int main() {
         iron::DrawCall water;
         water.mesh = waterMesh;
         water.shader = shader;
-        water.texture = renderer.whiteTexture();
+        water.material.texture = renderer.whiteTexture();
         water.model = iron::translation(iron::Vec3{0.0f, -3.0f, 0.0f});
-        water.reflectivity = 0.85f;
-        water.useReflectionPlane = true;
+        water.material.reflectivity = 0.85f;
+        water.material.useReflectionPlane = true;
+        water.material.uvScale = 0.0f;
         renderer.submit(water);
 
         renderer.endFrame();

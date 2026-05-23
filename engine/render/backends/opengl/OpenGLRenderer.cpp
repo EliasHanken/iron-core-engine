@@ -310,10 +310,10 @@ void OpenGLRenderer::endFrame() {
         reflectionShader_.setInt("uTexture", 0);
 
         for (const DrawCall& call : frameCalls_) {
-            if (call.useReflectionPlane) continue;  // skip water itself
+            if (call.material.useReflectionPlane) continue;  // skip water itself
             reflectionShader_.setMat4("uModel", call.model);
 
-            TextureHandle tex = call.texture;
+            TextureHandle tex = call.material.texture;
             if (tex == kInvalidHandle) {
                 tex = fallbackTexture_;
             }
@@ -361,7 +361,7 @@ void OpenGLRenderer::endFrame() {
         shader.setFloat("uFogDensity", fog_.density);
 
         // Per-draw emissive.
-        shader.setVec3("uEmissive", call.emissive);
+        shader.setVec3("uEmissive", call.material.emissive);
 
         // Reflection uniforms — per-frame, but uploaded per-draw to match the
         // existing sun/fog pattern.
@@ -371,9 +371,10 @@ void OpenGLRenderer::endFrame() {
 
         // Per-draw reflectivity. uUseReflectionPlane is forced to 0 when no
         // plane is set so reflective surfaces fall back to cubemap.
-        shader.setFloat("uReflectivity", call.reflectivity);
+        shader.setFloat("uReflectivity", call.material.reflectivity);
+        shader.setFloat("uUvScale", call.material.uvScale);
         const int effectiveUsePlane =
-            (call.useReflectionPlane && reflectionPlane_.has_value()) ? 1 : 0;
+            (call.material.useReflectionPlane && reflectionPlane_.has_value()) ? 1 : 0;
         shader.setInt("uUseReflectionPlane", effectiveUsePlane);
 
         // Bind the cubemap (if any) to unit 2 and the reflection RTT to unit 3.
@@ -387,7 +388,7 @@ void OpenGLRenderer::endFrame() {
             reflectionTarget_.bindColorTexture(3);
         }
 
-        TextureHandle tex = call.texture;
+        TextureHandle tex = call.material.texture;
         if (tex == kInvalidHandle) {
             tex = fallbackTexture_;
         }

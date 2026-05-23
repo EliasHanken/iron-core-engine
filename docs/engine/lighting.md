@@ -120,6 +120,28 @@ automatically to the cubemap. Future milestones may add Fresnel
 or multiple planes — for now, one plane, one reflectivity scalar per
 draw call.
 
+## Materials
+
+Each draw carries a `Material`: the texture, emissive colour,
+reflectivity, planar-reflection flag, and a `uvScale` multiplier on
+sampled UVs. Bundling these into one struct keeps the surface contract
+in one place and makes future additions (normal maps, specular maps,
+roughness) clean to add.
+
+**UV tiling.** Mesh builders (`appendBox`, `appendQuad`) write
+world-space-extent UVs — a 20×1 face emits `(0,0)→(20,1)` UVs, not
+`0..1`. Combined with `GL_REPEAT` wrap and the shader's
+`texture(uTexture, vUV * uUvScale)`, textures tile naturally on large
+faces. `uvScale = 1.0` (the default) means "one texture per world unit";
+`uvScale = 2.0` means "one per half-unit" (denser); `uvScale = 0.0`
+collapses to single-texel sampling for "flat colour" surfaces like
+water with a 1×1 white texture.
+
+A future milestone adds **normal maps** (perturbed surface normals for
+fine detail without geometry) and **specular maps + a specular lighting
+term** (bright highlights from glossy patches). Both naturally live on
+`Material`.
+
 ## Normals and scaling
 
 The normal must be rotated into world space along with the object. The vertex
