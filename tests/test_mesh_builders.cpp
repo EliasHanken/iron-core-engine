@@ -91,5 +91,64 @@ int main() {
         CHECK(m.vertices.empty());
     }
 
+    // --- appendQuad ---
+    // 1. Single quad: 4 vertices, 6 indices.
+    {
+        MeshData m;
+        appendQuad(m, Vec3{0.0f, 0.0f, 0.0f}, Vec2{2.0f, 2.0f},
+                   Vec3{0.0f, 1.0f, 0.0f});
+        CHECK(m.vertices.size() == 4u);
+        CHECK(m.indices.size() == 6u);
+    }
+
+    // 2. Index offsets accumulate when appending to a non-empty mesh.
+    {
+        MeshData m;
+        appendQuad(m, Vec3{0.0f, 0.0f, 0.0f}, Vec2{2.0f, 2.0f},
+                   Vec3{0.0f, 1.0f, 0.0f});
+        appendQuad(m, Vec3{10.0f, 0.0f, 0.0f}, Vec2{2.0f, 2.0f},
+                   Vec3{0.0f, 1.0f, 0.0f});
+        CHECK(m.vertices.size() == 8u);
+        CHECK(m.indices.size() == 12u);
+        // The second quad's indices should all be in [4, 7].
+        for (std::size_t i = 6; i < 12; ++i) {
+            CHECK(m.indices[i] >= 4u);
+            CHECK(m.indices[i] <= 7u);
+        }
+    }
+
+    // 3. Spatial extent for normal={0,1,0}, size={4,2}: x spans +-2, y=0,
+    //    z spans +-1 (since v=-Z, size.y stretches symmetrically in Z).
+    {
+        MeshData m;
+        appendQuad(m, Vec3{0.0f, 0.0f, 0.0f}, Vec2{4.0f, 2.0f},
+                   Vec3{0.0f, 1.0f, 0.0f});
+        float minX = 1e9f, maxX = -1e9f;
+        float minZ = 1e9f, maxZ = -1e9f;
+        for (const auto& v : m.vertices) {
+            CHECK_NEAR(v.position.y, 0.0f);
+            if (v.position.x < minX) minX = v.position.x;
+            if (v.position.x > maxX) maxX = v.position.x;
+            if (v.position.z < minZ) minZ = v.position.z;
+            if (v.position.z > maxZ) maxZ = v.position.z;
+        }
+        CHECK_NEAR(minX, -2.0f);
+        CHECK_NEAR(maxX,  2.0f);
+        CHECK_NEAR(minZ, -1.0f);
+        CHECK_NEAR(maxZ,  1.0f);
+    }
+
+    // 4. All vertices share the input normal.
+    {
+        MeshData m;
+        Vec3 normal{0.0f, 1.0f, 0.0f};
+        appendQuad(m, Vec3{0.0f, 0.0f, 0.0f}, Vec2{2.0f, 2.0f}, normal);
+        for (const auto& v : m.vertices) {
+            CHECK_NEAR(v.normal.x, normal.x);
+            CHECK_NEAR(v.normal.y, normal.y);
+            CHECK_NEAR(v.normal.z, normal.z);
+        }
+    }
+
     return iron_test_result();
 }
