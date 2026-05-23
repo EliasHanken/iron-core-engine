@@ -3,6 +3,7 @@
 #include "render/Renderer.h"
 #include "render/backends/opengl/GLCubemap.h"
 #include "render/backends/opengl/GLDebugLines.h"
+#include "render/backends/opengl/GLSkybox.h"
 #include "render/backends/opengl/GLHud.h"
 #include "render/backends/opengl/GLMesh.h"
 #include "render/backends/opengl/GLShader.h"
@@ -66,6 +67,7 @@ private:
     Mat4 projection_ = Mat4::identity();
     GLDebugLines debugLines_;
     GLHud hud_;
+    GLSkybox skybox_pass_;
     TextureHandle whiteTexture_ = kInvalidHandle;
     GLShadowMap shadowMap_;
     GLShader depthShader_;

@@ -15,6 +15,7 @@ add_library(ironcore STATIC
   render/backends/opengl/GLMesh.cpp
   render/backends/opengl/GLTexture.cpp
   render/backends/opengl/GLCubemap.cpp
+  render/backends/opengl/GLSkybox.cpp
   render/backends/opengl/OpenGLRenderer.cpp
   render/backends/opengl/GLDebugLines.cpp
   render/backends/opengl/GLHud.cpp

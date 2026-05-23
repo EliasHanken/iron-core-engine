@@ -26,6 +26,7 @@ void main() {}
 
 constexpr int kShadowResolution = 4096;
 constexpr float kShadowBias = 0.0005f;
+constexpr float kHorizonFogBand = 0.25f;
 }  // namespace
 
 namespace iron {
@@ -243,6 +244,12 @@ void OpenGLRenderer::endFrame() {
     glActiveTexture(GL_TEXTURE1);
     glBindTexture(GL_TEXTURE_2D, 0);
     glActiveTexture(GL_TEXTURE0);
+
+    // --- Pass 3: skybox (only if one is registered) ---
+    if (skybox_ != kInvalidHandle && skybox_ <= cubemaps_.size()) {
+        skybox_pass_.draw(view_, projection_, *cubemaps_[skybox_ - 1],
+                          fog_.color, kHorizonFogBand);
+    }
 }
 
 void OpenGLRenderer::drawLine(Vec3 a, Vec3 b, Vec3 color) {
