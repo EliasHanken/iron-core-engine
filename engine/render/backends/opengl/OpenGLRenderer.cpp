@@ -25,15 +25,59 @@ void main() {}
 )";
 
 constexpr int kShadowResolution = 4096;
+constexpr int kReflectionResolution = 1024;
 constexpr float kShadowBias = 0.0005f;
 constexpr float kHorizonFogBand = 0.25f;
+
+const char* kReflectionVertexShader = R"(#version 330 core
+layout(location = 0) in vec3 aPos;
+layout(location = 1) in vec3 aNormal;
+layout(location = 2) in vec2 aUV;
+uniform mat4 uModel;
+uniform mat4 uReflectionView;
+uniform mat4 uProjection;
+uniform vec4 uClipPlane;
+out vec3 vWorldPos;
+out vec3 vNormal;
+out vec2 vUV;
+void main() {
+    vec4 worldPos4 = uModel * vec4(aPos, 1.0);
+    vWorldPos = worldPos4.xyz;
+    vNormal = mat3(uModel) * aNormal;
+    vUV = aUV;
+    gl_ClipDistance[0] = dot(worldPos4.xyz, uClipPlane.xyz) + uClipPlane.w;
+    gl_Position = uProjection * uReflectionView * worldPos4;
+}
+)";
+
+const char* kReflectionFragmentShader = R"(#version 330 core
+in vec3 vWorldPos;
+in vec3 vNormal;
+in vec2 vUV;
+out vec4 FragColor;
+uniform sampler2D uTexture;
+uniform vec3 uLightDir;
+uniform vec3 uLightColor;
+uniform float uAmbient;
+void main() {
+    vec3 n = normalize(vNormal);
+    float diffuse = max(dot(n, -normalize(uLightDir)), 0.0);
+    vec3 lighting = uLightColor * (diffuse + uAmbient);
+    vec4 texel = texture(uTexture, vUV);
+    FragColor = vec4(texel.rgb * lighting, texel.a);
+}
+)";
+
 }  // namespace
 
 namespace iron {
 
 OpenGLRenderer::OpenGLRenderer()
     : shadowMap_(kShadowResolution),
-      depthShader_(kDepthVertexSrc, kDepthFragmentSrc) {
+      depthShader_(kDepthVertexSrc, kDepthFragmentSrc),
+      reflectionTarget_(kReflectionResolution),
+      reflectionShader_(kReflectionVertexShader, kReflectionFragmentShader),
+      hud_() {
     glEnable(GL_DEPTH_TEST);
 
     // A 2x2 magenta/black checker used when a real texture fails to load.
@@ -47,6 +91,15 @@ OpenGLRenderer::OpenGLRenderer()
     // textured HUD shader (sample white, tint by vertex colour).
     const unsigned char white[4] = {255, 255, 255, 255};
     whiteTexture_ = createTexture(1, 1, white);
+
+    if (!reflectionTarget_.isValid()) {
+        Log::warn("OpenGLRenderer: reflection target failed to initialise; "
+                  "planar reflections will be skipped");
+    }
+    if (!reflectionShader_.isValid()) {
+        Log::warn("OpenGLRenderer: reflection shader failed to compile; "
+                  "planar reflections will be skipped");
+    }
 }
 
 MeshHandle OpenGLRenderer::createMesh(const MeshData& data) {
@@ -205,7 +258,63 @@ void OpenGLRenderer::endFrame() {
     glViewport(savedViewport[0], savedViewport[1], savedViewport[2],
                savedViewport[3]);
 
-    // --- Pass 2: the lit scene, sampling the shadow map ---
+    // --- Pass 2: planar reflection (if a plane is set) ---
+    if (reflectionPlane_.has_value() &&
+        reflectionTarget_.isValid() &&
+        reflectionShader_.isValid()) {
+
+        const ReflectionPlane& plane = *reflectionPlane_;
+        const Mat4 mirror = reflectionMatrix(plane);
+        const Mat4 reflectionView = view_ * mirror;
+
+        // Clip-plane vector: (normal, -d). The vertex shader does
+        // dot(pos, n) + w which is positive for points on the same side
+        // as the normal — discard the rest.
+        const Vec4 clipPlane{plane.normal.x, plane.normal.y, plane.normal.z,
+                             -plane.d};
+
+        GLint savedViewport2[4];
+        glGetIntegerv(GL_VIEWPORT, savedViewport2);
+
+        reflectionTarget_.bindForWriting();
+        glViewport(0, 0, reflectionTarget_.resolution(),
+                   reflectionTarget_.resolution());
+        glClearColor(clearColor_.x, clearColor_.y, clearColor_.z, 1.0f);
+        glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+
+        glEnable(GL_CLIP_DISTANCE0);
+
+        reflectionShader_.bind();
+        reflectionShader_.setMat4("uReflectionView", reflectionView);
+        reflectionShader_.setMat4("uProjection", projection_);
+        reflectionShader_.setVec3("uLightDir", light_.direction);
+        reflectionShader_.setVec3("uLightColor", light_.color);
+        reflectionShader_.setFloat("uAmbient", light_.ambient);
+        reflectionShader_.setVec4("uClipPlane", clipPlane);
+        reflectionShader_.setInt("uTexture", 0);
+
+        for (const DrawCall& call : frameCalls_) {
+            if (call.useReflectionPlane) continue;  // skip water itself
+            reflectionShader_.setMat4("uModel", call.model);
+
+            TextureHandle tex = call.texture;
+            if (tex == kInvalidHandle) {
+                tex = fallbackTexture_;
+            }
+            if (tex != kInvalidHandle && tex <= textures_.size()) {
+                textures_[tex - 1]->bind(0);
+            }
+
+            meshes_[call.mesh - 1]->draw();
+        }
+
+        glDisable(GL_CLIP_DISTANCE0);
+        glBindFramebuffer(GL_FRAMEBUFFER, 0);
+        glViewport(savedViewport2[0], savedViewport2[1],
+                   savedViewport2[2], savedViewport2[3]);
+    }
+
+    // --- Pass 3: the lit scene, sampling the shadow map ---
     glClearColor(clearColor_.x, clearColor_.y, clearColor_.z, 1.0f);
     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
     for (const DrawCall& call : frameCalls_) {
