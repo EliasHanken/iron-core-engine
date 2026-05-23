@@ -7,6 +7,7 @@
 #include "render/Light.h"
 #include "scene/Mesh.h"
 
+#include <span>
 #include <string>
 
 namespace iron {
@@ -59,10 +60,11 @@ public:
                                       const std::string& fragmentSrc) = 0;
 
     // --- per-frame ---
-    // Begins a frame: records the clear colour, the directional light, and the
-    // camera (view + projection). Submitted draw calls are buffered until
-    // endFrame.
+    // Begins a frame: records the clear colour, the directional sun, the
+    // per-frame point lights (capped to kMaxPointLights), and the camera
+    // (view + projection). Submitted draw calls are buffered until endFrame.
     virtual void beginFrame(Vec3 clearColor, const DirectionalLight& light,
+                            std::span<const PointLight> pointLights,
                             const Mat4& view, const Mat4& projection) = 0;
     // Records one draw call for this frame. Each DrawCall supplies its model
     // matrix; the camera comes from beginFrame.

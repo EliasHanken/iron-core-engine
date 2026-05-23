@@ -7,6 +7,7 @@
 #include "scene/Mesh.h"
 
 #include <GLFW/glfw3.h>
+#include <span>
 
 namespace {
 
@@ -98,7 +99,9 @@ int main() {
             iron::rotationY(spin) * iron::rotationX(spin * 0.5f);
 
         renderer.beginFrame(iron::Vec3{0.1f, 0.12f, 0.15f},
-                            iron::DirectionalLight{}, camera.viewMatrix(),
+                            iron::DirectionalLight{},
+                            std::span<const iron::PointLight>{},
+                            camera.viewMatrix(),
                             camera.projectionMatrix());
 
         iron::DrawCall call;

@@ -20,6 +20,7 @@
 #include <cmath>
 #include <cstddef>
 #include <random>
+#include <span>
 #include <string>
 #include <vector>
 
@@ -414,8 +415,9 @@ int main() {
         const iron::Mat4 view = (state == PlayerState::Traversing)
                                     ? ropeWalker.viewMatrix()
                                     : player.viewMatrix();
-        renderer.beginFrame(iron::Vec3{0.5f, 0.7f, 0.9f}, scene.light, view,
-                            projection);
+        renderer.beginFrame(iron::Vec3{0.5f, 0.7f, 0.9f}, scene.light,
+                            std::span<const iron::PointLight>{},
+                            view, projection);
         for (const iron::RenderObject& obj : scene.objects) {
             iron::DrawCall call;
             call.mesh = obj.mesh;

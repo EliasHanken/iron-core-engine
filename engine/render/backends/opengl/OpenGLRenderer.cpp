@@ -6,6 +6,7 @@
 #include <glad/gl.h>
 
 #include <cmath>
+#include <cstddef>
 
 namespace {
 // The shadow pass renders only depth. The vertex stage transforms by the
@@ -98,12 +99,24 @@ ShaderHandle OpenGLRenderer::createShader(const std::string& vertexSrc,
 }
 
 void OpenGLRenderer::beginFrame(Vec3 clearColor, const DirectionalLight& light,
+                                std::span<const PointLight> pointLights,
                                 const Mat4& view, const Mat4& projection) {
     clearColor_ = clearColor;
     light_ = light;
     view_ = view;
     projection_ = projection;
     frameCalls_.clear();
+
+    // Cap the list at kMaxPointLights; warn once per frame on overflow.
+    pointLights_.clear();
+    if (pointLights.size() > static_cast<std::size_t>(kMaxPointLights)) {
+        Log::warn("OpenGLRenderer: %zu point lights submitted, capping at %d",
+                  pointLights.size(), kMaxPointLights);
+        pointLights_.assign(pointLights.begin(),
+                            pointLights.begin() + kMaxPointLights);
+    } else {
+        pointLights_.assign(pointLights.begin(), pointLights.end());
+    }
 }
 
 void OpenGLRenderer::submit(const DrawCall& call) {
