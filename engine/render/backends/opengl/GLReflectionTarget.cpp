@@ -69,7 +69,7 @@ void GLReflectionTarget::bindForWriting() const {
 }
 
 void GLReflectionTarget::bindColorTexture(int unit) const {
-    if (!colorTexture_) {
+    if (!isValid()) {
         Log::warn("GLReflectionTarget::bindColorTexture on invalid target");
         return;
     }
