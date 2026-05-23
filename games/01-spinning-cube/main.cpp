@@ -11,8 +11,7 @@
 
 namespace {
 
-// Vertex shader: MVP transform; passes world-space position, normal, UV, and
-// the light-space position (for the shadow lookup) through.
+// Vertex shader: standard model-view-projection transform, passes UV through.
 const char* kVertexShader = R"(#version 330 core
 layout(location = 0) in vec3 aPos;
 layout(location = 1) in vec3 aNormal;
@@ -21,39 +20,27 @@ layout(location = 2) in vec2 aUV;
 uniform mat4 uModel;
 uniform mat4 uView;
 uniform mat4 uProjection;
-uniform mat4 uLightViewProj;
 
-out vec3 vWorldPos;
-out vec3 vNormal;
 out vec2 vUV;
-out vec4 vLightSpacePos;
 
 void main() {
-    vec4 worldPos4 = uModel * vec4(aPos, 1.0);
-    vWorldPos = worldPos4.xyz;
-    vNormal = mat3(uModel) * aNormal;
     vUV = aUV;
-    vLightSpacePos = uLightViewProj * worldPos4;
-    gl_Position = uProjection * uView * worldPos4;
+    gl_Position = uProjection * uView * uModel * vec4(aPos, 1.0);
 }
 )";
 
-// Fragment shader: Lambert diffuse from one directional light + ambient, with
-// PCF soft shadows, point-light contributions, and an emissive term.
+// Fragment shader: sample the texture. New point-light/emissive uniforms
+// declared so the renderer's uploads find targets; the cube stays unlit.
 const char* kFragmentShader = R"(#version 330 core
-in vec3 vWorldPos;
-in vec3 vNormal;
 in vec2 vUV;
-in vec4 vLightSpacePos;
 out vec4 FragColor;
 
 uniform sampler2D uTexture;
-uniform sampler2D uShadowMap;
-uniform vec3 uLightDir;
-uniform vec3 uLightColor;
-uniform float uAmbient;
-uniform float uShadowBias;
 
+// New uniforms for the multi-light + emissive lit-pass uploads. The
+// spinning-cube shader does not actually use them (it stays unlit
+// textured); they exist so the renderer's per-frame uniform uploads
+// target real shader locations rather than silently no-op.
 struct PointLight {
     vec3 position;
     vec3 color;
@@ -64,52 +51,8 @@ uniform PointLight uPointLights[16];
 uniform int uPointLightCount;
 uniform vec3 uEmissive;
 
-// 1.0 = lit, 0.0 = in shadow. PCF: average a 3x3 grid of depth samples so
-// the shadow edge is soft rather than stair-stepped.
-float shadowFactor() {
-    vec3 proj = vLightSpacePos.xyz / vLightSpacePos.w;
-    proj = proj * 0.5 + 0.5;  // [-1,1] -> [0,1]
-    if (proj.z > 1.0) {
-        return 1.0;  // beyond the shadow map's far plane: lit
-    }
-    if (proj.x < 0.0 || proj.x > 1.0 || proj.y < 0.0 || proj.y > 1.0) {
-        return 1.0;  // outside the shadow map: lit
-    }
-    vec2 texel = 1.0 / vec2(textureSize(uShadowMap, 0));
-    float sum = 0.0;
-    for (int y = -1; y <= 1; ++y) {
-        for (int x = -1; x <= 1; ++x) {
-            float stored =
-                texture(uShadowMap, proj.xy + vec2(x, y) * texel).r;
-            sum += (proj.z - uShadowBias > stored) ? 0.0 : 1.0;
-        }
-    }
-    return sum / 9.0;
-}
-
 void main() {
-    vec3 normal = normalize(vNormal);
-    float diffuse = max(dot(normal, -normalize(uLightDir)), 0.0);
-    float shadow = shadowFactor();
-    vec3 lighting = uLightColor * (diffuse * shadow + uAmbient);
-
-    for (int i = 0; i < uPointLightCount; ++i) {
-        vec3 toLight = uPointLights[i].position - vWorldPos;
-        float dist = length(toLight);
-        // Cull: outside range OR degenerate zero-distance (avoid NaN from
-        // normalize(0)). Matches CPU mirror in PointLightMath.h.
-        if (dist < 0.0001 || dist >= uPointLights[i].range) continue;
-
-        vec3 L = toLight / dist;
-        float lambert = max(dot(normal, L), 0.0);
-        float falloff = 1.0 - smoothstep(0.0, uPointLights[i].range, dist);
-        lighting += uPointLights[i].color * uPointLights[i].intensity
-                  * lambert * falloff;
-    }
-
-    vec3 albedo = texture(uTexture, vUV).rgb;
-    vec3 result = albedo * lighting + uEmissive;
-    FragColor = vec4(result, 1.0);
+    FragColor = texture(uTexture, vUV);
 }
 )";
 
