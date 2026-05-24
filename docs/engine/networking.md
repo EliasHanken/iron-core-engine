@@ -87,3 +87,22 @@ against real sockets.
 The unit test for the contract — `tests/test_mock_net_transport.cpp` —
 runs the same kind of paired-connect / send / receive / close scenarios
 against `MockTransport` (no real sockets) on every CTest invocation.
+
+## Play with it: net-cubes
+
+`games/05-net-cubes` is a runnable multiplayer demo built on the wrapper.
+Launch two or more copies of `net-cubes.exe` on the same machine:
+
+- The first instance binds the listen socket and becomes the host (peer 0).
+- Every later instance auto-detects that the port is taken and connects
+  as a client. The host assigns each new client an incrementing `peerId`
+  via a one-shot reliable `HelloMsg`.
+- Each peer is a 1m colored cube; positions sync at ~30 Hz over the
+  unreliable channel. Move with WASD + QE + mouse; ESC quits.
+- Star topology: clients only talk to the host. The host rebroadcasts
+  each client's position to every other client.
+
+The protocol is two messages (Hello and Position) with a 1-byte tag
+prefix — defined in `games/05-net-cubes/Protocol.h` with round-trip
+unit tests in `tests/test_net_cubes_protocol.cpp`. There is deliberately
+no engine-side message dispatcher yet; that's M8.3.
