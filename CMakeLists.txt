@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.20)
-project(IronCoreEngine LANGUAGES CXX)
+project(IronCoreEngine LANGUAGES C CXX)
 
 # Force every target (including FetchContent dependencies) onto the dynamic CRT
 # so they all agree — avoids LNK4098 (LIBCMT vs MSVCRT mismatch).
@@ -61,4 +61,5 @@ add_subdirectory(engine)
 add_subdirectory(games/01-spinning-cube)
 add_subdirectory(games/02-strandbound)
 add_subdirectory(games/03-showcase)
+add_subdirectory(games/04-net-pingpong)
 add_subdirectory(tests)
