@@ -6,6 +6,7 @@ add_library(ironcore STATIC
   core/Application.cpp
   net/NetTransport.cpp
   net/backends/mock/MockTransport.cpp
+  net/backends/gns/GnsTransport.cpp
   scene/Mesh.cpp
   scene/Camera.cpp
   scene/FirstPersonController.cpp
@@ -29,4 +30,8 @@ add_library(ironcore STATIC
 )
 
 target_include_directories(ironcore PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
-target_link_libraries(ironcore PUBLIC glfw glad_gl_core_33 stb_image)
+target_link_libraries(ironcore PUBLIC
+  glfw
+  glad_gl_core_33
+  stb_image
+  GameNetworkingSockets::GameNetworkingSockets)
