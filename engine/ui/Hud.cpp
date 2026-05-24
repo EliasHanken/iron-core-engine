@@ -1,5 +1,6 @@
 #include "ui/Hud.h"
 
+#include <cstdio>
 #include <utility>
 
 namespace iron {
@@ -153,6 +154,33 @@ HudBatch Hud::build(const BitmapFont& font, TextureHandle whiteTexture) const {
         }
     }
     return batch;
+}
+
+
+Hud::NetStatsHudHandle Hud::addNetworkStatsWidget(Vec2 topRight, Vec4 color) {
+    constexpr float kWidthGuess = 220.0f;
+    constexpr float kLineHeight = 22.0f;
+    const Vec2 base{topRight.x - kWidthGuess, topRight.y};
+    NetStatsHudHandle h;
+    h.stateId     = addText("state: ?",     {base.x, base.y + 0 * kLineHeight}, 1.5f, color);
+    h.pingId      = addText("ping: ? ms",   {base.x, base.y + 1 * kLineHeight}, 1.5f, color);
+    h.lossId      = addText("loss: ? %",    {base.x, base.y + 2 * kLineHeight}, 1.5f, color);
+    h.bandwidthId = addText("bw: ? in/? out kbps", {base.x, base.y + 3 * kLineHeight}, 1.5f, color);
+    return h;
+}
+
+void Hud::updateNetworkStats(const NetStatsHudHandle& h,
+                              const ConnectionStats& s) {
+    char buf[96];
+    std::snprintf(buf, sizeof(buf), "state: %s", s.state.c_str());
+    setText(h.stateId, buf);
+    std::snprintf(buf, sizeof(buf), "ping: %.0f ms", s.pingMs);
+    setText(h.pingId, buf);
+    std::snprintf(buf, sizeof(buf), "loss: %.1f %%", s.packetLossPct);
+    setText(h.lossId, buf);
+    std::snprintf(buf, sizeof(buf), "bw: %.1f in / %.1f out kbps",
+                  s.bandwidthInKbps, s.bandwidthOutKbps);
+    setText(h.bandwidthId, buf);
 }
 
 } // namespace iron

@@ -1,6 +1,7 @@
 #pragma once
 
 #include "math/Vec.h"
+#include "net/NetworkStats.h"
 #include "render/Handles.h"
 #include "render/HudBatch.h"
 #include "ui/BitmapFont.h"
@@ -31,6 +32,26 @@ public:
     void setColor(HudId id, Vec4 color);
     void setSize(HudId id, Vec2 size);
     void setVisible(HudId id, bool visible);
+
+    // ---------- network-stats convenience ----------
+    // Bundles the HudIds for the 4 lines we render: connection state,
+    // ping, packet loss, in/out bandwidth. Game creates one with
+    // addNetworkStatsWidget and updates it each frame.
+    struct NetStatsHudHandle {
+        HudId pingId;
+        HudId lossId;
+        HudId bandwidthId;
+        HudId stateId;
+    };
+
+    // Register 4 stacked text lines left-anchored just inside `topRight`.
+    // Default text is "?"; call updateNetworkStats each frame.
+    NetStatsHudHandle addNetworkStatsWidget(
+        Vec2 topRight, Vec4 color = Vec4{1.0f, 1.0f, 1.0f, 0.7f});
+
+    // Format a fresh ConnectionStats into the widget's 4 lines.
+    void updateNetworkStats(const NetStatsHudHandle& h,
+                            const ConnectionStats& s);
 
     // Builds the screen-space quad batch for the current visible elements.
     // Text quads use `font.atlas`; panels use `whiteTexture`; images use their
