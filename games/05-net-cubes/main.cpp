@@ -354,18 +354,34 @@ int main() {
         "Peers: 0", iron::Vec2{12, 36}, 2.0f,
         iron::Vec4{1, 1, 1, 1});
 
-    // --- free-fly camera ---
-    iron::FreeFlyCamera camera;
-    camera.position = iron::Vec3{8, 4, 12};
-    camera.yaw   = -0.5f;
-    camera.pitch = -0.25f;
+    // --- player + chase camera ---
+    // The player (a cube) is the controlled entity. The camera orbits
+    // behind/above the player and smooth-lerps toward its ideal position
+    // each frame so movement feels weighty rather than snappy.
+    struct Player {
+        iron::Vec3 position{0.0f, 0.5f, 0.0f};  // cube center sits 0.5m above ground
+        float yaw   = 0.0f;     // radians; 0 = facing -Z
+        float pitch = -0.35f;   // radians; tilts camera orbit down a bit
+    } player;
+    constexpr float kCamDistance   = 6.0f;   // metres behind the player
+    constexpr float kCamHeightLift = 1.0f;   // look-target offset above cube centre
+    constexpr float kCamSmoothness = 8.0f;   // higher = snappier follow
+    constexpr float kMoveSpeed     = 6.0f;
+    constexpr float kMouseSens     = 0.0025f;
+    constexpr float kPitchLimit    = 1.45f;  // ~83 degrees; keep camera above the ground
+    constexpr float kPitchFloor    = -1.45f;
+
+    iron::Vec3 chaseCamPos{player.position.x, player.position.y + kCamDistance,
+                           player.position.z + kCamDistance};
+    iron::Vec3 chaseCamLookAt = player.position;
+
     double lastMouseX = 0.0, lastMouseY = 0.0;
     glfwGetCursorPos(window.handle(), &lastMouseX, &lastMouseY);
 
     // --- peer cube state ---
     // peerId -> world position. Task 3 will populate from network.
     std::unordered_map<std::uint32_t, iron::Vec3> cubes;
-    cubes[0] = camera.position;
+    cubes[0] = player.position;
 
     // --- networking ---
     iron::GnsTransport transport;
@@ -491,10 +507,54 @@ int main() {
         const bool kD = glfwGetKey(window.handle(), GLFW_KEY_D) == GLFW_PRESS;
         const bool kQ = glfwGetKey(window.handle(), GLFW_KEY_Q) == GLFW_PRESS;
         const bool kE = glfwGetKey(window.handle(), GLFW_KEY_E) == GLFW_PRESS;
-        // FreeFlyCamera::update signature: (dt, mouseDx, mouseDy,
-        //   fwd, back, left, right, worldDown, worldUp)
-        // Q=worldDown, E=worldUp — matches the header.
-        camera.update(dt, mouseDx, mouseDy, kW, kS, kA, kD, kQ, kE);
+
+        // Mouse: rotate the orbit around the player. Right-drag = yaw right
+        // (yaw decreases), Down-drag = look down (pitch decreases).
+        player.yaw   -= mouseDx * kMouseSens;
+        player.pitch -= mouseDy * kMouseSens;
+        if (player.pitch >  kPitchLimit) player.pitch =  kPitchLimit;
+        if (player.pitch <  kPitchFloor) player.pitch =  kPitchFloor;
+
+        // WASD moves the player in the horizontal plane relative to facing.
+        // Player's forward (in world XZ): (-sin(yaw), 0, -cos(yaw))
+        // Player's right   (in world XZ): ( cos(yaw), 0, -sin(yaw))
+        const float sy = std::sin(player.yaw);
+        const float cy = std::cos(player.yaw);
+        const iron::Vec3 forwardXZ{-sy, 0.0f, -cy};
+        const iron::Vec3 rightXZ  { cy, 0.0f, -sy};
+        const float step = kMoveSpeed * dt;
+        if (kW) { player.position.x += forwardXZ.x * step; player.position.z += forwardXZ.z * step; }
+        if (kS) { player.position.x -= forwardXZ.x * step; player.position.z -= forwardXZ.z * step; }
+        if (kD) { player.position.x += rightXZ.x   * step; player.position.z += rightXZ.z   * step; }
+        if (kA) { player.position.x -= rightXZ.x   * step; player.position.z -= rightXZ.z   * step; }
+        if (kE) { player.position.y += step; }
+        if (kQ) { player.position.y -= step; }
+        // Don't sink under the ground (cube centre stays above 0.5).
+        if (player.position.y < 0.5f) player.position.y = 0.5f;
+
+        // Chase camera: compute the ideal orbit position behind+above the
+        // player (sphere around the player parameterised by yaw, pitch,
+        // kCamDistance), then exponentially smooth toward it.
+        const float cp = std::cos(player.pitch);
+        const float sp = std::sin(player.pitch);
+        const iron::Vec3 idealCamPos{
+            player.position.x + sy * cp * kCamDistance,
+            player.position.y - sp * kCamDistance,
+            player.position.z + cy * cp * kCamDistance,
+        };
+        const iron::Vec3 idealLookAt{
+            player.position.x,
+            player.position.y + kCamHeightLift,
+            player.position.z,
+        };
+        // Framerate-independent lerp: 1 - exp(-dt * smoothness).
+        const float lerpAmt = 1.0f - std::exp(-dt * kCamSmoothness);
+        chaseCamPos.x    += (idealCamPos.x    - chaseCamPos.x)    * lerpAmt;
+        chaseCamPos.y    += (idealCamPos.y    - chaseCamPos.y)    * lerpAmt;
+        chaseCamPos.z    += (idealCamPos.z    - chaseCamPos.z)    * lerpAmt;
+        chaseCamLookAt.x += (idealLookAt.x    - chaseCamLookAt.x) * lerpAmt;
+        chaseCamLookAt.y += (idealLookAt.y    - chaseCamLookAt.y) * lerpAmt;
+        chaseCamLookAt.z += (idealLookAt.z    - chaseCamLookAt.z) * lerpAmt;
 
         transport.poll();
 
@@ -503,7 +563,7 @@ int main() {
         const std::uint32_t myId = isHost ? 0u : myPeerId;
         const bool haveIdentity = isHost || (myPeerId != 0);
         if (haveIdentity) {
-            cubes[myId] = camera.position;
+            cubes[myId] = player.position;
         }
 
         // Broadcast our position ~30 Hz.
@@ -514,7 +574,7 @@ int main() {
                 lastSend = now;
                 iron::netcubes::writePosition(sendBuf, iron::netcubes::PositionMsg{
                     myId,
-                    camera.position.x, camera.position.y, camera.position.z});
+                    player.position.x, player.position.y, player.position.z});
                 std::span<const std::byte> view(sendBuf.data(), sendBuf.size());
                 if (isHost) {
                     for (const auto& [c, _] : connToPeerId) {
@@ -526,16 +586,20 @@ int main() {
             }
         }
 
+        constexpr float kFovYDeg = 60.0f;
         const iron::Mat4 projection = iron::perspective(
-            camera.fovDeg * 3.14159265f / 180.0f,
+            kFovYDeg * 3.14159265f / 180.0f,
             static_cast<float>(kScreenWidth) / static_cast<float>(kScreenHeight),
             0.1f, 200.0f);
+
+        const iron::Mat4 view = iron::lookAt(
+            chaseCamPos, chaseCamLookAt, iron::Vec3{0.0f, 1.0f, 0.0f});
 
         renderer.beginFrame(iron::Vec3{0.5f, 0.6f, 0.8f},
                             sun,
                             std::span<const iron::PointLight>{},
                             fog,
-                            camera.viewMatrix(),
+                            view,
                             projection);
 
         // Ground
