@@ -54,6 +54,17 @@ inline Vec3 normalize(Vec3 v) {
     return v * (1.0f / len);
 }
 
+// Linear interpolation between two Vec3 by parameter t.
+// t=0 returns a, t=1 returns b. No clamping — callers may pass values
+// outside [0,1] for extrapolation if they really mean it.
+inline Vec3 interpolate(Vec3 a, Vec3 b, float t) {
+    return Vec3{
+        a.x + (b.x - a.x) * t,
+        a.y + (b.y - a.y) * t,
+        a.z + (b.z - a.z) * t,
+    };
+}
+
 // --- Vec4 ---
 inline Vec4 operator+(Vec4 a, Vec4 b) {
     return {a.x + b.x, a.y + b.y, a.z + b.z, a.w + b.w};
