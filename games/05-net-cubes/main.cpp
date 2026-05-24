@@ -389,9 +389,17 @@ int main() {
     // displayed toward target so remote cubes glide between 30 Hz updates
     // instead of teleporting. The local cube is updated to (player, player)
     // every frame so it never lerps — your own movement should be instant.
+    //
+    // NOTE: we intentionally do NOT pre-seed any entry here. For the host,
+    // cubes[0] is created on the first frame (since haveIdentity is true
+    // immediately after listen). For the client, the local entry is created
+    // once myPeerId arrives via HelloMsg; remote entries are seeded inside
+    // the Position branch of onMessage with both displayed and target set
+    // to the incoming position. Pre-seeding cubes[0] here would create a
+    // fake host-cube entry on clients at the local player's startup
+    // position — causing remote cubes to visibly lerp in from origin.
     struct CubeState { iron::Vec3 displayed; iron::Vec3 target; };
     std::unordered_map<std::uint32_t, CubeState> cubes;
-    cubes[0] = CubeState{player.position, player.position};
     constexpr float kCubeSmoothness = 12.0f;
 
     // --- networking ---
@@ -512,29 +520,55 @@ int main() {
     // becomes true and the broadcast loop never fires. Subtract 33ms from
     // `prevTime` instead so the first broadcast happens on frame 1.
     auto lastSend = prevTime - std::chrono::milliseconds(33);
+
+    // ESC releases the cursor (Minecraft-style) so you can alt-tab / poke
+    // at other windows without quitting. Left-click on the game window
+    // re-captures. Edge-triggered for both so holding doesn't toggle.
+    bool cursorCaptured = true;
+    bool prevEsc = false;
+    bool prevClick = false;
+
     while (!window.shouldClose()) {
         window.pollEvents();
         const auto now = std::chrono::steady_clock::now();
         const float dt = std::chrono::duration<float>(now - prevTime).count();
         prevTime = now;
 
-        if (glfwGetKey(window.handle(), GLFW_KEY_ESCAPE) == GLFW_PRESS) {
-            glfwSetWindowShouldClose(window.handle(), GLFW_TRUE);
+        // ESC releases the cursor (so you can alt-tab without quitting).
+        // Left-click on the window re-captures. Both edge-triggered so
+        // holding doesn't toggle. Use the X button on the window to quit.
+        const bool esc   = glfwGetKey(window.handle(), GLFW_KEY_ESCAPE) == GLFW_PRESS;
+        const bool click = glfwGetMouseButton(window.handle(), GLFW_MOUSE_BUTTON_LEFT) == GLFW_PRESS;
+        if (esc && !prevEsc && cursorCaptured) {
+            cursorCaptured = false;
+            window.setCursorCaptured(false);
+        } else if (click && !prevClick && !cursorCaptured) {
+            cursorCaptured = true;
+            window.setCursorCaptured(true);
+            // Re-sync the mouse anchor so we don't get a giant delta jump
+            // from wherever the cursor was on the desktop.
+            glfwGetCursorPos(window.handle(), &lastMouseX, &lastMouseY);
         }
+        prevEsc = esc;
+        prevClick = click;
 
         double mouseX = 0.0, mouseY = 0.0;
         glfwGetCursorPos(window.handle(), &mouseX, &mouseY);
-        const float mouseDx = static_cast<float>(mouseX - lastMouseX);
-        const float mouseDy = static_cast<float>(mouseY - lastMouseY);
+        const float mouseDx = cursorCaptured
+            ? static_cast<float>(mouseX - lastMouseX) : 0.0f;
+        const float mouseDy = cursorCaptured
+            ? static_cast<float>(mouseY - lastMouseY) : 0.0f;
         lastMouseX = mouseX;
         lastMouseY = mouseY;
 
-        const bool kW = glfwGetKey(window.handle(), GLFW_KEY_W) == GLFW_PRESS;
-        const bool kS = glfwGetKey(window.handle(), GLFW_KEY_S) == GLFW_PRESS;
-        const bool kA = glfwGetKey(window.handle(), GLFW_KEY_A) == GLFW_PRESS;
-        const bool kD = glfwGetKey(window.handle(), GLFW_KEY_D) == GLFW_PRESS;
-        const bool kQ = glfwGetKey(window.handle(), GLFW_KEY_Q) == GLFW_PRESS;
-        const bool kE = glfwGetKey(window.handle(), GLFW_KEY_E) == GLFW_PRESS;
+        // Disable WASD/QE when cursor is released — the player shouldn't
+        // drive the game while interacting with other windows.
+        const bool kW = cursorCaptured && glfwGetKey(window.handle(), GLFW_KEY_W) == GLFW_PRESS;
+        const bool kS = cursorCaptured && glfwGetKey(window.handle(), GLFW_KEY_S) == GLFW_PRESS;
+        const bool kA = cursorCaptured && glfwGetKey(window.handle(), GLFW_KEY_A) == GLFW_PRESS;
+        const bool kD = cursorCaptured && glfwGetKey(window.handle(), GLFW_KEY_D) == GLFW_PRESS;
+        const bool kQ = cursorCaptured && glfwGetKey(window.handle(), GLFW_KEY_Q) == GLFW_PRESS;
+        const bool kE = cursorCaptured && glfwGetKey(window.handle(), GLFW_KEY_E) == GLFW_PRESS;
 
         // Mouse: rotate the orbit around the player. Right-drag = yaw right
         // (yaw decreases), Down-drag = look down (pitch decreases).
