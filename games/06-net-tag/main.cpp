@@ -354,6 +354,10 @@ int main(int argc, char** argv) {
     const iron::HudId peersText = hud.addText(
         "Peers: 0", iron::Vec2{12, 36}, 2.0f,
         iron::Vec4{1, 1, 1, 1});
+    const iron::HudId stateText = hud.addText(
+        "(no round)", iron::Vec2{12, 60}, 2.0f, iron::Vec4{1, 1, 1, 1});
+    const iron::HudId scoresText = hud.addText(
+        "", iron::Vec2{12, 84}, 1.5f, iron::Vec4{1, 1, 1, 1});
 
     // --- player + chase camera ---
     // The player (a cube) is the controlled entity. The camera orbits
@@ -394,6 +398,26 @@ int main(int argc, char** argv) {
     std::uint32_t myPeerId = 0;
     std::unordered_map<iron::ConnectionId, std::uint32_t> connToPeerId;
     std::uint32_t nextPeerId = 1;
+
+    // --- tag game state (host owns; clients are passive renderers) ---
+    struct PlayerInfo {
+        float itTimeAccumSec = 0.0f;
+        float lastTaggedTimeSec = -1.0f;  // for the 0.5s post-swap cooldown
+    };
+    std::unordered_map<std::uint32_t, PlayerInfo> players;  // peerId -> info
+
+    std::uint32_t itPeerId = 0;  // who is "it" right now (broadcast to clients)
+    float roundTimeRemainingSec = 60.0f;
+    float lastScoreBroadcastSec = 0.0f;
+    bool  roundActive = false;
+    float roundEndDisplayUntilSec = 0.0f;
+    std::uint32_t winnerPeerId = 0;  // for HUD during round-end display
+    float gameElapsedSec = 0.0f;     // monotonically increasing host clock
+    constexpr float kTagDistance = 1.5f;
+    constexpr float kTagCooldownSec = 0.5f;
+    constexpr float kRoundDurationSec = 60.0f;
+    constexpr float kScoreBroadcastIntervalSec = 1.0f;
+    constexpr float kRoundEndDisplaySec = 5.0f;
 
     transport.setOnConnectionOpened([&](iron::ConnectionId c) {
         if (isHost) {
@@ -449,6 +473,36 @@ int main(int argc, char** argv) {
                         otherConn, msg, iron::SendReliability::Unreliable);
                 }
             }
+        });
+
+    // Client state populated from these host-broadcast events.
+    float clientRoundTimeRemainingSec = 0.0f;
+    std::unordered_map<std::uint32_t, float> clientScores;  // peerId -> itTimeSec
+    bool  clientShowingRoundEnd = false;
+    std::uint32_t clientWinnerPeerId = 0;
+
+    registry.registerHandler<iron::nettag::TagSwapMsg>(
+        [&](iron::ConnectionId /*c*/, const iron::nettag::TagSwapMsg& msg) {
+            itPeerId = msg.newItPeerId;
+        });
+
+    registry.registerHandler<iron::nettag::ScoreUpdateMsg>(
+        [&](iron::ConnectionId /*c*/, const iron::nettag::ScoreUpdateMsg& msg) {
+            clientScores[msg.peerId] = msg.itTimeSec;
+        });
+
+    registry.registerHandler<iron::nettag::RoundStartMsg>(
+        [&](iron::ConnectionId /*c*/, const iron::nettag::RoundStartMsg& msg) {
+            itPeerId = msg.initialItPeerId;
+            clientRoundTimeRemainingSec = msg.roundDurationSec;
+            clientShowingRoundEnd = false;
+            clientScores.clear();
+        });
+
+    registry.registerHandler<iron::nettag::RoundEndMsg>(
+        [&](iron::ConnectionId /*c*/, const iron::nettag::RoundEndMsg& msg) {
+            clientWinnerPeerId = msg.winnerPeerId;
+            clientShowingRoundEnd = true;
         });
 
     if (!transport.start()) {
@@ -581,6 +635,119 @@ int main(int argc, char** argv) {
 
         transport.poll();
 
+        // --- host gameplay tick ---
+        if (isHost) {
+            gameElapsedSec += dt;
+
+            // Ensure host's own player entry exists.
+            if (players.find(0) == players.end()) {
+                players[0] = PlayerInfo{};
+            }
+            // Ensure every connected client has a player entry.
+            for (const auto& [c, peerId] : connToPeerId) {
+                if (players.find(peerId) == players.end()) {
+                    players[peerId] = PlayerInfo{};
+                }
+            }
+
+            if (!roundActive && gameElapsedSec > roundEndDisplayUntilSec) {
+                // Start a new round. Reset scores, pick first "it" at random.
+                for (auto& [_, info] : players) {
+                    info.itTimeAccumSec = 0.0f;
+                    info.lastTaggedTimeSec = -1.0f;
+                }
+                // Pick a "random" peer to be "it" — including the host.
+                // Cheap PRNG-free source: gameElapsedSec * 1000 mod count.
+                std::vector<std::uint32_t> peerList;
+                for (const auto& [pid, _] : players) peerList.push_back(pid);
+                if (!peerList.empty()) {
+                    const std::size_t idx = static_cast<std::size_t>(gameElapsedSec * 1000) % peerList.size();
+                    itPeerId = peerList[idx];
+                }
+                roundTimeRemainingSec = kRoundDurationSec;
+                roundActive = true;
+
+                const iron::nettag::RoundStartMsg startMsg{
+                    itPeerId, kRoundDurationSec};
+                for (const auto& [c, _] : connToPeerId) {
+                    registry.send<iron::nettag::RoundStartMsg>(
+                        c, startMsg, iron::SendReliability::Reliable);
+                }
+            }
+
+            if (roundActive) {
+                roundTimeRemainingSec -= dt;
+                if (auto it = players.find(itPeerId); it != players.end()) {
+                    it->second.itTimeAccumSec += dt;
+                }
+
+                // Tag check: any non-it player within range + cooldown elapsed → swap.
+                const iron::Vec3& itPos = (itPeerId == 0)
+                    ? player.position
+                    : (cubes.count(itPeerId) ? cubes[itPeerId].target : iron::Vec3{1e9f, 0, 0});
+                std::uint32_t newIt = 0;
+                bool swap = false;
+                for (const auto& [pid, info] : players) {
+                    if (pid == itPeerId) continue;
+                    const iron::Vec3& pos = (pid == 0)
+                        ? player.position
+                        : (cubes.count(pid) ? cubes[pid].target : iron::Vec3{1e9f, 0, 0});
+                    const float dx = pos.x - itPos.x;
+                    const float dy = pos.y - itPos.y;
+                    const float dz = pos.z - itPos.z;
+                    const float d2 = dx*dx + dy*dy + dz*dz;
+                    if (d2 < kTagDistance * kTagDistance &&
+                        gameElapsedSec - info.lastTaggedTimeSec > kTagCooldownSec) {
+                        newIt = pid;
+                        swap = true;
+                        break;
+                    }
+                }
+                if (swap) {
+                    itPeerId = newIt;
+                    players[itPeerId].lastTaggedTimeSec = gameElapsedSec;
+                    const iron::nettag::TagSwapMsg swapMsg{itPeerId};
+                    for (const auto& [c, _] : connToPeerId) {
+                        registry.send<iron::nettag::TagSwapMsg>(
+                            c, swapMsg, iron::SendReliability::Reliable);
+                    }
+                }
+
+                // Broadcast scores every 1 s.
+                if (gameElapsedSec - lastScoreBroadcastSec >= kScoreBroadcastIntervalSec) {
+                    lastScoreBroadcastSec = gameElapsedSec;
+                    for (const auto& [pid, info] : players) {
+                        const iron::nettag::ScoreUpdateMsg sMsg{pid, info.itTimeAccumSec};
+                        for (const auto& [c, _] : connToPeerId) {
+                            registry.send<iron::nettag::ScoreUpdateMsg>(
+                                c, sMsg, iron::SendReliability::Reliable);
+                        }
+                    }
+                }
+
+                if (roundTimeRemainingSec <= 0.0f) {
+                    // Pick winner: lowest itTimeAccumSec.
+                    std::uint32_t winner = 0;
+                    float bestTime = 1e9f;
+                    for (const auto& [pid, info] : players) {
+                        if (info.itTimeAccumSec < bestTime) {
+                            bestTime = info.itTimeAccumSec;
+                            winner = pid;
+                        }
+                    }
+                    winnerPeerId = winner;
+                    roundActive = false;
+                    roundEndDisplayUntilSec = gameElapsedSec + kRoundEndDisplaySec;
+
+                    const iron::nettag::RoundEndMsg endMsg{winner};
+                    for (const auto& [c, _] : connToPeerId) {
+                        registry.send<iron::nettag::RoundEndMsg>(
+                            c, endMsg, iron::SendReliability::Reliable);
+                    }
+                }
+            }
+        }
+
         const std::uint32_t myId = isHost ? 0u : myPeerId;
         const bool haveIdentity = isHost || (myPeerId != 0);
         if (haveIdentity) {
@@ -615,6 +782,11 @@ int main(int argc, char** argv) {
                         hostConn, msg, iron::SendReliability::Unreliable);
                 }
             }
+        }
+
+        if (!isHost && !clientShowingRoundEnd) {
+            clientRoundTimeRemainingSec -= dt;
+            if (clientRoundTimeRemainingSec < 0.0f) clientRoundTimeRemainingSec = 0.0f;
         }
 
         constexpr float kFovYDeg = 60.0f;
@@ -654,12 +826,18 @@ int main(int argc, char** argv) {
             call.material.texture     = renderer.whiteTexture();
             call.material.normalMap   = renderer.flatNormalTexture();
             call.material.specularMap = renderer.noSpecularTexture();
-            call.material.emissive    = colorForPeer(peerId) * 0.4f;
+            iron::Vec3 emissive = colorForPeer(peerId) * 0.4f;
+            // Highlight "it" with a strong red boost so it's instantly readable.
+            if (peerId == itPeerId) {
+                emissive = emissive + iron::Vec3{1.5f, 0.0f, 0.0f};
+            }
+            call.material.emissive = emissive;
             renderer.submit(call);
         }
 
         renderer.endFrame();
 
+        // role + peer count (unchanged from Task 5)
         if (isHost) {
             hud.setText(roleText, "Host (peer 0)");
         } else if (myPeerId != 0) {
@@ -669,6 +847,46 @@ int main(int argc, char** argv) {
         }
         hud.setText(peersText,
                     "Peers: " + std::to_string(cubes.size()));
+
+        // game state
+        const std::uint32_t myId2 = isHost ? 0u : myPeerId;
+        const float remaining = isHost ? roundTimeRemainingSec
+                                        : clientRoundTimeRemainingSec;
+        const bool showingEnd = isHost
+                                  ? (!roundActive && gameElapsedSec < roundEndDisplayUntilSec)
+                                  : clientShowingRoundEnd;
+        const std::uint32_t winner = isHost ? winnerPeerId : clientWinnerPeerId;
+        if (showingEnd) {
+            hud.setText(stateText, "Round over! Winner: peer "
+                                    + std::to_string(winner));
+        } else if ((itPeerId == myId2 && myId2 != 0) || (isHost && itPeerId == 0)) {
+            const int secs = static_cast<int>(std::max(0.0f, remaining));
+            hud.setText(stateText, "You are IT!  " + std::to_string(secs) + "s");
+        } else {
+            const int secs = static_cast<int>(std::max(0.0f, remaining));
+            hud.setText(stateText, "Run!  " + std::to_string(secs) + "s");
+        }
+
+        // leaderboard
+        std::unordered_map<std::uint32_t, float> scoreView;
+        if (isHost) {
+            for (const auto& [pid, info] : players) scoreView[pid] = info.itTimeAccumSec;
+        } else {
+            scoreView = clientScores;
+        }
+        std::vector<std::pair<std::uint32_t, float>> sorted(
+            scoreView.begin(), scoreView.end());
+        std::sort(sorted.begin(), sorted.end(),
+                  [](const auto& a, const auto& b) { return a.second < b.second; });
+        std::string sb;
+        for (const auto& [pid, t] : sorted) {
+            char buf[64];
+            std::snprintf(buf, sizeof(buf), "peer %u: %.1fs   ",
+                          static_cast<unsigned>(pid), t);
+            sb += buf;
+        }
+        hud.setText(scoresText, sb);
+
         renderer.drawHud(hud.build(font, renderer.whiteTexture()),
                          kScreenWidth, kScreenHeight);
 
