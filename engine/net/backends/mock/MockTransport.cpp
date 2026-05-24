@@ -38,7 +38,9 @@ void MockTransport::stop() {
     for (auto& [id, link] : connections_) {
         if (link.peer) {
             link.peer->enqueueFromPeer({EventType::Closed, link.peerConn, {}, "peer stopped"});
-            link.peer->unregisterConnection(link.peerConn);
+            // Do NOT unregisterConnection on the peer here — let the peer
+            // process the Closed event during its own poll() so its
+            // onClosed_ callback fires at the right time.
         }
     }
     connections_.clear();
@@ -97,7 +99,9 @@ void MockTransport::close(ConnectionId conn) {
     if (it->second.peer) {
         it->second.peer->enqueueFromPeer(
             {EventType::Closed, it->second.peerConn, {}, "peer closed"});
-        it->second.peer->unregisterConnection(it->second.peerConn);
+        // Do NOT unregisterConnection on the peer here. The peer will
+        // unregister itself when it polls the Closed event, which also
+        // fires its onClosed_ callback at the right time.
     }
     connections_.erase(it);
 }
@@ -111,10 +115,18 @@ void MockTransport::poll() {
             case EventType::Opened:
                 if (onOpened_) onOpened_(ev.conn);
                 break;
-            case EventType::Closed:
-                if (onClosed_) onClosed_(ev.conn, ev.reason);
-                unregisterConnection(ev.conn);
+            case EventType::Closed: {
+                const bool stillAlive = connections_.find(ev.conn) != connections_.end();
+                if (stillAlive) {
+                    unregisterConnection(ev.conn);  // erase first so a re-entrant
+                                                     // close() inside the callback is a no-op
+                    if (onClosed_) onClosed_(ev.conn, ev.reason);
+                }
+                // If not stillAlive, the local side already called close() for this
+                // id and per the NetTransport contract local close() does NOT fire
+                // onClosed_. Drop the event.
                 break;
+            }
             case EventType::Message:
                 if (onMessage_) {
                     onMessage_(ev.conn,

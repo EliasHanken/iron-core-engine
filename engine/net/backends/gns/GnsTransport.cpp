@@ -185,16 +185,17 @@ void GnsTransport::handleStatusChanged(HSteamNetConnection h, int newState) {
                 sockets_->CloseConnection(h, 0, nullptr, false);
                 return;
             }
-            const ConnectionId id = registerConnection(h);
-            // Server-accepted connections didn't go through our options
-            // path; re-apply user-data so the status callback can route.
+            // Set user-data and the poll group BEFORE registering an engine
+            // ConnectionId. If any GNS setup call fails we clean up the GNS
+            // handle without ever exposing a half-baked id to the app.
             sockets_->SetConnectionUserData(h, packThisPointer(this));
             if (!sockets_->SetConnectionPollGroup(h, pollGroup_)) {
                 Log::warn("GnsTransport: SetConnectionPollGroup failed");
                 sockets_->CloseConnection(h, 0, nullptr, false);
-                unregisterConnection(id);
                 return;
             }
+            registerConnection(h);
+            // No onOpened here — wait for Connected state.
             break;
         }
 

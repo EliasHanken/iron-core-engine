@@ -50,7 +50,9 @@ public:
     virtual bool start() = 0;
 
     // Shut down. Closes every open connection without firing onConnectionClosed
-    // for them (caller is shutting down on purpose). Idempotent.
+    // for them (caller is shutting down on purpose). Any inbound messages
+    // that arrived after the last poll() but before stop() are silently
+    // dropped — drain via poll() first if you care about them. Idempotent.
     virtual void stop() = 0;
 
     // --- endpoints ---
