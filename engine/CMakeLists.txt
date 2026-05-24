@@ -7,6 +7,7 @@ add_library(ironcore STATIC
   core/NetArgs.cpp
   net/NetTransport.cpp
   net/MessageRegistry.cpp
+  net/PeerManager.cpp
   net/backends/mock/MockTransport.cpp
   net/backends/gns/GnsTransport.cpp
   scene/Mesh.cpp

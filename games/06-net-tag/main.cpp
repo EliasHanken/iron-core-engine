@@ -14,6 +14,8 @@
 #include "net/MessageRegistry.h"
 #include "net/NetTransport.h"
 #include "net/TimeHistory.h"
+#include "net/PeerManager.h"
+#include "net/PredictionEngine.h"
 #include "net/backends/gns/GnsTransport.h"
 
 #include "core/Log.h"
@@ -368,11 +370,40 @@ int main(int argc, char** argv) {
     // The player (a cube) is the controlled entity. The camera orbits
     // behind/above the player and smooth-lerps toward its ideal position
     // each frame so movement feels weighty rather than snappy.
-    struct Player {
-        iron::Vec3 position{0.0f, 0.5f, 0.0f};  // cube centre sits 0.5 m above ground
-        float yaw   = 0.0f;     // radians; 0 = facing -Z
-        float pitch = -0.35f;   // radians; tilts camera orbit down a bit
-    } player;
+
+    // Server-authoritative simulation. Client and host both run this on
+    // the same inputs in the same order, so prediction should always
+    // match in this trivial sim (PredictionEngine.reconcile will never
+    // actually fire). The machinery is in place for M8.6 hero shooter.
+    struct PlayerState {
+        float x, y, z;
+        bool operator==(const PlayerState& o) const {
+            return x == o.x && y == o.y && z == o.z;
+        }
+    };
+    struct PlayerInput { float dx, dy, dz; };
+    auto simulate = [](const PlayerState& s, const PlayerInput& i, float /*dt*/) {
+        // Cube centre stays above ground (matches the M8.3 per-frame
+        // ground guard that's now folded into the sim so host + client
+        // clamp identically and prediction stays consistent).
+        const float newY = std::max(0.5f, s.y + i.dy);
+        return PlayerState{s.x + i.dx, newY, s.z + i.dz};
+    };
+
+    // yaw/pitch are camera-orientation state owned locally. Position
+    // lives in the predictor below.
+    struct LookState { float yaw = -0.5f; float pitch = -0.25f; } look;
+
+    iron::PredictionEngine<PlayerInput, PlayerState> predictor{
+        simulate,
+        /*fixedDt*/ 1.0f / 60.0f,
+        /*initial*/ PlayerState{8.0f, 4.0f, 12.0f}};
+
+    // Helper: read predicted position as a Vec3 for rendering.
+    auto myPos = [&]() {
+        const auto& s = predictor.predictedState();
+        return iron::Vec3{s.x, s.y, s.z};
+    };
     constexpr float kCamDistance   = 6.0f;   // metres behind the player
     constexpr float kCamHeightLift = 1.0f;   // look-target offset above cube centre
     constexpr float kCamSmoothness = 8.0f;   // higher = snappier follow
@@ -381,9 +412,8 @@ int main(int argc, char** argv) {
     constexpr float kPitchLimit    = 1.45f;  // ~83 degrees; keep camera above ground
     constexpr float kPitchFloor    = -1.45f;
 
-    iron::Vec3 chaseCamPos{player.position.x, player.position.y + kCamDistance,
-                           player.position.z + kCamDistance};
-    iron::Vec3 chaseCamLookAt = player.position;
+    iron::Vec3 chaseCamPos{8.0f, 4.0f + kCamDistance, 12.0f + kCamDistance};
+    iron::Vec3 chaseCamLookAt{8.0f, 4.0f, 12.0f};
 
     double lastMouseX = 0.0, lastMouseY = 0.0;
     glfwGetCursorPos(window.handle(), &lastMouseX, &lastMouseY);
@@ -391,7 +421,7 @@ int main(int argc, char** argv) {
     // --- peer cube state ---
     // Remote peer positions are interpolated through a per-peer
     // TimeHistory<Vec3> for jitter/loss tolerance. Local player is NOT
-    // buffered — local cube renders at player.position directly.
+    // buffered — local cube renders at predictor.predictedState() directly.
     std::unordered_map<std::uint32_t, iron::TimeHistory<iron::Vec3>> remoteHistories;
     constexpr auto kDisplayDelay = std::chrono::milliseconds{100};
 
@@ -400,11 +430,7 @@ int main(int argc, char** argv) {
     iron::GnsTransport transport;
     iron::MessageRegistry registry(&transport);
 
-    bool isHost = false;
-    iron::ConnectionId hostConn = iron::kInvalidConnection;
-    std::uint32_t myPeerId = 0;
-    std::unordered_map<iron::ConnectionId, std::uint32_t> connToPeerId;
-    std::uint32_t nextPeerId = 1;
+    iron::PeerManager peers(transport, registry, iron::nettag::kGameId);
 
     // --- tag game state (host owns; clients are passive renderers) ---
     struct PlayerInfo {
@@ -424,86 +450,96 @@ int main(int argc, char** argv) {
     constexpr float kRoundDurationSec = 60.0f;
     constexpr float kRoundEndDisplaySec = 5.0f;
     iron::FixedTickScheduler scoreTicker{std::chrono::seconds{1}};
+    iron::FixedTickScheduler inputTicker{std::chrono::milliseconds{33}};  // ~30 Hz
 
-    transport.setOnConnectionOpened([&](iron::ConnectionId c) {
-        if (isHost) {
-            const std::uint32_t assigned = nextPeerId++;
-            connToPeerId[c] = assigned;
-            registry.send<iron::nettag::HelloMsg>(
-                c, iron::nettag::HelloMsg{iron::nettag::kGameId, assigned},
-                iron::SendReliability::Reliable);
-            // Late-joiner snapshot: if a round is already in progress,
-            // give the new client the current state so they see "it",
-            // the remaining timer, and (in a moment) the leaderboard
-            // via the next periodic ScoreUpdate broadcast. Without this
-            // the client sits in "(waiting for round...)" until the
-            // current round ends.
-            if (roundActive) {
-                const iron::nettag::RoundStartMsg snapshot{
-                    itPeerId,
-                    std::max(0.0f, roundTimeRemainingSec)};
-                registry.send<iron::nettag::RoundStartMsg>(
-                    c, snapshot, iron::SendReliability::Reliable);
-                // Also push current scores immediately so the leaderboard
-                // isn't empty for up to a second.
-                for (const auto& [pid, info] : players) {
-                    const iron::nettag::ScoreUpdateMsg sMsg{
-                        pid, info.itTimeAccumSec};
-                    registry.send<iron::nettag::ScoreUpdateMsg>(
-                        c, sMsg, iron::SendReliability::Reliable);
+    // Host-side authoritative state per peer.
+    std::unordered_map<std::uint32_t, PlayerState> authStates;
+
+    peers.setOnPeerJoined([&](std::uint32_t pid) {
+        if (peers.isHost()) {
+            if (players.find(pid) == players.end()) players[pid] = PlayerInfo{};
+            if (authStates.find(pid) == authStates.end()) {
+                if (pid == 0) {
+                    authStates[pid] = predictor.predictedState();
+                } else {
+                    authStates[pid] = PlayerState{0.0f, 0.5f, 0.0f};
+                }
+            }
+            // Late-joiner snapshot: send the new client current round
+            // state if a round is active, plus AuthorityPositionMsg for
+            // every existing peer so their cubes appear immediately
+            // (idle peers would otherwise be invisible until they next
+            // press a movement key).
+            if (pid != 0) {
+                for (const auto& [otherPid, state] : authStates) {
+                    if (otherPid == pid) continue;  // don't snapshot self to self
+                    peers.send(pid,
+                        iron::nettag::AuthorityPositionMsg{
+                            otherPid, state.x, state.y, state.z, /*lastInputId=*/0},
+                        iron::SendReliability::Reliable);
+                }
+                if (roundActive) {
+                    const iron::nettag::RoundStartMsg snapshot{
+                        itPeerId, std::max(0.0f, roundTimeRemainingSec)};
+                    peers.send(pid, snapshot, iron::SendReliability::Reliable);
+                    for (const auto& [otherPid, info] : players) {
+                        peers.send(pid,
+                            iron::nettag::ScoreUpdateMsg{otherPid, info.itTimeAccumSec},
+                            iron::SendReliability::Reliable);
+                    }
                 }
             }
         }
     });
 
-    transport.setOnConnectionClosed([&](iron::ConnectionId c,
-                                         const std::string& reason) {
-        if (isHost) {
-            auto it = connToPeerId.find(c);
-            if (it != connToPeerId.end()) {
-                remoteHistories.erase(it->second);
-                connToPeerId.erase(it);
-            }
+    peers.setOnPeerLeft([&](std::uint32_t pid) {
+        remoteHistories.erase(pid);
+        if (peers.isHost()) {
+            authStates.erase(pid);
         } else {
-            iron::Log::warn("net-tag: connection to host closed: %s",
-                            reason.c_str());
             glfwSetWindowShouldClose(window.handle(), GLFW_TRUE);
         }
     });
 
-    registry.registerHandler<iron::nettag::HelloMsg>(
-        [&](iron::ConnectionId /*c*/, const iron::nettag::HelloMsg& msg) {
-            if (isHost) {
-                iron::Log::warn("net-tag: host received Hello — ignoring");
-                return;
-            }
-            if (msg.gameId != iron::nettag::kGameId) {
-                iron::Log::error(
-                    "net-tag: connected to wrong game (gameId=0x%08X, expected 0x%08X) — exiting",
-                    msg.gameId, iron::nettag::kGameId);
-                glfwSetWindowShouldClose(window.handle(), GLFW_TRUE);
-                return;
-            }
-            if (myPeerId == 0) myPeerId = msg.peerId;
+    // Host: client input arrives → apply to that client's authoritative
+    // state → broadcast new AuthorityPositionMsg.
+    registry.registerHandler<iron::nettag::PlayerInputMsg>(
+        [&](iron::ConnectionId c, const iron::nettag::PlayerInputMsg& msg) {
+            if (!peers.isHost()) return;
+            auto pid = peers.peerIdFor(c);
+            if (!pid) return;
+            authStates[*pid] = simulate(
+                authStates[*pid], PlayerInput{msg.dx, msg.dy, msg.dz}, 0.0f);
+            const auto& s = authStates[*pid];
+            peers.broadcastToAll<iron::nettag::AuthorityPositionMsg>(
+                iron::nettag::AuthorityPositionMsg{
+                    *pid, s.x, s.y, s.z, msg.inputId},
+                iron::SendReliability::Unreliable);
         });
 
-    registry.registerHandler<iron::nettag::PositionMsg>(
-        [&](iron::ConnectionId c, const iron::nettag::PositionMsg& msg) {
-            if (isHost) {
-                auto it = connToPeerId.find(c);
-                if (it == connToPeerId.end() || it->second != msg.peerId) {
-                    iron::Log::warn("net-tag: dropping spoofed PositionMsg");
-                    return;
-                }
+    // All peers: receive authoritative position.
+    //   - For our own peerId: reconcile the predictor against authState.
+    //   - For other peers: push into the TimeHistory<Vec3> for smooth rendering.
+    registry.registerHandler<iron::nettag::AuthorityPositionMsg>(
+        [&](iron::ConnectionId, const iron::nettag::AuthorityPositionMsg& msg) {
+            // A client without an assigned peerId yet (Hello in flight)
+            // has myPeerId()=0, which matches the host's peerId. Without
+            // this guard the pre-Hello client would reconcile its
+            // predictor to the host's position. Treat as a remote-cube
+            // update until we have our own identity.
+            if (!peers.hasIdentity()) {
+                remoteHistories[msg.peerId].push(iron::Vec3{msg.x, msg.y, msg.z});
+                return;
             }
-            const iron::Vec3 incoming{msg.x, msg.y, msg.z};
-            remoteHistories[msg.peerId].push(incoming);
-            if (isHost) {
-                for (const auto& [otherConn, _] : connToPeerId) {
-                    if (otherConn == c) continue;
-                    registry.send<iron::nettag::PositionMsg>(
-                        otherConn, msg, iron::SendReliability::Unreliable);
+            const std::uint32_t myId = peers.isHost() ? 0u : peers.myPeerId();
+            if (msg.peerId == myId) {
+                if (!peers.isHost()) {
+                    predictor.reconcile(
+                        PlayerState{msg.x, msg.y, msg.z}, msg.lastInputId);
                 }
+                // Host doesn't reconcile its own state — it IS authoritative.
+            } else {
+                remoteHistories[msg.peerId].push(iron::Vec3{msg.x, msg.y, msg.z});
             }
         });
 
@@ -518,19 +554,19 @@ int main(int argc, char** argv) {
     // (e.g. flip `itPeerId` to an invalid peer). Drop silently on host.
     registry.registerHandler<iron::nettag::TagSwapMsg>(
         [&](iron::ConnectionId /*c*/, const iron::nettag::TagSwapMsg& msg) {
-            if (isHost) return;
+            if (peers.isHost()) return;
             itPeerId = msg.newItPeerId;
         });
 
     registry.registerHandler<iron::nettag::ScoreUpdateMsg>(
         [&](iron::ConnectionId /*c*/, const iron::nettag::ScoreUpdateMsg& msg) {
-            if (isHost) return;
+            if (peers.isHost()) return;
             clientScores[msg.peerId] = msg.itTimeSec;
         });
 
     registry.registerHandler<iron::nettag::RoundStartMsg>(
         [&](iron::ConnectionId /*c*/, const iron::nettag::RoundStartMsg& msg) {
-            if (isHost) return;
+            if (peers.isHost()) return;
             itPeerId = msg.initialItPeerId;
             clientRoundTimeRemainingSec = msg.roundDurationSec;
             clientShowingRoundEnd = false;
@@ -539,41 +575,17 @@ int main(int argc, char** argv) {
 
     registry.registerHandler<iron::nettag::RoundEndMsg>(
         [&](iron::ConnectionId /*c*/, const iron::nettag::RoundEndMsg& msg) {
-            if (isHost) return;
+            if (peers.isHost()) return;
             clientWinnerPeerId = msg.winnerPeerId;
             clientShowingRoundEnd = true;
         });
 
-    if (!transport.start()) {
-        iron::Log::error("net-tag: GnsTransport.start failed");
+    if (!peers.start(netArgs)) {
+        iron::Log::error("net-tag: PeerManager.start failed");
         return 1;
     }
 
-    if (netArgs.wantsConnect) {
-        hostConn = transport.connect(netArgs.addr);
-        if (hostConn == iron::kInvalidConnection) {
-            iron::Log::error("net-tag: connect failed");
-            transport.stop();
-            return 1;
-        }
-    } else {
-        isHost = transport.listen(netArgs.addr);
-        if (!isHost) {
-            hostConn = transport.connect(netArgs.addr);
-            if (hostConn == iron::kInvalidConnection) {
-                iron::Log::error("net-tag: neither listen nor connect succeeded");
-                transport.stop();
-                return 1;
-            }
-        }
-    }
-
     auto prevTime = std::chrono::steady_clock::now();
-    // NOTE: do NOT use time_point::min() here — `now - min()` overflows the
-    // signed duration to a huge negative number, so `since >= 33` never
-    // becomes true and the broadcast loop never fires. Subtract 33ms from
-    // `prevTime` instead so the first broadcast happens on frame 1.
-    auto lastSend = prevTime - std::chrono::milliseconds(33);
 
     // ESC releases the cursor (Minecraft-style) so you can alt-tab / poke
     // at other windows without quitting. Left-click on the game window
@@ -626,42 +638,28 @@ int main(int argc, char** argv) {
 
         // Mouse: rotate the orbit around the player. Right-drag = yaw right
         // (yaw decreases), Down-drag = look down (pitch decreases).
-        player.yaw   -= mouseDx * kMouseSens;
-        player.pitch -= mouseDy * kMouseSens;
-        if (player.pitch >  kPitchLimit) player.pitch =  kPitchLimit;
-        if (player.pitch <  kPitchFloor) player.pitch =  kPitchFloor;
-
-        // WASD moves the player in the horizontal plane relative to facing.
-        // Player's forward (in world XZ): (-sin(yaw), 0, -cos(yaw))
-        // Player's right   (in world XZ): ( cos(yaw), 0, -sin(yaw))
-        const float sy = std::sin(player.yaw);
-        const float cy = std::cos(player.yaw);
-        const iron::Vec3 forwardXZ{-sy, 0.0f, -cy};
-        const iron::Vec3 rightXZ  { cy, 0.0f, -sy};
-        const float step = kMoveSpeed * dt;
-        if (kW) { player.position.x += forwardXZ.x * step; player.position.z += forwardXZ.z * step; }
-        if (kS) { player.position.x -= forwardXZ.x * step; player.position.z -= forwardXZ.z * step; }
-        if (kD) { player.position.x += rightXZ.x   * step; player.position.z += rightXZ.z   * step; }
-        if (kA) { player.position.x -= rightXZ.x   * step; player.position.z -= rightXZ.z   * step; }
-        if (kE) { player.position.y += step; }
-        if (kQ) { player.position.y -= step; }
-        // Don't sink under the ground (cube centre stays above 0.5).
-        if (player.position.y < 0.5f) player.position.y = 0.5f;
+        look.yaw   -= mouseDx * kMouseSens;
+        look.pitch -= mouseDy * kMouseSens;
+        if (look.pitch >  kPitchLimit) look.pitch =  kPitchLimit;
+        if (look.pitch <  kPitchFloor) look.pitch =  kPitchFloor;
 
         // Chase camera: compute the ideal orbit position behind+above the
         // player (sphere around the player parameterised by yaw, pitch,
         // kCamDistance), then exponentially smooth toward it.
-        const float cp = std::cos(player.pitch);
-        const float sp = std::sin(player.pitch);
+        const float sy = std::sin(look.yaw);
+        const float cy = std::cos(look.yaw);
+        const float cp = std::cos(look.pitch);
+        const float sp = std::sin(look.pitch);
+        const iron::Vec3 curPos = myPos();
         const iron::Vec3 idealCamPos{
-            player.position.x + sy * cp * kCamDistance,
-            player.position.y - sp * kCamDistance,
-            player.position.z + cy * cp * kCamDistance,
+            curPos.x + sy * cp * kCamDistance,
+            curPos.y - sp * kCamDistance,
+            curPos.z + cy * cp * kCamDistance,
         };
         const iron::Vec3 idealLookAt{
-            player.position.x,
-            player.position.y + kCamHeightLift,
-            player.position.z,
+            curPos.x,
+            curPos.y + kCamHeightLift,
+            curPos.z,
         };
         // Framerate-independent lerp: 1 - exp(-dt * smoothness).
         const float lerpAmt = 1.0f - std::exp(-dt * kCamSmoothness);
@@ -672,41 +670,35 @@ int main(int argc, char** argv) {
         chaseCamLookAt.y += (idealLookAt.y - chaseCamLookAt.y) * lerpAmt;
         chaseCamLookAt.z += (idealLookAt.z - chaseCamLookAt.z) * lerpAmt;
 
-        transport.poll();
+        peers.poll();
 
-        // Host-side helper: latest known position of any peer.
-        //   - peerId 0 → local host player.position (instant).
-        //   - other peers → most recent TimeHistory sample (NOT the
-        //     display-delayed one — gameplay uses live data, not 100ms-old).
+        // Host-side helper: authoritative position of any peer from authStates.
         auto latestPosition = [&](std::uint32_t pid) -> iron::Vec3 {
-            if (pid == 0) return player.position;
-            auto it = remoteHistories.find(pid);
-            if (it == remoteHistories.end()) return iron::Vec3{1e9f, 0, 0};
-            auto s = it->second.sample(
-                iron::TimeHistory<iron::Vec3>::Clock::now());
-            return s.value_or(iron::Vec3{1e9f, 0, 0});
+            auto it = authStates.find(pid);
+            if (it == authStates.end()) return iron::Vec3{1e9f, 0, 0};
+            return iron::Vec3{it->second.x, it->second.y, it->second.z};
         };
 
         // --- host gameplay tick ---
-        if (isHost) {
+        if (peers.isHost()) {
             gameElapsedSec += dt;
 
             // Ensure host's own player entry exists.
             if (players.find(0) == players.end()) {
                 players[0] = PlayerInfo{};
             }
-            // Ensure every connected client has a player entry.
-            for (const auto& [c, peerId] : connToPeerId) {
+            // Ensure every connected peer has a player entry.
+            for (std::uint32_t peerId : peers.peerIds()) {
                 if (players.find(peerId) == players.end()) {
                     players[peerId] = PlayerInfo{};
                 }
             }
-            // Remove player entries for clients that have disconnected.
+            // Remove player entries for peers that have disconnected.
             // Without this, a dropped "it" leaves a ghost that nobody can
             // tag, freezing the round.
             for (auto it = players.begin(); it != players.end(); ) {
                 bool stillConnected = (it->first == 0);  // host is always present
-                for (const auto& [_, pid] : connToPeerId) {
+                for (std::uint32_t pid : peers.peerIds()) {
                     if (pid == it->first) { stillConnected = true; break; }
                 }
                 if (!stillConnected) {
@@ -719,10 +711,8 @@ int main(int argc, char** argv) {
                         }
                         itPeerId = newIt;
                         const iron::nettag::TagSwapMsg swapMsg{itPeerId};
-                        for (const auto& [c, _] : connToPeerId) {
-                            registry.send<iron::nettag::TagSwapMsg>(
-                                c, swapMsg, iron::SendReliability::Reliable);
-                        }
+                        peers.broadcastToAll<iron::nettag::TagSwapMsg>(
+                            swapMsg, iron::SendReliability::Reliable);
                     }
                     it = players.erase(it);
                 } else {
@@ -749,10 +739,8 @@ int main(int argc, char** argv) {
 
                 const iron::nettag::RoundStartMsg startMsg{
                     itPeerId, kRoundDurationSec};
-                for (const auto& [c, _] : connToPeerId) {
-                    registry.send<iron::nettag::RoundStartMsg>(
-                        c, startMsg, iron::SendReliability::Reliable);
-                }
+                peers.broadcastToAll<iron::nettag::RoundStartMsg>(
+                    startMsg, iron::SendReliability::Reliable);
             }
 
             if (roundActive) {
@@ -790,20 +778,16 @@ int main(int argc, char** argv) {
                         pit->second.lastTaggedTimeSec = gameElapsedSec;
                     }
                     const iron::nettag::TagSwapMsg swapMsg{itPeerId};
-                    for (const auto& [c, _] : connToPeerId) {
-                        registry.send<iron::nettag::TagSwapMsg>(
-                            c, swapMsg, iron::SendReliability::Reliable);
-                    }
+                    peers.broadcastToAll<iron::nettag::TagSwapMsg>(
+                        swapMsg, iron::SendReliability::Reliable);
                 }
 
                 // Broadcast scores at the FixedTickScheduler cadence (1 Hz).
                 scoreTicker.update(dt, [&]() {
                     for (const auto& [pid, info] : players) {
-                        const iron::nettag::ScoreUpdateMsg sMsg{pid, info.itTimeAccumSec};
-                        for (const auto& [c, _] : connToPeerId) {
-                            registry.send<iron::nettag::ScoreUpdateMsg>(
-                                c, sMsg, iron::SendReliability::Reliable);
-                        }
+                        peers.broadcastToAll<iron::nettag::ScoreUpdateMsg>(
+                            iron::nettag::ScoreUpdateMsg{pid, info.itTimeAccumSec},
+                            iron::SendReliability::Reliable);
                     }
                 });
 
@@ -822,42 +806,69 @@ int main(int argc, char** argv) {
                     roundEndDisplayUntilSec = gameElapsedSec + kRoundEndDisplaySec;
 
                     const iron::nettag::RoundEndMsg endMsg{winner};
-                    for (const auto& [c, _] : connToPeerId) {
-                        registry.send<iron::nettag::RoundEndMsg>(
-                            c, endMsg, iron::SendReliability::Reliable);
-                    }
+                    peers.broadcastToAll<iron::nettag::RoundEndMsg>(
+                        endMsg, iron::SendReliability::Reliable);
                 }
             }
         }
 
-        const std::uint32_t myId = isHost ? 0u : myPeerId;
-        const bool haveIdentity = isHost || (myPeerId != 0);
-        // The local cube is rendered directly from player.position in
-        // the render block below. Remote cubes come from per-peer
-        // TimeHistory<Vec3> sampled at (now - displayDelay).
+        const std::uint32_t myId = peers.isHost() ? 0u : peers.myPeerId();
+        const bool haveIdentity = peers.hasIdentity();
 
-        // Broadcast our position ~30 Hz.
-        if (haveIdentity) {
-            const auto since = std::chrono::duration_cast<std::chrono::milliseconds>(
-                                   now - lastSend).count();
-            if (since >= 33) {
-                lastSend = now;
-                const iron::nettag::PositionMsg msg{
-                    myId,
-                    player.position.x, player.position.y, player.position.z};
-                if (isHost) {
-                    for (const auto& [c, _] : connToPeerId) {
-                        registry.send<iron::nettag::PositionMsg>(
-                            c, msg, iron::SendReliability::Unreliable);
+        // Per-input-tick: compute movement direction from WASD/QE, apply
+        // to predictor for instant local response, send to host (client)
+        // or apply + broadcast authority (host).
+        {
+            const float yawSin = std::sin(look.yaw);
+            const float yawCos = std::cos(look.yaw);
+            const iron::Vec3 forwardXZ{-yawSin, 0.0f, -yawCos};
+            const iron::Vec3 rightXZ  { yawCos, 0.0f, -yawSin};
+            iron::Vec3 dirThisFrame{0, 0, 0};
+            if (kW) dirThisFrame = dirThisFrame + forwardXZ;
+            if (kS) dirThisFrame = dirThisFrame - forwardXZ;
+            if (kD) dirThisFrame = dirThisFrame + rightXZ;
+            if (kA) dirThisFrame = dirThisFrame - rightXZ;
+            if (kE) dirThisFrame.y += 1.0f;
+            if (kQ) dirThisFrame.y -= 1.0f;
+            // Normalise XZ so diagonals aren't faster.
+            const float xzLen = std::sqrt(dirThisFrame.x * dirThisFrame.x +
+                                          dirThisFrame.z * dirThisFrame.z);
+            if (xzLen > 1.0f) {
+                dirThisFrame.x /= xzLen;
+                dirThisFrame.z /= xzLen;
+            }
+
+            constexpr float kInputRateHz = 30.0f;
+            const float speedPerTick = kMoveSpeed / kInputRateHz;
+
+            if (haveIdentity) {
+                inputTicker.update(dt, [&]() {
+                    PlayerInput in{
+                        dirThisFrame.x * speedPerTick,
+                        dirThisFrame.y * speedPerTick,
+                        dirThisFrame.z * speedPerTick,
+                    };
+                    const auto inputId = predictor.applyInput(in);
+                    if (peers.isHost()) {
+                        // Host: apply to its own authoritative state and broadcast.
+                        authStates[0] = simulate(authStates[0], in, 0.0f);
+                        peers.broadcastToAll<iron::nettag::AuthorityPositionMsg>(
+                            iron::nettag::AuthorityPositionMsg{
+                                0, authStates[0].x, authStates[0].y, authStates[0].z,
+                                /*lastInputId=*/0},
+                            iron::SendReliability::Unreliable);
+                    } else {
+                        // Client: ship input to host.
+                        peers.send<iron::nettag::PlayerInputMsg>(
+                            0,
+                            iron::nettag::PlayerInputMsg{inputId, in.dx, in.dy, in.dz},
+                            iron::SendReliability::Unreliable);
                     }
-                } else {
-                    registry.send<iron::nettag::PositionMsg>(
-                        hostConn, msg, iron::SendReliability::Unreliable);
-                }
+                });
             }
         }
 
-        if (!isHost && !clientShowingRoundEnd) {
+        if (!peers.isHost() && !clientShowingRoundEnd) {
             clientRoundTimeRemainingSec -= dt;
             if (clientRoundTimeRemainingSec < 0.0f) clientRoundTimeRemainingSec = 0.0f;
         }
@@ -890,12 +901,12 @@ int main(int argc, char** argv) {
             renderer.submit(call);
         }
 
-        // Local cube renders at player.position (no buffering).
+        // Local cube renders at predicted position (no buffering).
         if (haveIdentity) {
             iron::DrawCall localCall;
             localCall.mesh = cubeMesh;
             localCall.shader = litShader;
-            localCall.model = iron::translation(player.position);
+            localCall.model = iron::translation(myPos());
             localCall.material.texture     = renderer.whiteTexture();
             localCall.material.normalMap   = renderer.flatNormalTexture();
             localCall.material.specularMap = renderer.noSpecularTexture();
@@ -924,11 +935,11 @@ int main(int argc, char** argv) {
 
         renderer.endFrame();
 
-        // role + peer count (unchanged from Task 5)
-        if (isHost) {
+        // role + peer count
+        if (peers.isHost()) {
             hud.setText(roleText, "Host (peer 0)");
-        } else if (myPeerId != 0) {
-            hud.setText(roleText, "Client (peer " + std::to_string(myPeerId) + ")");
+        } else if (peers.myPeerId() != 0) {
+            hud.setText(roleText, "Client (peer " + std::to_string(peers.myPeerId()) + ")");
         } else {
             hud.setText(roleText, "(connecting...)");
         }
@@ -936,24 +947,23 @@ int main(int argc, char** argv) {
         hud.setText(peersText, "Peers: " + std::to_string(peerCount));
 
         // game state
-        const std::uint32_t myId2 = isHost ? 0u : myPeerId;
-        const float remaining = isHost ? roundTimeRemainingSec
-                                        : clientRoundTimeRemainingSec;
-        const bool showingEnd = isHost
+        const float remaining = peers.isHost() ? roundTimeRemainingSec
+                                               : clientRoundTimeRemainingSec;
+        const bool showingEnd = peers.isHost()
                                   ? (!roundActive && gameElapsedSec < roundEndDisplayUntilSec)
                                   : clientShowingRoundEnd;
-        const std::uint32_t winner = isHost ? winnerPeerId : clientWinnerPeerId;
+        const std::uint32_t winner = peers.isHost() ? winnerPeerId : clientWinnerPeerId;
         // A client hasn't received the first RoundStart yet if its remaining
         // time is still zero and no round-end is being displayed. Show a
         // neutral message instead of misleading "Run! 0s".
-        const bool clientWaiting = !isHost && !showingEnd
+        const bool clientWaiting = !peers.isHost() && !showingEnd
                                     && clientRoundTimeRemainingSec <= 0.0f;
         if (clientWaiting) {
             hud.setText(stateText, "(waiting for round...)");
         } else if (showingEnd) {
             hud.setText(stateText, "Round over! Winner: peer "
                                     + std::to_string(winner));
-        } else if ((itPeerId == myId2 && myId2 != 0) || (isHost && itPeerId == 0)) {
+        } else if ((itPeerId == myId && myId != 0) || (peers.isHost() && itPeerId == 0)) {
             const int secs = static_cast<int>(std::max(0.0f, remaining));
             hud.setText(stateText, "You are IT!  " + std::to_string(secs) + "s");
         } else {
@@ -963,7 +973,7 @@ int main(int argc, char** argv) {
 
         // leaderboard
         std::unordered_map<std::uint32_t, float> scoreView;
-        if (isHost) {
+        if (peers.isHost()) {
             for (const auto& [pid, info] : players) scoreView[pid] = info.itTimeAccumSec;
         } else {
             scoreView = clientScores;
@@ -982,10 +992,11 @@ int main(int argc, char** argv) {
         hud.setText(scoresText, sb);
 
         iron::ConnectionId statsConn = iron::kInvalidConnection;
-        if (isHost) {
-            if (!connToPeerId.empty()) statsConn = connToPeerId.begin()->first;
+        if (peers.isHost()) {
+            const auto ids = peers.peerIds();
+            if (!ids.empty()) statsConn = peers.connectionFor(ids.front());
         } else {
-            statsConn = hostConn;
+            statsConn = peers.connectionFor(0);
         }
         hud.updateNetworkStats(netStatsHud, transport.stats(statsConn));
 
@@ -994,6 +1005,6 @@ int main(int argc, char** argv) {
 
         window.swapBuffers();
     }
-    transport.stop();
+    peers.stop();
     return 0;
 }
