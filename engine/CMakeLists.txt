@@ -5,6 +5,7 @@ add_library(ironcore STATIC
   core/Platform.cpp
   core/Application.cpp
   net/NetTransport.cpp
+  net/backends/mock/MockTransport.cpp
   scene/Mesh.cpp
   scene/Camera.cpp
   scene/FirstPersonController.cpp
