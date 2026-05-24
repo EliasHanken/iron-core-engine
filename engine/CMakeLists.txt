@@ -4,6 +4,7 @@ add_library(ironcore STATIC
   core/Input.cpp
   core/Platform.cpp
   core/Application.cpp
+  net/NetTransport.cpp
   scene/Mesh.cpp
   scene/Camera.cpp
   scene/FirstPersonController.cpp
