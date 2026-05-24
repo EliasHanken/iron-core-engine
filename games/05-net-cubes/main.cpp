@@ -1,3 +1,8 @@
+// Silence MSVC's std::getenv "use _dupenv_s instead" warning. The
+// NET_CUBES_PORT env-var read is a startup-only convenience and the
+// CRT-secure variant adds code without any real safety benefit here.
+#define _CRT_SECURE_NO_WARNINGS
+
 // Iron Core Engine — networked cubes demo (M8.2).
 //
 // Each launched copy of this exe is a colored cube in a shared 3D scene.
@@ -386,7 +391,13 @@ int main() {
     // --- networking ---
     iron::GnsTransport transport;
 
-    const iron::NetAddress addr{0x7F000001, 27015};
+    // Port can be overridden via NET_CUBES_PORT env var (handy when the
+    // default clashes with a running Steam game or zombie instance).
+    std::uint16_t port = 30005;
+    if (const char* envPort = std::getenv("NET_CUBES_PORT")) {
+        port = static_cast<std::uint16_t>(std::atoi(envPort));
+    }
+    const iron::NetAddress addr{0x7F000001, port};
 
     // State (mutable across callbacks + main loop).
     bool isHost = false;
@@ -483,7 +494,11 @@ int main() {
     }
 
     auto prevTime = std::chrono::steady_clock::now();
-    auto lastSend = std::chrono::steady_clock::time_point::min();
+    // NOTE: do NOT use time_point::min() here — `now - min()` overflows the
+    // signed duration to a huge negative number, so `since >= 33` never
+    // becomes true and the broadcast loop never fires. Subtract 33ms from
+    // `prevTime` instead so the first broadcast happens on frame 1.
+    auto lastSend = prevTime - std::chrono::milliseconds(33);
     while (!window.shouldClose()) {
         window.pollEvents();
         const auto now = std::chrono::steady_clock::now();

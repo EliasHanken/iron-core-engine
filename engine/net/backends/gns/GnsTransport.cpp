@@ -28,6 +28,19 @@ GnsTransport::~GnsTransport() {
     stop();
 }
 
+namespace {
+// Surfaces GNS's internal log messages (it usually knows exactly why a
+// listen/connect failed, but our wrapper otherwise swallows the detail).
+void gnsDebugOutput(ESteamNetworkingSocketsDebugOutputType type,
+                    const char* msg) {
+    if (type <= k_ESteamNetworkingSocketsDebugOutputType_Warning) {
+        Log::warn("GNS: %s", msg);
+    } else if (type <= k_ESteamNetworkingSocketsDebugOutputType_Msg) {
+        Log::info("GNS: %s", msg);
+    }
+}
+}  // namespace
+
 bool GnsTransport::start() {
     if (started_) return true;
 
@@ -36,6 +49,11 @@ bool GnsTransport::start() {
         Log::error("GnsTransport: init failed: %s", errMsg);
         return false;
     }
+
+    // Forward GNS's internal warnings/info to our log so listen/connect
+    // failures come with a useful reason.
+    SteamNetworkingUtils()->SetDebugOutputFunction(
+        k_ESteamNetworkingSocketsDebugOutputType_Msg, &gnsDebugOutput);
 
     sockets_ = SteamNetworkingSockets();
     if (!sockets_) {
@@ -120,6 +138,17 @@ ConnectionId GnsTransport::connect(NetAddress addr) {
         Log::error("GnsTransport: ConnectByIPAddress failed");
         return kInvalidConnection;
     }
+    // Add the outgoing connection to our poll group NOW so any inbound
+    // messages are drained by poll(). We must NOT defer this to the
+    // Connected status callback: re-assigning the poll group on a
+    // connection that already has one (server-accepted ones do, via the
+    // Connecting handler) appears to drop messages that arrived between
+    // accept and the redundant re-assignment.
+    if (!sockets_->SetConnectionPollGroup(h, pollGroup_)) {
+        Log::error("GnsTransport: SetConnectionPollGroup failed in connect()");
+        sockets_->CloseConnection(h, 0, nullptr, false);
+        return kInvalidConnection;
+    }
     return registerConnection(h);
 }
 
@@ -201,15 +230,8 @@ void GnsTransport::handleStatusChanged(HSteamNetConnection h, int newState) {
 
         case k_ESteamNetworkingConnectionState_Connected: {
             auto it = handleToId_.find(h);
-            if (it != handleToId_.end()) {
-                // Add outgoing (client-initiated) connections to the poll group
-                // so their inbound messages are drained by poll(). Accepted
-                // connections are added during the Connecting handler; this
-                // SetConnectionPollGroup call is a no-op for those.
-                sockets_->SetConnectionPollGroup(h, pollGroup_);
-                if (onOpened_) {
-                    onOpened_(it->second);
-                }
+            if (it != handleToId_.end() && onOpened_) {
+                onOpened_(it->second);
             }
             break;
         }
