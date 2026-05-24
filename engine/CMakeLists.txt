@@ -7,6 +7,7 @@ add_library(ironcore STATIC
   scene/Mesh.cpp
   scene/Camera.cpp
   scene/FirstPersonController.cpp
+  scene/FreeFlyCamera.cpp
   ui/BitmapFont.cpp
   ui/BuiltinFont.cpp
   ui/Hud.cpp
