@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.20)
-project(IronCoreEngine LANGUAGES CXX)
+project(IronCoreEngine LANGUAGES C CXX)
 
 # Force every target (including FetchContent dependencies) onto the dynamic CRT
 # so they all agree — avoids LNK4098 (LIBCMT vs MSVCRT mismatch).
@@ -50,10 +50,16 @@ if(MSVC)
   )
 endif()
 
+# --- GameNetworkingSockets: UDP transport with reliable channels, encryption,
+#     congestion control. Brought in via vcpkg manifest mode; see
+#     docs/engine/build-setup.md for the one-time vcpkg toolchain setup.
+find_package(GameNetworkingSockets CONFIG REQUIRED)
+
 add_subdirectory(third_party)
 
 add_subdirectory(engine)
 add_subdirectory(games/01-spinning-cube)
 add_subdirectory(games/02-strandbound)
 add_subdirectory(games/03-showcase)
+add_subdirectory(games/04-net-pingpong)
 add_subdirectory(tests)

@@ -1,0 +1,7 @@
+{
+  "name": "iron-core-engine",
+  "version-string": "0.0.0",
+  "dependencies": [
+    "gamenetworkingsockets"
+  ]
+}

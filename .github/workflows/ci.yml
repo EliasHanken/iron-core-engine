@@ -24,11 +24,24 @@ jobs:
       - name: Install glad generator dependency
         run: pip install jinja2
 
+      - name: Setup vcpkg
+        uses: lukka/run-vcpkg@v11
+        with:
+          vcpkgGitCommitId: 'aa40adda5352e87655b8583cfb2451d5e9e276fd'
+
       - name: Configure
-        run: cmake -S . -B build
+        # bash shell on Windows runner: pwsh's `${env:VCPKG_ROOT}` interpolation
+        # mangles -D...= args to cmake; bash with $VCPKG_ROOT is reliable.
+        shell: bash
+        run: cmake -S . -B build -DCMAKE_TOOLCHAIN_FILE="$VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake"
 
       - name: Build
-        run: cmake --build build
+        run: cmake --build build --config Debug
+
+      - name: Smoke test - net-pingpong
+        run: |
+          ./build/games/04-net-pingpong/Debug/net-pingpong.exe
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Test
         run: ctest --test-dir build -C Debug --output-on-failure
