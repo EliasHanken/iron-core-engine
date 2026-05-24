@@ -12,6 +12,7 @@
 #include "core/NetArgs.h"
 #include "net/TimeHistory.h"
 #include "net/MessageRegistry.h"
+#include "net/PeerManager.h"
 
 #include "core/Log.h"
 #include "core/Platform.h"
@@ -395,79 +396,39 @@ int main(int argc, char** argv) {
     iron::GnsTransport transport;
 
     const iron::NetArgs netArgs = iron::parseNetArgs(argc, argv);
-    const iron::NetAddress addr = netArgs.addr;
-    const bool wantsConnect = netArgs.wantsConnect;
-
-    // State (mutable across callbacks + main loop).
-    bool isHost = false;
-    iron::ConnectionId hostConn = iron::kInvalidConnection;
-    std::uint32_t myPeerId = 0;       // host is always 0; client starts at 0 until Hello
-    std::unordered_map<iron::ConnectionId, std::uint32_t> connToPeerId;
-    std::uint32_t nextPeerId = 1;
 
     iron::MessageRegistry registry(&transport);
 
-    transport.setOnConnectionOpened([&](iron::ConnectionId c) {
-        if (isHost) {
-            const std::uint32_t assigned = nextPeerId++;
-            connToPeerId[c] = assigned;
-            registry.send<iron::netcubes::HelloMsg>(
-                c, iron::netcubes::HelloMsg{iron::netcubes::kGameId, assigned},
-                iron::SendReliability::Reliable);
-        }
-        // Client side: nothing to do until HelloMsg arrives.
-    });
+    iron::PeerManager peers(transport, registry, iron::netcubes::kGameId);
 
-    transport.setOnConnectionClosed([&](iron::ConnectionId c,
-                                         const std::string& reason) {
-        if (isHost) {
-            auto it = connToPeerId.find(c);
-            if (it != connToPeerId.end()) {
-                remoteHistories.erase(it->second);
-                connToPeerId.erase(it);
-            }
-        } else {
-            iron::Log::warn("net-cubes: connection to host closed: %s",
-                            reason.c_str());
+    peers.setOnPeerJoined([&](std::uint32_t pid) {
+        // remoteHistories entries are created on demand in the
+        // PositionMsg handler. No per-peer init needed for cubes.
+        (void)pid;
+    });
+    peers.setOnPeerLeft([&](std::uint32_t pid) {
+        remoteHistories.erase(pid);
+        if (!peers.isHost()) {
+            // Host disconnected — exit cleanly.
             glfwSetWindowShouldClose(window.handle(), GLFW_TRUE);
         }
     });
 
-    registry.registerHandler<iron::netcubes::HelloMsg>(
-        [&](iron::ConnectionId /*c*/, const iron::netcubes::HelloMsg& msg) {
-            if (isHost) {
-                iron::Log::warn("net-cubes: host received Hello — ignoring");
-                return;
-            }
-            if (msg.gameId != iron::netcubes::kGameId) {
-                iron::Log::error(
-                    "net-cubes: connected to wrong game (gameId=0x%08X, expected 0x%08X) — exiting",
-                    msg.gameId, iron::netcubes::kGameId);
-                glfwSetWindowShouldClose(window.handle(), GLFW_TRUE);
-                return;
-            }
-            if (myPeerId == 0) {
-                myPeerId = msg.peerId;
-            }
-        });
-
     registry.registerHandler<iron::netcubes::PositionMsg>(
         [&](iron::ConnectionId c, const iron::netcubes::PositionMsg& msg) {
-            // Validate: host requires the sender's peerId to match what we
-            // assigned them. Rejects spoofs (incl. accidental peerId=0
-            // that would clobber the host's own cube).
-            if (isHost) {
-                auto it = connToPeerId.find(c);
-                if (it == connToPeerId.end() || it->second != msg.peerId) {
+            if (peers.isHost()) {
+                auto pid = peers.peerIdFor(c);
+                if (!pid || *pid != msg.peerId) {
                     iron::Log::warn("net-cubes: dropping PositionMsg with mismatched peerId");
                     return;
                 }
             }
             const iron::Vec3 incoming{msg.x, msg.y, msg.z};
             remoteHistories[msg.peerId].push(incoming);
-            // Host rebroadcasts to all other clients (star topology).
-            if (isHost) {
-                for (const auto& [otherConn, _] : connToPeerId) {
+            if (peers.isHost()) {
+                // Rebroadcast to all OTHER clients (skip the sender).
+                for (std::uint32_t otherPid : peers.peerIds()) {
+                    iron::ConnectionId otherConn = peers.connectionFor(otherPid);
                     if (otherConn == c) continue;
                     registry.send<iron::netcubes::PositionMsg>(
                         otherConn, msg, iron::SendReliability::Unreliable);
@@ -475,31 +436,9 @@ int main(int argc, char** argv) {
             }
         });
 
-    if (!transport.start()) {
-        iron::Log::error("net-cubes: GnsTransport.start failed");
+    if (!peers.start(netArgs)) {
+        iron::Log::error("net-cubes: PeerManager.start failed");
         return 1;
-    }
-
-    if (wantsConnect) {
-        hostConn = transport.connect(addr);
-        if (hostConn == iron::kInvalidConnection) {
-            iron::Log::error("net-cubes: connect failed");
-            transport.stop();
-            return 1;
-        }
-    } else {
-        isHost = transport.listen(addr);
-        if (!isHost) {
-            // No --connect supplied AND listen failed (port taken). Try
-            // connect as a fallback — preserves the old "just double-click
-            // the exe twice" UX on a single machine.
-            hostConn = transport.connect(addr);
-            if (hostConn == iron::kInvalidConnection) {
-                iron::Log::error("net-cubes: neither listen nor connect succeeded");
-                transport.stop();
-                return 1;
-            }
-        }
     }
 
     auto prevTime = std::chrono::steady_clock::now();
@@ -606,10 +545,10 @@ int main(int argc, char** argv) {
         chaseCamLookAt.y += (idealLookAt.y    - chaseCamLookAt.y) * lerpAmt;
         chaseCamLookAt.z += (idealLookAt.z    - chaseCamLookAt.z) * lerpAmt;
 
-        transport.poll();
+        peers.poll();
 
-        const std::uint32_t myId = isHost ? 0u : myPeerId;
-        const bool haveIdentity = isHost || (myPeerId != 0);
+        const std::uint32_t myId = peers.isHost() ? 0u : peers.myPeerId();
+        const bool haveIdentity = peers.hasIdentity();
         // The local cube is rendered directly from player.position in
         // the render block below. Remote cubes come from their per-peer
         // TimeHistory<Vec3> sampled at (now - displayDelay).
@@ -623,14 +562,12 @@ int main(int argc, char** argv) {
                 const iron::netcubes::PositionMsg msg{
                     myId,
                     player.position.x, player.position.y, player.position.z};
-                if (isHost) {
-                    for (const auto& [c, _] : connToPeerId) {
-                        registry.send<iron::netcubes::PositionMsg>(
-                            c, msg, iron::SendReliability::Unreliable);
-                    }
+                if (peers.isHost()) {
+                    peers.broadcastToAll<iron::netcubes::PositionMsg>(
+                        msg, iron::SendReliability::Unreliable);
                 } else {
-                    registry.send<iron::netcubes::PositionMsg>(
-                        hostConn, msg, iron::SendReliability::Unreliable);
+                    peers.send<iron::netcubes::PositionMsg>(
+                        0, msg, iron::SendReliability::Unreliable);
                 }
             }
         }
@@ -695,23 +632,24 @@ int main(int argc, char** argv) {
         renderer.endFrame();
 
         // Update HUD text from current state.
-        if (isHost) {
+        if (peers.isHost()) {
             hud.setText(roleText, "Host (peer 0)");
-        } else if (myPeerId != 0) {
-            hud.setText(roleText, "Client (peer " + std::to_string(myPeerId) + ")");
+        } else if (peers.myPeerId() != 0) {
+            hud.setText(roleText, "Client (peer " + std::to_string(peers.myPeerId()) + ")");
         } else {
             hud.setText(roleText, "(connecting...)");
         }
-        const std::size_t peerCount = (haveIdentity ? 1u : 0u) + remoteHistories.size();
+        const std::size_t peerCount = (peers.hasIdentity() ? 1u : 0u) + remoteHistories.size();
         hud.setText(peersText, "Peers: " + std::to_string(peerCount));
         // Update the live network stats widget for the connection that
         // matters: host shows the first connected client (if any),
         // client shows the host connection.
         iron::ConnectionId statsConn = iron::kInvalidConnection;
-        if (isHost) {
-            if (!connToPeerId.empty()) statsConn = connToPeerId.begin()->first;
+        if (peers.isHost()) {
+            const auto ids = peers.peerIds();
+            if (!ids.empty()) statsConn = peers.connectionFor(ids.front());
         } else {
-            statsConn = hostConn;
+            statsConn = peers.connectionFor(0);
         }
         hud.updateNetworkStats(netStatsHud, transport.stats(statsConn));
         renderer.drawHud(hud.build(font, renderer.whiteTexture()),
@@ -719,6 +657,6 @@ int main(int argc, char** argv) {
 
         window.swapBuffers();
     }
-    transport.stop();
+    peers.stop();
     return 0;
 }
