@@ -7,6 +7,7 @@ add_library(ironcore STATIC
   scene/Mesh.cpp
   scene/Camera.cpp
   scene/FirstPersonController.cpp
+  scene/FreeFlyCamera.cpp
   ui/BitmapFont.cpp
   ui/BuiltinFont.cpp
   ui/Hud.cpp
@@ -22,6 +23,7 @@ add_library(ironcore STATIC
   render/backends/opengl/GLShadowMap.cpp
   render/backends/opengl/GLReflectionTarget.cpp
   render/ReflectionPlane.cpp
+  render/TextureLoader.cpp
 )
 
 target_include_directories(ironcore PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
