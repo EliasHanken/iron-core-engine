@@ -48,14 +48,3 @@ target_include_directories(test_rope_thrower PRIVATE
   ${CMAKE_CURRENT_SOURCE_DIR}
   ${CMAKE_SOURCE_DIR}/games/02-strandbound)
 add_test(NAME test_rope_thrower COMMAND test_rope_thrower)
-
-# test_net_cubes_protocol compiles the game-side Protocol.cpp directly,
-# since it is not part of the ironcore library.
-add_executable(test_net_cubes_protocol
-  test_net_cubes_protocol.cpp
-  ${CMAKE_SOURCE_DIR}/games/05-net-cubes/Protocol.cpp)
-target_link_libraries(test_net_cubes_protocol PRIVATE ironcore)
-target_include_directories(test_net_cubes_protocol PRIVATE
-  ${CMAKE_CURRENT_SOURCE_DIR}
-  ${CMAKE_SOURCE_DIR}/games/05-net-cubes)
-add_test(NAME test_net_cubes_protocol COMMAND test_net_cubes_protocol)

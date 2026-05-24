@@ -1,4 +1,4 @@
-add_executable(net-cubes main.cpp Protocol.cpp)
+add_executable(net-cubes main.cpp)
 target_link_libraries(net-cubes PRIVATE ironcore)
 
 # Copy repo-root assets/ next to the built exe so net-cubes finds

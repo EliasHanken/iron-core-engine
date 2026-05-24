@@ -1,8 +1,3 @@
-// Silence MSVC's std::getenv "use _dupenv_s instead" warning. The
-// NET_CUBES_PORT env-var read is a startup-only convenience and the
-// CRT-secure variant adds code without any real safety benefit here.
-#define _CRT_SECURE_NO_WARNINGS
-
 // Iron Core Engine — networked cubes demo (M8.2).
 //
 // Each launched copy of this exe is a colored cube in a shared 3D scene.
@@ -13,7 +8,9 @@
 // Task 2: skeleton — window, free-fly camera, ground, skybox, your own
 // cube. Networking lands in Task 3.
 
-#include "Protocol.h"
+#include "Messages.h"
+#include "core/NetArgs.h"
+#include "net/MessageRegistry.h"
 
 #include "core/Log.h"
 #include "core/Platform.h"
@@ -286,7 +283,7 @@ iron::Vec3 colorForPeer(std::uint32_t peerId) {
 
 }  // namespace
 
-int main() {
+int main(int argc, char** argv) {
     iron::Window window(kScreenWidth, kScreenHeight, "Iron Core — Net Cubes");
     if (!window.valid()) {
         iron::Log::error("net-cubes: failed to create window");
@@ -405,13 +402,9 @@ int main() {
     // --- networking ---
     iron::GnsTransport transport;
 
-    // Port can be overridden via NET_CUBES_PORT env var (handy when the
-    // default clashes with a running Steam game or zombie instance).
-    std::uint16_t port = 30005;
-    if (const char* envPort = std::getenv("NET_CUBES_PORT")) {
-        port = static_cast<std::uint16_t>(std::atoi(envPort));
-    }
-    const iron::NetAddress addr{0x7F000001, port};
+    const iron::NetArgs netArgs = iron::parseNetArgs(argc, argv);
+    const iron::NetAddress addr = netArgs.addr;
+    const bool wantsConnect = netArgs.wantsConnect;
 
     // State (mutable across callbacks + main loop).
     bool isHost = false;
@@ -419,18 +412,16 @@ int main() {
     std::uint32_t myPeerId = 0;       // host is always 0; client starts at 0 until Hello
     std::unordered_map<iron::ConnectionId, std::uint32_t> connToPeerId;
     std::uint32_t nextPeerId = 1;
-    std::vector<std::byte> sendBuf;   // reusable serialisation buffer
+
+    iron::MessageRegistry registry(&transport);
 
     transport.setOnConnectionOpened([&](iron::ConnectionId c) {
         if (isHost) {
-            // Assign this client a peerId and send Hello reliably.
             const std::uint32_t assigned = nextPeerId++;
             connToPeerId[c] = assigned;
-            iron::netcubes::writeHello(sendBuf,
-                                        iron::netcubes::HelloMsg{assigned});
-            transport.send(c,
-                           std::span<const std::byte>(sendBuf.data(), sendBuf.size()),
-                           iron::SendReliability::Reliable);
+            registry.send<iron::netcubes::HelloMsg>(
+                c, iron::netcubes::HelloMsg{assigned},
+                iron::SendReliability::Reliable);
         }
         // Client side: nothing to do until HelloMsg arrives.
     });
@@ -450,36 +441,31 @@ int main() {
         }
     });
 
-    transport.setOnMessage([&](iron::ConnectionId c,
-                                std::span<const std::byte> bytes) {
-        auto parsed = iron::netcubes::parse(bytes);
-        if (!parsed) {
-            iron::Log::warn("net-cubes: unparseable message (%zu bytes)",
-                            bytes.size());
-            return;
-        }
-        if (parsed->tag == iron::netcubes::MsgTag::Hello) {
+    registry.registerHandler<iron::netcubes::HelloMsg>(
+        [&](iron::ConnectionId /*c*/, const iron::netcubes::HelloMsg& msg) {
             if (isHost) {
                 iron::Log::warn("net-cubes: host received Hello — ignoring");
                 return;
             }
             if (myPeerId == 0) {
-                myPeerId = parsed->hello.peerId;
+                myPeerId = msg.peerId;
             }
-        } else if (parsed->tag == iron::netcubes::MsgTag::Position) {
-            const auto& p = parsed->position;
+        });
+
+    registry.registerHandler<iron::netcubes::PositionMsg>(
+        [&](iron::ConnectionId c, const iron::netcubes::PositionMsg& msg) {
             // Validate: host requires the sender's peerId to match what we
             // assigned them. Rejects spoofs (incl. accidental peerId=0
             // that would clobber the host's own cube).
             if (isHost) {
                 auto it = connToPeerId.find(c);
-                if (it == connToPeerId.end() || it->second != p.peerId) {
+                if (it == connToPeerId.end() || it->second != msg.peerId) {
                     iron::Log::warn("net-cubes: dropping PositionMsg with mismatched peerId");
                     return;
                 }
             }
-            const iron::Vec3 incoming{p.x, p.y, p.z};
-            auto [it, inserted] = cubes.try_emplace(p.peerId);
+            const iron::Vec3 incoming{msg.x, msg.y, msg.z};
+            auto [it, inserted] = cubes.try_emplace(msg.peerId);
             if (inserted) {
                 // First sighting — seed `displayed` too so the cube
                 // doesn't lerp in from the world origin.
@@ -490,27 +476,36 @@ int main() {
             if (isHost) {
                 for (const auto& [otherConn, _] : connToPeerId) {
                     if (otherConn == c) continue;
-                    transport.send(otherConn,
-                                   bytes,
-                                   iron::SendReliability::Unreliable);
+                    registry.send<iron::netcubes::PositionMsg>(
+                        otherConn, msg, iron::SendReliability::Unreliable);
                 }
             }
-        }
-    });
+        });
 
     if (!transport.start()) {
         iron::Log::error("net-cubes: GnsTransport.start failed");
         return 1;
     }
 
-    // Auto-detect host vs client: try listen first; fall back to connect.
-    isHost = transport.listen(addr);
-    if (!isHost) {
+    if (wantsConnect) {
         hostConn = transport.connect(addr);
         if (hostConn == iron::kInvalidConnection) {
-            iron::Log::error("net-cubes: neither listen nor connect succeeded");
+            iron::Log::error("net-cubes: connect failed");
             transport.stop();
             return 1;
+        }
+    } else {
+        isHost = transport.listen(addr);
+        if (!isHost) {
+            // No --connect supplied AND listen failed (port taken). Try
+            // connect as a fallback — preserves the old "just double-click
+            // the exe twice" UX on a single machine.
+            hostConn = transport.connect(addr);
+            if (hostConn == iron::kInvalidConnection) {
+                iron::Log::error("net-cubes: neither listen nor connect succeeded");
+                transport.stop();
+                return 1;
+            }
         }
     }
 
@@ -646,16 +641,17 @@ int main() {
                                    now - lastSend).count();
             if (since >= 33) {
                 lastSend = now;
-                iron::netcubes::writePosition(sendBuf, iron::netcubes::PositionMsg{
+                const iron::netcubes::PositionMsg msg{
                     myId,
-                    player.position.x, player.position.y, player.position.z});
-                std::span<const std::byte> view(sendBuf.data(), sendBuf.size());
+                    player.position.x, player.position.y, player.position.z};
                 if (isHost) {
                     for (const auto& [c, _] : connToPeerId) {
-                        transport.send(c, view, iron::SendReliability::Unreliable);
+                        registry.send<iron::netcubes::PositionMsg>(
+                            c, msg, iron::SendReliability::Unreliable);
                     }
                 } else {
-                    transport.send(hostConn, view, iron::SendReliability::Unreliable);
+                    registry.send<iron::netcubes::PositionMsg>(
+                        hostConn, msg, iron::SendReliability::Unreliable);
                 }
             }
         }
