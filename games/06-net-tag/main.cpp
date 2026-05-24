@@ -7,6 +7,13 @@
 // Controls: WASD (move), QE (down/up), mouse (look), ESC (release cursor),
 //           left-click (recapture), window X (quit).
 
+#include "Messages.h"
+
+#include "core/NetArgs.h"
+#include "net/MessageRegistry.h"
+#include "net/NetTransport.h"
+#include "net/backends/gns/GnsTransport.h"
+
 #include "core/Log.h"
 #include "core/Platform.h"
 #include "core/Window.h"
@@ -30,6 +37,7 @@
 #include <cstdio>
 #include <span>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 namespace {
@@ -253,11 +261,28 @@ void generateSunsetFace(int face, std::vector<unsigned char>& pixels) {
     }
 }
 
+// Spread peerIds across the hue circle so adjacent IDs look distinct.
+iron::Vec3 colorForPeer(std::uint32_t peerId) {
+    const float hue = std::fmod(static_cast<float>(peerId) * 0.61803398875f, 1.0f);
+    const float s = 0.8f;
+    const float v = 0.9f;
+    const float c = v * s;
+    const float h6 = hue * 6.0f;
+    const float x = c * (1.0f - std::fabs(std::fmod(h6, 2.0f) - 1.0f));
+    const float m = v - c;
+    float r = 0.0f, g = 0.0f, b = 0.0f;
+    if      (h6 < 1.0f) { r = c; g = x; }
+    else if (h6 < 2.0f) { r = x; g = c; }
+    else if (h6 < 3.0f) { g = c; b = x; }
+    else if (h6 < 4.0f) { g = x; b = c; }
+    else if (h6 < 5.0f) { r = x; b = c; }
+    else                { r = c; b = x; }
+    return iron::Vec3{r + m, g + m, b + m};
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
-    (void)argc; (void)argv;  // unused until Task 5 wires up networking
-
     iron::Window window(kScreenWidth, kScreenHeight, "Iron Core — Net Tag");
     if (!window.valid()) {
         iron::Log::error("net-tag: failed to create window");
@@ -323,10 +348,11 @@ int main(int argc, char** argv) {
     const iron::BitmapFont font = iron::builtinFont(fontTexture);
 
     iron::Hud hud;
-    // roleText is set once and never mutated in the skeleton. Task 5 will
-    // call hud.setText on it to show the peer role.
-    [[maybe_unused]] const iron::HudId roleText = hud.addText(
-        "net-tag: skeleton", iron::Vec2{12, 12}, 2.0f,
+    const iron::HudId roleText = hud.addText(
+        "(connecting...)", iron::Vec2{12, 12}, 2.0f,
+        iron::Vec4{1, 1, 1, 1});
+    const iron::HudId peersText = hud.addText(
+        "Peers: 0", iron::Vec2{12, 36}, 2.0f,
         iron::Vec4{1, 1, 1, 1});
 
     // --- player + chase camera ---
@@ -353,7 +379,108 @@ int main(int argc, char** argv) {
     double lastMouseX = 0.0, lastMouseY = 0.0;
     glfwGetCursorPos(window.handle(), &lastMouseX, &lastMouseY);
 
+    // --- peer cube state ---
+    struct CubeState { iron::Vec3 displayed; iron::Vec3 target; };
+    std::unordered_map<std::uint32_t, CubeState> cubes;
+    constexpr float kCubeSmoothness = 12.0f;
+
+    // --- networking ---
+    const iron::NetArgs netArgs = iron::parseNetArgs(argc, argv);
+    iron::GnsTransport transport;
+    iron::MessageRegistry registry(&transport);
+
+    bool isHost = false;
+    iron::ConnectionId hostConn = iron::kInvalidConnection;
+    std::uint32_t myPeerId = 0;
+    std::unordered_map<iron::ConnectionId, std::uint32_t> connToPeerId;
+    std::uint32_t nextPeerId = 1;
+
+    transport.setOnConnectionOpened([&](iron::ConnectionId c) {
+        if (isHost) {
+            const std::uint32_t assigned = nextPeerId++;
+            connToPeerId[c] = assigned;
+            registry.send<iron::nettag::HelloMsg>(
+                c, iron::nettag::HelloMsg{assigned},
+                iron::SendReliability::Reliable);
+        }
+    });
+
+    transport.setOnConnectionClosed([&](iron::ConnectionId c,
+                                         const std::string& reason) {
+        if (isHost) {
+            auto it = connToPeerId.find(c);
+            if (it != connToPeerId.end()) {
+                cubes.erase(it->second);
+                connToPeerId.erase(it);
+            }
+        } else {
+            iron::Log::warn("net-tag: connection to host closed: %s",
+                            reason.c_str());
+            glfwSetWindowShouldClose(window.handle(), GLFW_TRUE);
+        }
+    });
+
+    registry.registerHandler<iron::nettag::HelloMsg>(
+        [&](iron::ConnectionId /*c*/, const iron::nettag::HelloMsg& msg) {
+            if (isHost) {
+                iron::Log::warn("net-tag: host received Hello — ignoring");
+                return;
+            }
+            if (myPeerId == 0) myPeerId = msg.peerId;
+        });
+
+    registry.registerHandler<iron::nettag::PositionMsg>(
+        [&](iron::ConnectionId c, const iron::nettag::PositionMsg& msg) {
+            if (isHost) {
+                auto it = connToPeerId.find(c);
+                if (it == connToPeerId.end() || it->second != msg.peerId) {
+                    iron::Log::warn("net-tag: dropping spoofed PositionMsg");
+                    return;
+                }
+            }
+            const iron::Vec3 incoming{msg.x, msg.y, msg.z};
+            auto [it, inserted] = cubes.try_emplace(msg.peerId);
+            if (inserted) it->second.displayed = incoming;
+            it->second.target = incoming;
+            if (isHost) {
+                for (const auto& [otherConn, _] : connToPeerId) {
+                    if (otherConn == c) continue;
+                    registry.send<iron::nettag::PositionMsg>(
+                        otherConn, msg, iron::SendReliability::Unreliable);
+                }
+            }
+        });
+
+    if (!transport.start()) {
+        iron::Log::error("net-tag: GnsTransport.start failed");
+        return 1;
+    }
+
+    if (netArgs.wantsConnect) {
+        hostConn = transport.connect(netArgs.addr);
+        if (hostConn == iron::kInvalidConnection) {
+            iron::Log::error("net-tag: connect failed");
+            transport.stop();
+            return 1;
+        }
+    } else {
+        isHost = transport.listen(netArgs.addr);
+        if (!isHost) {
+            hostConn = transport.connect(netArgs.addr);
+            if (hostConn == iron::kInvalidConnection) {
+                iron::Log::error("net-tag: neither listen nor connect succeeded");
+                transport.stop();
+                return 1;
+            }
+        }
+    }
+
     auto prevTime = std::chrono::steady_clock::now();
+    // NOTE: do NOT use time_point::min() here — `now - min()` overflows the
+    // signed duration to a huge negative number, so `since >= 33` never
+    // becomes true and the broadcast loop never fires. Subtract 33ms from
+    // `prevTime` instead so the first broadcast happens on frame 1.
+    auto lastSend = prevTime - std::chrono::milliseconds(33);
 
     // ESC releases the cursor (Minecraft-style) so you can alt-tab / poke
     // at other windows without quitting. Left-click on the game window
@@ -452,6 +579,44 @@ int main(int argc, char** argv) {
         chaseCamLookAt.y += (idealLookAt.y - chaseCamLookAt.y) * lerpAmt;
         chaseCamLookAt.z += (idealLookAt.z - chaseCamLookAt.z) * lerpAmt;
 
+        transport.poll();
+
+        const std::uint32_t myId = isHost ? 0u : myPeerId;
+        const bool haveIdentity = isHost || (myPeerId != 0);
+        if (haveIdentity) {
+            cubes[myId] = CubeState{player.position, player.position};
+        }
+
+        // Lerp remote cubes toward their latest target.
+        const float cubeLerp = 1.0f - std::exp(-dt * kCubeSmoothness);
+        for (auto& [peerId, cube] : cubes) {
+            if (peerId == myId) continue;
+            cube.displayed.x += (cube.target.x - cube.displayed.x) * cubeLerp;
+            cube.displayed.y += (cube.target.y - cube.displayed.y) * cubeLerp;
+            cube.displayed.z += (cube.target.z - cube.displayed.z) * cubeLerp;
+        }
+
+        // Broadcast our position ~30 Hz.
+        if (haveIdentity) {
+            const auto since = std::chrono::duration_cast<std::chrono::milliseconds>(
+                                   now - lastSend).count();
+            if (since >= 33) {
+                lastSend = now;
+                const iron::nettag::PositionMsg msg{
+                    myId,
+                    player.position.x, player.position.y, player.position.z};
+                if (isHost) {
+                    for (const auto& [c, _] : connToPeerId) {
+                        registry.send<iron::nettag::PositionMsg>(
+                            c, msg, iron::SendReliability::Unreliable);
+                    }
+                } else {
+                    registry.send<iron::nettag::PositionMsg>(
+                        hostConn, msg, iron::SendReliability::Unreliable);
+                }
+            }
+        }
+
         constexpr float kFovYDeg = 60.0f;
         const iron::Mat4 projection = iron::perspective(
             kFovYDeg * 3.14159265f / 180.0f,
@@ -480,26 +645,35 @@ int main(int argc, char** argv) {
             renderer.submit(call);
         }
 
-        // Single local cube tracking the player. Multi-peer rendering
-        // lands in Task 5 (networking).
-        {
+        // Cubes (one DrawCall per peer)
+        for (const auto& [peerId, cube] : cubes) {
             iron::DrawCall call;
             call.mesh = cubeMesh;
             call.shader = litShader;
-            call.model = iron::translation(player.position);
+            call.model = iron::translation(cube.displayed);
             call.material.texture     = renderer.whiteTexture();
             call.material.normalMap   = renderer.flatNormalTexture();
             call.material.specularMap = renderer.noSpecularTexture();
-            call.material.emissive    = iron::Vec3{0.4f, 0.4f, 0.4f};
+            call.material.emissive    = colorForPeer(peerId) * 0.4f;
             renderer.submit(call);
         }
 
         renderer.endFrame();
 
+        if (isHost) {
+            hud.setText(roleText, "Host (peer 0)");
+        } else if (myPeerId != 0) {
+            hud.setText(roleText, "Client (peer " + std::to_string(myPeerId) + ")");
+        } else {
+            hud.setText(roleText, "(connecting...)");
+        }
+        hud.setText(peersText,
+                    "Peers: " + std::to_string(cubes.size()));
         renderer.drawHud(hud.build(font, renderer.whiteTexture()),
                          kScreenWidth, kScreenHeight);
 
         window.swapBuffers();
     }
+    transport.stop();
     return 0;
 }
