@@ -3,12 +3,25 @@ name: CI
 on:
   push:
     branches: [main]
+    # Skip CI on doc-only changes (specs, plans, READMEs, this file's siblings).
+    paths-ignore:
+      - '**.md'
+      - 'docs/**'
   pull_request:
+    paths-ignore:
+      - '**.md'
+      - 'docs/**'
 
 jobs:
   build-and-test:
     name: Build & test (Windows / MSVC)
     runs-on: windows-latest
+
+    env:
+      # vcpkg's `x-gha` binary backend was removed upstream (lukka/run-vcpkg
+      # still sets it and prints a warning). Use a local file-based binary
+      # cache that we back via actions/cache below.
+      VCPKG_BINARY_SOURCES: 'clear;files,${{ github.workspace }}/vcpkg-bincache,readwrite'
 
     steps:
       - name: Checkout
@@ -23,6 +36,23 @@ jobs:
 
       - name: Install glad generator dependency
         run: pip install jinja2
+
+      - name: Cache vcpkg binary archives
+        # Restore previously-built dep archives. Invalidates only when our
+        # vcpkg manifest or registry baseline changes. On cache hit, vcpkg
+        # install in the Configure step decompresses pre-built packages
+        # instead of recompiling GNS + openssl + protobuf + abseil from
+        # source (~20 min saved).
+        uses: actions/cache@v4
+        with:
+          path: ${{ github.workspace }}/vcpkg-bincache
+          key: vcpkg-bincache-${{ runner.os }}-${{ hashFiles('vcpkg.json', 'vcpkg-configuration.json') }}
+          restore-keys: |
+            vcpkg-bincache-${{ runner.os }}-
+
+      - name: Ensure vcpkg binary cache dir exists
+        shell: bash
+        run: mkdir -p "${{ github.workspace }}/vcpkg-bincache"
 
       - name: Setup vcpkg
         uses: lukka/run-vcpkg@v11
