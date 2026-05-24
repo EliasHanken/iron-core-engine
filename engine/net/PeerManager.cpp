@@ -109,6 +109,11 @@ void PeerManager::handleHello(ConnectionId c, const peer::HelloMsg& msg) {
         transport_.close(c);
         return;
     }
+    if (msg.peerId == 0) {
+        Log::error("PeerManager: host assigned peerId=0 (reserved for host) — disconnecting");
+        transport_.close(c);
+        return;
+    }
     if (myPeerId_ != 0) {
         Log::warn("PeerManager: received duplicate Hello — ignoring");
         return;

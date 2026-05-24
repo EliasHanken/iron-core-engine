@@ -33,6 +33,12 @@ namespace iron {
 // Game state init must subscribe to onPeerJoined/Left BEFORE calling
 // start(), because host's start() synchronously fires onPeerJoined(0)
 // for itself.
+//
+// Lifetime: the referenced NetTransport and MessageRegistry MUST outlive
+// the PeerManager. MessageRegistry has no unregister API, so the Hello
+// handler installed in the constructor captures `this` and remains
+// registered for the registry's full lifetime; destroying the PeerManager
+// first would leave a dangling pointer.
 class PeerManager {
 public:
     using PeerJoinedFn = std::function<void(std::uint32_t)>;
