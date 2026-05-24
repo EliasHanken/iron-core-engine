@@ -4,6 +4,7 @@ add_library(ironcore STATIC
   core/Input.cpp
   core/Platform.cpp
   core/Application.cpp
+  core/NetArgs.cpp
   net/NetTransport.cpp
   net/backends/mock/MockTransport.cpp
   net/backends/gns/GnsTransport.cpp

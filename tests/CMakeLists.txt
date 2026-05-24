@@ -24,6 +24,7 @@ target_compile_definitions(test_texture_loader PRIVATE
   IRON_REPO_ROOT="${CMAKE_SOURCE_DIR}")
 iron_add_test(test_free_fly_camera test_free_fly_camera.cpp)
 iron_add_test(test_mock_net_transport test_mock_net_transport.cpp)
+iron_add_test(test_net_args test_net_args.cpp)
 
 # test_rope_walker compiles the game-side RopeWalker.cpp directly, since it is
 # not part of the ironcore library.
