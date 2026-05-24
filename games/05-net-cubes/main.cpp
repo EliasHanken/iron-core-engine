@@ -427,6 +427,16 @@ int main() {
             }
         } else if (parsed->tag == iron::netcubes::MsgTag::Position) {
             const auto& p = parsed->position;
+            // Validate: host requires the sender's peerId to match what we
+            // assigned them. Rejects spoofs (incl. accidental peerId=0
+            // that would clobber the host's own cube).
+            if (isHost) {
+                auto it = connToPeerId.find(c);
+                if (it == connToPeerId.end() || it->second != p.peerId) {
+                    iron::Log::warn("net-cubes: dropping PositionMsg with mismatched peerId");
+                    return;
+                }
+            }
             cubes[p.peerId] = iron::Vec3{p.x, p.y, p.z};
             // Host rebroadcasts to all other clients (star topology).
             if (isHost) {
@@ -457,6 +467,7 @@ int main() {
     }
 
     auto prevTime = std::chrono::steady_clock::now();
+    auto lastSend = std::chrono::steady_clock::time_point::min();
     while (!window.shouldClose()) {
         window.pollEvents();
         const auto now = std::chrono::steady_clock::now();
@@ -496,7 +507,6 @@ int main() {
         }
 
         // Broadcast our position ~30 Hz.
-        static auto lastSend = std::chrono::steady_clock::time_point::min();
         if (haveIdentity) {
             const auto since = std::chrono::duration_cast<std::chrono::milliseconds>(
                                    now - lastSend).count();
