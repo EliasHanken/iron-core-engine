@@ -69,5 +69,27 @@ int main() {
     CHECK_NEAR(p4.z, 4.0f);
     CHECK_NEAR(p4.w, 5.0f);
 
+    // interpolate(Vec3, Vec3, float) — used by TimeHistory<Vec3>.
+    {
+        const iron::Vec3 a{0.0f, 0.0f, 0.0f};
+        const iron::Vec3 b{10.0f, 20.0f, -4.0f};
+        {
+            const iron::Vec3 r = iron::interpolate(a, b, 0.0f);
+            CHECK_NEAR(r.x, 0.0f); CHECK_NEAR(r.y, 0.0f); CHECK_NEAR(r.z, 0.0f);
+        }
+        {
+            const iron::Vec3 r = iron::interpolate(a, b, 1.0f);
+            CHECK_NEAR(r.x, 10.0f); CHECK_NEAR(r.y, 20.0f); CHECK_NEAR(r.z, -4.0f);
+        }
+        {
+            const iron::Vec3 r = iron::interpolate(a, b, 0.5f);
+            CHECK_NEAR(r.x, 5.0f); CHECK_NEAR(r.y, 10.0f); CHECK_NEAR(r.z, -2.0f);
+        }
+        {
+            const iron::Vec3 r = iron::interpolate(a, b, 0.25f);
+            CHECK_NEAR(r.x, 2.5f); CHECK_NEAR(r.y, 5.0f); CHECK_NEAR(r.z, -1.0f);
+        }
+    }
+
     return iron_test_result();
 }

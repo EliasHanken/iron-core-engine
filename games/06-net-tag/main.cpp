@@ -9,9 +9,11 @@
 
 #include "Messages.h"
 
+#include "core/FixedTickScheduler.h"
 #include "core/NetArgs.h"
 #include "net/MessageRegistry.h"
 #include "net/NetTransport.h"
+#include "net/TimeHistory.h"
 #include "net/backends/gns/GnsTransport.h"
 
 #include "core/Log.h"
@@ -359,6 +361,9 @@ int main(int argc, char** argv) {
     const iron::HudId scoresText = hud.addText(
         "", iron::Vec2{12, 84}, 1.5f, iron::Vec4{1, 1, 1, 1});
 
+    auto netStatsHud = hud.addNetworkStatsWidget(
+        iron::Vec2{static_cast<float>(kScreenWidth) - 12.0f, 12.0f});
+
     // --- player + chase camera ---
     // The player (a cube) is the controlled entity. The camera orbits
     // behind/above the player and smooth-lerps toward its ideal position
@@ -384,9 +389,11 @@ int main(int argc, char** argv) {
     glfwGetCursorPos(window.handle(), &lastMouseX, &lastMouseY);
 
     // --- peer cube state ---
-    struct CubeState { iron::Vec3 displayed; iron::Vec3 target; };
-    std::unordered_map<std::uint32_t, CubeState> cubes;
-    constexpr float kCubeSmoothness = 12.0f;
+    // Remote peer positions are interpolated through a per-peer
+    // TimeHistory<Vec3> for jitter/loss tolerance. Local player is NOT
+    // buffered — local cube renders at player.position directly.
+    std::unordered_map<std::uint32_t, iron::TimeHistory<iron::Vec3>> remoteHistories;
+    constexpr auto kDisplayDelay = std::chrono::milliseconds{100};
 
     // --- networking ---
     const iron::NetArgs netArgs = iron::parseNetArgs(argc, argv);
@@ -408,7 +415,6 @@ int main(int argc, char** argv) {
 
     std::uint32_t itPeerId = 0;  // who is "it" right now (broadcast to clients)
     float roundTimeRemainingSec = 60.0f;
-    float lastScoreBroadcastSec = 0.0f;
     bool  roundActive = false;
     float roundEndDisplayUntilSec = 0.0f;
     std::uint32_t winnerPeerId = 0;  // for HUD during round-end display
@@ -416,15 +422,15 @@ int main(int argc, char** argv) {
     constexpr float kTagDistance = 1.5f;
     constexpr float kTagCooldownSec = 0.5f;
     constexpr float kRoundDurationSec = 60.0f;
-    constexpr float kScoreBroadcastIntervalSec = 1.0f;
     constexpr float kRoundEndDisplaySec = 5.0f;
+    iron::FixedTickScheduler scoreTicker{std::chrono::seconds{1}};
 
     transport.setOnConnectionOpened([&](iron::ConnectionId c) {
         if (isHost) {
             const std::uint32_t assigned = nextPeerId++;
             connToPeerId[c] = assigned;
             registry.send<iron::nettag::HelloMsg>(
-                c, iron::nettag::HelloMsg{assigned},
+                c, iron::nettag::HelloMsg{iron::nettag::kGameId, assigned},
                 iron::SendReliability::Reliable);
             // Late-joiner snapshot: if a round is already in progress,
             // give the new client the current state so they see "it",
@@ -455,7 +461,7 @@ int main(int argc, char** argv) {
         if (isHost) {
             auto it = connToPeerId.find(c);
             if (it != connToPeerId.end()) {
-                cubes.erase(it->second);
+                remoteHistories.erase(it->second);
                 connToPeerId.erase(it);
             }
         } else {
@@ -471,6 +477,13 @@ int main(int argc, char** argv) {
                 iron::Log::warn("net-tag: host received Hello — ignoring");
                 return;
             }
+            if (msg.gameId != iron::nettag::kGameId) {
+                iron::Log::error(
+                    "net-tag: connected to wrong game (gameId=0x%08X, expected 0x%08X) — exiting",
+                    msg.gameId, iron::nettag::kGameId);
+                glfwSetWindowShouldClose(window.handle(), GLFW_TRUE);
+                return;
+            }
             if (myPeerId == 0) myPeerId = msg.peerId;
         });
 
@@ -484,9 +497,7 @@ int main(int argc, char** argv) {
                 }
             }
             const iron::Vec3 incoming{msg.x, msg.y, msg.z};
-            auto [it, inserted] = cubes.try_emplace(msg.peerId);
-            if (inserted) it->second.displayed = incoming;
-            it->second.target = incoming;
+            remoteHistories[msg.peerId].push(incoming);
             if (isHost) {
                 for (const auto& [otherConn, _] : connToPeerId) {
                     if (otherConn == c) continue;
@@ -663,6 +674,19 @@ int main(int argc, char** argv) {
 
         transport.poll();
 
+        // Host-side helper: latest known position of any peer.
+        //   - peerId 0 → local host player.position (instant).
+        //   - other peers → most recent TimeHistory sample (NOT the
+        //     display-delayed one — gameplay uses live data, not 100ms-old).
+        auto latestPosition = [&](std::uint32_t pid) -> iron::Vec3 {
+            if (pid == 0) return player.position;
+            auto it = remoteHistories.find(pid);
+            if (it == remoteHistories.end()) return iron::Vec3{1e9f, 0, 0};
+            auto s = it->second.sample(
+                iron::TimeHistory<iron::Vec3>::Clock::now());
+            return s.value_or(iron::Vec3{1e9f, 0, 0});
+        };
+
         // --- host gameplay tick ---
         if (isHost) {
             gameElapsedSec += dt;
@@ -738,16 +762,12 @@ int main(int argc, char** argv) {
                 }
 
                 // Tag check: any non-it player within range + cooldown elapsed → swap.
-                const iron::Vec3& itPos = (itPeerId == 0)
-                    ? player.position
-                    : (cubes.count(itPeerId) ? cubes[itPeerId].target : iron::Vec3{1e9f, 0, 0});
+                const iron::Vec3 itPos = latestPosition(itPeerId);
                 std::uint32_t newIt = 0;
                 bool swap = false;
                 for (const auto& [pid, info] : players) {
                     if (pid == itPeerId) continue;
-                    const iron::Vec3& pos = (pid == 0)
-                        ? player.position
-                        : (cubes.count(pid) ? cubes[pid].target : iron::Vec3{1e9f, 0, 0});
+                    const iron::Vec3 pos = latestPosition(pid);
                     const float dx = pos.x - itPos.x;
                     const float dy = pos.y - itPos.y;
                     const float dz = pos.z - itPos.z;
@@ -776,9 +796,8 @@ int main(int argc, char** argv) {
                     }
                 }
 
-                // Broadcast scores every 1 s.
-                if (gameElapsedSec - lastScoreBroadcastSec >= kScoreBroadcastIntervalSec) {
-                    lastScoreBroadcastSec = gameElapsedSec;
+                // Broadcast scores at the FixedTickScheduler cadence (1 Hz).
+                scoreTicker.update(dt, [&]() {
                     for (const auto& [pid, info] : players) {
                         const iron::nettag::ScoreUpdateMsg sMsg{pid, info.itTimeAccumSec};
                         for (const auto& [c, _] : connToPeerId) {
@@ -786,7 +805,7 @@ int main(int argc, char** argv) {
                                 c, sMsg, iron::SendReliability::Reliable);
                         }
                     }
-                }
+                });
 
                 if (roundTimeRemainingSec <= 0.0f) {
                     // Pick winner: lowest itTimeAccumSec.
@@ -813,18 +832,9 @@ int main(int argc, char** argv) {
 
         const std::uint32_t myId = isHost ? 0u : myPeerId;
         const bool haveIdentity = isHost || (myPeerId != 0);
-        if (haveIdentity) {
-            cubes[myId] = CubeState{player.position, player.position};
-        }
-
-        // Lerp remote cubes toward their latest target.
-        const float cubeLerp = 1.0f - std::exp(-dt * kCubeSmoothness);
-        for (auto& [peerId, cube] : cubes) {
-            if (peerId == myId) continue;
-            cube.displayed.x += (cube.target.x - cube.displayed.x) * cubeLerp;
-            cube.displayed.y += (cube.target.y - cube.displayed.y) * cubeLerp;
-            cube.displayed.z += (cube.target.z - cube.displayed.z) * cubeLerp;
-        }
+        // The local cube is rendered directly from player.position in
+        // the render block below. Remote cubes come from per-peer
+        // TimeHistory<Vec3> sampled at (now - displayDelay).
 
         // Broadcast our position ~30 Hz.
         if (haveIdentity) {
@@ -880,20 +890,34 @@ int main(int argc, char** argv) {
             renderer.submit(call);
         }
 
-        // Cubes (one DrawCall per peer)
-        for (const auto& [peerId, cube] : cubes) {
+        // Local cube renders at player.position (no buffering).
+        if (haveIdentity) {
+            iron::DrawCall localCall;
+            localCall.mesh = cubeMesh;
+            localCall.shader = litShader;
+            localCall.model = iron::translation(player.position);
+            localCall.material.texture     = renderer.whiteTexture();
+            localCall.material.normalMap   = renderer.flatNormalTexture();
+            localCall.material.specularMap = renderer.noSpecularTexture();
+            iron::Vec3 emissive = colorForPeer(myId) * 0.4f;
+            if (myId == itPeerId) emissive = emissive + iron::Vec3{1.5f, 0.0f, 0.0f};
+            localCall.material.emissive = emissive;
+            renderer.submit(localCall);
+        }
+        // Remote cubes at buffer-interpolated positions.
+        for (const auto& [peerId, history] : remoteHistories) {
+            if (peerId == myId) continue;
+            auto pos = history.sampleAtDelay(kDisplayDelay);
+            if (!pos) continue;
             iron::DrawCall call;
             call.mesh = cubeMesh;
             call.shader = litShader;
-            call.model = iron::translation(cube.displayed);
+            call.model = iron::translation(*pos);
             call.material.texture     = renderer.whiteTexture();
             call.material.normalMap   = renderer.flatNormalTexture();
             call.material.specularMap = renderer.noSpecularTexture();
             iron::Vec3 emissive = colorForPeer(peerId) * 0.4f;
-            // Highlight "it" with a strong red boost so it's instantly readable.
-            if (peerId == itPeerId) {
-                emissive = emissive + iron::Vec3{1.5f, 0.0f, 0.0f};
-            }
+            if (peerId == itPeerId) emissive = emissive + iron::Vec3{1.5f, 0.0f, 0.0f};
             call.material.emissive = emissive;
             renderer.submit(call);
         }
@@ -908,8 +932,8 @@ int main(int argc, char** argv) {
         } else {
             hud.setText(roleText, "(connecting...)");
         }
-        hud.setText(peersText,
-                    "Peers: " + std::to_string(cubes.size()));
+        const std::size_t peerCount = (haveIdentity ? 1u : 0u) + remoteHistories.size();
+        hud.setText(peersText, "Peers: " + std::to_string(peerCount));
 
         // game state
         const std::uint32_t myId2 = isHost ? 0u : myPeerId;
@@ -956,6 +980,14 @@ int main(int argc, char** argv) {
             sb += buf;
         }
         hud.setText(scoresText, sb);
+
+        iron::ConnectionId statsConn = iron::kInvalidConnection;
+        if (isHost) {
+            if (!connToPeerId.empty()) statsConn = connToPeerId.begin()->first;
+        } else {
+            statsConn = hostConn;
+        }
+        hud.updateNetworkStats(netStatsHud, transport.stats(statsConn));
 
         renderer.drawHud(hud.build(font, renderer.whiteTexture()),
                          kScreenWidth, kScreenHeight);

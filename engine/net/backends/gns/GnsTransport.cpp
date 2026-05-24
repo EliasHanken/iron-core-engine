@@ -278,4 +278,43 @@ HSteamNetConnection GnsTransport::lookup(ConnectionId conn) const {
     return (it == idToHandle_.end()) ? k_HSteamNetConnection_Invalid : it->second;
 }
 
+
+ConnectionStats GnsTransport::stats(ConnectionId conn) const {
+    ConnectionStats out;
+    if (!started_ || conn == kInvalidConnection) return out;
+    auto it = idToHandle_.find(conn);
+    if (it == idToHandle_.end()) return out;
+
+    SteamNetConnectionRealTimeStatus_t rt{};
+    SteamNetConnectionRealTimeLaneStatus_t lane{};
+    const EResult r = sockets_->GetConnectionRealTimeStatus(
+        it->second, &rt, 0, &lane);
+    if (r != k_EResultOK) {
+        return out;
+    }
+
+    out.pingMs           = static_cast<float>(rt.m_nPing);
+    out.packetLossPct    = rt.m_flConnectionQualityRemote >= 0.0f
+                              ? (1.0f - rt.m_flConnectionQualityRemote) * 100.0f
+                              : 0.0f;
+    out.jitterMs         = 0.0f;  // GNS does not surface jitter directly today
+    out.bandwidthInKbps  = static_cast<float>(rt.m_flInBytesPerSec) * 8.0f / 1000.0f;
+    out.bandwidthOutKbps = static_cast<float>(rt.m_flOutBytesPerSec) * 8.0f / 1000.0f;
+
+    switch (rt.m_eState) {
+        case k_ESteamNetworkingConnectionState_Connecting:
+            out.state = "Connecting"; break;
+        case k_ESteamNetworkingConnectionState_FindingRoute:
+            out.state = "FindingRoute"; break;
+        case k_ESteamNetworkingConnectionState_Connected:
+            out.state = "Connected"; break;
+        case k_ESteamNetworkingConnectionState_ClosedByPeer:
+            out.state = "ClosedByPeer"; break;
+        case k_ESteamNetworkingConnectionState_ProblemDetectedLocally:
+            out.state = "ProblemDetectedLocally"; break;
+        default: out.state = "Unknown"; break;
+    }
+    return out;
+}
+
 } // namespace iron
