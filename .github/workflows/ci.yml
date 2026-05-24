@@ -33,7 +33,7 @@ jobs:
         run: cmake -S . -B build -DCMAKE_TOOLCHAIN_FILE=${env:VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake
 
       - name: Build
-        run: cmake --build build
+        run: cmake --build build --config Debug
 
       - name: Smoke test - net-pingpong
         run: |

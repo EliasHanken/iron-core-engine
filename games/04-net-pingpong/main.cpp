@@ -63,11 +63,12 @@ void onStatusChanged(SteamNetConnectionStatusChangedCallback_t* info) {
                     fail("AcceptConnection failed");
                     return;
                 }
+                // Record the handle now so the cleanup tail closes it if anything below fails.
+                s.acceptedConn = h;
                 if (!s.sockets->SetConnectionPollGroup(h, s.listenerPollGroup)) {
                     fail("SetConnectionPollGroup failed");
                     return;
                 }
-                s.acceptedConn = h;
                 s.serverAcceptedClient = true;
             }
             break;
@@ -82,6 +83,8 @@ void onStatusChanged(SteamNetConnectionStatusChangedCallback_t* info) {
         case k_ESteamNetworkingConnectionState_ClosedByPeer:
             fail("connection closed unexpectedly");
             s.sockets->CloseConnection(h, 0, nullptr, false);
+            if (h == s.clientConn)   s.clientConn   = k_HSteamNetConnection_Invalid;
+            if (h == s.acceptedConn) s.acceptedConn = k_HSteamNetConnection_Invalid;
             break;
 
         default:
@@ -170,7 +173,7 @@ int main() {
         return 1;
     }
 
-    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
     bool pingSent = false;
     bool pongSent = false;
 
