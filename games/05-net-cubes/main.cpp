@@ -24,6 +24,8 @@
 #include "scene/Mesh.h"
 #include "net/NetTransport.h"
 #include "net/backends/gns/GnsTransport.h"
+#include "ui/BuiltinFont.h"
+#include "ui/Hud.h"
 
 #include <GLFW/glfw3.h>
 
@@ -338,6 +340,20 @@ int main() {
     renderer.setShadowBounds(iron::Vec3{0, 0, 0}, 30.0f);
     renderer.disableReflectionPlane();
 
+    // --- HUD ---
+    const iron::BuiltinFontAtlas fontAtlas = iron::builtinFontAtlas();
+    const iron::TextureHandle fontTexture = renderer.createTexture(
+        fontAtlas.width, fontAtlas.height, fontAtlas.rgba.data());
+    const iron::BitmapFont font = iron::builtinFont(fontTexture);
+
+    iron::Hud hud;
+    const iron::HudId roleText = hud.addText(
+        "(connecting...)", iron::Vec2{12, 12}, 2.0f,
+        iron::Vec4{1, 1, 1, 1});
+    const iron::HudId peersText = hud.addText(
+        "Peers: 0", iron::Vec2{12, 36}, 2.0f,
+        iron::Vec4{1, 1, 1, 1});
+
     // --- free-fly camera ---
     iron::FreeFlyCamera camera;
     camera.position = iron::Vec3{8, 4, 12};
@@ -538,6 +554,20 @@ int main() {
         }
 
         renderer.endFrame();
+
+        // Update HUD text from current state.
+        if (isHost) {
+            hud.setText(roleText, "Host (peer 0)");
+        } else if (myPeerId != 0) {
+            hud.setText(roleText, "Client (peer " + std::to_string(myPeerId) + ")");
+        } else {
+            hud.setText(roleText, "(connecting...)");
+        }
+        hud.setText(peersText,
+                    "Peers: " + std::to_string(cubes.size()));
+        renderer.drawHud(hud.build(font, renderer.whiteTexture()),
+                         kScreenWidth, kScreenHeight);
+
         window.swapBuffers();
     }
     transport.stop();
