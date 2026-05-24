@@ -384,9 +384,15 @@ int main() {
     glfwGetCursorPos(window.handle(), &lastMouseX, &lastMouseY);
 
     // --- peer cube state ---
-    // peerId -> world position. Task 3 will populate from network.
-    std::unordered_map<std::uint32_t, iron::Vec3> cubes;
-    cubes[0] = player.position;
+    // peerId -> rendered position. `displayed` is what we draw; `target` is
+    // the latest position we received over the wire. Each frame we lerp
+    // displayed toward target so remote cubes glide between 30 Hz updates
+    // instead of teleporting. The local cube is updated to (player, player)
+    // every frame so it never lerps — your own movement should be instant.
+    struct CubeState { iron::Vec3 displayed; iron::Vec3 target; };
+    std::unordered_map<std::uint32_t, CubeState> cubes;
+    cubes[0] = CubeState{player.position, player.position};
+    constexpr float kCubeSmoothness = 12.0f;
 
     // --- networking ---
     iron::GnsTransport transport;
@@ -464,7 +470,14 @@ int main() {
                     return;
                 }
             }
-            cubes[p.peerId] = iron::Vec3{p.x, p.y, p.z};
+            const iron::Vec3 incoming{p.x, p.y, p.z};
+            auto [it, inserted] = cubes.try_emplace(p.peerId);
+            if (inserted) {
+                // First sighting — seed `displayed` too so the cube
+                // doesn't lerp in from the world origin.
+                it->second.displayed = incoming;
+            }
+            it->second.target = incoming;
             // Host rebroadcasts to all other clients (star topology).
             if (isHost) {
                 for (const auto& [otherConn, _] : connToPeerId) {
@@ -575,10 +588,22 @@ int main() {
 
         // Track our own cube under our peerId. Host is always 0; a client
         // only has a position cube once it has received its assigned id.
+        // Set both displayed and target to player.position so the local
+        // cube never lerps — your own movement should be instant.
         const std::uint32_t myId = isHost ? 0u : myPeerId;
         const bool haveIdentity = isHost || (myPeerId != 0);
         if (haveIdentity) {
-            cubes[myId] = player.position;
+            cubes[myId] = CubeState{player.position, player.position};
+        }
+
+        // Lerp every remote cube's displayed position toward its latest
+        // target. Framerate-independent: 1 - exp(-dt * smoothness).
+        const float cubeLerp = 1.0f - std::exp(-dt * kCubeSmoothness);
+        for (auto& [peerId, cube] : cubes) {
+            if (peerId == myId) continue;
+            cube.displayed.x += (cube.target.x - cube.displayed.x) * cubeLerp;
+            cube.displayed.y += (cube.target.y - cube.displayed.y) * cubeLerp;
+            cube.displayed.z += (cube.target.z - cube.displayed.z) * cubeLerp;
         }
 
         // Broadcast our position ~30 Hz.
@@ -630,11 +655,11 @@ int main() {
         }
 
         // Cubes (one DrawCall per peer)
-        for (const auto& [peerId, pos] : cubes) {
+        for (const auto& [peerId, cube] : cubes) {
             iron::DrawCall call;
             call.mesh = cubeMesh;
             call.shader = litShader;
-            call.model = iron::translation(pos);
+            call.model = iron::translation(cube.displayed);
             call.material.texture     = renderer.whiteTexture();
             call.material.normalMap   = renderer.flatNormalTexture();
             call.material.specularMap = renderer.noSpecularTexture();
