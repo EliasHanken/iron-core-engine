@@ -373,9 +373,9 @@ int main() {
     sun.ambient   = 0.15f;
 
     const std::array<iron::PointLight, 3> pointLights = {{
-        {iron::Vec3{-6.0f, 3.0f,  0.0f}, iron::Vec3{1.0f, 0.2f, 0.2f}, 8.0f, 10.0f},
-        {iron::Vec3{ 0.0f, 3.0f,  0.0f}, iron::Vec3{0.2f, 1.0f, 0.2f}, 8.0f, 10.0f},
-        {iron::Vec3{ 6.0f, 3.0f,  0.0f}, iron::Vec3{0.2f, 0.4f, 1.0f}, 8.0f, 10.0f},
+        {iron::Vec3{-6.0f, 3.0f,  0.0f}, iron::Vec3{1.0f, 0.2f, 0.2f}, 2.0f, 6.0f},
+        {iron::Vec3{ 0.0f, 3.0f,  0.0f}, iron::Vec3{0.2f, 1.0f, 0.2f}, 2.0f, 6.0f},
+        {iron::Vec3{ 6.0f, 3.0f,  0.0f}, iron::Vec3{0.2f, 0.4f, 1.0f}, 2.0f, 6.0f},
     }};
 
     iron::Fog fog;
@@ -466,11 +466,12 @@ int main() {
         // Ground
         submitObj(groundMesh, iron::Vec3{0.0f, 0.0f, 0.0f}, ground);
 
-        // 2x3 stack of wood crates at x=-6
+        // 2x3 stack of wood crates at x=-6 (0.1m gap between crates so the
+        // individual cubes are readable against each other).
         for (int row = 0; row < 3; ++row) {
             for (int col = 0; col < 2; ++col) {
                 submitObj(crateMesh,
-                          iron::Vec3{-6.0f + col * 1.6f, 0.75f + row * 1.5f, -1.0f},
+                          iron::Vec3{-6.0f + col * 1.6f, 0.8f + row * 1.6f, -1.0f},
                           wood);
             }
         }
