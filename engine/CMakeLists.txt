@@ -22,6 +22,7 @@ add_library(ironcore STATIC
   render/backends/opengl/GLShadowMap.cpp
   render/backends/opengl/GLReflectionTarget.cpp
   render/ReflectionPlane.cpp
+  render/TextureLoader.cpp
 )
 
 target_include_directories(ironcore PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
