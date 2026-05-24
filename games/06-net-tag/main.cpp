@@ -481,18 +481,24 @@ int main(int argc, char** argv) {
     bool  clientShowingRoundEnd = false;
     std::uint32_t clientWinnerPeerId = 0;
 
+    // These 4 messages are host-broadcast-only. If a client sends one,
+    // a misbehaving client could corrupt the host's authoritative state
+    // (e.g. flip `itPeerId` to an invalid peer). Drop silently on host.
     registry.registerHandler<iron::nettag::TagSwapMsg>(
         [&](iron::ConnectionId /*c*/, const iron::nettag::TagSwapMsg& msg) {
+            if (isHost) return;
             itPeerId = msg.newItPeerId;
         });
 
     registry.registerHandler<iron::nettag::ScoreUpdateMsg>(
         [&](iron::ConnectionId /*c*/, const iron::nettag::ScoreUpdateMsg& msg) {
+            if (isHost) return;
             clientScores[msg.peerId] = msg.itTimeSec;
         });
 
     registry.registerHandler<iron::nettag::RoundStartMsg>(
         [&](iron::ConnectionId /*c*/, const iron::nettag::RoundStartMsg& msg) {
+            if (isHost) return;
             itPeerId = msg.initialItPeerId;
             clientRoundTimeRemainingSec = msg.roundDurationSec;
             clientShowingRoundEnd = false;
@@ -501,6 +507,7 @@ int main(int argc, char** argv) {
 
     registry.registerHandler<iron::nettag::RoundEndMsg>(
         [&](iron::ConnectionId /*c*/, const iron::nettag::RoundEndMsg& msg) {
+            if (isHost) return;
             clientWinnerPeerId = msg.winnerPeerId;
             clientShowingRoundEnd = true;
         });
@@ -649,6 +656,34 @@ int main(int argc, char** argv) {
                     players[peerId] = PlayerInfo{};
                 }
             }
+            // Remove player entries for clients that have disconnected.
+            // Without this, a dropped "it" leaves a ghost that nobody can
+            // tag, freezing the round.
+            for (auto it = players.begin(); it != players.end(); ) {
+                bool stillConnected = (it->first == 0);  // host is always present
+                for (const auto& [_, pid] : connToPeerId) {
+                    if (pid == it->first) { stillConnected = true; break; }
+                }
+                if (!stillConnected) {
+                    if (it->first == itPeerId && roundActive) {
+                        // The dropped player was "it" — hand it to whoever
+                        // remains (host if available, else first remaining).
+                        std::uint32_t newIt = 0;
+                        for (const auto& [pid, _] : players) {
+                            if (pid != it->first) { newIt = pid; break; }
+                        }
+                        itPeerId = newIt;
+                        const iron::nettag::TagSwapMsg swapMsg{itPeerId};
+                        for (const auto& [c, _] : connToPeerId) {
+                            registry.send<iron::nettag::TagSwapMsg>(
+                                c, swapMsg, iron::SendReliability::Reliable);
+                        }
+                    }
+                    it = players.erase(it);
+                } else {
+                    ++it;
+                }
+            }
 
             if (!roundActive && gameElapsedSec > roundEndDisplayUntilSec) {
                 // Start a new round. Reset scores, pick first "it" at random.
@@ -704,8 +739,15 @@ int main(int argc, char** argv) {
                     }
                 }
                 if (swap) {
+                    const std::uint32_t prevIt = itPeerId;
                     itPeerId = newIt;
-                    players[itPeerId].lastTaggedTimeSec = gameElapsedSec;
+                    // Stamp BOTH players so neither can be tagged for 0.5s.
+                    // Stamping only the new "it" left the old "it" pristine
+                    // and they'd be instantly re-tagged next frame.
+                    players[newIt].lastTaggedTimeSec = gameElapsedSec;
+                    if (auto pit = players.find(prevIt); pit != players.end()) {
+                        pit->second.lastTaggedTimeSec = gameElapsedSec;
+                    }
                     const iron::nettag::TagSwapMsg swapMsg{itPeerId};
                     for (const auto& [c, _] : connToPeerId) {
                         registry.send<iron::nettag::TagSwapMsg>(
@@ -856,7 +898,14 @@ int main(int argc, char** argv) {
                                   ? (!roundActive && gameElapsedSec < roundEndDisplayUntilSec)
                                   : clientShowingRoundEnd;
         const std::uint32_t winner = isHost ? winnerPeerId : clientWinnerPeerId;
-        if (showingEnd) {
+        // A client hasn't received the first RoundStart yet if its remaining
+        // time is still zero and no round-end is being displayed. Show a
+        // neutral message instead of misleading "Run! 0s".
+        const bool clientWaiting = !isHost && !showingEnd
+                                    && clientRoundTimeRemainingSec <= 0.0f;
+        if (clientWaiting) {
+            hud.setText(stateText, "(waiting for round...)");
+        } else if (showingEnd) {
             hud.setText(stateText, "Round over! Winner: peer "
                                     + std::to_string(winner));
         } else if ((itPeerId == myId2 && myId2 != 0) || (isHost && itPeerId == 0)) {
