@@ -176,3 +176,106 @@ role + peers + game state + sorted leaderboard.
 
 If the player who's "it" disconnects mid-round, the host hands "it" off
 to a remaining player so the round can keep going.
+
+## Snapshot interpolation: `iron::TimeHistory<T>`
+
+Remote players don't render at the latest received position — they render
+at `now - displayDelay` (default 100 ms), interpolated through a buffer
+of recent samples. This trades 100 ms of viewing latency for smoothness:
+network jitter and the occasional dropped packet disappear from the
+visuals.
+
+Game code:
+
+```cpp
+std::unordered_map<std::uint32_t, iron::TimeHistory<iron::Vec3>> remoteHistories;
+constexpr auto kDisplayDelay = std::chrono::milliseconds{100};
+
+// On every incoming PositionMsg from a remote peer:
+remoteHistories[peerId].push(iron::Vec3{msg.x, msg.y, msg.z});
+
+// Per-frame render:
+for (const auto& [peerId, history] : remoteHistories) {
+    auto pos = history.sampleAtDelay(kDisplayDelay);
+    if (pos) {
+        renderCube(*pos);
+    }
+}
+```
+
+The local player NEVER goes through the buffer — your own movement
+should be instant. Render the local cube directly at `player.position`.
+
+`TimeHistory<T>` is also used **server-side** for lag-compensated hit
+detection (future hero-shooter milestone): host maintains a history of
+every player's authoritative position; on `FireMsg{origin, dir,
+fireTimestamp}`, the server queries `history.sample(fireTimestamp)` for
+each player and validates hits against where they actually were when
+the client fired. The primitive is here today.
+
+`T` must support free-function `interpolate(T, T, float)` found via ADL.
+The engine provides one for `iron::Vec3` in `engine/math/Vec.h`.
+
+## Game-id handshake
+
+Every networked game advertises a 4-byte ASCII identifier in its
+`HelloMsg`. The client rejects a Hello whose `gameId` doesn't match.
+This prevents accidentally connecting two different iron-core network
+exes to each other (the cubes/tag interop bug we hit in M8.3 playtest).
+
+Game IDs in use today:
+
+| Game | gameId (hex) | ASCII |
+|------|--------------|-------|
+| net-cubes | `0x6E457442` | `'nEtB'` |
+| net-tag | `0x7441476F` | `'tAGo'` |
+
+When adding a new networked game, pick a 4-character ASCII string that
+isn't in this table.
+
+## Fixed-timestep simulation: `iron::FixedTickScheduler`
+
+Game code that wants a deterministic tick rate (independent of render
+framerate) uses `iron::FixedTickScheduler`:
+
+```cpp
+iron::FixedTickScheduler scoreTicker{std::chrono::seconds{1}};
+
+while (running) {
+    const float dt = frameDt();
+    scoreTicker.update(dt, [&]() {
+        broadcastScores();  // called exactly once per second of game time
+    });
+    render();
+}
+```
+
+The scheduler accumulates `dt` and invokes the callback once per full
+tick interval. On a long frame, it catches up by firing several times
+in a row. On a short frame, it might not fire at all. The interval is
+honored on average regardless of framerate jitter. Internally uses
+integer microsecond arithmetic so the accumulator does not drift over
+long runs.
+
+## Network debug HUD
+
+Both networked demos render a small "network stats" widget in the
+top-right corner with the live state, ping, packet loss, and in/out
+bandwidth for the current connection. Powered by:
+
+```cpp
+iron::ConnectionStats GnsTransport::stats(iron::ConnectionId conn) const;
+```
+
+which wraps `ISteamNetworkingSockets::GetConnectionRealTimeStatus`. The
+`iron::Hud::addNetworkStatsWidget(...)` / `updateNetworkStats(...)` pair
+wraps this into 3 lines of game code:
+
+```cpp
+auto netStatsHud = hud.addNetworkStatsWidget({1268, 12});
+// each frame:
+hud.updateNetworkStats(netStatsHud, transport.stats(activeConn));
+```
+
+Useful when diagnosing "is this peer actually connected?", "why is the
+sync jittery?", or "is bandwidth blowing up?".
