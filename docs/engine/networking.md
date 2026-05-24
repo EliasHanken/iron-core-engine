@@ -279,3 +279,121 @@ hud.updateNetworkStats(netStatsHud, transport.stats(activeConn));
 
 Useful when diagnosing "is this peer actually connected?", "why is the
 sync jittery?", or "is bandwidth blowing up?".
+
+## Peer lifecycle: `iron::PeerManager`
+
+Every networked game has the same boilerplate: peerId assignment,
+conn↔peerId map, gameId validation, Hello flow, onPeerJoined /
+onPeerLeft handling. `iron::PeerManager` owns it all. **Reserves
+message tag=1** for `iron::peer::HelloMsg` — your game's messages
+start at tag 2.
+
+```cpp
+iron::GnsTransport transport;
+iron::MessageRegistry registry(&transport);
+iron::PeerManager peers(transport, registry, /*gameId*/ 0xMYGAMEu);
+
+peers.setOnPeerJoined([&](std::uint32_t pid) { initPlayer(pid); });
+peers.setOnPeerLeft([&](std::uint32_t pid)   { dropPlayer(pid); });
+
+peers.start(iron::parseNetArgs(argc, argv));
+
+while (running) {
+    peers.poll();
+    if (peers.isHost()) {
+        peers.broadcastToAll(myMsg, iron::SendReliability::Reliable);
+    } else {
+        peers.send(0, myMsg, iron::SendReliability::Unreliable);
+    }
+}
+```
+
+The host fires `onPeerJoined(0)` **synchronously** inside `start()` —
+your join callback runs once for "me" before any client connects, so
+per-peer init has a uniform path. Set the callback BEFORE calling
+`start()`.
+
+`gameId` mismatch on Hello closes the connection cleanly (server sees
+the disconnect, client sees no identity and the game's main loop
+typically exits when the host disconnects).
+
+## Client-side prediction: `iron::PredictionEngine<TInput, TState>`
+
+For server-authoritative games (server runs the simulation, clients
+render), the client predicts locally for input responsiveness and
+reconciles when authoritative state arrives. Engine handles the input
+history + replay; game provides a deterministic `simulate(state, input, dt)`
+function:
+
+```cpp
+struct PlayerState { float x, y, z; };
+struct PlayerInput { float dx, dy, dz; };
+auto simulate = [](const PlayerState& s, const PlayerInput& i, float /*dt*/) {
+    return PlayerState{s.x + i.dx, s.y + i.dy, s.z + i.dz};
+};
+
+iron::PredictionEngine<PlayerInput, PlayerState> predictor{
+    simulate, /*fixedDt*/ 1.0f / 60.0f, PlayerState{0, 0, 0}};
+
+// Each input tick (use iron::FixedTickScheduler):
+const auto inputId = predictor.applyInput(currentInput);
+peers.send(0, PlayerInputMsg{inputId, currentInput.dx, ...},
+           iron::SendReliability::Unreliable);
+
+// Render:
+render(predictor.predictedState());
+
+// When the host's AuthorityMsg for our peerId arrives:
+predictor.reconcile(PlayerState{msg.x, msg.y, msg.z}, msg.lastInputId);
+```
+
+If the client's predicted state at `lastInputId` matched the server's,
+nothing visible happens (just history bookkeeping). If it didn't,
+predicted state snaps to authoritative and any inputs since are
+replayed against it.
+
+State comparison uses `TState::operator==` — works for deterministic
+single-platform simulations where client and server run the same
+`simulate` on the same inputs.
+
+The host runs the same `simulate` on its own authoritative state for
+the local player AND for each connected client; broadcasts
+`AuthorityPositionMsg{peerId, x, y, z, lastInputId}` to all peers each
+input tick.
+
+## Snapshot pattern (late-joiner state catch-up)
+
+When a peer joins mid-game, they need a snapshot of in-progress world
+state. The engine doesn't abstract this — instead each game sends the
+right messages from inside the `onPeerJoined` callback. Reference
+implementation in net-tag:
+
+```cpp
+peers.setOnPeerJoined([&](std::uint32_t newPeer) {
+    if (!peers.isHost()) return;
+    if (newPeer == 0) return;   // 0 = self (host fires onJoined(0))
+
+    // Snapshot every existing peer's authoritative position so the
+    // new client's remote-cube map starts populated (idle peers would
+    // otherwise be invisible until they next move).
+    for (const auto& [pid, state] : authStates) {
+        if (pid == newPeer) continue;
+        peers.send(newPeer,
+            iron::nettag::AuthorityPositionMsg{pid, state.x, state.y, state.z, 0},
+            iron::SendReliability::Reliable);
+    }
+    // Snapshot round state if a round is active.
+    if (roundActive) {
+        peers.send(newPeer,
+            iron::nettag::RoundStartMsg{itPeerId, roundTimeRemainingSec},
+            iron::SendReliability::Reliable);
+        for (const auto& [pid, info] : players) {
+            peers.send(newPeer,
+                iron::nettag::ScoreUpdateMsg{pid, info.itTimeAccumSec},
+                iron::SendReliability::Reliable);
+        }
+    }
+});
+```
+
+Use `Reliable` for snapshot — late-joiners can't miss it.
