@@ -50,6 +50,11 @@ if(MSVC)
   )
 endif()
 
+# --- GameNetworkingSockets: UDP transport with reliable channels, encryption,
+#     congestion control. Brought in via vcpkg manifest mode; see
+#     docs/engine/build-setup.md for the one-time vcpkg toolchain setup.
+find_package(GameNetworkingSockets CONFIG REQUIRED)
+
 add_subdirectory(third_party)
 
 add_subdirectory(engine)
