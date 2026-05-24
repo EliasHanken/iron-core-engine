@@ -1,6 +1,7 @@
 #pragma once
 
 #include "net/NetTransport.h"
+#include "net/NetworkStats.h"
 
 #include <cstdint>
 #include <functional>
@@ -46,6 +47,12 @@ public:
 
     void close(ConnectionId conn) override;
     void poll() override;
+
+    // Live network health for one connection. Pulls from
+    // ISteamNetworkingSockets::GetConnectionRealTimeStatus. Returns
+    // a zero-initialised ConnectionStats with state="Unknown" if the
+    // connection id is not currently tracked.
+    ConnectionStats stats(ConnectionId conn) const;
 
     void setOnConnectionOpened(OnConnectionOpenedFn fn) override { onOpened_ = std::move(fn); }
     void setOnConnectionClosed(OnConnectionClosedFn fn) override { onClosed_ = std::move(fn); }
