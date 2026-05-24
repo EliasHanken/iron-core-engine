@@ -426,6 +426,27 @@ int main(int argc, char** argv) {
             registry.send<iron::nettag::HelloMsg>(
                 c, iron::nettag::HelloMsg{assigned},
                 iron::SendReliability::Reliable);
+            // Late-joiner snapshot: if a round is already in progress,
+            // give the new client the current state so they see "it",
+            // the remaining timer, and (in a moment) the leaderboard
+            // via the next periodic ScoreUpdate broadcast. Without this
+            // the client sits in "(waiting for round...)" until the
+            // current round ends.
+            if (roundActive) {
+                const iron::nettag::RoundStartMsg snapshot{
+                    itPeerId,
+                    std::max(0.0f, roundTimeRemainingSec)};
+                registry.send<iron::nettag::RoundStartMsg>(
+                    c, snapshot, iron::SendReliability::Reliable);
+                // Also push current scores immediately so the leaderboard
+                // isn't empty for up to a second.
+                for (const auto& [pid, info] : players) {
+                    const iron::nettag::ScoreUpdateMsg sMsg{
+                        pid, info.itTimeAccumSec};
+                    registry.send<iron::nettag::ScoreUpdateMsg>(
+                        c, sMsg, iron::SendReliability::Reliable);
+                }
+            }
         }
     });
 
