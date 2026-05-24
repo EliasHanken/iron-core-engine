@@ -20,6 +20,8 @@ iron_add_test(test_hud test_hud.cpp)
 iron_add_test(test_point_lights test_point_lights.cpp)
 iron_add_test(test_reflection test_reflection.cpp)
 iron_add_test(test_texture_loader test_texture_loader.cpp)
+target_compile_definitions(test_texture_loader PRIVATE
+  IRON_REPO_ROOT="${CMAKE_SOURCE_DIR}")
 iron_add_test(test_free_fly_camera test_free_fly_camera.cpp)
 
 # test_rope_walker compiles the game-side RopeWalker.cpp directly, since it is

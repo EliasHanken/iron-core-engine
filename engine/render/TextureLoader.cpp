@@ -19,8 +19,11 @@ void invertRGBChannels(std::vector<unsigned char>& pixels) {
 
 std::vector<unsigned char> loadRoughnessAsSpec(const std::string& path,
                                                 int& outWidth, int& outHeight) {
-    // stbi_set_flip_vertically_on_load matches the convention used by
-    // GLTexture so the resulting texture aligns with diffuse/normal pairs.
+    // stbi_set_flip_vertically_on_load is a sticky process-wide flag. We set it
+    // to 1 here, which matches the value GLTexture::GLTexture(const std::string&)
+    // also sets before each load — so the two helpers can be interleaved freely
+    // without either clobbering the other's expectation. Any future caller that
+    // needs a different value (0) must reset the flag itself.
     stbi_set_flip_vertically_on_load(1);
     int w = 0, h = 0, channels = 0;
     unsigned char* raw = stbi_load(path.c_str(), &w, &h, &channels, 4);

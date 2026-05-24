@@ -26,5 +26,29 @@ int main() {
         CHECK(empty.empty());
     }
 
+    // loadRoughnessAsSpec: end-to-end disk load of the CC0 wood roughness PNG.
+    {
+        // IRON_REPO_ROOT is defined by target_compile_definitions in CMakeLists.txt
+        // so this path is always absolute regardless of build layout.
+        const std::string path =
+            std::string{IRON_REPO_ROOT} + "/assets/cc0/wood/roughness.png";
+
+        int w = 0, h = 0;
+        std::vector<unsigned char> pixels = loadRoughnessAsSpec(path, w, h);
+
+        // Polyhaven 1k textures are 1024x1024.
+        CHECK(!pixels.empty());
+        CHECK(w == 1024);
+        CHECK(h == 1024);
+        CHECK(pixels.size() == static_cast<std::size_t>(w) * h * 4);
+
+        // Non-existent file: returns empty, leaves out-params untouched.
+        int badW = 7, badH = 9;
+        std::vector<unsigned char> bad = loadRoughnessAsSpec("nonexistent.png", badW, badH);
+        CHECK(bad.empty());
+        CHECK(badW == 7);
+        CHECK(badH == 9);
+    }
+
     return iron_test_result();
 }
