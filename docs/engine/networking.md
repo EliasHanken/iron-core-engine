@@ -102,7 +102,77 @@ Launch two or more copies of `net-cubes.exe` on the same machine:
 - Star topology: clients only talk to the host. The host rebroadcasts
   each client's position to every other client.
 
-The protocol is two messages (Hello and Position) with a 1-byte tag
-prefix — defined in `games/05-net-cubes/Protocol.h` with round-trip
-unit tests in `tests/test_net_cubes_protocol.cpp`. There is deliberately
-no engine-side message dispatcher yet; that's M8.3.
+The protocol is two messages (Hello and Position) declared in
+`games/05-net-cubes/Messages.h` as POD structs with a `static constexpr
+std::uint8_t kTag`. Dispatched via `iron::MessageRegistry` — see the
+"Typed messages" section below.
+
+## Typed messages: `iron::MessageRegistry`
+
+Game code does NOT manually serialise bytes and switch on a tag byte.
+That's what the registry is for. Define messages as POD structs with a
+1-byte tag:
+
+```cpp
+struct PositionMsg {
+    static constexpr std::uint8_t kTag = 2;
+    std::uint32_t peerId;
+    float x, y, z;
+};
+```
+
+Then wrap a transport once, register handlers per type, and send by type:
+
+```cpp
+iron::GnsTransport transport;
+iron::MessageRegistry registry(&transport);
+
+registry.registerHandler<PositionMsg>([&](iron::ConnectionId c, const PositionMsg& m) {
+    cubes[m.peerId] = {m.x, m.y, m.z};
+});
+
+// Later:
+registry.send<PositionMsg>(connId, PositionMsg{myId, 1.0f, 0.5f, -2.0f},
+                            iron::SendReliability::Unreliable);
+```
+
+Wire format is `[u8 tag][raw memcpy of struct]`. Tag 0 is reserved.
+Messages must be trivially copyable (POD only — no `std::string`, no
+`std::vector` inside). Compile-time enforced via `static_assert`. Max
+payload is 1200 bytes (one message, one packet, no fragmentation).
+
+Tag namespaces are per-registry — different games can reuse the same tag
+values without conflict.
+
+## Cross-machine LAN play
+
+Both networked demos (`net-cubes` and `net-tag`) parse the same CLI flags
+via `iron::parseNetArgs(argc, argv)`:
+
+```
+net-cubes.exe                                # listen on 30005 (host)
+net-cubes.exe --connect 192.168.1.5          # client connecting to that IP
+net-tag.exe --connect 127.0.0.1 --port 40000
+```
+
+No args = listen. `--connect <ip>` = client mode targeting that IP.
+`--port <n>` = override the default port (30005) on either side. Bad
+inputs (malformed IPs, non-numeric ports) fall back to defaults with a
+warning rather than aborting.
+
+## Play with it: net-tag
+
+`games/06-net-tag` — N-player tag with a 60-second round and a live
+leaderboard. Built entirely on `iron::MessageRegistry`. Cross-machine
+LAN play via `--connect <ip>` / `--port <n>`.
+
+Host is authoritative: detects the tag (distance < 1.5m + 0.5s cooldown
+on both swap participants), runs the round timer, owns the scoreboard,
+broadcasts state. Clients send position; receive everything else.
+
+Cube colored by `peerId` via hue rotation; the "it" cube has a strong
+red emissive glow so it's instantly readable across the scene. HUD shows
+role + peers + game state + sorted leaderboard.
+
+If the player who's "it" disconnects mid-round, the host hands "it" off
+to a remaining player so the round can keep going.
