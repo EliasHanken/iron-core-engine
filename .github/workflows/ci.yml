@@ -30,7 +30,10 @@ jobs:
           vcpkgGitCommitId: 'aa40adda5352e87655b8583cfb2451d5e9e276fd'
 
       - name: Configure
-        run: cmake -S . -B build -DCMAKE_TOOLCHAIN_FILE=${env:VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake
+        # bash shell on Windows runner: pwsh's `${env:VCPKG_ROOT}` interpolation
+        # mangles -D...= args to cmake; bash with $VCPKG_ROOT is reliable.
+        shell: bash
+        run: cmake -S . -B build -DCMAKE_TOOLCHAIN_FILE="$VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake"
 
       - name: Build
         run: cmake --build build --config Debug
