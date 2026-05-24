@@ -383,7 +383,11 @@ int main(int argc, char** argv) {
     };
     struct PlayerInput { float dx, dy, dz; };
     auto simulate = [](const PlayerState& s, const PlayerInput& i, float /*dt*/) {
-        return PlayerState{s.x + i.dx, s.y + i.dy, s.z + i.dz};
+        // Cube centre stays above ground (matches the M8.3 per-frame
+        // ground guard that's now folded into the sim so host + client
+        // clamp identically and prediction stays consistent).
+        const float newY = std::max(0.5f, s.y + i.dy);
+        return PlayerState{s.x + i.dx, newY, s.z + i.dz};
     };
 
     // yaw/pitch are camera-orientation state owned locally. Position
@@ -461,16 +465,28 @@ int main(int argc, char** argv) {
                     authStates[pid] = PlayerState{0.0f, 0.5f, 0.0f};
                 }
             }
-            // Late-joiner snapshot: send the new client current round state
-            // if a round is active.
-            if (roundActive && pid != 0) {
-                const iron::nettag::RoundStartMsg snapshot{
-                    itPeerId, std::max(0.0f, roundTimeRemainingSec)};
-                peers.send(pid, snapshot, iron::SendReliability::Reliable);
-                for (const auto& [otherPid, info] : players) {
+            // Late-joiner snapshot: send the new client current round
+            // state if a round is active, plus AuthorityPositionMsg for
+            // every existing peer so their cubes appear immediately
+            // (idle peers would otherwise be invisible until they next
+            // press a movement key).
+            if (pid != 0) {
+                for (const auto& [otherPid, state] : authStates) {
+                    if (otherPid == pid) continue;  // don't snapshot self to self
                     peers.send(pid,
-                        iron::nettag::ScoreUpdateMsg{otherPid, info.itTimeAccumSec},
+                        iron::nettag::AuthorityPositionMsg{
+                            otherPid, state.x, state.y, state.z, /*lastInputId=*/0},
                         iron::SendReliability::Reliable);
+                }
+                if (roundActive) {
+                    const iron::nettag::RoundStartMsg snapshot{
+                        itPeerId, std::max(0.0f, roundTimeRemainingSec)};
+                    peers.send(pid, snapshot, iron::SendReliability::Reliable);
+                    for (const auto& [otherPid, info] : players) {
+                        peers.send(pid,
+                            iron::nettag::ScoreUpdateMsg{otherPid, info.itTimeAccumSec},
+                            iron::SendReliability::Reliable);
+                    }
                 }
             }
         }
@@ -506,6 +522,15 @@ int main(int argc, char** argv) {
     //   - For other peers: push into the TimeHistory<Vec3> for smooth rendering.
     registry.registerHandler<iron::nettag::AuthorityPositionMsg>(
         [&](iron::ConnectionId, const iron::nettag::AuthorityPositionMsg& msg) {
+            // A client without an assigned peerId yet (Hello in flight)
+            // has myPeerId()=0, which matches the host's peerId. Without
+            // this guard the pre-Hello client would reconcile its
+            // predictor to the host's position. Treat as a remote-cube
+            // update until we have our own identity.
+            if (!peers.hasIdentity()) {
+                remoteHistories[msg.peerId].push(iron::Vec3{msg.x, msg.y, msg.z});
+                return;
+            }
             const std::uint32_t myId = peers.isHost() ? 0u : peers.myPeerId();
             if (msg.peerId == myId) {
                 if (!peers.isHost()) {
