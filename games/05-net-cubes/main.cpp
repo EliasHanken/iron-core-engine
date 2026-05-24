@@ -10,6 +10,7 @@
 
 #include "Messages.h"
 #include "core/NetArgs.h"
+#include "net/TimeHistory.h"
 #include "net/MessageRegistry.h"
 
 #include "core/Log.h"
@@ -356,6 +357,9 @@ int main(int argc, char** argv) {
         "Peers: 0", iron::Vec2{12, 36}, 2.0f,
         iron::Vec4{1, 1, 1, 1});
 
+    auto netStatsHud = hud.addNetworkStatsWidget(
+        iron::Vec2{static_cast<float>(kScreenWidth) - 12.0f, 12.0f});
+
     // --- player + chase camera ---
     // The player (a cube) is the controlled entity. The camera orbits
     // behind/above the player and smooth-lerps toward its ideal position
@@ -381,23 +385,11 @@ int main(int argc, char** argv) {
     glfwGetCursorPos(window.handle(), &lastMouseX, &lastMouseY);
 
     // --- peer cube state ---
-    // peerId -> rendered position. `displayed` is what we draw; `target` is
-    // the latest position we received over the wire. Each frame we lerp
-    // displayed toward target so remote cubes glide between 30 Hz updates
-    // instead of teleporting. The local cube is updated to (player, player)
-    // every frame so it never lerps — your own movement should be instant.
-    //
-    // NOTE: we intentionally do NOT pre-seed any entry here. For the host,
-    // cubes[0] is created on the first frame (since haveIdentity is true
-    // immediately after listen). For the client, the local entry is created
-    // once myPeerId arrives via HelloMsg; remote entries are seeded inside
-    // the Position branch of onMessage with both displayed and target set
-    // to the incoming position. Pre-seeding cubes[0] here would create a
-    // fake host-cube entry on clients at the local player's startup
-    // position — causing remote cubes to visibly lerp in from origin.
-    struct CubeState { iron::Vec3 displayed; iron::Vec3 target; };
-    std::unordered_map<std::uint32_t, CubeState> cubes;
-    constexpr float kCubeSmoothness = 12.0f;
+    // Remote peer positions are interpolated through a per-peer
+    // TimeHistory<Vec3> for jitter/loss tolerance. Local player is NOT
+    // buffered — the local cube renders at player.position directly.
+    std::unordered_map<std::uint32_t, iron::TimeHistory<iron::Vec3>> remoteHistories;
+    constexpr auto kDisplayDelay = std::chrono::milliseconds{100};
 
     // --- networking ---
     iron::GnsTransport transport;
@@ -420,7 +412,7 @@ int main(int argc, char** argv) {
             const std::uint32_t assigned = nextPeerId++;
             connToPeerId[c] = assigned;
             registry.send<iron::netcubes::HelloMsg>(
-                c, iron::netcubes::HelloMsg{assigned},
+                c, iron::netcubes::HelloMsg{iron::netcubes::kGameId, assigned},
                 iron::SendReliability::Reliable);
         }
         // Client side: nothing to do until HelloMsg arrives.
@@ -431,7 +423,7 @@ int main(int argc, char** argv) {
         if (isHost) {
             auto it = connToPeerId.find(c);
             if (it != connToPeerId.end()) {
-                cubes.erase(it->second);
+                remoteHistories.erase(it->second);
                 connToPeerId.erase(it);
             }
         } else {
@@ -445,6 +437,13 @@ int main(int argc, char** argv) {
         [&](iron::ConnectionId /*c*/, const iron::netcubes::HelloMsg& msg) {
             if (isHost) {
                 iron::Log::warn("net-cubes: host received Hello — ignoring");
+                return;
+            }
+            if (msg.gameId != iron::netcubes::kGameId) {
+                iron::Log::error(
+                    "net-cubes: connected to wrong game (gameId=0x%08X, expected 0x%08X) — exiting",
+                    msg.gameId, iron::netcubes::kGameId);
+                glfwSetWindowShouldClose(window.handle(), GLFW_TRUE);
                 return;
             }
             if (myPeerId == 0) {
@@ -465,13 +464,7 @@ int main(int argc, char** argv) {
                 }
             }
             const iron::Vec3 incoming{msg.x, msg.y, msg.z};
-            auto [it, inserted] = cubes.try_emplace(msg.peerId);
-            if (inserted) {
-                // First sighting — seed `displayed` too so the cube
-                // doesn't lerp in from the world origin.
-                it->second.displayed = incoming;
-            }
-            it->second.target = incoming;
+            remoteHistories[msg.peerId].push(incoming);
             // Host rebroadcasts to all other clients (star topology).
             if (isHost) {
                 for (const auto& [otherConn, _] : connToPeerId) {
@@ -615,25 +608,11 @@ int main(int argc, char** argv) {
 
         transport.poll();
 
-        // Track our own cube under our peerId. Host is always 0; a client
-        // only has a position cube once it has received its assigned id.
-        // Set both displayed and target to player.position so the local
-        // cube never lerps — your own movement should be instant.
         const std::uint32_t myId = isHost ? 0u : myPeerId;
         const bool haveIdentity = isHost || (myPeerId != 0);
-        if (haveIdentity) {
-            cubes[myId] = CubeState{player.position, player.position};
-        }
-
-        // Lerp every remote cube's displayed position toward its latest
-        // target. Framerate-independent: 1 - exp(-dt * smoothness).
-        const float cubeLerp = 1.0f - std::exp(-dt * kCubeSmoothness);
-        for (auto& [peerId, cube] : cubes) {
-            if (peerId == myId) continue;
-            cube.displayed.x += (cube.target.x - cube.displayed.x) * cubeLerp;
-            cube.displayed.y += (cube.target.y - cube.displayed.y) * cubeLerp;
-            cube.displayed.z += (cube.target.z - cube.displayed.z) * cubeLerp;
-        }
+        // The local cube is rendered directly from player.position in
+        // the render block below. Remote cubes come from their per-peer
+        // TimeHistory<Vec3> sampled at (now - displayDelay).
 
         // Broadcast our position ~30 Hz.
         if (haveIdentity) {
@@ -684,12 +663,28 @@ int main(int argc, char** argv) {
             renderer.submit(call);
         }
 
-        // Cubes (one DrawCall per peer)
-        for (const auto& [peerId, cube] : cubes) {
+        // Local cube renders at player.position (no buffering — your
+        // own movement should be instant).
+        if (haveIdentity) {
+            iron::DrawCall localCall;
+            localCall.mesh = cubeMesh;
+            localCall.shader = litShader;
+            localCall.model = iron::translation(player.position);
+            localCall.material.texture     = renderer.whiteTexture();
+            localCall.material.normalMap   = renderer.flatNormalTexture();
+            localCall.material.specularMap = renderer.noSpecularTexture();
+            localCall.material.emissive    = colorForPeer(myId) * 0.4f;
+            renderer.submit(localCall);
+        }
+        // Remote cubes at buffer-interpolated positions.
+        for (const auto& [peerId, history] : remoteHistories) {
+            if (peerId == myId) continue;  // skip our own echo if host
+            auto pos = history.sampleAtDelay(kDisplayDelay);
+            if (!pos) continue;
             iron::DrawCall call;
             call.mesh = cubeMesh;
             call.shader = litShader;
-            call.model = iron::translation(cube.displayed);
+            call.model = iron::translation(*pos);
             call.material.texture     = renderer.whiteTexture();
             call.material.normalMap   = renderer.flatNormalTexture();
             call.material.specularMap = renderer.noSpecularTexture();
@@ -707,8 +702,18 @@ int main(int argc, char** argv) {
         } else {
             hud.setText(roleText, "(connecting...)");
         }
-        hud.setText(peersText,
-                    "Peers: " + std::to_string(cubes.size()));
+        const std::size_t peerCount = (haveIdentity ? 1u : 0u) + remoteHistories.size();
+        hud.setText(peersText, "Peers: " + std::to_string(peerCount));
+        // Update the live network stats widget for the connection that
+        // matters: host shows the first connected client (if any),
+        // client shows the host connection.
+        iron::ConnectionId statsConn = iron::kInvalidConnection;
+        if (isHost) {
+            if (!connToPeerId.empty()) statsConn = connToPeerId.begin()->first;
+        } else {
+            statsConn = hostConn;
+        }
+        hud.updateNetworkStats(netStatsHud, transport.stats(statsConn));
         renderer.drawHud(hud.build(font, renderer.whiteTexture()),
                          kScreenWidth, kScreenHeight);
 
