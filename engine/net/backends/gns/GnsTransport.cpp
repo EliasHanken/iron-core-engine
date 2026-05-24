@@ -200,8 +200,15 @@ void GnsTransport::handleStatusChanged(HSteamNetConnection h, int newState) {
 
         case k_ESteamNetworkingConnectionState_Connected: {
             auto it = handleToId_.find(h);
-            if (it != handleToId_.end() && onOpened_) {
-                onOpened_(it->second);
+            if (it != handleToId_.end()) {
+                // Add outgoing (client-initiated) connections to the poll group
+                // so their inbound messages are drained by poll(). Accepted
+                // connections are added during the Connecting handler; this
+                // SetConnectionPollGroup call is a no-op for those.
+                sockets_->SetConnectionPollGroup(h, pollGroup_);
+                if (onOpened_) {
+                    onOpened_(it->second);
+                }
             }
             break;
         }
