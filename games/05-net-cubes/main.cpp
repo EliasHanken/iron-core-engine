@@ -22,6 +22,8 @@
 #include "render/backends/opengl/OpenGLRenderer.h"
 #include "scene/FreeFlyCamera.h"
 #include "scene/Mesh.h"
+#include "net/NetTransport.h"
+#include "net/backends/gns/GnsTransport.h"
 
 #include <GLFW/glfw3.h>
 
@@ -349,6 +351,95 @@ int main() {
     std::unordered_map<std::uint32_t, iron::Vec3> cubes;
     cubes[0] = camera.position;
 
+    // --- networking ---
+    iron::GnsTransport transport;
+
+    const iron::NetAddress addr{0x7F000001, 27015};
+
+    // State (mutable across callbacks + main loop).
+    bool isHost = false;
+    iron::ConnectionId hostConn = iron::kInvalidConnection;
+    std::uint32_t myPeerId = 0;       // host is always 0; client starts at 0 until Hello
+    std::unordered_map<iron::ConnectionId, std::uint32_t> connToPeerId;
+    std::uint32_t nextPeerId = 1;
+    std::vector<std::byte> sendBuf;   // reusable serialisation buffer
+
+    transport.setOnConnectionOpened([&](iron::ConnectionId c) {
+        if (isHost) {
+            // Assign this client a peerId and send Hello reliably.
+            const std::uint32_t assigned = nextPeerId++;
+            connToPeerId[c] = assigned;
+            iron::netcubes::writeHello(sendBuf,
+                                        iron::netcubes::HelloMsg{assigned});
+            transport.send(c,
+                           std::span<const std::byte>(sendBuf.data(), sendBuf.size()),
+                           iron::SendReliability::Reliable);
+        }
+        // Client side: nothing to do until HelloMsg arrives.
+    });
+
+    transport.setOnConnectionClosed([&](iron::ConnectionId c,
+                                         const std::string& reason) {
+        if (isHost) {
+            auto it = connToPeerId.find(c);
+            if (it != connToPeerId.end()) {
+                cubes.erase(it->second);
+                connToPeerId.erase(it);
+            }
+        } else {
+            iron::Log::warn("net-cubes: connection to host closed: %s",
+                            reason.c_str());
+            glfwSetWindowShouldClose(window.handle(), GLFW_TRUE);
+        }
+    });
+
+    transport.setOnMessage([&](iron::ConnectionId c,
+                                std::span<const std::byte> bytes) {
+        auto parsed = iron::netcubes::parse(bytes);
+        if (!parsed) {
+            iron::Log::warn("net-cubes: unparseable message (%zu bytes)",
+                            bytes.size());
+            return;
+        }
+        if (parsed->tag == iron::netcubes::MsgTag::Hello) {
+            if (isHost) {
+                iron::Log::warn("net-cubes: host received Hello — ignoring");
+                return;
+            }
+            if (myPeerId == 0) {
+                myPeerId = parsed->hello.peerId;
+            }
+        } else if (parsed->tag == iron::netcubes::MsgTag::Position) {
+            const auto& p = parsed->position;
+            cubes[p.peerId] = iron::Vec3{p.x, p.y, p.z};
+            // Host rebroadcasts to all other clients (star topology).
+            if (isHost) {
+                for (const auto& [otherConn, _] : connToPeerId) {
+                    if (otherConn == c) continue;
+                    transport.send(otherConn,
+                                   bytes,
+                                   iron::SendReliability::Unreliable);
+                }
+            }
+        }
+    });
+
+    if (!transport.start()) {
+        iron::Log::error("net-cubes: GnsTransport.start failed");
+        return 1;
+    }
+
+    // Auto-detect host vs client: try listen first; fall back to connect.
+    isHost = transport.listen(addr);
+    if (!isHost) {
+        hostConn = transport.connect(addr);
+        if (hostConn == iron::kInvalidConnection) {
+            iron::Log::error("net-cubes: neither listen nor connect succeeded");
+            transport.stop();
+            return 1;
+        }
+    }
+
     auto prevTime = std::chrono::steady_clock::now();
     while (!window.shouldClose()) {
         window.pollEvents();
@@ -378,8 +469,36 @@ int main() {
         // Q=worldDown, E=worldUp — matches the header.
         camera.update(dt, mouseDx, mouseDy, kW, kS, kA, kD, kQ, kE);
 
-        // Track local cube where the camera is.
-        cubes[0] = camera.position;
+        transport.poll();
+
+        // Track our own cube under our peerId. Host is always 0; a client
+        // only has a position cube once it has received its assigned id.
+        const std::uint32_t myId = isHost ? 0u : myPeerId;
+        const bool haveIdentity = isHost || (myPeerId != 0);
+        if (haveIdentity) {
+            cubes[myId] = camera.position;
+        }
+
+        // Broadcast our position ~30 Hz.
+        static auto lastSend = std::chrono::steady_clock::time_point::min();
+        if (haveIdentity) {
+            const auto since = std::chrono::duration_cast<std::chrono::milliseconds>(
+                                   now - lastSend).count();
+            if (since >= 33) {
+                lastSend = now;
+                iron::netcubes::writePosition(sendBuf, iron::netcubes::PositionMsg{
+                    myId,
+                    camera.position.x, camera.position.y, camera.position.z});
+                std::span<const std::byte> view(sendBuf.data(), sendBuf.size());
+                if (isHost) {
+                    for (const auto& [c, _] : connToPeerId) {
+                        transport.send(c, view, iron::SendReliability::Unreliable);
+                    }
+                } else {
+                    transport.send(hostConn, view, iron::SendReliability::Unreliable);
+                }
+            }
+        }
 
         const iron::Mat4 projection = iron::perspective(
             camera.fovDeg * 3.14159265f / 180.0f,
@@ -421,5 +540,6 @@ int main() {
         renderer.endFrame();
         window.swapBuffers();
     }
+    transport.stop();
     return 0;
 }
