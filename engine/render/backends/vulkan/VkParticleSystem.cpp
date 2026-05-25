@@ -306,9 +306,8 @@ void VkParticleSystem::tick(float dtSec) {
     sim.count         = cfg_.count;
     sim.frameSeed     = ++frameSeed_;
     std::memcpy(simUboMapped_, &sim, sizeof(sim));
-    // Sim UBO is persistently mapped + HOST_COHERENT (typical on desktop),
-    // so no explicit flush is needed. On non-coherent platforms, add:
-    //   vmaFlushAllocation(ctx.allocator(), simUboAlloc_, 0, sizeof(sim));
+    // Flush — no-op on coherent memory, required on non-coherent.
+    vmaFlushAllocation(ctx.allocator(), simUboAlloc_, 0, sizeof(sim));
 
     // One-shot command pool + buffer for this dispatch.
     VkCommandPool pool = VK_NULL_HANDLE;
@@ -393,7 +392,7 @@ void VkParticleSystem::tick(float dtSec) {
     submit.commandBufferCount = 1;
     submit.pCommandBuffers    = &cb;
     VK_CHECK(vkQueueSubmit(ctx.graphicsQueue(), 1, &submit, VK_NULL_HANDLE));
-    vkQueueWaitIdle(ctx.graphicsQueue());
+    VK_CHECK(vkQueueWaitIdle(ctx.graphicsQueue()));
 
     vkDestroyDescriptorPool(ctx.device(), dpool, nullptr);
     vkDestroyCommandPool(ctx.device(), pool, nullptr);
