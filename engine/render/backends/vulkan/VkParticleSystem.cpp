@@ -72,14 +72,14 @@ bool VkParticleSystem::createSsbo() {
 
     VmaAllocationCreateInfo alloc{};
     alloc.usage = VMA_MEMORY_USAGE_AUTO;
-    alloc.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT |
-                  VMA_ALLOCATION_CREATE_MAPPED_BIT;
-    // M10 uses host-visible memory so the initial upload + Task 5 sim UBO
-    // path can memcpy directly. Future optimization: device-local SSBO
-    // with a staging-buffer initial upload.
-    VmaAllocationInfo aInfo{};
+    alloc.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT;
+    // M10 uses host-visible memory so the initial upload can memcpy
+    // directly. NOT persistently mapped — uploadInitialState() does a
+    // one-shot vmaMapMemory/Unmap; after that the SSBO is GPU-only
+    // (compute writes, vertex shader reads). Future optimization:
+    // device-local SSBO with a staging-buffer initial upload.
     VK_CHECK(vmaCreateBuffer(ctx.allocator(), &info, &alloc,
-                             &ssbo_, &ssboAlloc_, &aInfo));
+                             &ssbo_, &ssboAlloc_, nullptr));
     return ssbo_ != VK_NULL_HANDLE;
 }
 
@@ -118,6 +118,9 @@ void VkParticleSystem::uploadInitialState() {
         dst[i] = p;
     }
 
+    // Flush before unmap — required for non-coherent memory types.
+    // No-op when VMA picked HOST_COHERENT (typical on desktop GPUs).
+    vmaFlushAllocation(ctx.allocator(), ssboAlloc_, 0, VK_WHOLE_SIZE);
     vmaUnmapMemory(ctx.allocator(), ssboAlloc_);
 }
 
