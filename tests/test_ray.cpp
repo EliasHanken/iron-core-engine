@@ -117,5 +117,21 @@ int main() {
         CHECK_NEAR(n.z, 0.0f);
     }
 
+    // intersectRayAabb normal overload: negative-direction ray entering
+    // the +X face. Exercises the t1>t2 swap path of the slab method that
+    // the two previous cases (both positive-direction) skip.
+    {
+        Ray ray{Vec3{5.0f, 0.0f, 6.0f}, Vec3{-1.0f, 0.0f, 0.0f}};
+        const Aabb box{Vec3{-1.0f, -1.0f, 5.0f}, Vec3{1.0f, 1.0f, 7.0f}};
+        float t = -1.0f;
+        Vec3 n{};
+        const bool hit = intersectRayAabb(ray, box, t, n);
+        CHECK(hit);
+        CHECK_NEAR(t, 4.0f);
+        CHECK_NEAR(n.x, 1.0f);   // entered through +X face
+        CHECK_NEAR(n.y, 0.0f);
+        CHECK_NEAR(n.z, 0.0f);
+    }
+
     return iron_test_result();
 }
