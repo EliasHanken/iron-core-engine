@@ -98,11 +98,28 @@ void VulkanRenderer::drawHud(const HudBatch&, int, int) { warnOnce("drawHud"); }
 
 // --- per-frame (real) ---
 
+namespace {
+// Set viewport + scissor on the active command buffer. Vulkan clip-Y points
+// DOWN (opposite OpenGL); negative-height + bottom-origin viewport flips it
+// back so GL-style projection matrices render correctly without altering
+// winding (back-face culling stays consistent).
+void setSceneViewport(VkCommandBuffer cb, VkExtent2D extent) {
+    VkViewport vp{};
+    vp.x = 0;
+    vp.y = static_cast<float>(extent.height);
+    vp.width  = static_cast<float>(extent.width);
+    vp.height = -static_cast<float>(extent.height);
+    vp.minDepth = 0.0f; vp.maxDepth = 1.0f;
+    vkCmdSetViewport(cb, 0, 1, &vp);
+    VkRect2D scissor{{0, 0}, extent};
+    vkCmdSetScissor(cb, 0, 1, &scissor);
+}
+}  // namespace
+
 void VulkanRenderer::beginFrame(Vec3 clearColor, const DirectionalLight&,
                                  std::span<const PointLight>,
                                  const Fog&, const Mat4& view,
                                  const Mat4& projection) {
-    pendingDraws_.clear();
     pendingClear_      = clearColor;
     pendingView_       = view;
     pendingProjection_ = projection;
@@ -136,24 +153,11 @@ void VulkanRenderer::beginFrame(Vec3 clearColor, const DirectionalLight&,
         skipFrame_ = true;
         return;
     }
-}
 
-void VulkanRenderer::submit(const DrawCall& call) {
-    if (skipFrame_) return;
-    if (!meshes_.has(call.mesh) || !shaders_.has(call.shader)) return;
-    const Mat4 mvp = pendingProjection_ * pendingView_ * call.model;
-    pendingDraws_.push_back({call.mesh, call.shader, call.material.texture, mvp});
-}
-
-void VulkanRenderer::endFrame() {
-    if (skipFrame_) {
-        frames_.advance();
-        return;
-    }
-
-    VkFrameRing::Frame& f = frames_.current();
+    // Begin recording IMMEDIATELY so external subsystems (iron::ParticleSystem,
+    // future GPU helpers) can record draws between begin/endFrame. Closes in
+    // endFrame.
     VkCommandBuffer cb = f.commandBuffer;
-
     VkCommandBufferBeginInfo begin{};
     begin.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
     begin.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
@@ -172,74 +176,78 @@ void VulkanRenderer::endFrame() {
     rpBegin.pClearValues = clears;
     vkCmdBeginRenderPass(cb, &rpBegin, VK_SUBPASS_CONTENTS_INLINE);
 
-    // Vulkan clip-space Y points DOWN, opposite of OpenGL. To let games
-    // share OpenGL-style projection matrices, set a negative viewport
-    // height starting from the bottom of the framebuffer — the GPU then
-    // interprets Y the same way OpenGL does, AND winding order stays
-    // consistent (back-face culling still works). Requires Vulkan 1.1+
-    // (or VK_KHR_maintenance1), both of which we have via apiVersion 1.3.
-    VkViewport vp{};
-    vp.x = 0;
-    vp.y = static_cast<float>(swapchain_.extent().height);
-    vp.width  = static_cast<float>(swapchain_.extent().width);
-    vp.height = -static_cast<float>(swapchain_.extent().height);
-    vp.minDepth = 0.0f; vp.maxDepth = 1.0f;
-    vkCmdSetViewport(cb, 0, 1, &vp);
-    VkRect2D scissor{{0, 0}, swapchain_.extent()};
-    vkCmdSetScissor(cb, 0, 1, &scissor);
+    setSceneViewport(cb, swapchain_.extent());
+}
 
-    for (const auto& d : pendingDraws_) {
-        const VkShader& sh = shaders_.get(d.shader);
-        ::VkPipeline pipe = pipelines_.pipelineFor(context_, swapchain_, sh);
-        vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, pipe);
+void VulkanRenderer::submit(const DrawCall& call) {
+    if (skipFrame_) return;
+    if (!meshes_.has(call.mesh) || !shaders_.has(call.shader)) return;
 
-        // Allocate + write descriptor set.
-        VkDescriptorSetAllocateInfo dsInfo{};
-        dsInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
-        dsInfo.descriptorPool = f.descriptorPool;
-        dsInfo.descriptorSetCount = 1;
-        dsInfo.pSetLayouts = &sh.setLayout;
-        VkDescriptorSet set = VK_NULL_HANDLE;
-        VK_CHECK(vkAllocateDescriptorSets(context_.device(), &dsInfo, &set));
+    VkFrameRing::Frame& f = frames_.current();
+    VkCommandBuffer cb = f.commandBuffer;
 
-        const VkDeviceSize uboOffset = frames_.allocateUbo(&d.mvp, sizeof(Mat4));
-        VkDescriptorBufferInfo bufInfo{};
-        bufInfo.buffer = f.uboBuffer;
-        bufInfo.offset = uboOffset;
-        bufInfo.range  = sizeof(Mat4);
+    const Mat4 mvp = pendingProjection_ * pendingView_ * call.model;
 
-        const auto& tex = textures_.has(d.texture)
-            ? textures_.get(d.texture)
-            : textures_.get(textures_.whiteTexture());
-        VkDescriptorImageInfo imgInfo{};
-        imgInfo.sampler = tex.sampler;
-        imgInfo.imageView = tex.view;
-        imgInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    const VkShader& sh = shaders_.get(call.shader);
+    ::VkPipeline pipe = pipelines_.pipelineFor(context_, swapchain_, sh);
+    vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, pipe);
 
-        VkWriteDescriptorSet writes[2]{};
-        writes[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-        writes[0].dstSet = set;
-        writes[0].dstBinding = 0;
-        writes[0].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-        writes[0].descriptorCount = 1;
-        writes[0].pBufferInfo = &bufInfo;
-        writes[1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-        writes[1].dstSet = set;
-        writes[1].dstBinding = 1;
-        writes[1].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-        writes[1].descriptorCount = 1;
-        writes[1].pImageInfo = &imgInfo;
-        vkUpdateDescriptorSets(context_.device(), 2, writes, 0, nullptr);
+    // Allocate + write descriptor set from the frame's pool.
+    VkDescriptorSetAllocateInfo dsInfo{};
+    dsInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+    dsInfo.descriptorPool = f.descriptorPool;
+    dsInfo.descriptorSetCount = 1;
+    dsInfo.pSetLayouts = &sh.setLayout;
+    VkDescriptorSet set = VK_NULL_HANDLE;
+    VK_CHECK(vkAllocateDescriptorSets(context_.device(), &dsInfo, &set));
 
-        vkCmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_GRAPHICS,
-                                sh.pipelineLayout, 0, 1, &set, 0, nullptr);
+    const VkDeviceSize uboOffset = frames_.allocateUbo(&mvp, sizeof(Mat4));
+    VkDescriptorBufferInfo bufInfo{};
+    bufInfo.buffer = f.uboBuffer;
+    bufInfo.offset = uboOffset;
+    bufInfo.range  = sizeof(Mat4);
 
-        const auto& mesh = meshes_.get(d.mesh);
-        VkDeviceSize offsets[1] = {0};
-        vkCmdBindVertexBuffers(cb, 0, 1, &mesh.vertexBuffer, offsets);
-        vkCmdBindIndexBuffer(cb, mesh.indexBuffer, 0, VK_INDEX_TYPE_UINT32);
-        vkCmdDrawIndexed(cb, mesh.indexCount, 1, 0, 0, 0);
+    const auto& tex = textures_.has(call.material.texture)
+        ? textures_.get(call.material.texture)
+        : textures_.get(textures_.whiteTexture());
+    VkDescriptorImageInfo imgInfo{};
+    imgInfo.sampler = tex.sampler;
+    imgInfo.imageView = tex.view;
+    imgInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+
+    VkWriteDescriptorSet writes[2]{};
+    writes[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    writes[0].dstSet = set;
+    writes[0].dstBinding = 0;
+    writes[0].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+    writes[0].descriptorCount = 1;
+    writes[0].pBufferInfo = &bufInfo;
+    writes[1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    writes[1].dstSet = set;
+    writes[1].dstBinding = 1;
+    writes[1].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    writes[1].descriptorCount = 1;
+    writes[1].pImageInfo = &imgInfo;
+    vkUpdateDescriptorSets(context_.device(), 2, writes, 0, nullptr);
+
+    vkCmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                            sh.pipelineLayout, 0, 1, &set, 0, nullptr);
+
+    const auto& mesh = meshes_.get(call.mesh);
+    VkDeviceSize offsets[1] = {0};
+    vkCmdBindVertexBuffers(cb, 0, 1, &mesh.vertexBuffer, offsets);
+    vkCmdBindIndexBuffer(cb, mesh.indexBuffer, 0, VK_INDEX_TYPE_UINT32);
+    vkCmdDrawIndexed(cb, mesh.indexCount, 1, 0, 0, 0);
+}
+
+void VulkanRenderer::endFrame() {
+    if (skipFrame_) {
+        frames_.advance();
+        return;
     }
+
+    VkFrameRing::Frame& f = frames_.current();
+    VkCommandBuffer cb = f.commandBuffer;
 
     vkCmdEndRenderPass(cb);
     VK_CHECK(vkEndCommandBuffer(cb));

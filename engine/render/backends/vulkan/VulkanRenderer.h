@@ -108,14 +108,10 @@ private:
     VkTextureStore  textures_;
     VkShaderStore   shaders_;
 
-    // Per-frame transient state, populated by beginFrame, consumed by endFrame.
-    struct PendingDraw {
-        MeshHandle    mesh;
-        ShaderHandle  shader;
-        TextureHandle texture;
-        Mat4          mvp;
-    };
-    std::vector<PendingDraw> pendingDraws_;
+    // Per-frame transient state. beginFrame records into the active
+    // command buffer; submit() and external systems' record paths
+    // (e.g., iron::ParticleSystem::render) read these when computing
+    // their MVPs / camera UBOs.
     Vec3      pendingClear_{0,0,0};
     Mat4      pendingView_       = Mat4::identity();
     Mat4      pendingProjection_ = Mat4::identity();
