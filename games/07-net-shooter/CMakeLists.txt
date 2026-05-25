@@ -1,6 +1,7 @@
 add_executable(net-shooter
   main.cpp
-  Arena.cpp)
+  Arena.cpp
+  HitscanRifle.cpp)
 target_link_libraries(net-shooter PRIVATE ironcore)
 
 add_custom_command(TARGET net-shooter POST_BUILD

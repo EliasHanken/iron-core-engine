@@ -58,3 +58,13 @@ target_include_directories(test_rope_thrower PRIVATE
   ${CMAKE_CURRENT_SOURCE_DIR}
   ${CMAKE_SOURCE_DIR}/games/02-strandbound)
 add_test(NAME test_rope_thrower COMMAND test_rope_thrower)
+
+# test_hitscan_rifle compiles the game-side HitscanRifle.cpp directly.
+add_executable(test_hitscan_rifle
+  test_hitscan_rifle.cpp
+  ${CMAKE_SOURCE_DIR}/games/07-net-shooter/HitscanRifle.cpp)
+target_link_libraries(test_hitscan_rifle PRIVATE ironcore)
+target_include_directories(test_hitscan_rifle PRIVATE
+  ${CMAKE_CURRENT_SOURCE_DIR}
+  ${CMAKE_SOURCE_DIR}/games/07-net-shooter)
+add_test(NAME test_hitscan_rifle COMMAND test_hitscan_rifle)
