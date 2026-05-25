@@ -493,6 +493,11 @@ int main(int argc, char** argv) {
     // Ghost rockets (client visual only)
     std::unordered_map<std::uint32_t, iron::Projectile> ghostRockets;
 
+    // Explosion FX — small expanding emissive sphere rendered for both
+    // host and client at the detonation point. ~0.4s lifetime.
+    struct ExplosionFx { iron::Vec3 pos; double startSec; };
+    std::vector<ExplosionFx> explosions;
+
     // Client score cache (from ScoreUpdateMsg)
     std::unordered_map<std::uint32_t, std::pair<std::uint32_t,std::uint32_t>> clientScores; // pid → {kills,deaths}
 
@@ -559,7 +564,11 @@ int main(int argc, char** argv) {
                 }
             }
         } else {
-            // Client: ensure a RemotePlayer entry exists.
+            // Client: ensure a RemotePlayer entry exists, EXCEPT for self.
+            // PeerManager fires onJoined(myPeerId) then onJoined(0) for the
+            // host — without this guard, self lands in remotes and the
+            // peer count + render iteration are off by one.
+            if (pid == peers.myPeerId()) return;
             if (remotes.find(pid) == remotes.end()) {
                 remotes.emplace(pid, RemotePlayer{});
             }
@@ -650,6 +659,8 @@ int main(int argc, char** argv) {
         [&](iron::ConnectionId, const iron::netshooter::DespawnProjectileMsg& msg) {
             if (peers.isHost()) return;
             ghostRockets.erase(msg.projectileId);
+            explosions.push_back(
+                ExplosionFx{iron::Vec3{msg.x, msg.y, msg.z}, nowSec()});
         });
 
     // CLIENT: damage + kill feed.
@@ -771,7 +782,10 @@ int main(int argc, char** argv) {
     // -----------------------------------------------------------------------
     // Fixed-tick schedulers
     // -----------------------------------------------------------------------
-    iron::FixedTickScheduler inputTicker{std::chrono::milliseconds{33}};   // ~30 Hz
+    // Input ticker matches sim rate (60 Hz) so the locally-predicted
+    // player position advances every render frame instead of every other
+    // frame — removes the "30 Hz stepping" jitter on local movement.
+    iron::FixedTickScheduler inputTicker{std::chrono::milliseconds{16}};   // ~60 Hz
     iron::FixedTickScheduler simTicker  {std::chrono::milliseconds{16}};   // ~60 Hz
 
     // -----------------------------------------------------------------------
@@ -865,7 +879,7 @@ int main(int argc, char** argv) {
                 : false;
 
             inputTicker.update(dt, [&]() {
-                constexpr float kInputRateHz  = 30.0f;
+                constexpr float kInputRateHz  = 60.0f;
                 const float speedPerTick = kMoveSpeed / kInputRateHz;
                 PlayerInput in{
                     moveDir.x * speedPerTick,
@@ -1022,6 +1036,11 @@ int main(int argc, char** argv) {
                         // Broadcast despawn.
                         peers.broadcastToAll<iron::netshooter::DespawnProjectileMsg>(
                             result.despawn, iron::SendReliability::Reliable);
+                        // Local FX for the host (clients spawn theirs in the
+                        // DespawnProjectileMsg handler).
+                        explosions.push_back(ExplosionFx{
+                            iron::Vec3{result.despawn.x, result.despawn.y, result.despawn.z},
+                            simNow});
                         // Apply splash damage.
                         for (auto& dm : result.splashHits) {
                             auto vit = hostPlayers.find(dm.victimPeerId);
@@ -1156,24 +1175,41 @@ int main(int argc, char** argv) {
             renderer.submit(call);
         }
 
-        // Remote players (interpolated from TimeHistory)
-        for (const auto& [pid, remote] : remotes) {
-            if (pid == myId) continue;
-            auto pos = remote.positionHistory.sampleAtDelay(kDisplayDelay);
-            if (!pos) continue;
-            // Render as a 0.8x2.0x0.8 capsule-ish box
+        // Helper: submit a player cube at world position `pos` for peer `pid`.
+        auto submitPlayerCube = [&](std::uint32_t pid, const iron::Vec3& pos) {
+            const iron::Vec3 halfE = iron::netshooter::kPlayerHalfExtents;
             iron::DrawCall call;
             call.mesh = cubeMesh;
             call.shader = litShader;
-            // Center the box at pos (feet level → centre at pos.y + half-height)
-            const iron::Vec3 halfE = iron::netshooter::kPlayerHalfExtents;
-            call.model = iron::translation(iron::Vec3{pos->x, pos->y + halfE.y, pos->z})
+            call.model = iron::translation(iron::Vec3{pos.x, pos.y + halfE.y, pos.z})
                        * iron::scaling(iron::Vec3{halfE.x*2, halfE.y*2, halfE.z*2});
             call.material.texture     = renderer.whiteTexture();
             call.material.normalMap   = renderer.flatNormalTexture();
             call.material.specularMap = renderer.noSpecularTexture();
             call.material.emissive    = colorForPeer(pid) * 0.5f;
             renderer.submit(call);
+        };
+
+        if (peers.isHost()) {
+            // HOST: render other players directly from authoritative state
+            // (no interpolation needed; host runs the sim itself).
+            for (const auto& [pid, state] : authStates) {
+                if (pid == 0) continue;                     // self
+                if (auto it = hostPlayers.find(pid);
+                    it != hostPlayers.end() && it->second.respawnAtSec >= 0.0) {
+                    continue;                                // dead — hide corpse
+                }
+                submitPlayerCube(pid, iron::Vec3{state.x, state.y, state.z});
+            }
+        } else {
+            // CLIENT: render remote players (including host at pid 0)
+            // interpolated from TimeHistory at kDisplayDelay (100 ms).
+            for (const auto& [pid, remote] : remotes) {
+                if (pid == myId) continue;                  // already guarded in join, defensive
+                auto pos = remote.positionHistory.sampleAtDelay(kDisplayDelay);
+                if (!pos) continue;
+                submitPlayerCube(pid, *pos);
+            }
         }
 
         // Ghost rockets (client-side visual)
@@ -1203,6 +1239,38 @@ int main(int argc, char** argv) {
             renderer.submit(call);
         }
 
+        // Explosions: expanding emissive cube, ~0.4 s lifetime.
+        // Cull expired entries before rendering (cheap O(n) compact).
+        {
+            constexpr double kExplosionLifeSec = 0.4;
+            const double t = nowSec();
+            explosions.erase(
+                std::remove_if(explosions.begin(), explosions.end(),
+                    [&](const ExplosionFx& fx) {
+                        return (t - fx.startSec) > kExplosionLifeSec;
+                    }),
+                explosions.end());
+            for (const auto& fx : explosions) {
+                const float age = static_cast<float>(t - fx.startSec);
+                const float k = age / static_cast<float>(kExplosionLifeSec); // 0..1
+                const float scale = 0.5f + 8.0f * k;                          // grow
+                const float intensity = (1.0f - k) * 6.0f;                    // fade
+                iron::DrawCall call;
+                call.mesh = cubeMesh;
+                call.shader = litShader;
+                call.model = iron::translation(fx.pos)
+                           * iron::scaling(iron::Vec3{scale, scale, scale});
+                call.material.texture     = renderer.whiteTexture();
+                call.material.normalMap   = renderer.flatNormalTexture();
+                call.material.specularMap = renderer.noSpecularTexture();
+                call.material.emissive    = iron::Vec3{
+                    intensity * 1.0f,
+                    intensity * 0.45f,
+                    intensity * 0.1f};
+                renderer.submit(call);
+            }
+        }
+
         renderer.endFrame();
 
         // -----------------------------------------------------------------------
@@ -1218,8 +1286,12 @@ int main(int argc, char** argv) {
             hud.setText(roleText, "(connecting...)");
         }
 
-        // Peer count
-        const std::size_t peerCount = (haveIdentity ? 1u : 0u) + remotes.size();
+        // Peer count — total players including self.
+        // Host counts from authStates (host's authoritative map).
+        // Client counts from remotes (now correctly excludes self) + 1 for self.
+        const std::size_t peerCount = peers.isHost()
+            ? authStates.size()
+            : (haveIdentity ? remotes.size() + 1u : 0u);
         hud.setText(peersText, "Peers: " + std::to_string(peerCount));
 
         // Weapon label
