@@ -19,6 +19,7 @@ add_library(ironcore STATIC
   ui/Hud.cpp
   physics/Rope.cpp
   game/Collision.cpp
+  game/ProjectileSim.cpp
   render/backends/opengl/GLShader.cpp
   render/backends/opengl/GLMesh.cpp
   render/backends/opengl/GLTexture.cpp
