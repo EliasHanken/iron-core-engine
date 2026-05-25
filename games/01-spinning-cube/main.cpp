@@ -2,7 +2,7 @@
 #include "core/Log.h"
 #include "core/Platform.h"
 #include "math/Transform.h"
-#include "render/backends/opengl/OpenGLRenderer.h"
+#include "render/RendererFactory.h"
 #include "scene/Camera.h"
 #include "scene/Mesh.h"
 
@@ -10,6 +10,41 @@
 #include <span>
 
 namespace {
+
+#ifdef IRON_RENDER_BACKEND_VULKAN
+
+// Vulkan path: #version 450 + UBO block + explicit set/binding layout.
+// The Vulkan backend compiles via glslang into SPIR-V; the descriptor
+// set layout (set=0 binding=0 = UBO, binding=1 = combined sampler) is
+// hard-coded in VkShader.cpp to match this.
+const char* kVertexShader = R"(#version 450
+layout(location = 0) in vec3 aPos;
+layout(location = 1) in vec3 aNormal;
+layout(location = 2) in vec2 aUV;
+layout(location = 3) in vec3 aTangent;
+
+layout(set = 0, binding = 0) uniform Ubo { mat4 uMvp; } ubo;
+
+layout(location = 0) out vec2 vUV;
+
+void main() {
+    vUV = aUV;
+    gl_Position = ubo.uMvp * vec4(aPos, 1.0);
+}
+)";
+
+const char* kFragmentShader = R"(#version 450
+layout(set = 0, binding = 1) uniform sampler2D uTex;
+
+layout(location = 0) in vec2 vUV;
+layout(location = 0) out vec4 outColor;
+
+void main() {
+    outColor = texture(uTex, vUV);
+}
+)";
+
+#else  // IRON_RENDER_BACKEND_OPENGL
 
 // Vertex shader: standard model-view-projection transform, passes UV through.
 const char* kVertexShader = R"(#version 330 core
@@ -74,6 +109,8 @@ void main() {
 }
 )";
 
+#endif
+
 } // namespace
 
 int main() {
@@ -85,8 +122,9 @@ int main() {
         return 1;
     }
 
-    // The renderer needs the GL context the Application's window created.
-    iron::OpenGLRenderer renderer;
+    // The renderer is selected at build time via the IRON_RENDER_BACKEND define.
+    auto renderer_ptr = iron::createRenderer(app.window());
+    iron::Renderer& renderer = *renderer_ptr;
 
     const iron::MeshHandle cube = renderer.createMesh(iron::makeCube());
     const iron::ShaderHandle shader =

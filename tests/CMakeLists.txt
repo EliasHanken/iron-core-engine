@@ -80,3 +80,4 @@ target_include_directories(test_rocket_launcher PRIVATE
 add_test(NAME test_rocket_launcher COMMAND test_rocket_launcher)
 
 iron_add_test(test_glsl_to_spirv test_glsl_to_spirv.cpp)
+iron_add_test(test_renderer_factory test_renderer_factory.cpp)
