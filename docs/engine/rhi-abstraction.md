@@ -139,3 +139,95 @@ Per-frame flow in `VulkanRenderer::endFrame`: vkAcquireNextImageKHR
 frame's command buffer, allocate a descriptor set + write UBO + sampler
 per draw, vkCmdDrawIndexed, vkQueueSubmit (waits on image-available,
 signals render-finished, fence), vkQueuePresentKHR.
+
+## GPU compute & particle system (Vulkan-only)
+
+The Vulkan backend is the first to expose a GPU-resident particle
+system, demonstrating the hardware capability the Vulkan investment
+unlocks. The OpenGL backend has no equivalent — by design, since the
+demo's CMakeLists.txt is gated on the Vulkan configure.
+
+### Public API: `iron::ParticleSystem`
+
+```cpp
+#include "render/ParticleSystem.h"
+
+iron::ParticleSystemConfig cfg;       // sensible defaults: 1M particles
+auto particles = iron::createParticleSystem(*renderer, cfg);
+if (!particles) { /* init failed */ }
+
+// Per frame:
+particles->tick(dt);                 // one compute dispatch
+renderer->beginFrame(...);
+particles->render(view, projection); // one instanced billboard draw
+renderer->endFrame();
+```
+
+The header has an `#error` if included under any non-Vulkan backend, so
+games meant to support multiple backends must gate the include themselves.
+
+### Implementation
+
+`engine/render/backends/vulkan/VkParticleSystem` owns:
+
+- **SSBO** — one host-visible VMA buffer holding `count` 64-byte
+  particles (1M = 64 MB). Initial state seeded with `std::mt19937`
+  uniform-in-sphere positions + staggered initial ages so the field
+  is saturated on frame 0.
+- **Compute pipeline** — curl-noise update shader (analytic value
+  noise, no texture lookups). Workgroup size 256.
+  `tick(dt)` records a one-shot command pool + buffer, dispatches
+  `ceil(count/256)` workgroups, submits, `vkQueueWaitIdle`. Isolated
+  from the per-frame command buffer for M10 simplicity.
+- **Graphics pipeline** — additive blend (ONE,ONE), depth test ON /
+  write OFF, cull NONE, no vertex input. `render(view, projection)`
+  allocates one descriptor set from the active frame's pool, writes
+  the Camera UBO via the frame ring's per-frame sub-allocator, then
+  `vkCmdDraw(6, count, 0, 0)` — 6 verts (billboard quad) × count
+  instances, vertex pull from the SSBO via `gl_InstanceIndex`.
+
+### Cross-boundary touchpoints
+
+External Vulkan subsystems (like `VkParticleSystem`) need four accessors
+on `iron::VulkanRenderer` that are NOT part of the abstract `Renderer`:
+
+```cpp
+VkContext&      context();              // raw Vulkan handles + VMA
+VkFrameRing&    frameRing();            // per-frame UBO sub-allocator + descriptor pool
+VkCommandBuffer currentCommandBuffer(); // active primary cmd buffer; VK_NULL_HANDLE when frame is skipped
+VkRenderPass    scenePass() const;      // the main color+depth render pass
+```
+
+`currentCommandBuffer()` returns `VK_NULL_HANDLE` during a skipped
+frame (acquire failed, resize pending). External subsystems must
+early-out on null instead of recording into an unbegun command buffer.
+
+These are documented as engine-internal in the header. Game code never
+calls them.
+
+### `VkFrameRing` pool capacity
+
+The per-frame descriptor pool was sized in M9 for `UNIFORM_BUFFER` +
+`COMBINED_IMAGE_SAMPLER` only. M10 added `STORAGE_BUFFER` capacity for
+the particle system's render-side SSBO binding. New Vulkan subsystems
+that allocate descriptors of new types from the frame pool need to
+extend `VkFrameRing::initFrame`'s `sizes[]` array.
+
+### Internal helper: `VkComputePipeline`
+
+`engine/render/backends/vulkan/VkComputePipeline.h` wraps the SPIR-V →
+shader module → pipeline layout → compute pipeline boilerplate. Private
+to the Vulkan backend; gains a second consumer in a future milestone
+(GPU skinning, GPU culling, etc.) at which point we'll consider
+promoting it.
+
+### Future work
+
+- Fold the compute dispatch into the per-frame command buffer (drop
+  the `vkQueueWaitIdle`).
+- Multiple particle systems per scene (currently untested — the
+  abstraction allows it but the demo uses one).
+- Public `iron::ComputePipeline` engine surface (when a second
+  consumer needs it).
+- Particle textures, sub-particle physics (collisions, etc.) — out of
+  scope for M10.
