@@ -1,0 +1,137 @@
+// VkShader.cpp — glslang-based GLSL→SPIR-V compile + descriptor set
+// layout for the spinning-cube binding contract.
+
+#include "render/backends/vulkan/VkShader.h"
+#include "render/backends/vulkan/VkContext.h"
+#include "render/backends/vulkan/VkUtils.h"
+
+#include <glslang/Public/ShaderLang.h>
+#include <glslang/Public/ResourceLimits.h>
+#include <glslang/SPIRV/GlslangToSpv.h>
+
+namespace iron {
+
+namespace {
+
+struct GlslangInit {
+    GlslangInit()  { glslang::InitializeProcess(); }
+    ~GlslangInit() { glslang::FinalizeProcess(); }
+};
+
+void ensureGlslangInit() {
+    static GlslangInit init;
+    (void)init;
+}
+
+EShLanguage toLang(VkShaderStageFlagBits stage) {
+    switch (stage) {
+        case VK_SHADER_STAGE_VERTEX_BIT:   return EShLangVertex;
+        case VK_SHADER_STAGE_FRAGMENT_BIT: return EShLangFragment;
+        default:                            return EShLangVertex;
+    }
+}
+
+}  // namespace
+
+std::vector<std::uint32_t> compileGlsl(VkShaderStageFlagBits stage,
+                                       const std::string& src) {
+    ensureGlslangInit();
+
+    const EShLanguage lang = toLang(stage);
+    glslang::TShader shader(lang);
+    const char* srcs[] = { src.c_str() };
+    shader.setStrings(srcs, 1);
+    shader.setEnvInput(glslang::EShSourceGlsl, lang, glslang::EShClientVulkan, 450);
+    shader.setEnvClient(glslang::EShClientVulkan, glslang::EShTargetVulkan_1_3);
+    shader.setEnvTarget(glslang::EShTargetSpv, glslang::EShTargetSpv_1_5);
+
+    const TBuiltInResource* resources = GetDefaultResources();
+    const EShMessages messages = (EShMessages)(EShMsgSpvRules | EShMsgVulkanRules);
+
+    if (!shader.parse(resources, 450, false, messages)) {
+        Log::error("compileGlsl: parse failed:\n%s", shader.getInfoLog());
+        return {};
+    }
+
+    glslang::TProgram program;
+    program.addShader(&shader);
+    if (!program.link(messages)) {
+        Log::error("compileGlsl: link failed:\n%s", program.getInfoLog());
+        return {};
+    }
+
+    std::vector<std::uint32_t> spirv;
+    glslang::GlslangToSpv(*program.getIntermediate(lang), spirv);
+    return spirv;
+}
+
+ShaderHandle VkShaderStore::create(VkContext& ctx,
+                                   const std::string& vertSrc,
+                                   const std::string& fragSrc) {
+    auto vspv = compileGlsl(VK_SHADER_STAGE_VERTEX_BIT, vertSrc);
+    auto fspv = compileGlsl(VK_SHADER_STAGE_FRAGMENT_BIT, fragSrc);
+    if (vspv.empty() || fspv.empty()) {
+        Log::error("VkShaderStore: shader compile failed");
+        return kInvalidHandle;
+    }
+
+    VkShader s{};
+
+    auto makeModule = [&](const std::vector<std::uint32_t>& code, VkShaderModule& out) {
+        VkShaderModuleCreateInfo info{};
+        info.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
+        info.codeSize = code.size() * sizeof(std::uint32_t);
+        info.pCode = code.data();
+        VK_CHECK(vkCreateShaderModule(ctx.device(), &info, nullptr, &out));
+        return out != VK_NULL_HANDLE;
+    };
+    if (!makeModule(vspv, s.vertexModule))   return kInvalidHandle;
+    if (!makeModule(fspv, s.fragmentModule)) {
+        vkDestroyShaderModule(ctx.device(), s.vertexModule, nullptr);
+        return kInvalidHandle;
+    }
+
+    // Descriptor set layout: hardcoded for foundation contract.
+    VkDescriptorSetLayoutBinding bindings[2]{};
+    bindings[0].binding = 0;
+    bindings[0].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+    bindings[0].descriptorCount = 1;
+    bindings[0].stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
+    bindings[1].binding = 1;
+    bindings[1].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    bindings[1].descriptorCount = 1;
+    bindings[1].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+
+    VkDescriptorSetLayoutCreateInfo dslInfo{};
+    dslInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+    dslInfo.bindingCount = 2;
+    dslInfo.pBindings = bindings;
+    VK_CHECK(vkCreateDescriptorSetLayout(ctx.device(), &dslInfo, nullptr, &s.setLayout));
+
+    VkPipelineLayoutCreateInfo plInfo{};
+    plInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+    plInfo.setLayoutCount = 1;
+    plInfo.pSetLayouts = &s.setLayout;
+    VK_CHECK(vkCreatePipelineLayout(ctx.device(), &plInfo, nullptr, &s.pipelineLayout));
+
+    const ShaderHandle h = nextHandle_++;
+    shaders_[h] = s;
+    return h;
+}
+
+const VkShader& VkShaderStore::get(ShaderHandle h) const {
+    auto it = shaders_.find(h);
+    return it->second;  // caller-checked via has()
+}
+
+void VkShaderStore::destroyAll(VkContext& ctx) {
+    for (auto& [h, s] : shaders_) {
+        if (s.pipelineLayout) vkDestroyPipelineLayout(ctx.device(), s.pipelineLayout, nullptr);
+        if (s.setLayout)      vkDestroyDescriptorSetLayout(ctx.device(), s.setLayout, nullptr);
+        if (s.fragmentModule) vkDestroyShaderModule(ctx.device(), s.fragmentModule, nullptr);
+        if (s.vertexModule)   vkDestroyShaderModule(ctx.device(), s.vertexModule, nullptr);
+    }
+    shaders_.clear();
+}
+
+}  // namespace iron
