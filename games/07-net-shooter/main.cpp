@@ -503,7 +503,7 @@ int main(int argc, char** argv) {
     struct HitscanTracer { iron::Vec3 origin; iron::Vec3 end; double startSec; };
     std::vector<HitscanTracer> hitscanTracers;
     constexpr float kTracerLengthM   = 30.0f;
-    constexpr double kTracerLifeSec  = 0.12;
+    constexpr double kTracerLifeSec  = 0.18;
 
     // Client score cache (from ScoreUpdateMsg)
     std::unordered_map<std::uint32_t, std::pair<std::uint32_t,std::uint32_t>> clientScores; // pid → {kills,deaths}
@@ -1268,8 +1268,9 @@ int main(int argc, char** argv) {
             renderer.submit(call);
         }
 
-        // Hitscan tracers: brief yellow debug-lines from muzzle to fixed range.
-        // Expire after kTracerLifeSec.
+        // Hitscan tracers: a row of small emissive cubes along the shot
+        // path. Same render path as rockets and explosions (which we
+        // know works), so visible even if debug-line flush has issues.
         {
             const double t = nowSec();
             hitscanTracers.erase(
@@ -1280,9 +1281,28 @@ int main(int argc, char** argv) {
                 hitscanTracers.end());
             for (const auto& tr : hitscanTracers) {
                 const float k = static_cast<float>((t - tr.startSec) / kTracerLifeSec);
-                const float fade = 1.0f - k;
-                renderer.drawLine(tr.origin, tr.end,
-                                  iron::Vec3{fade * 1.0f, fade * 0.9f, fade * 0.2f});
+                const float fade = 1.0f - k;                  // 1 → 0
+                const iron::Vec3 delta{tr.end.x - tr.origin.x,
+                                       tr.end.y - tr.origin.y,
+                                       tr.end.z - tr.origin.z};
+                const int kBeads = 24;
+                for (int i = 1; i < kBeads; ++i) {            // skip i=0 (inside head)
+                    const float u = static_cast<float>(i) / kBeads;
+                    const iron::Vec3 p{tr.origin.x + delta.x * u,
+                                       tr.origin.y + delta.y * u,
+                                       tr.origin.z + delta.z * u};
+                    iron::DrawCall call;
+                    call.mesh   = cubeMesh;
+                    call.shader = litShader;
+                    call.model  = iron::translation(p)
+                                * iron::scaling(iron::Vec3{0.06f, 0.06f, 0.06f});
+                    call.material.texture     = renderer.whiteTexture();
+                    call.material.normalMap   = renderer.flatNormalTexture();
+                    call.material.specularMap = renderer.noSpecularTexture();
+                    call.material.emissive    = iron::Vec3{
+                        fade * 4.0f, fade * 3.0f, fade * 0.4f};
+                    renderer.submit(call);
+                }
             }
         }
 
