@@ -18,6 +18,7 @@ add_library(ironcore STATIC
   ui/BuiltinFont.cpp
   ui/Hud.cpp
   physics/Rope.cpp
+  game/Collision.cpp
   render/backends/opengl/GLShader.cpp
   render/backends/opengl/GLMesh.cpp
   render/backends/opengl/GLTexture.cpp
