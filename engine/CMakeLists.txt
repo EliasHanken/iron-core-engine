@@ -8,6 +8,7 @@ add_library(ironcore STATIC
   net/NetTransport.cpp
   net/MessageRegistry.cpp
   net/PeerManager.cpp
+  net/LagCompensator.cpp
   net/backends/mock/MockTransport.cpp
   net/backends/gns/GnsTransport.cpp
   scene/Mesh.cpp
