@@ -3,6 +3,7 @@
 #include "render/Renderer.h"
 #include "render/backends/vulkan/VkContext.h"
 #include "render/backends/vulkan/VkFrameRing.h"
+#include "render/backends/vulkan/VkPipeline.h"
 #include "render/backends/vulkan/VkSwapchain.h"
 
 #include <string>
@@ -73,6 +74,7 @@ private:
     VkContext context_;
     VkSwapchain swapchain_;
     VkFrameRing frames_;
+    VkPipeline pipelines_;
 };
 
 }  // namespace iron

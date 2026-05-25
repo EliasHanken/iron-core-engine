@@ -17,6 +17,7 @@ VulkanRenderer::~VulkanRenderer() {
     if (initOk_) {
         // Wait for outstanding GPU work before tearing down.
         vkDeviceWaitIdle(context_.device());
+        pipelines_.destroy(context_);
         frames_.destroy(context_);
         swapchain_.destroy(context_);
     }
@@ -34,6 +35,10 @@ bool VulkanRenderer::init(Window& window) {
     }
     if (!frames_.init(context_)) {
         Log::error("VulkanRenderer: VkFrameRing init failed");
+        return false;
+    }
+    if (!pipelines_.init(context_, swapchain_)) {
+        Log::error("VulkanRenderer: VkPipeline init failed");
         return false;
     }
     initOk_ = true;
