@@ -34,6 +34,7 @@ public:
 private:
     bool createSsbo();
     void uploadInitialState();
+    bool initCompute();
 
     VulkanRenderer* renderer_ = nullptr;
     ParticleSystemConfig cfg_;
