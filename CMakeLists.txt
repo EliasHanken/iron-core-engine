@@ -55,6 +55,19 @@ endif()
 #     docs/engine/build-setup.md for the one-time vcpkg toolchain setup.
 find_package(GameNetworkingSockets CONFIG REQUIRED)
 
+set(IRON_RENDER_BACKEND "opengl" CACHE STRING
+    "Render backend: opengl or vulkan")
+set_property(CACHE IRON_RENDER_BACKEND PROPERTY STRINGS opengl vulkan)
+
+if (IRON_RENDER_BACKEND STREQUAL "vulkan")
+    find_package(Vulkan REQUIRED)
+    find_package(VulkanMemoryAllocator CONFIG REQUIRED)
+    find_package(glslang CONFIG REQUIRED)
+    message(STATUS "Iron: building with Vulkan backend")
+else()
+    message(STATUS "Iron: building with OpenGL backend (default)")
+endif()
+
 add_subdirectory(third_party)
 
 add_subdirectory(engine)
