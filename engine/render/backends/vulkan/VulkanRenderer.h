@@ -3,11 +3,16 @@
 #include "render/Renderer.h"
 #include "render/backends/vulkan/VkContext.h"
 #include "render/backends/vulkan/VkFrameRing.h"
+#include "render/backends/vulkan/VkMesh.h"
 #include "render/backends/vulkan/VkPipeline.h"
+#include "render/backends/vulkan/VkShader.h"
 #include "render/backends/vulkan/VkSwapchain.h"
+#include "render/backends/vulkan/VkTexture.h"
 
+#include <cstdint>
 #include <string>
 #include <unordered_set>
+#include <vector>
 
 namespace iron {
 
@@ -68,13 +73,37 @@ public:
 
 private:
     void warnOnce(const char* feature);
+    bool recreateSwapchainAndFramebuffers(int width, int height);
 
     bool initOk_ = false;
     std::unordered_set<std::string> warnedFeatures_;
-    VkContext context_;
-    VkSwapchain swapchain_;
-    VkFrameRing frames_;
-    VkPipeline pipelines_;
+
+    VkContext    context_;
+    VkSwapchain  swapchain_;
+    VkFrameRing  frames_;
+    VkPipeline   pipelines_;
+    VkMeshStore     meshes_;
+    VkTextureStore  textures_;
+    VkShaderStore   shaders_;
+
+    // Per-frame transient state, populated by beginFrame, consumed by endFrame.
+    struct PendingDraw {
+        MeshHandle    mesh;
+        ShaderHandle  shader;
+        TextureHandle texture;
+        Mat4          mvp;
+    };
+    std::vector<PendingDraw> pendingDraws_;
+    Vec3      pendingClear_{0,0,0};
+    Mat4      pendingView_       = Mat4::identity();
+    Mat4      pendingProjection_ = Mat4::identity();
+
+    // Swapchain image index acquired in beginFrame, used in endFrame.
+    std::uint32_t currentImageIndex_ = 0;
+    bool       pendingResize_  = false;
+    int        pendingResizeWidth_ = 0;
+    int        pendingResizeHeight_ = 0;
+    bool       skipFrame_ = false;  // set when acquire fails this frame
 };
 
 }  // namespace iron
