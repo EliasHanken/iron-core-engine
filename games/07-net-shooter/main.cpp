@@ -745,6 +745,9 @@ int main(int argc, char** argv) {
                 it->second.kills++;
                 vit->second.deaths++;
                 vit->second.respawnAtSec = nowSec() + 2.0;
+                // Wipe lag-comp samples so shots aimed at the corpse spot
+                // can't retroactively damage the player after respawn.
+                lagComp.forgetPeer(dm.victimPeerId);
 
                 peers.broadcastToAll<iron::netshooter::ScoreUpdateMsg>(
                     iron::netshooter::ScoreUpdateMsg{dm.attackerPeerId, it->second.kills, it->second.deaths},
@@ -971,6 +974,7 @@ int main(int argc, char** argv) {
                                     hostPlayers[0].kills++;
                                     vit->second.deaths++;
                                     vit->second.respawnAtSec = nowSec() + 2.0;
+                                    lagComp.forgetPeer(dm.victimPeerId);
                                     peers.broadcastToAll<iron::netshooter::ScoreUpdateMsg>(
                                         iron::netshooter::ScoreUpdateMsg{0u, hostPlayers[0].kills, hostPlayers[0].deaths},
                                         iron::SendReliability::Reliable);
@@ -1085,6 +1089,7 @@ int main(int argc, char** argv) {
                                 if (ait != hostPlayers.end()) ait->second.kills++;
                                 vit->second.deaths++;
                                 vit->second.respawnAtSec = simNow + 2.0;
+                                lagComp.forgetPeer(dm.victimPeerId);
                                 if (ait != hostPlayers.end()) {
                                     peers.broadcastToAll<iron::netshooter::ScoreUpdateMsg>(
                                         iron::netshooter::ScoreUpdateMsg{attacker, ait->second.kills, ait->second.deaths},
@@ -1242,6 +1247,7 @@ int main(int argc, char** argv) {
             // interpolated from TimeHistory at kDisplayDelay (100 ms).
             for (const auto& [pid, remote] : remotes) {
                 if (pid == myId) continue;                  // already guarded in join, defensive
+                if (remote.hpForHud <= 0) continue;          // dead — hide corpse
                 auto pos = remote.positionHistory.sampleAtDelay(kDisplayDelay);
                 if (!pos) continue;
                 submitPlayerCube(pid, *pos);
