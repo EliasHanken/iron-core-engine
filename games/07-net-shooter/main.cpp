@@ -450,6 +450,10 @@ int main(int argc, char** argv) {
     iron::netshooter::HitscanRifle localRifle;
     iron::netshooter::RocketLauncher localRocket;
 
+    // Client's own HP for HUD — fed by DamageMsg/RespawnMsg when we're
+    // the victim. Host reads from hostPlayers[0].hp.current directly.
+    int localHpForHud = 100;
+
     // -----------------------------------------------------------------------
     // Host-side state
     // -----------------------------------------------------------------------
@@ -675,7 +679,9 @@ int main(int argc, char** argv) {
         [&](iron::ConnectionId, const iron::netshooter::DamageMsg& msg) {
             if (peers.isHost()) return;
             // Update HP display for victim.
-            if (remotes.find(msg.victimPeerId) != remotes.end()) {
+            if (msg.victimPeerId == peers.myPeerId()) {
+                localHpForHud = static_cast<int>(msg.victimHpAfter);
+            } else if (remotes.find(msg.victimPeerId) != remotes.end()) {
                 remotes[msg.victimPeerId].hpForHud = static_cast<int>(msg.victimHpAfter);
             }
             if (msg.victimHpAfter == 0) {
@@ -691,6 +697,7 @@ int main(int argc, char** argv) {
             if (msg.peerId == myId) {
                 // Reset predictor to authoritative spawn position.
                 predictor.reset(PlayerState{msg.x, msg.y, msg.z});
+                localHpForHud = static_cast<int>(msg.hp);
             } else {
                 // Push new position into history for this remote player.
                 remotes[msg.peerId].positionHistory.push(iron::Vec3{msg.x, msg.y, msg.z});
@@ -936,6 +943,12 @@ int main(int argc, char** argv) {
                 if (selectedWeapon == 1) {
                     // Hitscan rifle
                     if (peers.isHost()) {
+                        // Cooldown peek: don't even spawn a tracer when the
+                        // server-side cooldown will reject. (resolveHitscanHost
+                        // also checks + consumes the cooldown; this just keeps
+                        // visuals in sync.)
+                        if (hostPlayers[0].hitscan.cooldown.timeUntilReady(localNow) <= 0.0f)
+                        {
                         // Host fires directly (no send-to-self)
                         iron::netshooter::FireHitscanMsg fmsg{
                             muzzle.x, muzzle.y, muzzle.z,
@@ -984,6 +997,7 @@ int main(int argc, char** argv) {
                                 }
                             }
                         }
+                        }  // cooldown ready
                     } else {
                         auto opt = iron::netshooter::tryFireHitscanClient(
                             localRifle, localNow, muzzle, dir, viewTime);
@@ -1387,6 +1401,8 @@ int main(int argc, char** argv) {
         int localHp = 100;
         if (peers.isHost()) {
             if (hostPlayers.count(0)) localHp = hostPlayers[0].hp.current;
+        } else {
+            localHp = localHpForHud;
         }
         {
             char hpBuf[32];
