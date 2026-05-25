@@ -2,6 +2,7 @@
 
 #include "render/Renderer.h"
 #include "render/backends/vulkan/VkContext.h"
+#include "render/backends/vulkan/VkFrameRing.h"
 #include "render/backends/vulkan/VkSwapchain.h"
 
 #include <string>
@@ -71,6 +72,7 @@ private:
     std::unordered_set<std::string> warnedFeatures_;
     VkContext context_;
     VkSwapchain swapchain_;
+    VkFrameRing frames_;
 };
 
 }  // namespace iron

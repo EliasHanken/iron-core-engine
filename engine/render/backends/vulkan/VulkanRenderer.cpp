@@ -17,6 +17,7 @@ VulkanRenderer::~VulkanRenderer() {
     if (initOk_) {
         // Wait for outstanding GPU work before tearing down.
         vkDeviceWaitIdle(context_.device());
+        frames_.destroy(context_);
         swapchain_.destroy(context_);
     }
     context_.shutdown();
@@ -31,7 +32,10 @@ bool VulkanRenderer::init(Window& window) {
         Log::error("VulkanRenderer: VkSwapchain init failed");
         return false;
     }
-    // Task 6+ wire VkFrameRing here.
+    if (!frames_.init(context_)) {
+        Log::error("VulkanRenderer: VkFrameRing init failed");
+        return false;
+    }
     initOk_ = true;
     Log::info("VulkanRenderer: context + swapchain up (foundation; features still stubs)");
     return true;
