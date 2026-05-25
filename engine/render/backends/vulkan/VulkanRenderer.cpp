@@ -284,6 +284,11 @@ void VulkanRenderer::setViewport(int width, int height) {
 }
 
 VkCommandBuffer VulkanRenderer::currentCommandBuffer() {
+    // Returns VK_NULL_HANDLE during a skipped frame (acquire failed,
+    // resize pending). External subsystems must check the return and
+    // skip their own recording to avoid issuing commands on a buffer
+    // that was never vkBeginCommandBuffer-ed.
+    if (skipFrame_) return VK_NULL_HANDLE;
     return frames_.current().commandBuffer;
 }
 
@@ -292,5 +297,9 @@ VkFrameRing& VulkanRenderer::frameRing() {
 }
 
 VkContext& VulkanRenderer::context() { return context_; }
+
+VkRenderPass VulkanRenderer::scenePass() const {
+    return pipelines_.renderPass();
+}
 
 }  // namespace iron

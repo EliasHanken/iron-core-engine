@@ -88,6 +88,11 @@ public:
     // can allocate their own VMA buffers + Vulkan objects.
     VkContext& context();
 
+    // Engine-internal: the render pass for the scene's main color+depth pass.
+    // External subsystems creating their own graphics pipelines reuse it so
+    // their draws go into the same framebuffer.
+    VkRenderPass scenePass() const;
+
 private:
     void warnOnce(const char* feature);
     bool recreateSwapchainAndFramebuffers(int width, int height);

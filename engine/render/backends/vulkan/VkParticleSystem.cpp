@@ -149,6 +149,72 @@ void main() {
 }
 )";
 
+struct CameraUboCpu {
+    float view[16];        // 64 bytes
+    float projection[16];  // 64 bytes
+    float spriteSize;      // 4 bytes
+    float pad[3];          // 12 bytes
+};
+static_assert(sizeof(CameraUboCpu) == 144, "CameraUboCpu size");
+
+const char* kRenderVertShader = R"(#version 450
+
+struct Particle {
+    vec4 position;
+    vec4 velocity;
+    vec4 colorYoung;
+    vec4 colorOld;
+};
+layout(std430, set = 0, binding = 0) readonly buffer ParticleBuffer {
+    Particle particles[];
+};
+
+layout(set = 0, binding = 1) uniform Camera {
+    mat4 view;
+    mat4 projection;
+    float spriteSize;
+    float _pad0, _pad1, _pad2;
+} cam;
+
+const vec2 kCorner[6] = vec2[6](
+    vec2(-1.0, -1.0), vec2( 1.0, -1.0), vec2( 1.0,  1.0),
+    vec2(-1.0, -1.0), vec2( 1.0,  1.0), vec2(-1.0,  1.0)
+);
+
+layout(location = 0) out vec2 vCorner;
+layout(location = 1) out vec4 vColor;
+
+void main() {
+    Particle p = particles[gl_InstanceIndex];
+    vec2 corner = kCorner[gl_VertexIndex];
+    vCorner = corner;
+
+    float t = clamp(p.position.w / max(p.velocity.w, 0.001), 0.0, 1.0);
+    vColor = mix(p.colorYoung, p.colorOld, t);
+    float aliveFade = 1.0 - smoothstep(0.85, 1.0, t);
+    vColor.a *= aliveFade;
+
+    vec4 viewCenter = cam.view * vec4(p.position.xyz, 1.0);
+    viewCenter.xy += corner * cam.spriteSize;
+    gl_Position = cam.projection * viewCenter;
+}
+)";
+
+const char* kRenderFragShader = R"(#version 450
+
+layout(location = 0) in vec2 vCorner;
+layout(location = 1) in vec4 vColor;
+layout(location = 0) out vec4 outColor;
+
+void main() {
+    float r2 = dot(vCorner, vCorner);
+    if (r2 > 1.0) discard;
+    float falloff = (1.0 - r2);
+    float intensity = falloff * falloff;
+    outColor = vec4(vColor.rgb * intensity, vColor.a * intensity);
+}
+)";
+
 }  // namespace
 
 VkParticleSystem::VkParticleSystem() = default;
@@ -176,6 +242,7 @@ bool VkParticleSystem::init(VulkanRenderer& renderer,
     if (!createSsbo()) return false;
     uploadInitialState();
     if (!initCompute()) return false;
+    if (!initRender()) return false;
     Log::info("VkParticleSystem: %u particles allocated (%.1f MB)",
               cfg_.count,
               static_cast<double>(cfg_.count) * sizeof(ParticleCpu) / (1024.0 * 1024.0));
@@ -398,8 +465,193 @@ void VkParticleSystem::tick(float dtSec) {
     vkDestroyCommandPool(ctx.device(), pool, nullptr);
 }
 
-void VkParticleSystem::render(const Mat4& /*view*/, const Mat4& /*projection*/) {
-    // Task 6 stub.
+bool VkParticleSystem::initRender() {
+    VkContext& ctx = renderer_->context();
+
+    // Descriptor set layout: SSBO (read-only) + Camera UBO.
+    VkDescriptorSetLayoutBinding b[2]{};
+    b[0].binding = 0;
+    b[0].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+    b[0].descriptorCount = 1;
+    b[0].stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
+    b[1].binding = 1;
+    b[1].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+    b[1].descriptorCount = 1;
+    b[1].stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
+
+    VkDescriptorSetLayoutCreateInfo slInfo{};
+    slInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+    slInfo.bindingCount = 2;
+    slInfo.pBindings = b;
+    VK_CHECK(vkCreateDescriptorSetLayout(ctx.device(), &slInfo, nullptr, &renderSetLayout_));
+
+    VkPipelineLayoutCreateInfo plInfo{};
+    plInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+    plInfo.setLayoutCount = 1;
+    plInfo.pSetLayouts = &renderSetLayout_;
+    VK_CHECK(vkCreatePipelineLayout(ctx.device(), &plInfo, nullptr, &renderPipelineLayout_));
+
+    // Compile shaders.
+    auto vspv = compileGlsl(VK_SHADER_STAGE_VERTEX_BIT, kRenderVertShader);
+    auto fspv = compileGlsl(VK_SHADER_STAGE_FRAGMENT_BIT, kRenderFragShader);
+    if (vspv.empty() || fspv.empty()) {
+        Log::error("VkParticleSystem: render shader compile failed");
+        return false;
+    }
+
+    VkShaderModule vmod = VK_NULL_HANDLE, fmod = VK_NULL_HANDLE;
+    {
+        VkShaderModuleCreateInfo info{};
+        info.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
+        info.codeSize = vspv.size() * sizeof(std::uint32_t);
+        info.pCode = vspv.data();
+        VK_CHECK(vkCreateShaderModule(ctx.device(), &info, nullptr, &vmod));
+        info.codeSize = fspv.size() * sizeof(std::uint32_t);
+        info.pCode = fspv.data();
+        VK_CHECK(vkCreateShaderModule(ctx.device(), &info, nullptr, &fmod));
+    }
+
+    // Pipeline state — see spec table.
+    VkPipelineShaderStageCreateInfo stages[2]{};
+    stages[0].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+    stages[0].stage = VK_SHADER_STAGE_VERTEX_BIT;
+    stages[0].module = vmod;
+    stages[0].pName = "main";
+    stages[1].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+    stages[1].stage = VK_SHADER_STAGE_FRAGMENT_BIT;
+    stages[1].module = fmod;
+    stages[1].pName = "main";
+
+    VkPipelineVertexInputStateCreateInfo vi{};
+    vi.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
+    // Empty vertex input.
+
+    VkPipelineInputAssemblyStateCreateInfo ia{};
+    ia.sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO;
+    ia.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+
+    VkPipelineViewportStateCreateInfo vp{};
+    vp.sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO;
+    vp.viewportCount = 1;
+    vp.scissorCount = 1;
+
+    VkPipelineRasterizationStateCreateInfo rs{};
+    rs.sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO;
+    rs.polygonMode = VK_POLYGON_MODE_FILL;
+    rs.cullMode = VK_CULL_MODE_NONE;
+    rs.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE;
+    rs.lineWidth = 1.0f;
+
+    VkPipelineMultisampleStateCreateInfo ms{};
+    ms.sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO;
+    ms.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
+
+    VkPipelineDepthStencilStateCreateInfo ds{};
+    ds.sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO;
+    ds.depthTestEnable = VK_TRUE;
+    ds.depthWriteEnable = VK_FALSE;
+    ds.depthCompareOp = VK_COMPARE_OP_LESS;
+
+    VkPipelineColorBlendAttachmentState cba{};
+    cba.blendEnable = VK_TRUE;
+    cba.srcColorBlendFactor = VK_BLEND_FACTOR_ONE;
+    cba.dstColorBlendFactor = VK_BLEND_FACTOR_ONE;
+    cba.colorBlendOp = VK_BLEND_OP_ADD;
+    cba.srcAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
+    cba.dstAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
+    cba.alphaBlendOp = VK_BLEND_OP_ADD;
+    cba.colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT |
+                         VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
+    VkPipelineColorBlendStateCreateInfo cb{};
+    cb.sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO;
+    cb.attachmentCount = 1;
+    cb.pAttachments = &cba;
+
+    VkDynamicState dyn[] = {VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR};
+    VkPipelineDynamicStateCreateInfo dynInfo{};
+    dynInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO;
+    dynInfo.dynamicStateCount = 2;
+    dynInfo.pDynamicStates = dyn;
+
+    VkGraphicsPipelineCreateInfo info{};
+    info.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
+    info.stageCount = 2;
+    info.pStages = stages;
+    info.pVertexInputState = &vi;
+    info.pInputAssemblyState = &ia;
+    info.pViewportState = &vp;
+    info.pRasterizationState = &rs;
+    info.pMultisampleState = &ms;
+    info.pDepthStencilState = &ds;
+    info.pColorBlendState = &cb;
+    info.pDynamicState = &dynInfo;
+    info.layout = renderPipelineLayout_;
+    info.renderPass = renderer_->scenePass();
+    info.subpass = 0;
+
+    VK_CHECK(vkCreateGraphicsPipelines(ctx.device(), VK_NULL_HANDLE, 1, &info,
+                                        nullptr, &renderPipeline_));
+
+    vkDestroyShaderModule(ctx.device(), vmod, nullptr);
+    vkDestroyShaderModule(ctx.device(), fmod, nullptr);
+
+    return renderPipeline_ != VK_NULL_HANDLE;
+}
+
+void VkParticleSystem::render(const Mat4& view, const Mat4& projection) {
+    VkCommandBuffer cb = renderer_->currentCommandBuffer();
+    if (cb == VK_NULL_HANDLE) return;  // host renderer skipped this frame (e.g., resize)
+
+    VkContext& ctx = renderer_->context();
+    VkFrameRing::Frame& frame = renderer_->frameRing().current();
+
+    // Build Camera UBO and allocate per-frame offset.
+    CameraUboCpu camera{};
+    std::memcpy(camera.view,       view.m,       sizeof(camera.view));
+    std::memcpy(camera.projection, projection.m, sizeof(camera.projection));
+    camera.spriteSize = cfg_.spriteSize;
+    const VkDeviceSize camOffset =
+        renderer_->frameRing().allocateUbo(&camera, sizeof(camera));
+
+    // Allocate descriptor set from the frame's pool.
+    VkDescriptorSetAllocateInfo dsInfo{};
+    dsInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+    dsInfo.descriptorPool = frame.descriptorPool;
+    dsInfo.descriptorSetCount = 1;
+    dsInfo.pSetLayouts = &renderSetLayout_;
+    VkDescriptorSet set = VK_NULL_HANDLE;
+    VK_CHECK(vkAllocateDescriptorSets(ctx.device(), &dsInfo, &set));
+
+    VkDescriptorBufferInfo ssboInfo{};
+    ssboInfo.buffer = ssbo_;
+    ssboInfo.offset = 0;
+    ssboInfo.range  = static_cast<VkDeviceSize>(cfg_.count) * sizeof(ParticleCpu);
+
+    VkDescriptorBufferInfo uboInfo{};
+    uboInfo.buffer = frame.uboBuffer;
+    uboInfo.offset = camOffset;
+    uboInfo.range  = sizeof(CameraUboCpu);
+
+    VkWriteDescriptorSet writes[2]{};
+    writes[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    writes[0].dstSet = set;
+    writes[0].dstBinding = 0;
+    writes[0].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+    writes[0].descriptorCount = 1;
+    writes[0].pBufferInfo = &ssboInfo;
+    writes[1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    writes[1].dstSet = set;
+    writes[1].dstBinding = 1;
+    writes[1].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+    writes[1].descriptorCount = 1;
+    writes[1].pBufferInfo = &uboInfo;
+    vkUpdateDescriptorSets(ctx.device(), 2, writes, 0, nullptr);
+
+    // Record draw into the active command buffer.
+    vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, renderPipeline_);
+    vkCmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                             renderPipelineLayout_, 0, 1, &set, 0, nullptr);
+    vkCmdDraw(cb, 6, cfg_.count, 0, 0);
 }
 
 // --- Factory ---
