@@ -172,10 +172,17 @@ void VulkanRenderer::endFrame() {
     rpBegin.pClearValues = clears;
     vkCmdBeginRenderPass(cb, &rpBegin, VK_SUBPASS_CONTENTS_INLINE);
 
+    // Vulkan clip-space Y points DOWN, opposite of OpenGL. To let games
+    // share OpenGL-style projection matrices, set a negative viewport
+    // height starting from the bottom of the framebuffer — the GPU then
+    // interprets Y the same way OpenGL does, AND winding order stays
+    // consistent (back-face culling still works). Requires Vulkan 1.1+
+    // (or VK_KHR_maintenance1), both of which we have via apiVersion 1.3.
     VkViewport vp{};
-    vp.x = 0; vp.y = 0;
-    vp.width = static_cast<float>(swapchain_.extent().width);
-    vp.height = static_cast<float>(swapchain_.extent().height);
+    vp.x = 0;
+    vp.y = static_cast<float>(swapchain_.extent().height);
+    vp.width  = static_cast<float>(swapchain_.extent().width);
+    vp.height = -static_cast<float>(swapchain_.extent().height);
     vp.minDepth = 0.0f; vp.maxDepth = 1.0f;
     vkCmdSetViewport(cb, 0, 1, &vp);
     VkRect2D scissor{{0, 0}, swapchain_.extent()};
