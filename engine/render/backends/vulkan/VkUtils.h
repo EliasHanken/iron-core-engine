@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstdlib>
 #include <vulkan/vulkan.h>
 
 #include "core/Log.h"
@@ -45,6 +46,7 @@ inline const char* vkResultString(VkResult r) {
             ::iron::Log::error("VK_CHECK failed: " #call " at %s:%d (%s)",     \
                                __FILE__, __LINE__,                             \
                                ::iron::vkResultString(_vk_result));            \
+            std::abort();                                                      \
         }                                                                      \
     } while (0)
 
