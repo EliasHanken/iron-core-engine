@@ -1318,6 +1318,9 @@ int main(int argc, char** argv) {
             }
         }
 
+        // Flush queued debug lines (hitscan tracers) before endFrame.
+        renderer.flushDebugLines(view, projection);
+
         renderer.endFrame();
 
         // -----------------------------------------------------------------------
