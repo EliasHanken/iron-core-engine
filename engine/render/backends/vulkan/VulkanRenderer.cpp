@@ -6,18 +6,29 @@
 #include "render/backends/vulkan/VkUtils.h"
 #include "core/Log.h"
 
+#include <vulkan/vulkan.h>
+
 namespace iron {
 
 VulkanRenderer::VulkanRenderer() = default;
-VulkanRenderer::~VulkanRenderer() = default;
+
+VulkanRenderer::~VulkanRenderer() {
+    if (initOk_) {
+        // Wait for outstanding GPU work before tearing down.
+        vkDeviceWaitIdle(context_.device());
+    }
+    context_.shutdown();
+}
 
 bool VulkanRenderer::init(Window& window) {
-    (void)window;
-    // M9 Task 4+ will fill this in: VkContext::init, VkSwapchain::init,
-    // VkFrameRing::init, builtin textures.
-    Log::warn("VulkanRenderer::init not yet implemented (M9 Task 4+)");
-    initOk_ = false;
-    return false;
+    if (!context_.init(window)) {
+        Log::error("VulkanRenderer: VkContext init failed");
+        return false;
+    }
+    // Task 5+ wire VkSwapchain, VkFrameRing here.
+    initOk_ = true;
+    Log::info("VulkanRenderer: context up (foundation only — most features are stubs)");
+    return true;
 }
 
 void VulkanRenderer::warnOnce(const char* feature) {

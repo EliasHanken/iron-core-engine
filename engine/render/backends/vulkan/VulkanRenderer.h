@@ -1,6 +1,7 @@
 #pragma once
 
 #include "render/Renderer.h"
+#include "render/backends/vulkan/VkContext.h"
 
 #include <string>
 #include <unordered_set>
@@ -67,6 +68,7 @@ private:
 
     bool initOk_ = false;
     std::unordered_set<std::string> warnedFeatures_;
+    VkContext context_;
 };
 
 }  // namespace iron
