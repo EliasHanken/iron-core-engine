@@ -397,3 +397,83 @@ peers.setOnPeerJoined([&](std::uint32_t newPeer) {
 ```
 
 Use `Reliable` for snapshot — late-joiners can't miss it.
+
+## Server-side lag compensation: `iron::LagCompensator`
+
+For server-authoritative shooters, the server stores a short rolling
+history of every player's position (via `TimeHistory<Vec3>`) and
+rewinds when validating a client's shot:
+
+```cpp
+iron::LagCompensator lagComp;
+
+// Each sim tick on the host:
+for (const auto& [pid, state] : authStates) {
+    lagComp.recordPosition(pid, nowSec(), Vec3{state.x, state.y, state.z});
+}
+
+// On FireHitscanMsg arrival:
+const auto hit = lagComp.hitscan(
+    /*shooter=*/msg.shooterPeerId,
+    /*origin=*/Vec3{msg.ox, msg.oy, msg.oz},
+    /*dir=*/Vec3{msg.dx, msg.dy, msg.dz},
+    /*rewindTimeSec=*/msg.viewTimeSec,
+    /*playerHalfExtents=*/{0.4f, 1.0f, 0.4f},
+    /*candidates=*/alivePeerIds);
+```
+
+`hitscan` excludes the shooter and considers ONLY lag-compensated
+player AABBs — it does not know about walls. The host raycasts world
+boxes separately and applies damage only if the player hit is closer
+than the closest wall along the same ray.
+
+`viewTimeSec` is the host-clock instant the client was rendering when
+it fired. Clients compute it from `ClockSync.remoteTimeNow(localNow) -
+interpDelay`. This gives the "what you see is what you hit" guarantee.
+
+The API works in `double` seconds; internally it maps to
+`std::chrono::steady_clock::time_point` via a fixed epoch, so the
+mapping is bijective for any given double.
+
+## Clock sync: `iron::ClockSync` (and PeerManager Ping/Pong)
+
+`PeerManager` reserves tags 254 and 255 for `peer::PingMsg` and
+`peer::PongMsg`. Clients ping the host four times per second from
+inside `PeerManager::poll()`; the host echoes immediately with its own
+monotonic clock. `ClockSync` ingests pongs and exposes:
+
+- `ready()` — true once 3+ samples have arrived
+- `rttSec()` — smoothed median round-trip
+- `offsetSec()` — smoothed median of `(hostTime - localMid)`
+- `remoteTimeNow(localNow)` — host-clock estimate at this local instant
+
+Games read it via `peers.clockSync()` (const reference). Block fire
+input until `clockSync.ready()` to avoid stamping shots with garbage
+`viewTimeSec`. Host's `ClockSync` is never fed (its own clock IS the
+authority), so `peers.clockSync().ready()` stays false on the host —
+gate fire on `peers.isHost() || peers.clockSync().ready()` instead.
+
+The reserved-tag count is now: **1 = Hello, 254 = Ping, 255 = Pong**.
+Game tags must stay in [2, 253].
+
+## `engine/game/` helpers
+
+A small new directory of game-agnostic gameplay utilities:
+
+- `WeaponCooldown` — header-only monotonic gate, one per weapon.
+  `tryFire(nowSec)` returns true and arms the cooldown, or false if
+  not ready. `timeUntilReady(nowSec)` reports remaining seconds.
+- `Health` — `{max, current}` POD + `isAlive` / `applyDamage` /
+  `resetHealth`. `applyDamage` clamps at 0 and ignores negative input
+  (no healing via damage).
+- `ProjectileSim` — `Projectile` POD + `tickProjectile(p, dt,
+  worldBoxes)` that sweeps a per-tick segment against static AABBs.
+  Returns a `ProjectileHit{point, normal}` on first collision and
+  flips `p.alive = false`. No gravity, no player collision.
+- `Collision::sphereOverlapAabb` — closest-point-on-AABB distance
+  check, used by rocket splash damage.
+
+The `engine/game/` directory is for helpers that ANY gameplay code can
+consume but that don't depend on networking. `engine/net/` helpers
+(`PeerManager`, `LagCompensator`, etc.) may include `engine/game/`,
+but `engine/game/` MUST NOT include `engine/net/`.
