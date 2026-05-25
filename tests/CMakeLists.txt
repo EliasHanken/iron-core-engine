@@ -78,3 +78,5 @@ target_include_directories(test_rocket_launcher PRIVATE
   ${CMAKE_CURRENT_SOURCE_DIR}
   ${CMAKE_SOURCE_DIR}/games/07-net-shooter)
 add_test(NAME test_rocket_launcher COMMAND test_rocket_launcher)
+
+iron_add_test(test_glsl_to_spirv test_glsl_to_spirv.cpp)
