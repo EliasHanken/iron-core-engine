@@ -112,7 +112,7 @@ void VkTextureStore::uploadRgba(VkContext& ctx, VkTextureResource& tex,
     poolInfo.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
     poolInfo.queueFamilyIndex = ctx.graphicsFamily();
     poolInfo.flags = VK_COMMAND_POOL_CREATE_TRANSIENT_BIT;
-    vkCreateCommandPool(ctx.device(), &poolInfo, nullptr, &pool);
+    VK_CHECK(vkCreateCommandPool(ctx.device(), &poolInfo, nullptr, &pool));
 
     VkCommandBuffer cb;
     VkCommandBufferAllocateInfo cbInfo{};
@@ -120,12 +120,12 @@ void VkTextureStore::uploadRgba(VkContext& ctx, VkTextureResource& tex,
     cbInfo.commandPool = pool;
     cbInfo.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
     cbInfo.commandBufferCount = 1;
-    vkAllocateCommandBuffers(ctx.device(), &cbInfo, &cb);
+    VK_CHECK(vkAllocateCommandBuffers(ctx.device(), &cbInfo, &cb));
 
     VkCommandBufferBeginInfo begin{};
     begin.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
     begin.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
-    vkBeginCommandBuffer(cb, &begin);
+    VK_CHECK(vkBeginCommandBuffer(cb, &begin));
 
     VkImageMemoryBarrier toDst{};
     toDst.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
@@ -154,13 +154,13 @@ void VkTextureStore::uploadRgba(VkContext& ctx, VkTextureResource& tex,
                          VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0,
                          0, nullptr, 0, nullptr, 1, &toShader);
 
-    vkEndCommandBuffer(cb);
+    VK_CHECK(vkEndCommandBuffer(cb));
 
     VkSubmitInfo submit{};
     submit.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
     submit.commandBufferCount = 1;
     submit.pCommandBuffers = &cb;
-    vkQueueSubmit(ctx.graphicsQueue(), 1, &submit, VK_NULL_HANDLE);
+    VK_CHECK(vkQueueSubmit(ctx.graphicsQueue(), 1, &submit, VK_NULL_HANDLE));
     vkQueueWaitIdle(ctx.graphicsQueue());
 
     vkDestroyCommandPool(ctx.device(), pool, nullptr);
