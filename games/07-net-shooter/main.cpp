@@ -498,6 +498,13 @@ int main(int argc, char** argv) {
     struct ExplosionFx { iron::Vec3 pos; double startSec; };
     std::vector<ExplosionFx> explosions;
 
+    // Hitscan tracer FX — a debug-line from muzzle to a fixed range,
+    // visible for ~0.12 s so the shooter sees the shot land.
+    struct HitscanTracer { iron::Vec3 origin; iron::Vec3 end; double startSec; };
+    std::vector<HitscanTracer> hitscanTracers;
+    constexpr float kTracerLengthM   = 30.0f;
+    constexpr double kTracerLifeSec  = 0.12;
+
     // Client score cache (from ScoreUpdateMsg)
     std::unordered_map<std::uint32_t, std::pair<std::uint32_t,std::uint32_t>> clientScores; // pid → {kills,deaths}
 
@@ -931,6 +938,14 @@ int main(int argc, char** argv) {
                             muzzle.x, muzzle.y, muzzle.z,
                             dir.x, dir.y, dir.z,
                             viewTime};
+                        // Visual tracer (a few frames of emissive line so the
+                        // shooter actually sees the shot leave the barrel).
+                        hitscanTracers.push_back(HitscanTracer{
+                            muzzle,
+                            iron::Vec3{muzzle.x + dir.x * kTracerLengthM,
+                                       muzzle.y + dir.y * kTracerLengthM,
+                                       muzzle.z + dir.z * kTracerLengthM},
+                            localNow});
                         // Inline host hitscan resolution
                         std::vector<std::uint32_t> alivePeers;
                         for (const auto& [p, hp] : hostPlayers) {
@@ -969,6 +984,12 @@ int main(int argc, char** argv) {
                         auto opt = iron::netshooter::tryFireHitscanClient(
                             localRifle, localNow, muzzle, dir, viewTime);
                         if (opt) {
+                            hitscanTracers.push_back(HitscanTracer{
+                                muzzle,
+                                iron::Vec3{muzzle.x + dir.x * kTracerLengthM,
+                                           muzzle.y + dir.y * kTracerLengthM,
+                                           muzzle.z + dir.z * kTracerLengthM},
+                                localNow});
                             peers.send<iron::netshooter::FireHitscanMsg>(
                                 0u, *opt, iron::SendReliability::Reliable);
                         }
@@ -1095,6 +1116,14 @@ int main(int argc, char** argv) {
 
                     iron::Vec3 sp = iron::netshooter::pickRandomSpawn(arena, hostRngState);
                     authStates[pid] = PlayerState{sp.x, sp.y, sp.z};
+
+                    // Host's own respawn: broadcastToAll doesn't loop back to
+                    // ourselves, so reset our local predictor inline. Without
+                    // this, the host's first-person camera (myPos → predictor)
+                    // stays at the death position permanently.
+                    if (pid == 0) {
+                        predictor.reset(PlayerState{sp.x, sp.y, sp.z});
+                    }
 
                     iron::netshooter::RespawnMsg rm{};
                     rm.peerId = pid;
@@ -1237,6 +1266,24 @@ int main(int argc, char** argv) {
             call.material.specularMap = renderer.noSpecularTexture();
             call.material.emissive    = iron::Vec3{2.0f, 0.5f, 0.0f};
             renderer.submit(call);
+        }
+
+        // Hitscan tracers: brief yellow debug-lines from muzzle to fixed range.
+        // Expire after kTracerLifeSec.
+        {
+            const double t = nowSec();
+            hitscanTracers.erase(
+                std::remove_if(hitscanTracers.begin(), hitscanTracers.end(),
+                    [&](const HitscanTracer& tr) {
+                        return (t - tr.startSec) > kTracerLifeSec;
+                    }),
+                hitscanTracers.end());
+            for (const auto& tr : hitscanTracers) {
+                const float k = static_cast<float>((t - tr.startSec) / kTracerLifeSec);
+                const float fade = 1.0f - k;
+                renderer.drawLine(tr.origin, tr.end,
+                                  iron::Vec3{fade * 1.0f, fade * 0.9f, fade * 0.2f});
+            }
         }
 
         // Explosions: expanding emissive cube, ~0.4 s lifetime.
