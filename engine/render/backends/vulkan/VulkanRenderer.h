@@ -71,6 +71,19 @@ public:
 
     void setViewport(int width, int height) override;
 
+    // --- engine-internal accessors (not part of iron::Renderer) ---
+
+    // Returns the current frame's primary command buffer. Only meaningful
+    // between Renderer::beginFrame and Renderer::endFrame. Used by
+    // external Vulkan subsystems (e.g., iron::ParticleSystem) that need
+    // to record draws into the active render pass.
+    VkCommandBuffer currentCommandBuffer();
+
+    // Exposes the frame ring so external Vulkan subsystems can allocate
+    // per-frame UBO storage and descriptor sets that live until the
+    // next time this frame index is reused.
+    VkFrameRing& frameRing();
+
 private:
     void warnOnce(const char* feature);
     bool recreateSwapchainAndFramebuffers(int width, int height);

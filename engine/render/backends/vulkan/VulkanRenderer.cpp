@@ -283,4 +283,12 @@ void VulkanRenderer::setViewport(int width, int height) {
     pendingResizeHeight_ = height;
 }
 
+VkCommandBuffer VulkanRenderer::currentCommandBuffer() {
+    return frames_.current().commandBuffer;
+}
+
+VkFrameRing& VulkanRenderer::frameRing() {
+    return frames_;
+}
+
 }  // namespace iron
