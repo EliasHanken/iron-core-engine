@@ -84,6 +84,10 @@ public:
     // next time this frame index is reused.
     VkFrameRing& frameRing();
 
+    // Engine-internal: expose the VkContext so external Vulkan subsystems
+    // can allocate their own VMA buffers + Vulkan objects.
+    VkContext& context();
+
 private:
     void warnOnce(const char* feature);
     bool recreateSwapchainAndFramebuffers(int width, int height);

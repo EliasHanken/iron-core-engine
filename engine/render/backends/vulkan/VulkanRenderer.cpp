@@ -291,4 +291,6 @@ VkFrameRing& VulkanRenderer::frameRing() {
     return frames_;
 }
 
+VkContext& VulkanRenderer::context() { return context_; }
+
 }  // namespace iron
