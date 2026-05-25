@@ -2,6 +2,7 @@
 
 #include "render/Renderer.h"
 #include "render/backends/vulkan/VkContext.h"
+#include "render/backends/vulkan/VkSwapchain.h"
 
 #include <string>
 #include <unordered_set>
@@ -69,6 +70,7 @@ private:
     bool initOk_ = false;
     std::unordered_set<std::string> warnedFeatures_;
     VkContext context_;
+    VkSwapchain swapchain_;
 };
 
 }  // namespace iron

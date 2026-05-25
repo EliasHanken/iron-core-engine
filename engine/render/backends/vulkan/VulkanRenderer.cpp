@@ -5,6 +5,7 @@
 #include "render/backends/vulkan/VulkanRenderer.h"
 #include "render/backends/vulkan/VkUtils.h"
 #include "core/Log.h"
+#include "core/Window.h"
 
 #include <vulkan/vulkan.h>
 
@@ -16,6 +17,7 @@ VulkanRenderer::~VulkanRenderer() {
     if (initOk_) {
         // Wait for outstanding GPU work before tearing down.
         vkDeviceWaitIdle(context_.device());
+        swapchain_.destroy(context_);
     }
     context_.shutdown();
 }
@@ -25,9 +27,13 @@ bool VulkanRenderer::init(Window& window) {
         Log::error("VulkanRenderer: VkContext init failed");
         return false;
     }
-    // Task 5+ wire VkSwapchain, VkFrameRing here.
+    if (!swapchain_.init(context_, window.width(), window.height())) {
+        Log::error("VulkanRenderer: VkSwapchain init failed");
+        return false;
+    }
+    // Task 6+ wire VkFrameRing here.
     initOk_ = true;
-    Log::info("VulkanRenderer: context up (foundation only — most features are stubs)");
+    Log::info("VulkanRenderer: context + swapchain up (foundation; features still stubs)");
     return true;
 }
 
