@@ -111,7 +111,6 @@ void tickRocketClient(Projectile& ghost, float dt,
     if (!ghost.alive) return;
     // Same swept collision, but on hit we stop motion and leave alive=true.
     // The host's DespawnProjectileMsg will be authoritative for removal.
-    const Vec3 startPos = ghost.position;
     const auto hit = tickProjectile(ghost, dt, worldBoxes);
     if (hit.has_value()) {
         // tickProjectile already set alive=false; flip back to true so
@@ -120,7 +119,6 @@ void tickRocketClient(Projectile& ghost, float dt,
         ghost.position = hit->point;
         ghost.velocity = Vec3{0.0f, 0.0f, 0.0f};
     }
-    (void)startPos;
 }
 
 }  // namespace iron::netshooter
