@@ -1031,10 +1031,17 @@ int main(int argc, char** argv) {
                 const float  simDt  = simTicker.tickIntervalSeconds();
 
                 // Record all alive peer positions for lag compensation.
+                // Note: LagCompensator::aabbAt builds [pos-halfExtents, pos+halfExtents],
+                // i.e. it treats the stored position as the AABB CENTER. Our
+                // authStates store the feet position, so shift up by halfE.y so
+                // the hit AABB lines up with the rendered cube (which is drawn
+                // centered at feet + halfE.y — see the player-cube submit lambda).
                 for (const auto& [pid, state] : authStates) {
                     if (hostPlayers.count(pid) && hostPlayers[pid].respawnAtSec < 0.0) {
                         lagComp.recordPosition(pid, simNow,
-                            iron::Vec3{state.x, state.y, state.z});
+                            iron::Vec3{state.x,
+                                       state.y + iron::netshooter::kPlayerHalfExtents.y,
+                                       state.z});
                     }
                 }
 
