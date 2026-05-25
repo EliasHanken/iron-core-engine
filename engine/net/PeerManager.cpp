@@ -1,5 +1,6 @@
 #include "net/PeerManager.h"
 
+#include <chrono>
 #include <utility>
 
 namespace iron {
@@ -10,6 +11,14 @@ PeerManager::PeerManager(NetTransport& transport, MessageRegistry& registry,
     registry_.registerHandler<peer::HelloMsg>(
         [this](ConnectionId c, const peer::HelloMsg& msg) {
             this->handleHello(c, msg);
+        });
+    registry_.registerHandler<peer::PingMsg>(
+        [this](ConnectionId c, const peer::PingMsg& msg) {
+            this->handlePing(c, msg);
+        });
+    registry_.registerHandler<peer::PongMsg>(
+        [this](ConnectionId c, const peer::PongMsg& msg) {
+            this->handlePong(c, msg);
         });
     transport_.setOnConnectionOpened(
         [this](ConnectionId c) { this->handleConnectionOpened(c); });
@@ -93,8 +102,26 @@ std::optional<std::uint32_t> PeerManager::peerIdFor(ConnectionId conn) const {
     return it->second;
 }
 
+namespace {
+// PeerManager's own monotonic clock — independent of any game clock,
+// matched by ClockSync on the receiving side.
+double peerNowSec() {
+    using Clock = std::chrono::steady_clock;
+    static const auto epoch = Clock::now();
+    return std::chrono::duration<double>(Clock::now() - epoch).count();
+}
+}  // namespace
+
 void PeerManager::poll() {
     transport_.poll();
+    if (!started_) return;
+    if (isHost_)  return;                    // host doesn't ping
+    if (hostConn_ == kInvalidConnection) return;
+    const double now = peerNowSec();
+    if (now < nextPingAtSec_) return;
+    nextPingAtSec_ = now + 0.25;             // 4 pings/sec
+    registry_.send<peer::PingMsg>(
+        hostConn_, peer::PingMsg{now}, SendReliability::Unreliable);
 }
 
 void PeerManager::handleHello(ConnectionId c, const peer::HelloMsg& msg) {
@@ -148,6 +175,19 @@ void PeerManager::handleConnectionClosed(ConnectionId c,
     connToPeerId_.erase(it);
     peerIdToConn_.erase(pid);
     if (onLeft_) onLeft_(pid);
+}
+
+void PeerManager::handlePing(ConnectionId c, const peer::PingMsg& msg) {
+    if (!isHost_) return;
+    registry_.send<peer::PongMsg>(
+        c, peer::PongMsg{msg.clientSendTimeSec, peerNowSec()},
+        SendReliability::Unreliable);
+}
+
+void PeerManager::handlePong(ConnectionId c, const peer::PongMsg& msg) {
+    (void)c;
+    if (isHost_) return;
+    clockSync_.onPongReceived(msg.clientSendTimeSec, peerNowSec(), msg.hostTimeSec);
 }
 
 }  // namespace iron

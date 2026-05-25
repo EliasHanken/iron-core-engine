@@ -14,6 +14,12 @@ iron_add_test(test_transform test_transform.cpp)
 iron_add_test(test_first_person_controller test_first_person_controller.cpp)
 iron_add_test(test_verlet test_verlet.cpp)
 iron_add_test(test_ray test_ray.cpp)
+iron_add_test(test_collision test_collision.cpp)
+iron_add_test(test_weapon_cooldown test_weapon_cooldown.cpp)
+iron_add_test(test_health test_health.cpp)
+iron_add_test(test_projectile_sim test_projectile_sim.cpp)
+iron_add_test(test_lag_compensator test_lag_compensator.cpp)
+iron_add_test(test_clock_sync test_clock_sync.cpp)
 iron_add_test(test_mesh_builders test_mesh_builders.cpp)
 iron_add_test(test_bitmap_font test_bitmap_font.cpp)
 iron_add_test(test_hud test_hud.cpp)
@@ -52,3 +58,23 @@ target_include_directories(test_rope_thrower PRIVATE
   ${CMAKE_CURRENT_SOURCE_DIR}
   ${CMAKE_SOURCE_DIR}/games/02-strandbound)
 add_test(NAME test_rope_thrower COMMAND test_rope_thrower)
+
+# test_hitscan_rifle compiles the game-side HitscanRifle.cpp directly.
+add_executable(test_hitscan_rifle
+  test_hitscan_rifle.cpp
+  ${CMAKE_SOURCE_DIR}/games/07-net-shooter/HitscanRifle.cpp)
+target_link_libraries(test_hitscan_rifle PRIVATE ironcore)
+target_include_directories(test_hitscan_rifle PRIVATE
+  ${CMAKE_CURRENT_SOURCE_DIR}
+  ${CMAKE_SOURCE_DIR}/games/07-net-shooter)
+add_test(NAME test_hitscan_rifle COMMAND test_hitscan_rifle)
+
+# test_rocket_launcher compiles RocketLauncher.cpp directly.
+add_executable(test_rocket_launcher
+  test_rocket_launcher.cpp
+  ${CMAKE_SOURCE_DIR}/games/07-net-shooter/RocketLauncher.cpp)
+target_link_libraries(test_rocket_launcher PRIVATE ironcore)
+target_include_directories(test_rocket_launcher PRIVATE
+  ${CMAKE_CURRENT_SOURCE_DIR}
+  ${CMAKE_SOURCE_DIR}/games/07-net-shooter)
+add_test(NAME test_rocket_launcher COMMAND test_rocket_launcher)

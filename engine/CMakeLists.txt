@@ -8,6 +8,8 @@ add_library(ironcore STATIC
   net/NetTransport.cpp
   net/MessageRegistry.cpp
   net/PeerManager.cpp
+  net/LagCompensator.cpp
+  net/ClockSync.cpp
   net/backends/mock/MockTransport.cpp
   net/backends/gns/GnsTransport.cpp
   scene/Mesh.cpp
@@ -18,6 +20,8 @@ add_library(ironcore STATIC
   ui/BuiltinFont.cpp
   ui/Hud.cpp
   physics/Rope.cpp
+  game/Collision.cpp
+  game/ProjectileSim.cpp
   render/backends/opengl/GLShader.cpp
   render/backends/opengl/GLMesh.cpp
   render/backends/opengl/GLTexture.cpp

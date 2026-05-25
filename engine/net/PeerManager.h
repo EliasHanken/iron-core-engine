@@ -2,6 +2,7 @@
 
 #include "core/Log.h"
 #include "core/NetArgs.h"
+#include "net/ClockSync.h"
 #include "net/MessageRegistry.h"
 #include "net/NetTransport.h"
 #include "net/PeerMessages.h"
@@ -67,6 +68,10 @@ public:
 
     void poll();
 
+    // Returns the local→host clock sync estimator (clients only; host's
+    // ClockSync is never fed and ready() stays false).
+    const ClockSync& clockSync() const { return clockSync_; }
+
     template <typename Msg>
     bool send(std::uint32_t peerId, const Msg& msg, SendReliability r) {
         const ConnectionId c = connectionFor(peerId);
@@ -99,6 +104,12 @@ private:
     std::unordered_map<std::uint32_t, ConnectionId> peerIdToConn_;
     PeerJoinedFn onJoined_;
     PeerLeftFn   onLeft_;
+
+    // Ping/Pong (client-side periodic ping; host echoes).
+    void handlePing(ConnectionId c, const peer::PingMsg& msg);
+    void handlePong(ConnectionId c, const peer::PongMsg& msg);
+    double nextPingAtSec_ = 0.0;
+    ClockSync clockSync_;
 };
 
 }  // namespace iron
