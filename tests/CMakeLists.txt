@@ -68,3 +68,13 @@ target_include_directories(test_hitscan_rifle PRIVATE
   ${CMAKE_CURRENT_SOURCE_DIR}
   ${CMAKE_SOURCE_DIR}/games/07-net-shooter)
 add_test(NAME test_hitscan_rifle COMMAND test_hitscan_rifle)
+
+# test_rocket_launcher compiles RocketLauncher.cpp directly.
+add_executable(test_rocket_launcher
+  test_rocket_launcher.cpp
+  ${CMAKE_SOURCE_DIR}/games/07-net-shooter/RocketLauncher.cpp)
+target_link_libraries(test_rocket_launcher PRIVATE ironcore)
+target_include_directories(test_rocket_launcher PRIVATE
+  ${CMAKE_CURRENT_SOURCE_DIR}
+  ${CMAKE_SOURCE_DIR}/games/07-net-shooter)
+add_test(NAME test_rocket_launcher COMMAND test_rocket_launcher)
