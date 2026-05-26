@@ -9,6 +9,7 @@
 #include "math/Transform.h"
 
 #include <vulkan/vulkan.h>
+#include <algorithm>
 #include <cmath>
 
 namespace iron {
@@ -134,21 +135,25 @@ void VulkanRenderer::drawHud(const HudBatch& batch, int fbW, int fbH) {
 
 namespace {
 
-// M12+M13+M14 — per-draw UBO uploaded by submit. std140 layout: all members
-// are mat4 (64-byte aligned) or vec4 (16-byte aligned), so no
-// straddling. Total 288 bytes.
+// M12+M13+M14+M15 — per-draw UBO uploaded by submit. std140 layout: all
+// members are mat4 (64-byte aligned) or vec4 (16-byte aligned), so no
+// straddling. Total 832 bytes.
 struct LitUbo {
-    Mat4 mvp;             // 64
-    Mat4 model;           // 64
-    Mat4 lightViewProj;   // 64  M14
-    Vec4 sunDir;          // 16
-    Vec4 sunColor;        // 16
-    Vec4 ambient;         // 16
-    Vec4 emissive;        // 16
-    Vec4 cameraPos;       // 16
-    Vec4 materialParams;  // 16  x=uvScale, y=specPower, z=reflectivity, w=shadowBias (M14)
+    Mat4 mvp;                 // 64
+    Mat4 model;               // 64
+    Mat4 lightViewProj;       // 64
+    Vec4 sunDir;              // 16
+    Vec4 sunColor;            // 16
+    Vec4 ambient;             // 16
+    Vec4 emissive;            // 16
+    Vec4 cameraPos;           // 16
+    Vec4 materialParams;      // 16  x=uvScale, y=specPower, z=reflectivity, w=shadowBias
+    Vec4 fogColor;            // 16  M15 — xyz=color, w=density
+    Vec4 lightCounts;         // 16  M15 — x=pointLightCount (as float), y/z/w padding
+    Vec4 pointPositions[16];  // 256 M15 — xyz=position, w=intensity
+    Vec4 pointColors[16];     // 256 M15 — xyz=color, w=range
 };
-static_assert(sizeof(LitUbo) == 288, "LitUbo std140 layout");
+static_assert(sizeof(LitUbo) == 832, "LitUbo std140 layout");
 
 // Extracts the camera's world-space position from a view matrix.
 // Assumes view is a pure rigid transform [R | t; 0 0 0 1] (rotation +
@@ -205,8 +210,8 @@ void setSceneViewport(VkCommandBuffer cb, VkExtent2D extent) {
 }  // namespace
 
 void VulkanRenderer::beginFrame(Vec3 clearColor, const DirectionalLight& light,
-                                 std::span<const PointLight>,
-                                 const Fog&, const Mat4& view,
+                                 std::span<const PointLight> pointLights,
+                                 const Fog& fog, const Mat4& view,
                                  const Mat4& projection) {
     pendingClear_      = clearColor;
     pendingView_       = view;
@@ -219,6 +224,12 @@ void VulkanRenderer::beginFrame(Vec3 clearColor, const DirectionalLight& light,
     pendingCameraPos_ = extractCameraPos(view);
     pendingLightViewProj_ = computeLightViewProj(
         pendingSunDir_, pendingShadowCenter_, pendingShadowRadius_);
+    pendingPointLightCount_ = static_cast<int>(
+        std::min<std::size_t>(pointLights.size(), kMaxPointLights));
+    for (int i = 0; i < pendingPointLightCount_; ++i) {
+        pendingPointLights_[i] = pointLights[i];
+    }
+    pendingFog_ = fog;
     skipFrame_         = false;
 
     if (pendingResize_) {
@@ -294,6 +305,27 @@ void VulkanRenderer::recordSceneDraw(VkCommandBuffer cb, const DrawCall& call) {
         call.material.reflectivity,
         pendingShadowBias_,
     };
+    ubo.fogColor = Vec4{
+        pendingFog_.color.x, pendingFog_.color.y, pendingFog_.color.z,
+        pendingFog_.density,
+    };
+    ubo.lightCounts = Vec4{
+        static_cast<float>(pendingPointLightCount_), 0.0f, 0.0f, 0.0f,
+    };
+    for (int i = 0; i < pendingPointLightCount_; ++i) {
+        const PointLight& pl = pendingPointLights_[i];
+        ubo.pointPositions[i] = Vec4{
+            pl.position.x, pl.position.y, pl.position.z, pl.intensity,
+        };
+        ubo.pointColors[i] = Vec4{
+            pl.color.x, pl.color.y, pl.color.z, pl.range,
+        };
+    }
+    // Zero unused slots so the GPU never reads uninitialized stack data.
+    for (int i = pendingPointLightCount_; i < kMaxPointLights; ++i) {
+        ubo.pointPositions[i] = Vec4{0.0f, 0.0f, 0.0f, 0.0f};
+        ubo.pointColors[i]    = Vec4{0.0f, 0.0f, 0.0f, 0.0f};
+    }
 
     const VkShader& sh = shaders_.get(call.shader);
     ::VkPipeline pipe = pipelines_.pipelineFor(context_, swapchain_, sh);
