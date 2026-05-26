@@ -120,6 +120,12 @@ private:
     Mat4      pendingView_       = Mat4::identity();
     Mat4      pendingProjection_ = Mat4::identity();
 
+    // M12 — directional light + ambient stored at beginFrame, packed
+    // into each draw's LitUbo by submit.
+    Vec3 pendingSunDir_   = {0.0f, -1.0f, 0.0f};
+    Vec3 pendingSunColor_ = {1.0f, 1.0f, 1.0f};
+    Vec3 pendingAmbient_  = {0.1f, 0.1f, 0.1f};
+
     // Swapchain image index acquired in beginFrame, used in endFrame.
     std::uint32_t currentImageIndex_ = 0;
     bool       pendingResize_  = false;

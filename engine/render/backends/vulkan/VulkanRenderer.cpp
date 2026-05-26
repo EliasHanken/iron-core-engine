@@ -120,6 +120,20 @@ void VulkanRenderer::drawHud(const HudBatch& batch, int fbW, int fbH) {
 // --- per-frame (real) ---
 
 namespace {
+
+// M12 — per-draw UBO uploaded by submit. std140 layout: all members
+// are mat4 (64-byte aligned) or vec4 (16-byte aligned), so no
+// straddling. Total 192 bytes.
+struct LitUbo {
+    Mat4 mvp;        // 64 — projection * view * model
+    Mat4 model;      // 64 — for mat3(model) * aNormal in the vertex shader
+    Vec4 sunDir;     // 16 — xyz direction; w padding
+    Vec4 sunColor;   // 16 — xyz color; w padding
+    Vec4 ambient;    // 16 — xyz color (pre-multiplied); w padding
+    Vec4 emissive;   // 16 — xyz color (from call.material.emissive); w padding
+};
+static_assert(sizeof(LitUbo) == 192, "LitUbo std140 layout");
+
 // Set viewport + scissor on the active command buffer. Vulkan clip-Y points
 // DOWN (opposite OpenGL); negative-height + bottom-origin viewport flips it
 // back so GL-style projection matrices render correctly without altering
@@ -137,13 +151,18 @@ void setSceneViewport(VkCommandBuffer cb, VkExtent2D extent) {
 }
 }  // namespace
 
-void VulkanRenderer::beginFrame(Vec3 clearColor, const DirectionalLight&,
+void VulkanRenderer::beginFrame(Vec3 clearColor, const DirectionalLight& light,
                                  std::span<const PointLight>,
                                  const Fog&, const Mat4& view,
                                  const Mat4& projection) {
     pendingClear_      = clearColor;
     pendingView_       = view;
     pendingProjection_ = projection;
+    pendingSunDir_     = light.direction;
+    pendingSunColor_   = light.color;
+    pendingAmbient_    = Vec3{light.ambient * light.color.x,
+                              light.ambient * light.color.y,
+                              light.ambient * light.color.z};
     skipFrame_         = false;
 
     if (pendingResize_) {
@@ -207,7 +226,16 @@ void VulkanRenderer::submit(const DrawCall& call) {
     VkFrameRing::Frame& f = frames_.current();
     VkCommandBuffer cb = f.commandBuffer;
 
-    const Mat4 mvp = pendingProjection_ * pendingView_ * call.model;
+    LitUbo ubo;
+    ubo.mvp      = pendingProjection_ * pendingView_ * call.model;
+    ubo.model    = call.model;
+    ubo.sunDir   = Vec4{pendingSunDir_.x,   pendingSunDir_.y,   pendingSunDir_.z,   0.0f};
+    ubo.sunColor = Vec4{pendingSunColor_.x, pendingSunColor_.y, pendingSunColor_.z, 0.0f};
+    ubo.ambient  = Vec4{pendingAmbient_.x,  pendingAmbient_.y,  pendingAmbient_.z,  0.0f};
+    ubo.emissive = Vec4{call.material.emissive.x,
+                        call.material.emissive.y,
+                        call.material.emissive.z,
+                        0.0f};
 
     const VkShader& sh = shaders_.get(call.shader);
     ::VkPipeline pipe = pipelines_.pipelineFor(context_, swapchain_, sh);
@@ -222,11 +250,11 @@ void VulkanRenderer::submit(const DrawCall& call) {
     VkDescriptorSet set = VK_NULL_HANDLE;
     VK_CHECK(vkAllocateDescriptorSets(context_.device(), &dsInfo, &set));
 
-    const VkDeviceSize uboOffset = frames_.allocateUbo(&mvp, sizeof(Mat4));
+    const VkDeviceSize uboOffset = frames_.allocateUbo(&ubo, sizeof(ubo));
     VkDescriptorBufferInfo bufInfo{};
     bufInfo.buffer = f.uboBuffer;
     bufInfo.offset = uboOffset;
-    bufInfo.range  = sizeof(Mat4);
+    bufInfo.range  = sizeof(ubo);
 
     const auto& tex = textures_.has(call.material.texture)
         ? textures_.get(call.material.texture)
