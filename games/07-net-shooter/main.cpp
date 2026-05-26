@@ -15,6 +15,7 @@
 #include "game/Health.h"
 #include "core/FixedTickScheduler.h"
 #include "core/Log.h"
+#include "debug/GizmoRegistry.h"
 #include "core/NetArgs.h"
 #include "core/Platform.h"
 #include "core/Window.h"
@@ -515,6 +516,13 @@ int main(int argc, char** argv) {
     // Host-side authoritative positions
     std::unordered_map<std::uint32_t, PlayerState> authStates;
 
+    // M11 — gizmo registry (lag-comp AABBs + splash spheres) + F3 toggle.
+    iron::GizmoRegistry gizmos;
+    gizmos.enable("lagcomp", true);
+    gizmos.enable("splash",  true);
+    bool gizmosOn = true;
+    std::unordered_map<std::uint32_t, iron::GizmoId> lagcompGizmoFor;
+
     // Live rockets on host
     std::vector<iron::Projectile> liveRockets;
     std::uint32_t nextProjectileId = 1;
@@ -716,6 +724,12 @@ int main(int argc, char** argv) {
             ghostRockets.erase(msg.projectileId);
             explosions.push_back(
                 ExplosionFx{iron::Vec3{msg.x, msg.y, msg.z}, nowSec()});
+            // M11 — splash radius gizmo (timed, matches ExplosionFx lifetime).
+            gizmos.addSphere("splash",
+                             iron::Vec3{msg.x, msg.y, msg.z},
+                             iron::netshooter::RocketLauncher::kSplashRadius,
+                             iron::Vec3{1.0f, 0.6f, 0.0f},
+                             /*lifetimeSec=*/0.4f);
         });
 
     // CLIENT: damage + kill feed.
@@ -904,6 +918,17 @@ int main(int argc, char** argv) {
         if (key2 && !prevKey2) selectedWeapon = 2;
         prevKey1 = key1;
         prevKey2 = key2;
+
+        // --- F3: gizmo master toggle ------------------------------------
+        {
+            const bool f3 = glfwGetKey(window.handle(), GLFW_KEY_F3) == GLFW_PRESS;
+            static bool prevF3 = false;
+            if (f3 && !prevF3) {
+                gizmosOn = !gizmosOn;
+                gizmos.enableAll(gizmosOn);
+            }
+            prevF3 = f3;
+        }
 
         // --- Network poll -----------------------------------------------
         peers.poll();
@@ -1131,6 +1156,12 @@ int main(int argc, char** argv) {
                         explosions.push_back(ExplosionFx{
                             iron::Vec3{result.despawn.x, result.despawn.y, result.despawn.z},
                             simNow});
+                        // M11 — splash radius gizmo (timed, matches ExplosionFx lifetime).
+                        gizmos.addSphere("splash",
+                                         iron::Vec3{result.despawn.x, result.despawn.y, result.despawn.z},
+                                         iron::netshooter::RocketLauncher::kSplashRadius,
+                                         iron::Vec3{1.0f, 0.6f, 0.0f},
+                                         /*lifetimeSec=*/0.4f);
                         // Apply splash damage.
                         for (auto& dm : result.splashHits) {
                             auto vit = hostPlayers.find(dm.victimPeerId);
@@ -1408,6 +1439,40 @@ int main(int argc, char** argv) {
                 renderer.submit(call);
             }
         }
+
+        // M11 — lag-comp gizmo update (host only). Match the visible cube's
+        // AABB shape: center at feet + halfE.y, full extents = 2*halfE.
+        if (peers.isHost()) {
+            const iron::Vec3 halfE = iron::netshooter::kPlayerHalfExtents;
+            for (const auto& [pid, state] : authStates) {
+                const iron::Vec3 minP{state.x - halfE.x,
+                                      state.y,
+                                      state.z - halfE.z};
+                const iron::Vec3 maxP{state.x + halfE.x,
+                                      state.y + halfE.y * 2.0f,
+                                      state.z + halfE.z};
+                auto& gid = lagcompGizmoFor[pid];
+                if (gid == iron::kInvalidGizmo) {
+                    gid = gizmos.addAabb("lagcomp", minP, maxP,
+                                         iron::Vec3{1.0f, 0.2f, 0.2f});
+                } else {
+                    gizmos.updateAabb(gid, minP, maxP,
+                                       iron::Vec3{1.0f, 0.2f, 0.2f});
+                }
+            }
+            // Remove gizmos for peers no longer in authStates (e.g. disconnected).
+            for (auto it = lagcompGizmoFor.begin(); it != lagcompGizmoFor.end(); ) {
+                if (authStates.find(it->first) == authStates.end()) {
+                    gizmos.remove(it->second);
+                    it = lagcompGizmoFor.erase(it);
+                } else {
+                    ++it;
+                }
+            }
+        }
+
+        // Tick gizmos (advance expiries, emit debug lines).
+        gizmos.tick(dt, renderer);
 
         // Flush queued debug lines (hitscan tracers) before endFrame.
         renderer.flushDebugLines(view, projection);
