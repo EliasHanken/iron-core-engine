@@ -13,34 +13,59 @@ namespace {
 
 #ifdef IRON_RENDER_BACKEND_VULKAN
 
-// Vulkan path: #version 450 + UBO block + explicit set/binding layout.
-// The Vulkan backend compiles via glslang into SPIR-V; the descriptor
-// set layout (set=0 binding=0 = UBO, binding=1 = combined sampler) is
-// hard-coded in VkShader.cpp to match this.
+// Vulkan path: #version 450 + LitUbo block (192 bytes) + explicit set/binding
+// layout. Lambertian diffuse + ambient + emissive. The descriptor set layout
+// (set=0 binding=0 = LitUbo, binding=1 = combined sampler) is hard-coded in
+// VkShader.cpp to match this.
 const char* kVertexShader = R"(#version 450
 layout(location = 0) in vec3 aPos;
 layout(location = 1) in vec3 aNormal;
 layout(location = 2) in vec2 aUV;
 layout(location = 3) in vec3 aTangent;
 
-layout(set = 0, binding = 0) uniform Ubo { mat4 uMvp; } ubo;
+layout(set = 0, binding = 0) uniform LitUbo {
+    mat4 mvp;
+    mat4 model;
+    vec4 sunDir;
+    vec4 sunColor;
+    vec4 ambient;
+    vec4 emissive;
+} u;
 
 layout(location = 0) out vec2 vUV;
+layout(location = 1) out vec3 vNormal;
 
 void main() {
     vUV = aUV;
-    gl_Position = ubo.uMvp * vec4(aPos, 1.0);
+    vNormal = mat3(u.model) * aNormal;
+    gl_Position = u.mvp * vec4(aPos, 1.0);
 }
 )";
 
 const char* kFragmentShader = R"(#version 450
-layout(set = 0, binding = 1) uniform sampler2D uTex;
-
 layout(location = 0) in vec2 vUV;
+layout(location = 1) in vec3 vNormal;
 layout(location = 0) out vec4 outColor;
 
+layout(set = 0, binding = 0) uniform LitUbo {
+    mat4 mvp;
+    mat4 model;
+    vec4 sunDir;
+    vec4 sunColor;
+    vec4 ambient;
+    vec4 emissive;
+} u;
+
+layout(set = 0, binding = 1) uniform sampler2D uTex;
+
 void main() {
-    outColor = texture(uTex, vUV);
+    vec3 N = normalize(vNormal);
+    vec3 L = -normalize(u.sunDir.xyz);
+    float lambert = max(dot(N, L), 0.0);
+    vec3 lighting = u.sunColor.xyz * lambert + u.ambient.xyz;
+    vec3 diff = texture(uTex, vUV).rgb;
+    vec3 lit = diff * lighting + u.emissive.xyz;
+    outColor = vec4(lit, 1.0);
 }
 )";
 
