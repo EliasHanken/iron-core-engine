@@ -419,6 +419,17 @@ int main(int argc, char** argv) {
         ? renderer.noSpecularTexture()
         : renderer.createTexture(gw, gh, specBytes.data());
 
+    // Wall textures — CC0 brick. M13 fixup: wire diffuse + normal + spec so
+    // walls actually show normal/spec detail on both backends.
+    const std::string brickRoot = iron::executableDir() + "/assets/cc0/brick";
+    const iron::TextureHandle wallDiff   = renderer.loadTexture(brickRoot + "/diffuse.png");
+    const iron::TextureHandle wallNormal = renderer.loadTexture(brickRoot + "/normal.png");
+    int bw = 0, bh = 0;
+    auto wallSpecBytes = iron::loadRoughnessAsSpec(brickRoot + "/roughness.png", bw, bh);
+    const iron::TextureHandle wallSpec = wallSpecBytes.empty()
+        ? renderer.noSpecularTexture()
+        : renderer.createTexture(bw, bh, wallSpecBytes.data());
+
     // Ground mesh (large flat quad)
     iron::MeshData groundData;
     iron::appendQuad(groundData, iron::Vec3{0, 0, 0}, iron::Vec2{40, 40}, iron::Vec3{0, 1, 0});
@@ -1355,10 +1366,11 @@ int main(int argc, char** argv) {
             call.mesh = cubeMesh;
             call.shader = litShader;
             call.model = iron::translation(center) * iron::scaling(size);
-            call.material.texture     = renderer.whiteTexture();
-            call.material.normalMap   = renderer.flatNormalTexture();
-            call.material.specularMap = renderer.noSpecularTexture();
-            call.material.emissive    = iron::Vec3{0.08f, 0.08f, 0.10f};
+            call.material.texture     = wallDiff;
+            call.material.normalMap   = wallNormal;
+            call.material.specularMap = wallSpec;
+            call.material.uvScale     = 0.5f;
+            call.material.emissive    = iron::Vec3{0.0f, 0.0f, 0.0f};
             renderer.submit(call);
         }
 
