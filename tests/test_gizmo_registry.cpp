@@ -118,5 +118,40 @@ int main() {
         }
     }
 
+    // addAabb returns a valid id; tick emits 12 lines (cube edges).
+    {
+        GizmoRegistry g;
+        const GizmoId id = g.addAabb("box", {0,0,0}, {1,1,1}, {1,1,1});
+        CHECK(id != kInvalidGizmo);
+        MockRenderer r;
+        g.tick(0.016f, r);
+        CHECK(r.lines.size() == 12);
+    }
+
+    // updateAabb mutates an existing entry.
+    {
+        GizmoRegistry g;
+        const GizmoId id = g.addAabb("box", {0,0,0}, {1,1,1}, {1,0,0});
+        g.updateAabb(id, {10,10,10}, {11,11,11}, {0,1,0});
+        MockRenderer r;
+        g.tick(0.016f, r);
+        CHECK(r.lines.size() == 12);
+        // All 12 emitted lines should have all coordinates in [10,11].
+        for (const auto& ln : r.lines) {
+            CHECK(ln.a.x >= 10.0f && ln.a.x <= 11.0f);
+            CHECK(ln.color.y == 1.0f);
+        }
+    }
+
+    // addSphere returns a valid id; tick emits 3 * 32 = 96 lines.
+    {
+        GizmoRegistry g;
+        const GizmoId id = g.addSphere("ball", {0,0,0}, 1.0f, {1,1,1});
+        CHECK(id != kInvalidGizmo);
+        MockRenderer r;
+        g.tick(0.016f, r);
+        CHECK(r.lines.size() == 96);
+    }
+
     return iron_test_result();
 }
