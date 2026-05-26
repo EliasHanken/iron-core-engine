@@ -285,15 +285,30 @@ void VulkanRenderer::submit(const DrawCall& call) {
     bufInfo.offset = uboOffset;
     bufInfo.range  = sizeof(ubo);
 
-    const auto& tex = textures_.has(call.material.texture)
+    // M13 — write 4 descriptors per draw: UBO + diffuse + normal + spec.
+    // Fallback textures used for invalid handles.
+    const auto& diffuse = textures_.has(call.material.texture)
         ? textures_.get(call.material.texture)
         : textures_.get(textures_.whiteTexture());
-    VkDescriptorImageInfo imgInfo{};
-    imgInfo.sampler = tex.sampler;
-    imgInfo.imageView = tex.view;
-    imgInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    const auto& normal = textures_.has(call.material.normalMap)
+        ? textures_.get(call.material.normalMap)
+        : textures_.get(textures_.flatNormalTexture());
+    const auto& spec = textures_.has(call.material.specularMap)
+        ? textures_.get(call.material.specularMap)
+        : textures_.get(textures_.noSpecularTexture());
 
-    VkWriteDescriptorSet writes[2]{};
+    VkDescriptorImageInfo imgInfos[3]{};
+    imgInfos[0].sampler     = diffuse.sampler;
+    imgInfos[0].imageView   = diffuse.view;
+    imgInfos[0].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    imgInfos[1].sampler     = normal.sampler;
+    imgInfos[1].imageView   = normal.view;
+    imgInfos[1].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    imgInfos[2].sampler     = spec.sampler;
+    imgInfos[2].imageView   = spec.view;
+    imgInfos[2].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+
+    VkWriteDescriptorSet writes[4]{};
     writes[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
     writes[0].dstSet = set;
     writes[0].dstBinding = 0;
@@ -305,8 +320,20 @@ void VulkanRenderer::submit(const DrawCall& call) {
     writes[1].dstBinding = 1;
     writes[1].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
     writes[1].descriptorCount = 1;
-    writes[1].pImageInfo = &imgInfo;
-    vkUpdateDescriptorSets(context_.device(), 2, writes, 0, nullptr);
+    writes[1].pImageInfo = &imgInfos[0];
+    writes[2].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    writes[2].dstSet = set;
+    writes[2].dstBinding = 2;
+    writes[2].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    writes[2].descriptorCount = 1;
+    writes[2].pImageInfo = &imgInfos[1];
+    writes[3].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    writes[3].dstSet = set;
+    writes[3].dstBinding = 3;
+    writes[3].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    writes[3].descriptorCount = 1;
+    writes[3].pImageInfo = &imgInfos[2];
+    vkUpdateDescriptorSets(context_.device(), 4, writes, 0, nullptr);
 
     vkCmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_GRAPHICS,
                             sh.pipelineLayout, 0, 1, &set, 0, nullptr);

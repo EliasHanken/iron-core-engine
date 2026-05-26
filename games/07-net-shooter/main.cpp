@@ -70,21 +70,30 @@ layout(set = 0, binding = 0) uniform LitUbo {
     vec4 sunColor;
     vec4 ambient;
     vec4 emissive;
+    vec4 cameraPos;
+    vec4 materialParams;
 } u;
 
-layout(location = 0) out vec2 vUV;
+layout(location = 0) out vec3 vWorldPos;
 layout(location = 1) out vec3 vNormal;
+layout(location = 2) out vec3 vTangent;
+layout(location = 3) out vec2 vUV;
 
 void main() {
-    vUV = aUV;
+    vec4 world = u.model * vec4(aPos, 1.0);
+    vWorldPos = world.xyz;
     vNormal = mat3(u.model) * aNormal;
+    vTangent = mat3(u.model) * aTangent;
+    vUV = aUV;
     gl_Position = u.mvp * vec4(aPos, 1.0);
 }
 )";
 
 const char* kFragmentShader = R"(#version 450
-layout(location = 0) in vec2 vUV;
+layout(location = 0) in vec3 vWorldPos;
 layout(location = 1) in vec3 vNormal;
+layout(location = 2) in vec3 vTangent;
+layout(location = 3) in vec2 vUV;
 layout(location = 0) out vec4 outColor;
 
 layout(set = 0, binding = 0) uniform LitUbo {
@@ -94,16 +103,36 @@ layout(set = 0, binding = 0) uniform LitUbo {
     vec4 sunColor;
     vec4 ambient;
     vec4 emissive;
+    vec4 cameraPos;
+    vec4 materialParams;  // x=uvScale, y=specPower, z=reflectivity
 } u;
 
-layout(set = 0, binding = 1) uniform sampler2D uTex;
+layout(set = 0, binding = 1) uniform sampler2D uDiffuse;
+layout(set = 0, binding = 2) uniform sampler2D uNormalMap;
+layout(set = 0, binding = 3) uniform sampler2D uSpecularMap;
 
 void main() {
+    float uvScale   = u.materialParams.x;
+    float specPower = u.materialParams.y;
+    vec2 uv = vUV * uvScale;
+
     vec3 N = normalize(vNormal);
+    vec3 T = normalize(vTangent);
+    vec3 B = cross(N, T);
+    mat3 TBN = mat3(T, B, N);
+    vec3 tangentNormal = texture(uNormalMap, uv).rgb * 2.0 - 1.0;
+    vec3 perturbedN = normalize(TBN * tangentNormal);
+
     vec3 L = -normalize(u.sunDir.xyz);
-    float lambert = max(dot(N, L), 0.0);
-    vec3 lighting = u.sunColor.xyz * lambert + u.ambient.xyz;
-    vec3 diff = texture(uTex, vUV).rgb;
+    vec3 V = normalize(u.cameraPos.xyz - vWorldPos);
+    vec3 H = normalize(L + V);
+
+    float diffuse = max(dot(perturbedN, L), 0.0);
+    float spec    = pow(max(dot(perturbedN, H), 0.0), specPower);
+    float specMask = texture(uSpecularMap, uv).r;
+
+    vec3 lighting = u.sunColor.xyz * (diffuse + spec * specMask) + u.ambient.xyz;
+    vec3 diff = texture(uDiffuse, uv).rgb;
     vec3 lit = diff * lighting + u.emissive.xyz;
     outColor = vec4(lit, 1.0);
 }
@@ -364,10 +393,10 @@ int main(int argc, char** argv) {
     }
 
 #ifdef IRON_RENDER_BACKEND_VULKAN
-    iron::Log::warn("net-shooter Vulkan path: sun + ambient + emissive lit. "
-                    "Still missing point lights, fog, shadows, cubemap "
-                    "reflections, and normal/spec maps. Full parity ships "
-                    "in future milestones.");
+    iron::Log::warn("net-shooter Vulkan path: sun + ambient + emissive "
+                    "+ normal/spec maps (Blinn-Phong) lit. Still missing "
+                    "point lights, fog, shadows, cubemap reflections. "
+                    "Full parity ships in future milestones.");
 #endif
 
     // Skybox
