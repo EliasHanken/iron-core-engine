@@ -72,7 +72,11 @@ layout(set = 0, binding = 0) uniform LitUbo {
     vec4 ambient;
     vec4 emissive;
     vec4 cameraPos;
-    vec4 materialParams;  // x=uvScale, y=specPower, z=reflectivity, w=shadowBias
+    vec4 materialParams;
+    vec4 fogColor;
+    vec4 lightCounts;
+    vec4 pointPositions[16];
+    vec4 pointColors[16];
 } u;
 
 layout(location = 0) out vec3 vWorldPos;
@@ -110,6 +114,10 @@ layout(set = 0, binding = 0) uniform LitUbo {
     vec4 emissive;
     vec4 cameraPos;
     vec4 materialParams;
+    vec4 fogColor;
+    vec4 lightCounts;
+    vec4 pointPositions[16];
+    vec4 pointColors[16];
 } u;
 
 layout(set = 0, binding = 1) uniform sampler2D uDiffuse;
@@ -157,9 +165,32 @@ void main() {
 
     vec3 lighting = u.sunColor.xyz * (diffuse * shadow + spec * specMask * shadow)
                   + u.ambient.xyz;
+
+    // M15 — point lights.
+    int plCount = int(u.lightCounts.x);
+    for (int i = 0; i < plCount; ++i) {
+        vec3 toLight = u.pointPositions[i].xyz - vWorldPos;
+        float dist  = length(toLight);
+        float range = u.pointColors[i].w;
+        if (dist < 0.0001 || dist >= range) continue;
+        vec3 Lp = toLight / dist;
+        float falloff   = 1.0 - smoothstep(0.0, range, dist);
+        float intensity = u.pointPositions[i].w;
+        float diffusePL = max(dot(perturbedN, Lp), 0.0);
+        vec3  Hp        = normalize(Lp + V);
+        float specPL    = pow(max(dot(perturbedN, Hp), 0.0), specPower);
+        lighting += u.pointColors[i].xyz * intensity * falloff
+                  * (diffusePL + specPL * specMask);
+    }
+
     vec3 diff = texture(uDiffuse, uv).rgb;
     vec3 lit = diff * lighting + u.emissive.xyz;
-    outColor = vec4(lit, 1.0);
+
+    // M15 — fog. Zero density = no-op.
+    float distFromCamera = length(u.cameraPos.xyz - vWorldPos);
+    float fogFactor = 1.0 - exp(-u.fogColor.w * distFromCamera);
+    vec3 finalColor = mix(lit, u.fogColor.xyz, clamp(fogFactor, 0.0, 1.0));
+    outColor = vec4(finalColor, 1.0);
 }
 )";
 
@@ -419,9 +450,9 @@ int main(int argc, char** argv) {
 
 #ifdef IRON_RENDER_BACKEND_VULKAN
     iron::Log::warn("net-shooter Vulkan path: sun + ambient + emissive "
-                    "+ normal/spec + shadow map (Blinn-Phong, 3x3 PCF) lit. "
-                    "Still missing point lights, fog, cubemap reflections. "
-                    "Full parity ships in future milestones.");
+                    "+ normal/spec + shadow + point lights + fog "
+                    "(Blinn-Phong, 3x3 PCF) lit. Still missing cubemap "
+                    "reflections. Full parity ships in future milestones.");
 #endif
 
     // Skybox
