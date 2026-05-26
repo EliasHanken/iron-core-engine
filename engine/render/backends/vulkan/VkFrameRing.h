@@ -12,7 +12,7 @@ class VkContext;
 class VkFrameRing {
 public:
     static constexpr int kFramesInFlight = 2;
-    static constexpr int kMaxDescriptorSetsPerFrame = 128;
+    static constexpr int kMaxDescriptorSetsPerFrame = 256;
     static constexpr VkDeviceSize kUboBytesPerFrame    = 256 * 1024;  // 256 KB
     static constexpr VkDeviceSize kVertexBytesPerFrame = 1024 * 1024;  // 1 MB
 

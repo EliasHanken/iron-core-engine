@@ -9,9 +9,11 @@
 #include "render/backends/vulkan/VkSwapchain.h"
 #include "render/backends/vulkan/VkDebugLines.h"
 #include "render/backends/vulkan/VkHud.h"
+#include "render/backends/vulkan/VkShadowMap.h"
 #include "render/backends/vulkan/VkTexture.h"
 
 #include <cstdint>
+#include <functional>
 #include <string>
 #include <unordered_set>
 #include <vector>
@@ -95,9 +97,21 @@ public:
     // their draws go into the same framebuffer.
     VkRenderPass scenePass() const;
 
+    // Engine-internal: external Vulkan subsystems register a deferred
+    // render callback. Fires inside the scene render pass during endFrame,
+    // after the geometry replay and before debug-lines + HUD.
+    //
+    // LIFETIME: the callback may capture this/other-state by reference or
+    // raw pointer. The caller MUST guarantee that any captured objects
+    // outlive the matching endFrame() call. The deferred queue is cleared
+    // at every beginFrame() — captures only need to survive until endFrame
+    // of the SAME frame.
+    void enqueueDeferredScenePass(std::function<void(VkCommandBuffer)> fn);
+
 private:
     void warnOnce(const char* feature);
     bool recreateSwapchainAndFramebuffers(int width, int height);
+    void recordSceneDraw(VkCommandBuffer cb, const DrawCall& call);
 
     bool initOk_ = false;
     std::unordered_set<std::string> warnedFeatures_;
@@ -129,6 +143,26 @@ private:
     // M13 — camera world position, extracted from view matrix at beginFrame.
     // Used by submit() for Blinn-Phong specular highlights in the lit shader.
     Vec3 pendingCameraPos_ = {0.0f, 0.0f, 0.0f};
+
+    // M14 — directional-light shadow state.
+    Vec3  pendingShadowCenter_  = {0.0f, 0.0f, 0.0f};
+    float pendingShadowRadius_  = 20.0f;
+    float pendingShadowBias_    = 0.002f;
+    Mat4  pendingLightViewProj_ = Mat4::identity();
+    VkShadowMap shadowMap_;
+
+    // M14 — frame-flow state for defer-and-replay rendering.
+    std::vector<DrawCall> sceneDraws_;
+    std::vector<std::function<void(VkCommandBuffer)>> deferredScenePass_;
+
+    Mat4 pendingDebugView_       = Mat4::identity();
+    Mat4 pendingDebugProj_       = Mat4::identity();
+    bool pendingDebugFlush_      = false;
+
+    HudBatch pendingHudBatch_{};
+    int      pendingHudW_      = 0;
+    int      pendingHudH_      = 0;
+    bool     pendingHudValid_  = false;
 
     // Swapchain image index acquired in beginFrame, used in endFrame.
     std::uint32_t currentImageIndex_ = 0;

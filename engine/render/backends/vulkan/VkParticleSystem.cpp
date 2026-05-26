@@ -598,10 +598,19 @@ bool VkParticleSystem::initRender() {
     return renderPipeline_ != VK_NULL_HANDLE;
 }
 
+// `render` registers a deferred callback that fires inside the scene
+// render pass during VulkanRenderer::endFrame. The lambda captures `this`
+// raw — callers MUST keep the particle system alive until endFrame of the
+// SAME frame returns. (Destroying mid-frame would dangle.)
 void VkParticleSystem::render(const Mat4& view, const Mat4& projection) {
-    VkCommandBuffer cb = renderer_->currentCommandBuffer();
-    if (cb == VK_NULL_HANDLE) return;  // host renderer skipped this frame (e.g., resize)
+    renderer_->enqueueDeferredScenePass(
+        [this, view, projection](VkCommandBuffer cb) {
+            recordRender(cb, view, projection);
+        });
+}
 
+void VkParticleSystem::recordRender(VkCommandBuffer cb, const Mat4& view,
+                                     const Mat4& projection) {
     VkContext& ctx = renderer_->context();
     VkFrameRing::Frame& frame = renderer_->frameRing().current();
 

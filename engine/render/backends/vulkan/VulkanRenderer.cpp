@@ -6,8 +6,10 @@
 #include "render/backends/vulkan/VkUtils.h"
 #include "core/Log.h"
 #include "core/Window.h"
+#include "math/Transform.h"
 
 #include <vulkan/vulkan.h>
+#include <cmath>
 
 namespace iron {
 
@@ -20,6 +22,7 @@ VulkanRenderer::~VulkanRenderer() {
         textures_.destroyAll(context_);
         shaders_.destroyAll(context_);
         hud_.destroy(context_);
+        shadowMap_.destroy(context_);
         debugLines_.destroy(context_);
         pipelines_.destroy(context_);
         frames_.destroy(context_);
@@ -47,6 +50,10 @@ bool VulkanRenderer::init(Window& window) {
     }
     if (!textures_.init(context_)) {
         Log::error("VulkanRenderer: VkTextureStore init failed");
+        return false;
+    }
+    if (!shadowMap_.init(context_)) {
+        Log::error("VulkanRenderer: VkShadowMap init failed");
         return false;
     }
     if (!debugLines_.init(context_, scenePass())) {
@@ -99,7 +106,10 @@ CubemapHandle VulkanRenderer::createCubemap(int, int,
     return kInvalidHandle;
 }
 void VulkanRenderer::setSkybox(CubemapHandle) { warnOnce("setSkybox"); }
-void VulkanRenderer::setShadowBounds(Vec3, float) { warnOnce("setShadowBounds"); }
+void VulkanRenderer::setShadowBounds(Vec3 center, float radius) {
+    pendingShadowCenter_ = center;
+    pendingShadowRadius_ = radius;
+}
 void VulkanRenderer::setReflectionPlane(Vec3, float) { warnOnce("setReflectionPlane"); }
 void VulkanRenderer::disableReflectionPlane() { warnOnce("disableReflectionPlane"); }
 void VulkanRenderer::drawLine(Vec3 a, Vec3 b, Vec3 color) {
@@ -107,34 +117,38 @@ void VulkanRenderer::drawLine(Vec3 a, Vec3 b, Vec3 color) {
 }
 
 void VulkanRenderer::flushDebugLines(const Mat4& view, const Mat4& projection) {
-    const VkCommandBuffer cb = currentCommandBuffer();
-    if (cb == VK_NULL_HANDLE) return;  // skipped frame
-    debugLines_.record(cb, context_.device(), frames_, view, projection);
+    if (skipFrame_) return;
+    pendingDebugView_  = view;
+    pendingDebugProj_  = projection;
+    pendingDebugFlush_ = true;
 }
 void VulkanRenderer::drawHud(const HudBatch& batch, int fbW, int fbH) {
-    const VkCommandBuffer cb = currentCommandBuffer();
-    if (cb == VK_NULL_HANDLE) return;
-    hud_.record(cb, context_.device(), frames_, textures_, batch, fbW, fbH);
+    if (skipFrame_) return;
+    pendingHudBatch_ = batch;
+    pendingHudW_     = fbW;
+    pendingHudH_     = fbH;
+    pendingHudValid_ = true;
 }
 
 // --- per-frame (real) ---
 
 namespace {
 
-// M12+M13 — per-draw UBO uploaded by submit. std140 layout: all members
+// M12+M13+M14 — per-draw UBO uploaded by submit. std140 layout: all members
 // are mat4 (64-byte aligned) or vec4 (16-byte aligned), so no
-// straddling. Total 224 bytes.
+// straddling. Total 288 bytes.
 struct LitUbo {
-    Mat4 mvp;             // 64 — projection * view * model
-    Mat4 model;           // 64 — for mat3(model) transforms in the vertex shader
-    Vec4 sunDir;          // 16 — xyz direction; w padding
-    Vec4 sunColor;        // 16 — xyz color; w padding
-    Vec4 ambient;         // 16 — xyz pre-multiplied ambient color; w padding
-    Vec4 emissive;        // 16 — xyz from call.material.emissive; w padding
-    Vec4 cameraPos;       // 16 — xyz world-space camera; w padding (M13)
-    Vec4 materialParams;  // 16 — x=uvScale, y=specPower, z=reflectivity, w=padding (M13)
+    Mat4 mvp;             // 64
+    Mat4 model;           // 64
+    Mat4 lightViewProj;   // 64  M14
+    Vec4 sunDir;          // 16
+    Vec4 sunColor;        // 16
+    Vec4 ambient;         // 16
+    Vec4 emissive;        // 16
+    Vec4 cameraPos;       // 16
+    Vec4 materialParams;  // 16  x=uvScale, y=specPower, z=reflectivity, w=shadowBias (M14)
 };
-static_assert(sizeof(LitUbo) == 224, "LitUbo std140 layout");
+static_assert(sizeof(LitUbo) == 288, "LitUbo std140 layout");
 
 // Extracts the camera's world-space position from a view matrix.
 // Assumes view is a pure rigid transform [R | t; 0 0 0 1] (rotation +
@@ -150,6 +164,27 @@ Vec3 extractCameraPos(const Mat4& view) {
         -(view.at(0, 1) * tx + view.at(1, 1) * ty + view.at(2, 1) * tz),
         -(view.at(0, 2) * tx + view.at(1, 2) * ty + view.at(2, 2) * tz),
     };
+}
+
+// Builds the directional light's orthographic view-projection matrix.
+// `dir` is the sun direction (engine convention: direction the light
+// travels). Eye = center - dir * 2r so the camera sits behind the scene
+// relative to the sun. Matches the OpenGL backend's computeLightViewProj.
+Mat4 computeLightViewProj(Vec3 dir, Vec3 center, float radius) {
+    const Vec3 dn = normalize(dir);
+    const Vec3 up = (std::fabs(dn.y) > 0.99f)
+        ? Vec3{0.0f, 0.0f, 1.0f}
+        : Vec3{0.0f, 1.0f, 0.0f};
+    const Vec3 eye{
+        center.x - dn.x * (radius * 2.0f),
+        center.y - dn.y * (radius * 2.0f),
+        center.z - dn.z * (radius * 2.0f),
+    };
+    const Mat4 view = lookAt(eye, center, up);
+    const Mat4 proj = orthographic(-radius, radius,
+                                   -radius, radius,
+                                   radius * 0.5f, radius * 3.5f);
+    return proj * view;
 }
 
 // Set viewport + scissor on the active command buffer. Vulkan clip-Y points
@@ -182,6 +217,8 @@ void VulkanRenderer::beginFrame(Vec3 clearColor, const DirectionalLight& light,
                               light.ambient * light.color.y,
                               light.ambient * light.color.z};
     pendingCameraPos_ = extractCameraPos(view);
+    pendingLightViewProj_ = computeLightViewProj(
+        pendingSunDir_, pendingShadowCenter_, pendingShadowRadius_);
     skipFrame_         = false;
 
     if (pendingResize_) {
@@ -213,37 +250,28 @@ void VulkanRenderer::beginFrame(Vec3 clearColor, const DirectionalLight& light,
         return;
     }
 
-    // Begin recording IMMEDIATELY so external subsystems (iron::ParticleSystem,
-    // future GPU helpers) can record draws between begin/endFrame. Closes in
-    // endFrame.
+    // Begin recording. Render pass and draw replay happen in endFrame.
     VkCommandBuffer cb = f.commandBuffer;
     VkCommandBufferBeginInfo begin{};
     begin.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
     begin.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
     VK_CHECK(vkBeginCommandBuffer(cb, &begin));
 
-    VkClearValue clears[2]{};
-    clears[0].color = {{pendingClear_.x, pendingClear_.y, pendingClear_.z, 1.0f}};
-    clears[1].depthStencil = {1.0f, 0};
-
-    VkRenderPassBeginInfo rpBegin{};
-    rpBegin.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
-    rpBegin.renderPass = pipelines_.renderPass();
-    rpBegin.framebuffer = pipelines_.framebuffer(currentImageIndex_);
-    rpBegin.renderArea = {{0, 0}, swapchain_.extent()};
-    rpBegin.clearValueCount = 2;
-    rpBegin.pClearValues = clears;
-    vkCmdBeginRenderPass(cb, &rpBegin, VK_SUBPASS_CONTENTS_INLINE);
-
-    setSceneViewport(cb, swapchain_.extent());
+    sceneDraws_.clear();
+    deferredScenePass_.clear();
+    pendingDebugFlush_ = false;
+    pendingHudValid_   = false;
 }
 
 void VulkanRenderer::submit(const DrawCall& call) {
     if (skipFrame_) return;
+    sceneDraws_.push_back(call);
+}
+
+void VulkanRenderer::recordSceneDraw(VkCommandBuffer cb, const DrawCall& call) {
     if (!meshes_.has(call.mesh) || !shaders_.has(call.shader)) return;
 
     VkFrameRing::Frame& f = frames_.current();
-    VkCommandBuffer cb = f.commandBuffer;
 
     LitUbo ubo;
     ubo.mvp      = pendingProjection_ * pendingView_ * call.model;
@@ -255,6 +283,7 @@ void VulkanRenderer::submit(const DrawCall& call) {
                         call.material.emissive.y,
                         call.material.emissive.z,
                         0.0f};
+    ubo.lightViewProj = pendingLightViewProj_;
     ubo.cameraPos = Vec4{pendingCameraPos_.x,
                          pendingCameraPos_.y,
                          pendingCameraPos_.z,
@@ -263,7 +292,7 @@ void VulkanRenderer::submit(const DrawCall& call) {
         call.material.uvScale,
         call.material.specPower,
         call.material.reflectivity,
-        0.0f
+        pendingShadowBias_,
     };
 
     const VkShader& sh = shaders_.get(call.shader);
@@ -297,7 +326,7 @@ void VulkanRenderer::submit(const DrawCall& call) {
         ? textures_.get(call.material.specularMap)
         : textures_.get(textures_.noSpecularTexture());
 
-    VkDescriptorImageInfo imgInfos[3]{};
+    VkDescriptorImageInfo imgInfos[4]{};
     imgInfos[0].sampler     = diffuse.sampler;
     imgInfos[0].imageView   = diffuse.view;
     imgInfos[0].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
@@ -307,8 +336,11 @@ void VulkanRenderer::submit(const DrawCall& call) {
     imgInfos[2].sampler     = spec.sampler;
     imgInfos[2].imageView   = spec.view;
     imgInfos[2].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    imgInfos[3].sampler     = shadowMap_.sampler();
+    imgInfos[3].imageView   = shadowMap_.depthView();
+    imgInfos[3].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 
-    VkWriteDescriptorSet writes[4]{};
+    VkWriteDescriptorSet writes[5]{};
     writes[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
     writes[0].dstSet = set;
     writes[0].dstBinding = 0;
@@ -333,7 +365,13 @@ void VulkanRenderer::submit(const DrawCall& call) {
     writes[3].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
     writes[3].descriptorCount = 1;
     writes[3].pImageInfo = &imgInfos[2];
-    vkUpdateDescriptorSets(context_.device(), 4, writes, 0, nullptr);
+    writes[4].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    writes[4].dstSet = set;
+    writes[4].dstBinding = 4;
+    writes[4].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    writes[4].descriptorCount = 1;
+    writes[4].pImageInfo = &imgInfos[3];
+    vkUpdateDescriptorSets(context_.device(), 5, writes, 0, nullptr);
 
     vkCmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_GRAPHICS,
                             sh.pipelineLayout, 0, 1, &set, 0, nullptr);
@@ -354,7 +392,53 @@ void VulkanRenderer::endFrame() {
     VkFrameRing::Frame& f = frames_.current();
     VkCommandBuffer cb = f.commandBuffer;
 
-    vkCmdEndRenderPass(cb);
+    // --- Pass 1: shadow ---
+    shadowMap_.record(cb, context_.device(), frames_, meshes_,
+                     pendingLightViewProj_, sceneDraws_);
+
+    // --- Scene pass ---
+    {
+        VkClearValue clears[2]{};
+        clears[0].color.float32[0] = pendingClear_.x;
+        clears[0].color.float32[1] = pendingClear_.y;
+        clears[0].color.float32[2] = pendingClear_.z;
+        clears[0].color.float32[3] = 1.0f;
+        clears[1].depthStencil = {1.0f, 0};
+
+        VkRenderPassBeginInfo rpBegin{};
+        rpBegin.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
+        rpBegin.renderPass = pipelines_.renderPass();
+        rpBegin.framebuffer = pipelines_.framebuffer(currentImageIndex_);
+        rpBegin.renderArea.offset = {0, 0};
+        rpBegin.renderArea.extent = swapchain_.extent();
+        rpBegin.clearValueCount = 2;
+        rpBegin.pClearValues = clears;
+        vkCmdBeginRenderPass(cb, &rpBegin, VK_SUBPASS_CONTENTS_INLINE);
+        setSceneViewport(cb, swapchain_.extent());
+
+        for (const DrawCall& call : sceneDraws_) {
+            recordSceneDraw(cb, call);
+        }
+
+        for (auto& fn : deferredScenePass_) {
+            fn(cb);
+        }
+        deferredScenePass_.clear();
+
+        if (pendingDebugFlush_) {
+            debugLines_.record(cb, context_.device(), frames_,
+                               pendingDebugView_, pendingDebugProj_);
+            pendingDebugFlush_ = false;
+        }
+        if (pendingHudValid_) {
+            hud_.record(cb, context_.device(), frames_, textures_,
+                        pendingHudBatch_, pendingHudW_, pendingHudH_);
+            pendingHudValid_ = false;
+        }
+
+        vkCmdEndRenderPass(cb);
+    }
+
     VK_CHECK(vkEndCommandBuffer(cb));
 
     const VkPipelineStageFlags waitStages[] =
@@ -413,6 +497,12 @@ VkContext& VulkanRenderer::context() { return context_; }
 
 VkRenderPass VulkanRenderer::scenePass() const {
     return pipelines_.renderPass();
+}
+
+void VulkanRenderer::enqueueDeferredScenePass(
+        std::function<void(VkCommandBuffer)> fn) {
+    if (skipFrame_) return;
+    deferredScenePass_.push_back(std::move(fn));
 }
 
 }  // namespace iron

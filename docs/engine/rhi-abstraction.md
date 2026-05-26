@@ -396,3 +396,105 @@ These need either UBO fields or whole new passes:
 
 After M14-M17 land, the Vulkan backend reaches full parity with the
 OpenGL lit pass.
+
+## Vulkan shadow map + frame-flow restructure (M14)
+
+The Vulkan backend's first multi-pass rendering feature, plus a
+foundational restructure of the per-frame flow to make multi-pass
+rendering practical going forward.
+
+### Frame-flow restructure: defer + replay
+
+`VulkanRenderer::submit` no longer records into the active command
+buffer. It queues into a `std::vector<DrawCall> sceneDraws_`.
+External Vulkan subsystems (`VkParticleSystem::render`) register
+deferred render callbacks via a new
+`VulkanRenderer::enqueueDeferredScenePass` API.
+`flushDebugLines` and `drawHud` also defer (HUD already did on
+OpenGL). `endFrame` orchestrates the entire pass sequence:
+
+```
+endFrame:
+  1. Shadow pass (VkShadowMap::record)
+       — depth-only render pass, replays sceneDraws_, ends with
+         image in SHADER_READ_ONLY_OPTIMAL
+  2. Scene render pass
+       — replays sceneDraws_ via recordSceneDraw (writes 5
+         descriptors per draw including binding 4 = shadow sampler)
+       — drains deferredScenePass_ callbacks (particles)
+       — drains pending debug-lines if any
+       — drains pending HUD if any
+  3. End cmd buffer + submit + present
+```
+
+Deferred callbacks capture pointers by raw `this` — callers must
+guarantee the captured object outlives the matching `endFrame()`
+call (the queue is cleared each `beginFrame`).
+
+### VkShadowMap subsystem
+
+`engine/render/backends/vulkan/VkShadowMap.cpp` owns a 2048×2048
+D32_SFLOAT depth image, a depth-only render pass with two subpass
+dependencies (entry + exit) for race-free sampling, a framebuffer,
+a depth-only graphics pipeline (back-face cull to reduce
+peter-panning, no color attachments), and a sampler with NEAREST
+filter + CLAMP_TO_BORDER + `VK_BORDER_COLOR_FLOAT_OPAQUE_WHITE`
+(matches the OpenGL "out-of-bounds = lit" convention).
+
+### LitUbo grew to 288 bytes
+
+```cpp
+struct LitUbo {
+    Mat4 mvp;
+    Mat4 model;
+    Mat4 lightViewProj;   // M14 — for shadow map sampling
+    Vec4 sunDir;
+    Vec4 sunColor;
+    Vec4 ambient;
+    Vec4 emissive;
+    Vec4 cameraPos;
+    Vec4 materialParams;  // x=uvScale, y=specPower, z=reflectivity,
+                          // w=shadowBias (M14 repurposes padding)
+};
+```
+
+`VulkanRenderer::beginFrame` computes `pendingLightViewProj_` from
+`pendingSunDir_ + pendingShadowCenter_ + pendingShadowRadius_` using
+the same orthographic-from-sphere math the OpenGL backend uses
+(`computeLightViewProj` helper). `VulkanRenderer::setShadowBounds`
+(was a stub since M9) now stores the center + radius for the next
+frame.
+
+### Descriptor set layout: 5 bindings
+
+| Binding | Type | Stage | Purpose |
+|---|---|---|---|
+| 0 | UNIFORM_BUFFER | VS+FS | LitUbo |
+| 1 | COMBINED_IMAGE_SAMPLER | FS | Diffuse |
+| 2 | COMBINED_IMAGE_SAMPLER | FS | Normal |
+| 3 | COMBINED_IMAGE_SAMPLER | FS | Specular |
+| 4 | COMBINED_IMAGE_SAMPLER | FS | Shadow (M14) |
+
+`VkFrameRing` per-frame descriptor pool budget doubled from 128 to
+256 sets/frame to accommodate the shadow+scene draw doubling.
+COMBINED_IMAGE_SAMPLER capacity = `4 * kMaxDescriptorSetsPerFrame`
+(= 1024 / frame).
+
+### Shader-side PCF sampling
+
+Vertex shader emits `vLightSpacePos = u.lightViewProj * world`.
+Fragment shader's `shadowFactor()` helper does 3×3 PCF:
+remap clip-space XY to UV via `proj.xy * 0.5 + 0.5` (Vulkan clip-Z
+is already [0,1] — no remap needed there, unlike OpenGL), then for
+each of 9 texel offsets sample the shadow map and compare to
+`proj.z - bias`. Average of 9 samples = soft-edged shadow factor.
+
+### What's still missing
+
+- Point lights (16-array with range falloff) — M15.
+- Exponential distance fog — M15.
+- Cubemap skybox + cubemap-based reflection — M16.
+- Planar reflection — M17.
+
+After M15-M17 land, the Vulkan backend reaches full parity with the
+OpenGL lit pass.
