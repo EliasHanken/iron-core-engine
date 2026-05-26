@@ -288,3 +288,48 @@ host adds/updates an AABB per peer in `authStates` each frame and
 removes them when peers disconnect. Both host and client add a
 0.4-second splash sphere at rocket detonation sites (matching the
 existing `ExplosionFx` lifetime).
+
+## Vulkan lit shader basics (M12)
+
+The Vulkan backend's per-draw UBO grew from a bare `mat4 mvp` to a
+`LitUbo` struct (192 bytes, std140-safe):
+
+```cpp
+struct LitUbo {
+    Mat4 mvp;        // projection * view * model
+    Mat4 model;      // for mat3(model) * aNormal in the vertex shader
+    Vec4 sunDir;     // xyz direction; w padding
+    Vec4 sunColor;   // xyz color; w padding
+    Vec4 ambient;    // xyz pre-multiplied ambient color; w padding
+    Vec4 emissive;   // xyz from call.material.emissive; w padding
+};
+```
+
+`VulkanRenderer::beginFrame` stores the directional light + ambient
+from its args; `VulkanRenderer::submit` packs everything into
+`LitUbo` and uploads via `VkFrameRing::allocateUbo`. The descriptor
+set layout (set=0 binding=0 = UBO, binding=1 = combined image
+sampler) is unchanged — only the UBO contents grew.
+
+Vulkan shaders in `games/01-spinning-cube/main.cpp` and
+`games/07-net-shooter/main.cpp` were rewritten to consume `LitUbo`
+and perform Lambertian shading: `dot(N, -sunDir) * sunColor +
+ambient`, multiplied by the diffuse texture sample, plus the
+per-draw emissive.
+
+### What's still missing on the Vulkan lit path
+
+These all need additional UBO fields and either pipeline state
+(LEQUAL depth compare, extra subpasses) or whole new passes
+(shadow depth, cubemap, reflection RTT):
+
+- Point lights (16-array with range falloff).
+- Exponential distance fog.
+- Shadow map sampling (needs the depth-pass port).
+- Cubemap skybox + cubemap-based reflection sampling.
+- Planar reflection sampling (needs RTT pipeline).
+- Normal maps + specular maps + TBN math.
+- Per-DrawCall UV scale (`call.material.uvScale`).
+
+Net-shooter's Vulkan-startup warning enumerates the gaps so the user
+knows what to expect.
