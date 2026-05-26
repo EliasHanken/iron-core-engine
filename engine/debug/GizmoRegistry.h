@@ -43,6 +43,9 @@ public:
 
     void remove(GizmoId id);
     void clearCategory(std::string_view category);
+    // Removes every entry. Note: category registrations + their enabled
+    // flags persist for the registry's lifetime, so dynamic-string
+    // category names will accumulate. Use named static categories.
     void clearAll();
 
     // Per frame: advance expiries, then emit drawLine for everything in

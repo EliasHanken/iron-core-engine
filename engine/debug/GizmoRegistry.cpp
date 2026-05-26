@@ -37,6 +37,7 @@ GizmoId GizmoRegistry::addLine(std::string_view category, Vec3 a, Vec3 b,
     e.b = b;
     e.color = color;
     e.lifetimeRemaining = (lifetimeSec > 0.0f) ? lifetimeSec : -1.0f;
+    if (nextId_ == 0) nextId_ = 1;  // skip kInvalidGizmo on wrap
     const GizmoId id = nextId_++;
     entries_.emplace(id, e);
     return id;
@@ -79,7 +80,8 @@ void GizmoRegistry::clearAll() {
     entries_.clear();
 }
 
-void GizmoRegistry::tick(float, Renderer& renderer) {
+void GizmoRegistry::tick(float dt, Renderer& renderer) {
+    (void)dt;  // TODO M11 Task 4: decrement entry.lifetimeRemaining + erase expired
     if (!masterEnabled_) return;
     for (const auto& [id, e] : entries_) {
         if (e.categoryId < categoryEnabled_.size() &&
