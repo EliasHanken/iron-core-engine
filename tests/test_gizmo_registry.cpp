@@ -93,5 +93,30 @@ int main() {
         CHECK(g.isEnabled("x"));
     }
 
+    // lifetimeSec = 0.5 entry survives tick(0.4) and is removed by tick(0.2).
+    {
+        GizmoRegistry g;
+        g.addLine("t", {0,0,0}, {1,0,0}, {1,1,1}, /*lifetime=*/0.5f);
+
+        MockRenderer r1;
+        g.tick(0.4f, r1);
+        CHECK(r1.lines.size() == 1);
+
+        MockRenderer r2;
+        g.tick(0.2f, r2);  // 0.5 - 0.4 - 0.2 = -0.1, expired
+        CHECK(r2.lines.size() == 0);
+    }
+
+    // Persistent entries (lifetimeSec = 0) never expire.
+    {
+        GizmoRegistry g;
+        g.addLine("t", {0,0,0}, {1,0,0}, {1,1,1});  // default lifetime
+        for (int i = 0; i < 100; ++i) {
+            MockRenderer r;
+            g.tick(1.0f, r);
+            CHECK(r.lines.size() == 1);
+        }
+    }
+
     return iron_test_result();
 }

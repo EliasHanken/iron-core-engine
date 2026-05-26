@@ -81,7 +81,20 @@ void GizmoRegistry::clearAll() {
 }
 
 void GizmoRegistry::tick(float dt, Renderer& renderer) {
-    (void)dt;  // TODO M11 Task 4: decrement entry.lifetimeRemaining + erase expired
+    // Advance expiries; remove anything that's now < 0 if it was a
+    // finite-lifetime entry.
+    for (auto it = entries_.begin(); it != entries_.end(); ) {
+        Entry& e = it->second;
+        if (e.lifetimeRemaining >= 0.0f) {
+            e.lifetimeRemaining -= dt;
+            if (e.lifetimeRemaining < 0.0f) {
+                it = entries_.erase(it);
+                continue;
+            }
+        }
+        ++it;
+    }
+
     if (!masterEnabled_) return;
     for (const auto& [id, e] : entries_) {
         if (e.categoryId < categoryEnabled_.size() &&
