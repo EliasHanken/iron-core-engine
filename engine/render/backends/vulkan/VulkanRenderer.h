@@ -99,6 +99,12 @@ public:
     // Engine-internal: external Vulkan subsystems register a deferred
     // render callback. Fires inside the scene render pass during endFrame,
     // after the geometry replay and before debug-lines + HUD.
+    //
+    // LIFETIME: the callback may capture this/other-state by reference or
+    // raw pointer. The caller MUST guarantee that any captured objects
+    // outlive the matching endFrame() call. The deferred queue is cleared
+    // at every beginFrame() — captures only need to survive until endFrame
+    // of the SAME frame.
     void enqueueDeferredScenePass(std::function<void(VkCommandBuffer)> fn);
 
 private:
