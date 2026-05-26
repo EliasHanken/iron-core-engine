@@ -121,18 +121,36 @@ void VulkanRenderer::drawHud(const HudBatch& batch, int fbW, int fbH) {
 
 namespace {
 
-// M12 — per-draw UBO uploaded by submit. std140 layout: all members
+// M12+M13 — per-draw UBO uploaded by submit. std140 layout: all members
 // are mat4 (64-byte aligned) or vec4 (16-byte aligned), so no
-// straddling. Total 192 bytes.
+// straddling. Total 224 bytes.
 struct LitUbo {
-    Mat4 mvp;        // 64 — projection * view * model
-    Mat4 model;      // 64 — for mat3(model) * aNormal in the vertex shader
-    Vec4 sunDir;     // 16 — xyz direction; w padding
-    Vec4 sunColor;   // 16 — xyz color; w padding
-    Vec4 ambient;    // 16 — xyz color (pre-multiplied); w padding
-    Vec4 emissive;   // 16 — xyz color (from call.material.emissive); w padding
+    Mat4 mvp;             // 64 — projection * view * model
+    Mat4 model;           // 64 — for mat3(model) transforms in the vertex shader
+    Vec4 sunDir;          // 16 — xyz direction; w padding
+    Vec4 sunColor;        // 16 — xyz color; w padding
+    Vec4 ambient;         // 16 — xyz pre-multiplied ambient color; w padding
+    Vec4 emissive;        // 16 — xyz from call.material.emissive; w padding
+    Vec4 cameraPos;       // 16 — xyz world-space camera; w padding (M13)
+    Vec4 materialParams;  // 16 — x=uvScale, y=specPower, z=reflectivity, w=padding (M13)
 };
-static_assert(sizeof(LitUbo) == 192, "LitUbo std140 layout");
+static_assert(sizeof(LitUbo) == 224, "LitUbo std140 layout");
+
+// Extracts the camera's world-space position from a view matrix.
+// Assumes view is a pure rigid transform [R | t; 0 0 0 1] (rotation +
+// translation, no scale) — true for all engine cameras (lookAt /
+// first-person / free-fly). For column-major Mat4 storage where
+// m[col*4+row] = at(row, col), the camera world position is -R^T * t.
+Vec3 extractCameraPos(const Mat4& view) {
+    const float tx = view.at(0, 3);
+    const float ty = view.at(1, 3);
+    const float tz = view.at(2, 3);
+    return Vec3{
+        -(view.at(0, 0) * tx + view.at(1, 0) * ty + view.at(2, 0) * tz),
+        -(view.at(0, 1) * tx + view.at(1, 1) * ty + view.at(2, 1) * tz),
+        -(view.at(0, 2) * tx + view.at(1, 2) * ty + view.at(2, 2) * tz),
+    };
+}
 
 // Set viewport + scissor on the active command buffer. Vulkan clip-Y points
 // DOWN (opposite OpenGL); negative-height + bottom-origin viewport flips it
@@ -163,6 +181,7 @@ void VulkanRenderer::beginFrame(Vec3 clearColor, const DirectionalLight& light,
     pendingAmbient_    = Vec3{light.ambient * light.color.x,
                               light.ambient * light.color.y,
                               light.ambient * light.color.z};
+    pendingCameraPos_ = extractCameraPos(view);
     skipFrame_         = false;
 
     if (pendingResize_) {
@@ -236,6 +255,16 @@ void VulkanRenderer::submit(const DrawCall& call) {
                         call.material.emissive.y,
                         call.material.emissive.z,
                         0.0f};
+    ubo.cameraPos = Vec4{pendingCameraPos_.x,
+                         pendingCameraPos_.y,
+                         pendingCameraPos_.z,
+                         0.0f};
+    ubo.materialParams = Vec4{
+        call.material.uvScale,
+        call.material.specPower,
+        call.material.reflectivity,
+        0.0f
+    };
 
     const VkShader& sh = shaders_.get(call.shader);
     ::VkPipeline pipe = pipelines_.pipelineFor(context_, swapchain_, sh);
