@@ -5,6 +5,7 @@
 #include "render/backends/vulkan/VkContext.h"
 #include "render/backends/vulkan/VkUtils.h"
 
+#include <cassert>
 #include <cstring>
 
 namespace iron {
@@ -120,6 +121,7 @@ void VkFrameRing::resetCurrentFrame(VkContext& ctx) {
 }
 
 VkDeviceSize VkFrameRing::allocateUbo(const void* data, VkDeviceSize size) {
+    assert(size > 0 && size <= kUboBytesPerFrame && data != nullptr);
     // Align to 256 bytes (matches typical minUniformBufferOffsetAlignment;
     // safe upper bound — we can tune per-device later.)
     constexpr VkDeviceSize kAlign = 256;
@@ -134,6 +136,10 @@ VkBuffer VkFrameRing::allocateVertices(const void* data, VkDeviceSize size,
                                        VkDeviceSize& outOffset) {
     constexpr VkDeviceSize kAlign = 16;
     Frame& f = current();
+    if (size == 0 || size > kVertexBytesPerFrame || data == nullptr) {
+        outOffset = 0;
+        return VK_NULL_HANDLE;
+    }
     const VkDeviceSize aligned = (f.vertexCursor + kAlign - 1) & ~(kAlign - 1);
     if (aligned + size > kVertexBytesPerFrame) {
         outOffset = 0;
