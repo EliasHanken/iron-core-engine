@@ -8,6 +8,7 @@
 #include "render/backends/vulkan/VkShader.h"
 #include "render/backends/vulkan/VkSwapchain.h"
 #include "render/backends/vulkan/VkDebugLines.h"
+#include "render/backends/vulkan/VkHud.h"
 #include "render/backends/vulkan/VkTexture.h"
 
 #include <cstdint>
@@ -109,6 +110,7 @@ private:
     VkTextureStore  textures_;
     VkShaderStore   shaders_;
     VkDebugLines    debugLines_;
+    VkHud           hud_;
 
     // Per-frame transient state. beginFrame records into the active
     // command buffer; submit() and external systems' record paths

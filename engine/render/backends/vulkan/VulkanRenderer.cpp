@@ -19,6 +19,7 @@ VulkanRenderer::~VulkanRenderer() {
         meshes_.destroyAll(context_);
         textures_.destroyAll(context_);
         shaders_.destroyAll(context_);
+        hud_.destroy(context_);
         debugLines_.destroy(context_);
         pipelines_.destroy(context_);
         frames_.destroy(context_);
@@ -50,6 +51,10 @@ bool VulkanRenderer::init(Window& window) {
     }
     if (!debugLines_.init(context_, scenePass())) {
         Log::error("VulkanRenderer: VkDebugLines init failed");
+        return false;
+    }
+    if (!hud_.init(context_, scenePass())) {
+        Log::error("VulkanRenderer: VkHud init failed");
         return false;
     }
     initOk_ = true;
@@ -106,7 +111,11 @@ void VulkanRenderer::flushDebugLines(const Mat4& view, const Mat4& projection) {
     if (cb == VK_NULL_HANDLE) return;  // skipped frame
     debugLines_.record(cb, context_.device(), frames_, view, projection);
 }
-void VulkanRenderer::drawHud(const HudBatch&, int, int) { warnOnce("drawHud"); }
+void VulkanRenderer::drawHud(const HudBatch& batch, int fbW, int fbH) {
+    const VkCommandBuffer cb = currentCommandBuffer();
+    if (cb == VK_NULL_HANDLE) return;
+    hud_.record(cb, context_.device(), frames_, textures_, batch, fbW, fbH);
+}
 
 // --- per-frame (real) ---
 
