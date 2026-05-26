@@ -121,18 +121,36 @@ void VulkanRenderer::drawHud(const HudBatch& batch, int fbW, int fbH) {
 
 namespace {
 
-// M12 — per-draw UBO uploaded by submit. std140 layout: all members
+// M12+M13 — per-draw UBO uploaded by submit. std140 layout: all members
 // are mat4 (64-byte aligned) or vec4 (16-byte aligned), so no
-// straddling. Total 192 bytes.
+// straddling. Total 224 bytes.
 struct LitUbo {
-    Mat4 mvp;        // 64 — projection * view * model
-    Mat4 model;      // 64 — for mat3(model) * aNormal in the vertex shader
-    Vec4 sunDir;     // 16 — xyz direction; w padding
-    Vec4 sunColor;   // 16 — xyz color; w padding
-    Vec4 ambient;    // 16 — xyz color (pre-multiplied); w padding
-    Vec4 emissive;   // 16 — xyz color (from call.material.emissive); w padding
+    Mat4 mvp;             // 64 — projection * view * model
+    Mat4 model;           // 64 — for mat3(model) transforms in the vertex shader
+    Vec4 sunDir;          // 16 — xyz direction; w padding
+    Vec4 sunColor;        // 16 — xyz color; w padding
+    Vec4 ambient;         // 16 — xyz pre-multiplied ambient color; w padding
+    Vec4 emissive;        // 16 — xyz from call.material.emissive; w padding
+    Vec4 cameraPos;       // 16 — xyz world-space camera; w padding (M13)
+    Vec4 materialParams;  // 16 — x=uvScale, y=specPower, z=reflectivity, w=padding (M13)
 };
-static_assert(sizeof(LitUbo) == 192, "LitUbo std140 layout");
+static_assert(sizeof(LitUbo) == 224, "LitUbo std140 layout");
+
+// Extracts the camera's world-space position from a view matrix.
+// Assumes view is a pure rigid transform [R | t; 0 0 0 1] (rotation +
+// translation, no scale) — true for all engine cameras (lookAt /
+// first-person / free-fly). For column-major Mat4 storage where
+// m[col*4+row] = at(row, col), the camera world position is -R^T * t.
+Vec3 extractCameraPos(const Mat4& view) {
+    const float tx = view.at(0, 3);
+    const float ty = view.at(1, 3);
+    const float tz = view.at(2, 3);
+    return Vec3{
+        -(view.at(0, 0) * tx + view.at(1, 0) * ty + view.at(2, 0) * tz),
+        -(view.at(0, 1) * tx + view.at(1, 1) * ty + view.at(2, 1) * tz),
+        -(view.at(0, 2) * tx + view.at(1, 2) * ty + view.at(2, 2) * tz),
+    };
+}
 
 // Set viewport + scissor on the active command buffer. Vulkan clip-Y points
 // DOWN (opposite OpenGL); negative-height + bottom-origin viewport flips it
@@ -163,6 +181,7 @@ void VulkanRenderer::beginFrame(Vec3 clearColor, const DirectionalLight& light,
     pendingAmbient_    = Vec3{light.ambient * light.color.x,
                               light.ambient * light.color.y,
                               light.ambient * light.color.z};
+    pendingCameraPos_ = extractCameraPos(view);
     skipFrame_         = false;
 
     if (pendingResize_) {
@@ -236,6 +255,16 @@ void VulkanRenderer::submit(const DrawCall& call) {
                         call.material.emissive.y,
                         call.material.emissive.z,
                         0.0f};
+    ubo.cameraPos = Vec4{pendingCameraPos_.x,
+                         pendingCameraPos_.y,
+                         pendingCameraPos_.z,
+                         0.0f};
+    ubo.materialParams = Vec4{
+        call.material.uvScale,
+        call.material.specPower,
+        call.material.reflectivity,
+        0.0f
+    };
 
     const VkShader& sh = shaders_.get(call.shader);
     ::VkPipeline pipe = pipelines_.pipelineFor(context_, swapchain_, sh);
@@ -256,15 +285,30 @@ void VulkanRenderer::submit(const DrawCall& call) {
     bufInfo.offset = uboOffset;
     bufInfo.range  = sizeof(ubo);
 
-    const auto& tex = textures_.has(call.material.texture)
+    // M13 — write 4 descriptors per draw: UBO + diffuse + normal + spec.
+    // Fallback textures used for invalid handles.
+    const auto& diffuse = textures_.has(call.material.texture)
         ? textures_.get(call.material.texture)
         : textures_.get(textures_.whiteTexture());
-    VkDescriptorImageInfo imgInfo{};
-    imgInfo.sampler = tex.sampler;
-    imgInfo.imageView = tex.view;
-    imgInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    const auto& normal = textures_.has(call.material.normalMap)
+        ? textures_.get(call.material.normalMap)
+        : textures_.get(textures_.flatNormalTexture());
+    const auto& spec = textures_.has(call.material.specularMap)
+        ? textures_.get(call.material.specularMap)
+        : textures_.get(textures_.noSpecularTexture());
 
-    VkWriteDescriptorSet writes[2]{};
+    VkDescriptorImageInfo imgInfos[3]{};
+    imgInfos[0].sampler     = diffuse.sampler;
+    imgInfos[0].imageView   = diffuse.view;
+    imgInfos[0].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    imgInfos[1].sampler     = normal.sampler;
+    imgInfos[1].imageView   = normal.view;
+    imgInfos[1].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    imgInfos[2].sampler     = spec.sampler;
+    imgInfos[2].imageView   = spec.view;
+    imgInfos[2].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+
+    VkWriteDescriptorSet writes[4]{};
     writes[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
     writes[0].dstSet = set;
     writes[0].dstBinding = 0;
@@ -276,8 +320,20 @@ void VulkanRenderer::submit(const DrawCall& call) {
     writes[1].dstBinding = 1;
     writes[1].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
     writes[1].descriptorCount = 1;
-    writes[1].pImageInfo = &imgInfo;
-    vkUpdateDescriptorSets(context_.device(), 2, writes, 0, nullptr);
+    writes[1].pImageInfo = &imgInfos[0];
+    writes[2].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    writes[2].dstSet = set;
+    writes[2].dstBinding = 2;
+    writes[2].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    writes[2].descriptorCount = 1;
+    writes[2].pImageInfo = &imgInfos[1];
+    writes[3].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    writes[3].dstSet = set;
+    writes[3].dstBinding = 3;
+    writes[3].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    writes[3].descriptorCount = 1;
+    writes[3].pImageInfo = &imgInfos[2];
+    vkUpdateDescriptorSets(context_.device(), 4, writes, 0, nullptr);
 
     vkCmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_GRAPHICS,
                             sh.pipelineLayout, 0, 1, &set, 0, nullptr);

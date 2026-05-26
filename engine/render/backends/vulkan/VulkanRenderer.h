@@ -126,6 +126,10 @@ private:
     Vec3 pendingSunColor_ = {1.0f, 1.0f, 1.0f};
     Vec3 pendingAmbient_  = {0.1f, 0.1f, 0.1f};
 
+    // M13 — camera world position, extracted from view matrix at beginFrame.
+    // Used by submit() for Blinn-Phong specular highlights in the lit shader.
+    Vec3 pendingCameraPos_ = {0.0f, 0.0f, 0.0f};
+
     // Swapchain image index acquired in beginFrame, used in endFrame.
     std::uint32_t currentImageIndex_ = 0;
     bool       pendingResize_  = false;

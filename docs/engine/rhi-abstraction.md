@@ -333,3 +333,66 @@ These all need additional UBO fields and either pipeline state
 
 Net-shooter's Vulkan-startup warning enumerates the gaps so the user
 knows what to expect.
+
+## Vulkan normal + specular maps + UV scale (M13)
+
+The Vulkan lit pass gained TBN-perturbed normals, Blinn-Phong
+specular highlights, and per-Material UV tiling.
+
+### LitUbo grew to 224 bytes
+
+```cpp
+struct LitUbo {
+    Mat4 mvp;
+    Mat4 model;
+    Vec4 sunDir;
+    Vec4 sunColor;
+    Vec4 ambient;
+    Vec4 emissive;
+    Vec4 cameraPos;       // M13 — for Blinn-Phong view vector
+    Vec4 materialParams;  // M13 — x=uvScale, y=specPower, z=reflectivity (unused until M16/17)
+};
+```
+
+`VulkanRenderer::beginFrame` extracts the camera world position from
+the view matrix via `-R^T * t`; `submit` packs `materialParams` from
+the per-`DrawCall::material` fields.
+
+### Descriptor set layout grew to 4 bindings
+
+| Binding | Type | Stage | Purpose |
+|---|---|---|---|
+| 0 | UNIFORM_BUFFER | VS+FS | LitUbo |
+| 1 | COMBINED_IMAGE_SAMPLER | FS | Diffuse |
+| 2 | COMBINED_IMAGE_SAMPLER | FS | Normal map (new) |
+| 3 | COMBINED_IMAGE_SAMPLER | FS | Specular map (new) |
+
+`VulkanRenderer::submit` writes all three samplers per draw, with
+fallback to the built-in white / flat-normal / no-spec textures
+when the Material's handle is invalid. The per-frame descriptor pool
+in `VkFrameRing` bumped its COMBINED_IMAGE_SAMPLER capacity from
+`kMaxDescriptorSetsPerFrame` to `3 * kMaxDescriptorSetsPerFrame` to
+match (= 384 samplers / frame).
+
+### Shader-side TBN + Blinn-Phong
+
+Spinning-cube and net-shooter share the same Vulkan-branch shaders.
+The fragment shader builds the TBN basis from `vNormal` + `vTangent`,
+samples the normal map RGB → tangent-space normal, multiplies by TBN
+to get a world-space perturbed normal. Blinn-Phong: half vector
+`H = normalize(L + V)`, specular term `pow(max(dot(perturbedN, H),
+0), specPower)` modulated by the spec map's red channel as a mask.
+
+### What's still missing
+
+These need either UBO fields or whole new passes:
+
+- Point lights (16-array with range falloff) — M15.
+- Exponential distance fog — M15.
+- Shadow map sampling — M14 (multi-pass).
+- Cubemap skybox + cubemap-based reflection — M16 (separate pass +
+  binding).
+- Planar reflection — M17 (RTT pipeline).
+
+After M14-M17 land, the Vulkan backend reaches full parity with the
+OpenGL lit pass.
