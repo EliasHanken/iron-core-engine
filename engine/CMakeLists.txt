@@ -25,6 +25,7 @@ add_library(ironcore STATIC
   render/RendererFactory.cpp
   render/ReflectionPlane.cpp
   render/TextureLoader.cpp
+  debug/GizmoRegistry.cpp
 )
 
 target_include_directories(ironcore PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
