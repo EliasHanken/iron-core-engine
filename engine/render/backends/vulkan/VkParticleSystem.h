@@ -29,6 +29,8 @@ public:
 
     void tick(float dtSec) override;
     void render(const Mat4& view, const Mat4& projection) override;
+    // Engine-internal: called from VulkanRenderer's deferred-callback drain.
+    void recordRender(VkCommandBuffer cb, const Mat4& view, const Mat4& projection);
     std::uint32_t count() const override { return cfg_.count; }
 
 private:

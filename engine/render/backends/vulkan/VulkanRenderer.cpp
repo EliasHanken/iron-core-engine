@@ -107,14 +107,17 @@ void VulkanRenderer::drawLine(Vec3 a, Vec3 b, Vec3 color) {
 }
 
 void VulkanRenderer::flushDebugLines(const Mat4& view, const Mat4& projection) {
-    const VkCommandBuffer cb = currentCommandBuffer();
-    if (cb == VK_NULL_HANDLE) return;  // skipped frame
-    debugLines_.record(cb, context_.device(), frames_, view, projection);
+    if (skipFrame_) return;
+    pendingDebugView_  = view;
+    pendingDebugProj_  = projection;
+    pendingDebugFlush_ = true;
 }
 void VulkanRenderer::drawHud(const HudBatch& batch, int fbW, int fbH) {
-    const VkCommandBuffer cb = currentCommandBuffer();
-    if (cb == VK_NULL_HANDLE) return;
-    hud_.record(cb, context_.device(), frames_, textures_, batch, fbW, fbH);
+    if (skipFrame_) return;
+    pendingHudBatch_ = batch;
+    pendingHudW_     = fbW;
+    pendingHudH_     = fbH;
+    pendingHudValid_ = true;
 }
 
 // --- per-frame (real) ---
@@ -213,37 +216,28 @@ void VulkanRenderer::beginFrame(Vec3 clearColor, const DirectionalLight& light,
         return;
     }
 
-    // Begin recording IMMEDIATELY so external subsystems (iron::ParticleSystem,
-    // future GPU helpers) can record draws between begin/endFrame. Closes in
-    // endFrame.
+    // Begin recording. Render pass and draw replay happen in endFrame.
     VkCommandBuffer cb = f.commandBuffer;
     VkCommandBufferBeginInfo begin{};
     begin.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
     begin.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
     VK_CHECK(vkBeginCommandBuffer(cb, &begin));
 
-    VkClearValue clears[2]{};
-    clears[0].color = {{pendingClear_.x, pendingClear_.y, pendingClear_.z, 1.0f}};
-    clears[1].depthStencil = {1.0f, 0};
-
-    VkRenderPassBeginInfo rpBegin{};
-    rpBegin.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
-    rpBegin.renderPass = pipelines_.renderPass();
-    rpBegin.framebuffer = pipelines_.framebuffer(currentImageIndex_);
-    rpBegin.renderArea = {{0, 0}, swapchain_.extent()};
-    rpBegin.clearValueCount = 2;
-    rpBegin.pClearValues = clears;
-    vkCmdBeginRenderPass(cb, &rpBegin, VK_SUBPASS_CONTENTS_INLINE);
-
-    setSceneViewport(cb, swapchain_.extent());
+    sceneDraws_.clear();
+    deferredScenePass_.clear();
+    pendingDebugFlush_ = false;
+    pendingHudValid_   = false;
 }
 
 void VulkanRenderer::submit(const DrawCall& call) {
     if (skipFrame_) return;
+    sceneDraws_.push_back(call);
+}
+
+void VulkanRenderer::recordSceneDraw(VkCommandBuffer cb, const DrawCall& call) {
     if (!meshes_.has(call.mesh) || !shaders_.has(call.shader)) return;
 
     VkFrameRing::Frame& f = frames_.current();
-    VkCommandBuffer cb = f.commandBuffer;
 
     LitUbo ubo;
     ubo.mvp      = pendingProjection_ * pendingView_ * call.model;
@@ -354,7 +348,49 @@ void VulkanRenderer::endFrame() {
     VkFrameRing::Frame& f = frames_.current();
     VkCommandBuffer cb = f.commandBuffer;
 
-    vkCmdEndRenderPass(cb);
+    // --- Scene pass ---
+    {
+        VkClearValue clears[2]{};
+        clears[0].color.float32[0] = pendingClear_.x;
+        clears[0].color.float32[1] = pendingClear_.y;
+        clears[0].color.float32[2] = pendingClear_.z;
+        clears[0].color.float32[3] = 1.0f;
+        clears[1].depthStencil = {1.0f, 0};
+
+        VkRenderPassBeginInfo rpBegin{};
+        rpBegin.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
+        rpBegin.renderPass = pipelines_.renderPass();
+        rpBegin.framebuffer = pipelines_.framebuffer(currentImageIndex_);
+        rpBegin.renderArea.offset = {0, 0};
+        rpBegin.renderArea.extent = swapchain_.extent();
+        rpBegin.clearValueCount = 2;
+        rpBegin.pClearValues = clears;
+        vkCmdBeginRenderPass(cb, &rpBegin, VK_SUBPASS_CONTENTS_INLINE);
+        setSceneViewport(cb, swapchain_.extent());
+
+        for (const DrawCall& call : sceneDraws_) {
+            recordSceneDraw(cb, call);
+        }
+
+        for (auto& fn : deferredScenePass_) {
+            fn(cb);
+        }
+        deferredScenePass_.clear();
+
+        if (pendingDebugFlush_) {
+            debugLines_.record(cb, context_.device(), frames_,
+                               pendingDebugView_, pendingDebugProj_);
+            pendingDebugFlush_ = false;
+        }
+        if (pendingHudValid_) {
+            hud_.record(cb, context_.device(), frames_, textures_,
+                        pendingHudBatch_, pendingHudW_, pendingHudH_);
+            pendingHudValid_ = false;
+        }
+
+        vkCmdEndRenderPass(cb);
+    }
+
     VK_CHECK(vkEndCommandBuffer(cb));
 
     const VkPipelineStageFlags waitStages[] =
@@ -413,6 +449,12 @@ VkContext& VulkanRenderer::context() { return context_; }
 
 VkRenderPass VulkanRenderer::scenePass() const {
     return pipelines_.renderPass();
+}
+
+void VulkanRenderer::enqueueDeferredScenePass(
+        std::function<void(VkCommandBuffer)> fn) {
+    if (skipFrame_) return;
+    deferredScenePass_.push_back(std::move(fn));
 }
 
 }  // namespace iron

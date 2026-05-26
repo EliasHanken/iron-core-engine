@@ -599,9 +599,14 @@ bool VkParticleSystem::initRender() {
 }
 
 void VkParticleSystem::render(const Mat4& view, const Mat4& projection) {
-    VkCommandBuffer cb = renderer_->currentCommandBuffer();
-    if (cb == VK_NULL_HANDLE) return;  // host renderer skipped this frame (e.g., resize)
+    renderer_->enqueueDeferredScenePass(
+        [this, view, projection](VkCommandBuffer cb) {
+            recordRender(cb, view, projection);
+        });
+}
 
+void VkParticleSystem::recordRender(VkCommandBuffer cb, const Mat4& view,
+                                     const Mat4& projection) {
     VkContext& ctx = renderer_->context();
     VkFrameRing::Frame& frame = renderer_->frameRing().current();
 
