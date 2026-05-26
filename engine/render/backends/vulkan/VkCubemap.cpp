@@ -60,6 +60,7 @@ CubemapHandle VkCubemapStore::createFromFaces(
     for (int i = 0; i < 6; ++i) {
         if (faces[i] == nullptr) return kInvalidHandle;
     }
+    if (sharedSampler_ == VK_NULL_HANDLE) return kInvalidHandle;
 
     VkCubemapResource res{};
     res.width  = static_cast<std::uint32_t>(width);
