@@ -30,8 +30,8 @@
 #include "render/Fog.h"
 #include "render/Light.h"
 #include "render/Material.h"
+#include "render/RendererFactory.h"
 #include "render/TextureLoader.h"
-#include "render/backends/opengl/OpenGLRenderer.h"
 #include "scene/Mesh.h"
 #include "ui/BuiltinFont.h"
 #include "ui/Hud.h"
@@ -53,6 +53,41 @@ namespace {
 
 constexpr int kScreenWidth  = 1280;
 constexpr int kScreenHeight = 720;
+
+#ifdef IRON_RENDER_BACKEND_VULKAN
+
+// Vulkan path: matches the M9 single-mat4 UBO contract (set=0 binding=0).
+// Net-shooter renders unlit-textured on Vulkan for M11; full lit shader
+// port lands when a future milestone extends VulkanRenderer::submit to
+// upload a richer UBO. Reference: games/01-spinning-cube/main.cpp.
+const char* kVertexShader = R"(#version 450
+layout(location = 0) in vec3 aPos;
+layout(location = 1) in vec3 aNormal;
+layout(location = 2) in vec2 aUV;
+layout(location = 3) in vec3 aTangent;
+
+layout(set = 0, binding = 0) uniform Ubo { mat4 uMvp; } ubo;
+
+layout(location = 0) out vec2 vUV;
+
+void main() {
+    vUV = aUV;
+    gl_Position = ubo.uMvp * vec4(aPos, 1.0);
+}
+)";
+
+const char* kFragmentShader = R"(#version 450
+layout(set = 0, binding = 1) uniform sampler2D uTex;
+
+layout(location = 0) in vec2 vUV;
+layout(location = 0) out vec4 outColor;
+
+void main() {
+    outColor = texture(uTex, vUV);
+}
+)";
+
+#else  // IRON_RENDER_BACKEND_OPENGL
 
 // ---------------------------------------------------------------------------
 // Lit vertex shader — same as net-tag
@@ -197,6 +232,8 @@ void main() {
 }
 )";
 
+#endif  // IRON_RENDER_BACKEND_VULKAN / IRON_RENDER_BACKEND_OPENGL
+
 // ---------------------------------------------------------------------------
 // Procedural sunset cubemap — same as net-tag
 // ---------------------------------------------------------------------------
@@ -293,7 +330,8 @@ int main(int argc, char** argv) {
     }
     window.setCursorCaptured(true);
 
-    iron::OpenGLRenderer renderer;
+    auto renderer_ptr = iron::createRenderer(window);
+    iron::Renderer& renderer = *renderer_ptr;
     renderer.setViewport(kScreenWidth, kScreenHeight);
 
     const iron::ShaderHandle litShader =
@@ -302,6 +340,12 @@ int main(int argc, char** argv) {
         iron::Log::error("net-shooter: shader failed to compile");
         return 1;
     }
+
+#ifdef IRON_RENDER_BACKEND_VULKAN
+    iron::Log::warn("net-shooter Vulkan path is unlit textured "
+                    "(no lighting / shadows / cubemap / reflection / fog / emissive). "
+                    "Full lit-shader parity ships in a later milestone.");
+#endif
 
     // Skybox
     std::vector<unsigned char> faceData[6];
