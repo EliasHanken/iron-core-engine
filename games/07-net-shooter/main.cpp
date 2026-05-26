@@ -1477,10 +1477,9 @@ int main(int argc, char** argv) {
         // Flush queued debug lines (hitscan tracers) before endFrame.
         renderer.flushDebugLines(view, projection);
 
-        renderer.endFrame();
-
         // -----------------------------------------------------------------------
-        // HUD updates
+        // HUD updates — must run BEFORE endFrame so drawHud records into the
+        // still-open per-frame command buffer (Vulkan requirement).
         // -----------------------------------------------------------------------
 
         // Role text
@@ -1573,6 +1572,8 @@ int main(int argc, char** argv) {
 
         renderer.drawHud(hud.build(font, renderer.whiteTexture()),
                          kScreenWidth, kScreenHeight);
+
+        renderer.endFrame();
 
         window.swapBuffers();
     }

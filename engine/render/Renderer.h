@@ -120,9 +120,12 @@ public:
     virtual void flushDebugLines(const Mat4& view, const Mat4& projection) = 0;
 
     // --- HUD ---
-    // Draw a screen-space HUD batch on top of the finished frame, sized to the
-    // given framebuffer dimensions. Call after endFrame (the HUD is an overlay
-    // composited on top of the rendered scene).
+    // Draw a screen-space HUD batch on top of the scene, sized to the given
+    // framebuffer dimensions. Call BEFORE endFrame — under Vulkan the HUD
+    // records into the active scene render pass, so the per-frame command
+    // buffer must still be open. Under OpenGL the order is flexible, but
+    // calling before endFrame works for both backends and is the supported
+    // contract going forward.
     virtual void drawHud(const HudBatch& batch, int framebufferWidth,
                          int framebufferHeight) = 0;
 
