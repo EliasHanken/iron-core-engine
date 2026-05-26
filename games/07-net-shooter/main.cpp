@@ -501,8 +501,20 @@ int main(int argc, char** argv) {
     sun.direction = iron::normalize(iron::Vec3{-0.4f, -1.0f, -0.3f});
     sun.color = iron::Vec3{1.0f, 0.95f, 0.85f};
     sun.ambient = 0.2f;
+
+    // M15 demo — warm sunset fog matching the skybox palette.
     iron::Fog fog;
-    fog.density = 0.0f;
+    fog.color = iron::Vec3{1.00f, 0.55f, 0.30f};
+    fog.density = 0.015f;
+
+    // M15 demo — 4 arena corner lanterns (warm orange glow).
+    const std::array<iron::PointLight, 4> arenaLanterns = {{
+        {iron::Vec3{-12.0f, 3.0f, -12.0f}, iron::Vec3{1.0f, 0.55f, 0.20f}, 2.0f, 8.0f},
+        {iron::Vec3{ 12.0f, 3.0f, -12.0f}, iron::Vec3{1.0f, 0.55f, 0.20f}, 2.0f, 8.0f},
+        {iron::Vec3{-12.0f, 3.0f,  12.0f}, iron::Vec3{1.0f, 0.55f, 0.20f}, 2.0f, 8.0f},
+        {iron::Vec3{ 12.0f, 3.0f,  12.0f}, iron::Vec3{1.0f, 0.55f, 0.20f}, 2.0f, 8.0f},
+    }};
+
     renderer.setShadowBounds(iron::Vec3{0, 0, 0}, 30.0f);
     renderer.disableReflectionPlane();
 
@@ -1391,7 +1403,8 @@ int main(int argc, char** argv) {
 
         renderer.beginFrame(iron::Vec3{0.5f, 0.6f, 0.8f},
                             sun,
-                            std::span<const iron::PointLight>{},
+                            std::span<const iron::PointLight>{
+                                arenaLanterns.data(), arenaLanterns.size()},
                             fog,
                             view,
                             projection);
