@@ -49,6 +49,7 @@ if (IRON_RENDER_BACKEND STREQUAL "vulkan")
       render/backends/vulkan/VkDebugLines.cpp
       render/backends/vulkan/VkHud.cpp
       render/backends/vulkan/VkShadowMap.cpp
+      render/backends/vulkan/VkCubemap.cpp
     )
     target_compile_definitions(ironcore PUBLIC IRON_RENDER_BACKEND_VULKAN)
     target_link_libraries(ironcore PUBLIC
