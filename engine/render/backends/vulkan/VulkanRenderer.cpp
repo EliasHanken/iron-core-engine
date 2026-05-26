@@ -19,6 +19,8 @@ VulkanRenderer::~VulkanRenderer() {
         meshes_.destroyAll(context_);
         textures_.destroyAll(context_);
         shaders_.destroyAll(context_);
+        hud_.destroy(context_);
+        debugLines_.destroy(context_);
         pipelines_.destroy(context_);
         frames_.destroy(context_);
         swapchain_.destroy(context_);
@@ -45,6 +47,14 @@ bool VulkanRenderer::init(Window& window) {
     }
     if (!textures_.init(context_)) {
         Log::error("VulkanRenderer: VkTextureStore init failed");
+        return false;
+    }
+    if (!debugLines_.init(context_, scenePass())) {
+        Log::error("VulkanRenderer: VkDebugLines init failed");
+        return false;
+    }
+    if (!hud_.init(context_, scenePass())) {
+        Log::error("VulkanRenderer: VkHud init failed");
         return false;
     }
     initOk_ = true;
@@ -92,9 +102,20 @@ void VulkanRenderer::setSkybox(CubemapHandle) { warnOnce("setSkybox"); }
 void VulkanRenderer::setShadowBounds(Vec3, float) { warnOnce("setShadowBounds"); }
 void VulkanRenderer::setReflectionPlane(Vec3, float) { warnOnce("setReflectionPlane"); }
 void VulkanRenderer::disableReflectionPlane() { warnOnce("disableReflectionPlane"); }
-void VulkanRenderer::drawLine(Vec3, Vec3, Vec3) { warnOnce("drawLine"); }
-void VulkanRenderer::flushDebugLines(const Mat4&, const Mat4&) { warnOnce("flushDebugLines"); }
-void VulkanRenderer::drawHud(const HudBatch&, int, int) { warnOnce("drawHud"); }
+void VulkanRenderer::drawLine(Vec3 a, Vec3 b, Vec3 color) {
+    debugLines_.queue(a, b, color);
+}
+
+void VulkanRenderer::flushDebugLines(const Mat4& view, const Mat4& projection) {
+    const VkCommandBuffer cb = currentCommandBuffer();
+    if (cb == VK_NULL_HANDLE) return;  // skipped frame
+    debugLines_.record(cb, context_.device(), frames_, view, projection);
+}
+void VulkanRenderer::drawHud(const HudBatch& batch, int fbW, int fbH) {
+    const VkCommandBuffer cb = currentCommandBuffer();
+    if (cb == VK_NULL_HANDLE) return;
+    hud_.record(cb, context_.device(), frames_, textures_, batch, fbW, fbH);
+}
 
 // --- per-frame (real) ---
 

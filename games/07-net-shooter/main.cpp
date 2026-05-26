@@ -15,6 +15,7 @@
 #include "game/Health.h"
 #include "core/FixedTickScheduler.h"
 #include "core/Log.h"
+#include "debug/GizmoRegistry.h"
 #include "core/NetArgs.h"
 #include "core/Platform.h"
 #include "core/Window.h"
@@ -30,8 +31,8 @@
 #include "render/Fog.h"
 #include "render/Light.h"
 #include "render/Material.h"
+#include "render/RendererFactory.h"
 #include "render/TextureLoader.h"
-#include "render/backends/opengl/OpenGLRenderer.h"
 #include "scene/Mesh.h"
 #include "ui/BuiltinFont.h"
 #include "ui/Hud.h"
@@ -53,6 +54,41 @@ namespace {
 
 constexpr int kScreenWidth  = 1280;
 constexpr int kScreenHeight = 720;
+
+#ifdef IRON_RENDER_BACKEND_VULKAN
+
+// Vulkan path: matches the M9 single-mat4 UBO contract (set=0 binding=0).
+// Net-shooter renders unlit-textured on Vulkan for M11; full lit shader
+// port lands when a future milestone extends VulkanRenderer::submit to
+// upload a richer UBO. Reference: games/01-spinning-cube/main.cpp.
+const char* kVertexShader = R"(#version 450
+layout(location = 0) in vec3 aPos;
+layout(location = 1) in vec3 aNormal;
+layout(location = 2) in vec2 aUV;
+layout(location = 3) in vec3 aTangent;
+
+layout(set = 0, binding = 0) uniform Ubo { mat4 uMvp; } ubo;
+
+layout(location = 0) out vec2 vUV;
+
+void main() {
+    vUV = aUV;
+    gl_Position = ubo.uMvp * vec4(aPos, 1.0);
+}
+)";
+
+const char* kFragmentShader = R"(#version 450
+layout(set = 0, binding = 1) uniform sampler2D uTex;
+
+layout(location = 0) in vec2 vUV;
+layout(location = 0) out vec4 outColor;
+
+void main() {
+    outColor = texture(uTex, vUV);
+}
+)";
+
+#else  // IRON_RENDER_BACKEND_OPENGL
 
 // ---------------------------------------------------------------------------
 // Lit vertex shader — same as net-tag
@@ -197,6 +233,8 @@ void main() {
 }
 )";
 
+#endif  // IRON_RENDER_BACKEND_VULKAN / IRON_RENDER_BACKEND_OPENGL
+
 // ---------------------------------------------------------------------------
 // Procedural sunset cubemap — same as net-tag
 // ---------------------------------------------------------------------------
@@ -293,7 +331,8 @@ int main(int argc, char** argv) {
     }
     window.setCursorCaptured(true);
 
-    iron::OpenGLRenderer renderer;
+    auto renderer_ptr = iron::createRenderer(window);
+    iron::Renderer& renderer = *renderer_ptr;
     renderer.setViewport(kScreenWidth, kScreenHeight);
 
     const iron::ShaderHandle litShader =
@@ -302,6 +341,12 @@ int main(int argc, char** argv) {
         iron::Log::error("net-shooter: shader failed to compile");
         return 1;
     }
+
+#ifdef IRON_RENDER_BACKEND_VULKAN
+    iron::Log::warn("net-shooter Vulkan path is unlit textured "
+                    "(no lighting / shadows / cubemap / reflection / fog / emissive). "
+                    "Full lit-shader parity ships in a later milestone.");
+#endif
 
     // Skybox
     std::vector<unsigned char> faceData[6];
@@ -374,6 +419,12 @@ int main(int argc, char** argv) {
     // Network stats widget (top-right)
     auto netStatsHud = hud.addNetworkStatsWidget(
         iron::Vec2{static_cast<float>(kScreenWidth) - 12.0f, 12.0f});
+    // Gizmo toggle indicator (bottom-right, yellow; avoids kill-feed at bottom-left)
+    const iron::HudId gizmoText = hud.addText("Gizmos: ON (F3)",
+                                              iron::Vec2{static_cast<float>(kScreenWidth) - 180.0f,
+                                                         static_cast<float>(kScreenHeight) - 24.0f},
+                                              1.5f,
+                                              iron::Vec4{1.0f, 1.0f, 0.4f, 1.0f});
 
     // -----------------------------------------------------------------------
     // Arena geometry (deterministic; same seed on all peers)
@@ -470,6 +521,13 @@ int main(int argc, char** argv) {
 
     // Host-side authoritative positions
     std::unordered_map<std::uint32_t, PlayerState> authStates;
+
+    // M11 — gizmo registry (lag-comp AABBs + splash spheres) + F3 toggle.
+    iron::GizmoRegistry gizmos;
+    gizmos.enable("lagcomp", true);
+    gizmos.enable("splash",  true);
+    bool gizmosOn = true;
+    std::unordered_map<std::uint32_t, iron::GizmoId> lagcompGizmoFor;
 
     // Live rockets on host
     std::vector<iron::Projectile> liveRockets;
@@ -672,6 +730,12 @@ int main(int argc, char** argv) {
             ghostRockets.erase(msg.projectileId);
             explosions.push_back(
                 ExplosionFx{iron::Vec3{msg.x, msg.y, msg.z}, nowSec()});
+            // M11 — splash radius gizmo (timed, matches ExplosionFx lifetime).
+            gizmos.addSphere("splash",
+                             iron::Vec3{msg.x, msg.y, msg.z},
+                             iron::netshooter::RocketLauncher::kSplashRadius,
+                             iron::Vec3{1.0f, 0.6f, 0.0f},
+                             /*lifetimeSec=*/0.4f);
         });
 
     // CLIENT: damage + kill feed.
@@ -860,6 +924,17 @@ int main(int argc, char** argv) {
         if (key2 && !prevKey2) selectedWeapon = 2;
         prevKey1 = key1;
         prevKey2 = key2;
+
+        // --- F3: gizmo master toggle ------------------------------------
+        {
+            const bool f3 = glfwGetKey(window.handle(), GLFW_KEY_F3) == GLFW_PRESS;
+            static bool prevF3 = false;
+            if (f3 && !prevF3) {
+                gizmosOn = !gizmosOn;
+                gizmos.enableAll(gizmosOn);
+            }
+            prevF3 = f3;
+        }
 
         // --- Network poll -----------------------------------------------
         peers.poll();
@@ -1087,6 +1162,12 @@ int main(int argc, char** argv) {
                         explosions.push_back(ExplosionFx{
                             iron::Vec3{result.despawn.x, result.despawn.y, result.despawn.z},
                             simNow});
+                        // M11 — splash radius gizmo (timed, matches ExplosionFx lifetime).
+                        gizmos.addSphere("splash",
+                                         iron::Vec3{result.despawn.x, result.despawn.y, result.despawn.z},
+                                         iron::netshooter::RocketLauncher::kSplashRadius,
+                                         iron::Vec3{1.0f, 0.6f, 0.0f},
+                                         /*lifetimeSec=*/0.4f);
                         // Apply splash damage.
                         for (auto& dm : result.splashHits) {
                             auto vit = hostPlayers.find(dm.victimPeerId);
@@ -1365,13 +1446,46 @@ int main(int argc, char** argv) {
             }
         }
 
+        // M11 — lag-comp gizmo update (host only). Match the visible cube's
+        // AABB shape: center at feet + halfE.y, full extents = 2*halfE.
+        if (peers.isHost()) {
+            const iron::Vec3 halfE = iron::netshooter::kPlayerHalfExtents;
+            for (const auto& [pid, state] : authStates) {
+                const iron::Vec3 minP{state.x - halfE.x,
+                                      state.y,
+                                      state.z - halfE.z};
+                const iron::Vec3 maxP{state.x + halfE.x,
+                                      state.y + halfE.y * 2.0f,
+                                      state.z + halfE.z};
+                auto& gid = lagcompGizmoFor[pid];
+                if (gid == iron::kInvalidGizmo) {
+                    gid = gizmos.addAabb("lagcomp", minP, maxP,
+                                         iron::Vec3{1.0f, 0.2f, 0.2f});
+                } else {
+                    gizmos.updateAabb(gid, minP, maxP,
+                                       iron::Vec3{1.0f, 0.2f, 0.2f});
+                }
+            }
+            // Remove gizmos for peers no longer in authStates (e.g. disconnected).
+            for (auto it = lagcompGizmoFor.begin(); it != lagcompGizmoFor.end(); ) {
+                if (authStates.find(it->first) == authStates.end()) {
+                    gizmos.remove(it->second);
+                    it = lagcompGizmoFor.erase(it);
+                } else {
+                    ++it;
+                }
+            }
+        }
+
+        // Tick gizmos (advance expiries, emit debug lines).
+        gizmos.tick(dt, renderer);
+
         // Flush queued debug lines (hitscan tracers) before endFrame.
         renderer.flushDebugLines(view, projection);
 
-        renderer.endFrame();
-
         // -----------------------------------------------------------------------
-        // HUD updates
+        // HUD updates — must run BEFORE endFrame so drawHud records into the
+        // still-open per-frame command buffer (Vulkan requirement).
         // -----------------------------------------------------------------------
 
         // Role text
@@ -1452,6 +1566,9 @@ int main(int argc, char** argv) {
         const bool showSync = !peers.isHost() && haveIdentity && !peers.clockSync().ready();
         hud.setVisible(syncText, showSync);
 
+        // Gizmo toggle indicator (reflects current gizmosOn state)
+        hud.setText(gizmoText, gizmosOn ? "Gizmos: ON (F3)" : "Gizmos: OFF (F3)");
+
         // Network stats
         iron::ConnectionId statsConn = iron::kInvalidConnection;
         if (peers.isHost()) {
@@ -1464,6 +1581,8 @@ int main(int argc, char** argv) {
 
         renderer.drawHud(hud.build(font, renderer.whiteTexture()),
                          kScreenWidth, kScreenHeight);
+
+        renderer.endFrame();
 
         window.swapBuffers();
     }

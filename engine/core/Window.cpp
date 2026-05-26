@@ -41,7 +41,12 @@ Window::Window(int width, int height, const std::string& title)
     glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
 #endif
 
-    handle_ = glfwCreateWindow(width, height, title.c_str(), nullptr, nullptr);
+#ifdef IRON_RENDER_BACKEND_VULKAN
+    const std::string fullTitle = title + " [Vulkan]";
+#else
+    const std::string fullTitle = title + " [OpenGL]";
+#endif
+    handle_ = glfwCreateWindow(width, height, fullTitle.c_str(), nullptr, nullptr);
     if (!handle_) {
         Log::error("Window: glfwCreateWindow failed");
         return;

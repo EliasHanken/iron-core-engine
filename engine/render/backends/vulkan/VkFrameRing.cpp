@@ -5,6 +5,7 @@
 #include "render/backends/vulkan/VkContext.h"
 #include "render/backends/vulkan/VkUtils.h"
 
+#include <cassert>
 #include <cstring>
 
 namespace iron {
@@ -78,10 +79,30 @@ bool VkFrameRing::initFrame(VkContext& ctx, Frame& f) {
                              &f.uboBuffer, &f.uboAlloc, &allocInfo));
     f.uboMapped = allocInfo.pMappedData;
     f.uboCursor = 0;
+
+    // Per-frame vertex buffer (host-visible, used by VkHud + VkDebugLines).
+    // 1 MB is enough for ~16 K HudVertices or ~31 K LineVertices — well
+    // above realistic per-frame use.
+    VkBufferCreateInfo vbInfo{};
+    vbInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+    vbInfo.size = kVertexBytesPerFrame;
+    vbInfo.usage = VK_BUFFER_USAGE_VERTEX_BUFFER_BIT;
+    vbInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+
+    VmaAllocationCreateInfo vbAlloc{};
+    vbAlloc.usage = VMA_MEMORY_USAGE_AUTO;
+    vbAlloc.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT |
+                    VMA_ALLOCATION_CREATE_MAPPED_BIT;
+    VmaAllocationInfo vbAllocInfo{};
+    VK_CHECK(vmaCreateBuffer(ctx.allocator(), &vbInfo, &vbAlloc,
+                             &f.vertexBuffer, &f.vertexAlloc, &vbAllocInfo));
+    f.vertexMapped = vbAllocInfo.pMappedData;
+    f.vertexCursor = 0;
     return true;
 }
 
 void VkFrameRing::destroyFrame(VkContext& ctx, Frame& f) {
+    if (f.vertexBuffer)   { vmaDestroyBuffer(ctx.allocator(), f.vertexBuffer, f.vertexAlloc); f.vertexBuffer = VK_NULL_HANDLE; }
     if (f.uboBuffer)      { vmaDestroyBuffer(ctx.allocator(), f.uboBuffer, f.uboAlloc); f.uboBuffer = VK_NULL_HANDLE; }
     if (f.descriptorPool) { vkDestroyDescriptorPool(ctx.device(), f.descriptorPool, nullptr); f.descriptorPool = VK_NULL_HANDLE; }
     if (f.inFlight)       { vkDestroyFence(ctx.device(), f.inFlight, nullptr); f.inFlight = VK_NULL_HANDLE; }
@@ -96,9 +117,11 @@ void VkFrameRing::resetCurrentFrame(VkContext& ctx) {
     vkResetCommandPool(ctx.device(), f.commandPool, 0);
     vkResetDescriptorPool(ctx.device(), f.descriptorPool, 0);
     f.uboCursor = 0;
+    f.vertexCursor = 0;
 }
 
 VkDeviceSize VkFrameRing::allocateUbo(const void* data, VkDeviceSize size) {
+    assert(size > 0 && size <= kUboBytesPerFrame && data != nullptr);
     // Align to 256 bytes (matches typical minUniformBufferOffsetAlignment;
     // safe upper bound — we can tune per-device later.)
     constexpr VkDeviceSize kAlign = 256;
@@ -107,6 +130,25 @@ VkDeviceSize VkFrameRing::allocateUbo(const void* data, VkDeviceSize size) {
     f.uboCursor = aligned + size;
     std::memcpy(static_cast<char*>(f.uboMapped) + aligned, data, size);
     return aligned;
+}
+
+VkBuffer VkFrameRing::allocateVertices(const void* data, VkDeviceSize size,
+                                       VkDeviceSize& outOffset) {
+    constexpr VkDeviceSize kAlign = 16;
+    Frame& f = current();
+    if (size == 0 || size > kVertexBytesPerFrame || data == nullptr) {
+        outOffset = 0;
+        return VK_NULL_HANDLE;
+    }
+    const VkDeviceSize aligned = (f.vertexCursor + kAlign - 1) & ~(kAlign - 1);
+    if (aligned + size > kVertexBytesPerFrame) {
+        outOffset = 0;
+        return VK_NULL_HANDLE;
+    }
+    f.vertexCursor = aligned + size;
+    std::memcpy(static_cast<char*>(f.vertexMapped) + aligned, data, size);
+    outOffset = aligned;
+    return f.vertexBuffer;
 }
 
 }  // namespace iron

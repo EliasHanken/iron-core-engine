@@ -454,6 +454,47 @@ void OpenGLRenderer::endFrame() {
         skybox_pass_.draw(view_, projection_, *cubemaps_[skybox_ - 1],
                           fog_.color, kHorizonFogBand);
     }
+
+    // --- Pass 5: drain queued debug lines AFTER the scene pass so they
+    // overlay the final lit framebuffer. ---
+    if (pendingDebugFlush_) {
+        debugLines_.flush(pendingDebugView_, pendingDebugProjection_);
+        pendingDebugFlush_ = false;
+    }
+
+    // --- Pass 6: drain any buffered HUD as the final operation so it
+    // overlays the just-finalized default framebuffer. Uses the same GL
+    // state setup the old drawHud body used: no depth test, alpha blend. ---
+    if (pendingHudValid_) {
+        glDisable(GL_DEPTH_TEST);
+        glDepthMask(GL_FALSE);
+        glEnable(GL_BLEND);
+        glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+
+        hud_.begin(pendingHudWidth_, pendingHudHeight_);
+        for (const HudDrawGroup& group : pendingHudBatch_) {
+            if (group.vertices.empty()) {
+                continue;
+            }
+            // Bind the group's texture to unit 0; fall back to white if invalid.
+            TextureHandle tex = group.texture;
+            if (tex == kInvalidHandle || tex > textures_.size()) {
+                tex = whiteTexture_;
+            }
+            if (tex != kInvalidHandle && tex <= textures_.size()) {
+                textures_[tex - 1]->bind(0);
+            }
+            hud_.drawGroup(group.vertices);
+        }
+        hud_.end();
+
+        glDisable(GL_BLEND);
+        glDepthMask(GL_TRUE);
+        glEnable(GL_DEPTH_TEST);
+
+        pendingHudValid_ = false;
+        pendingHudBatch_.clear();
+    }
 }
 
 void OpenGLRenderer::drawLine(Vec3 a, Vec3 b, Vec3 color) {
@@ -461,41 +502,22 @@ void OpenGLRenderer::drawLine(Vec3 a, Vec3 b, Vec3 color) {
 }
 
 void OpenGLRenderer::flushDebugLines(const Mat4& view, const Mat4& projection) {
-    debugLines_.flush(view, projection);
+    // M11 — buffer the (view, projection) pair; the actual GL draw happens
+    // at the tail of endFrame so lines overlay the completed lit pass.
+    pendingDebugView_       = view;
+    pendingDebugProjection_ = projection;
+    pendingDebugFlush_      = true;
 }
 
 void OpenGLRenderer::drawHud(const HudBatch& batch, int framebufferWidth,
                              int framebufferHeight) {
-    if (batch.empty()) {
-        return;
-    }
-
-    // HUD draws on top of everything: no depth test, alpha-blended.
-    glDisable(GL_DEPTH_TEST);
-    glDepthMask(GL_FALSE);
-    glEnable(GL_BLEND);
-    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
-
-    hud_.begin(framebufferWidth, framebufferHeight);
-    for (const HudDrawGroup& group : batch) {
-        if (group.vertices.empty()) {
-            continue;
-        }
-        // Bind the group's texture to unit 0; fall back to white if invalid.
-        TextureHandle tex = group.texture;
-        if (tex == kInvalidHandle || tex > textures_.size()) {
-            tex = whiteTexture_;
-        }
-        if (tex != kInvalidHandle && tex <= textures_.size()) {
-            textures_[tex - 1]->bind(0);
-        }
-        hud_.drawGroup(group.vertices);
-    }
-    hud_.end();
-
-    glDisable(GL_BLEND);
-    glDepthMask(GL_TRUE);
-    glEnable(GL_DEPTH_TEST);
+    // M11 — buffer the HUD instead of drawing immediately. endFrame will
+    // emit this as its final step, after all scene passes have finished
+    // writing the default framebuffer (shadow → reflection → lit → skybox).
+    pendingHudBatch_  = batch;
+    pendingHudWidth_  = framebufferWidth;
+    pendingHudHeight_ = framebufferHeight;
+    pendingHudValid_  = !batch.empty();
 }
 
 void OpenGLRenderer::setViewport(int width, int height) {

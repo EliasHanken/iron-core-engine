@@ -88,6 +88,22 @@ private:
     int viewportWidth_ = 0;
     int viewportHeight_ = 0;
 
+    // M11 — HudBatch is buffered at drawHud time and emitted at the
+    // tail of endFrame, after the lit/reflection/shadow passes finish
+    // writing the default framebuffer. Matches the cross-backend
+    // contract: drawHud is called before endFrame.
+    HudBatch  pendingHudBatch_{};
+    int       pendingHudWidth_  = 0;
+    int       pendingHudHeight_ = 0;
+    bool      pendingHudValid_  = false;
+
+    // M11 — like HUD, debug-line flushing is deferred until endFrame so
+    // the lines land ON TOP of the lit pass instead of being overwritten
+    // by it.
+    Mat4  pendingDebugView_       = Mat4::identity();
+    Mat4  pendingDebugProjection_ = Mat4::identity();
+    bool  pendingDebugFlush_      = false;
+
     Mat4 computeLightViewProj() const;
 };
 

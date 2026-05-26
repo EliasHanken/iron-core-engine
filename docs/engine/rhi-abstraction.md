@@ -231,3 +231,60 @@ promoting it.
   consumer needs it).
 - Particle textures, sub-particle physics (collisions, etc.) — out of
   scope for M10.
+
+## HUD + debug-lines + gizmos on Vulkan (M11)
+
+The Vulkan backend gained two render subsystems and one engine-level
+debug-visualization layer:
+
+- `VkHud` (`engine/render/backends/vulkan/VkHud.cpp`) — screen-space
+  triangle-list pipeline, alpha blend, depth off. Recorded inside the
+  scene render pass as the final draw. Each `HudDrawGroup` allocates a
+  descriptor set from the active frame pool and gets one `vkCmdDraw`.
+- `VkDebugLines` (`engine/render/backends/vulkan/VkDebugLines.cpp`) —
+  line-list pipeline, depth test on / write off, no blend. `drawLine`
+  queues; `flushDebugLines` records into the active cmd buffer using
+  the frame's vertex sub-allocator.
+- `VkFrameRing` extended with a per-frame 1 MB host-visible vertex
+  sub-allocator (`allocateVertices`) alongside the existing 256 KB UBO
+  sub-allocator. Reset at the start of each frame. Sized for ~16 K
+  HudVertices or ~31 K LineVertices per frame.
+- `iron::GizmoRegistry` (`engine/debug/GizmoRegistry.h`) — backend-
+  agnostic retained-mode shape registry. Game code adds named,
+  categorized lines / AABBs / spheres with optional timed expiry;
+  `tick(dt, renderer)` advances expiries and emits `drawLine` for
+  enabled categories. AABBs tessellate into 12 edges; spheres into
+  3 great-circle loops of 32 segments each (96 lines). Each shape
+  gets a `GizmoId` handle that can be updated in place or removed.
+  Master toggle (`enableAll(bool)`) for F3-style on/off.
+
+### Scene-pass record order
+
+Per frame inside the active render pass:
+
+1. Scene geometry (the queue submitted via `Renderer::submit`)
+2. Particles (`iron::ParticleSystem::render`, M10)
+3. Debug lines (`Renderer::flushDebugLines` → `VkDebugLines::record`)
+4. HUD (`Renderer::drawHud` → `VkHud::record`)
+
+HUD is last so overlays sit on top of everything; debug-lines goes
+after particles so lines are visible through transparent particle
+puffs.
+
+### Net-shooter Vulkan port
+
+`games/07-net-shooter` no longer gates on the OpenGL backend. The
+Vulkan path uses an **unlit textured shader** matching the M9
+single-mat4-UBO contract (the existing `VulkanRenderer::submit` only
+uploads `mat4 mvp` per draw — no lighting uniforms). The game logs a
+one-time warning on Vulkan startup. Full lit-shader parity needs a
+future milestone to extend `submit` with a richer per-draw UBO
+(model/view/projection split, sun direction + color, ambient, point
+lights, emissive, etc.).
+
+Lag-comp AABBs and rocket-splash spheres are registered as gizmos in
+two categories (`"lagcomp"` and `"splash"`), toggled with F3. The
+host adds/updates an AABB per peer in `authStates` each frame and
+removes them when peers disconnect. Both host and client add a
+0.4-second splash sphere at rocket detonation sites (matching the
+existing `ExplosionFx` lifetime).
