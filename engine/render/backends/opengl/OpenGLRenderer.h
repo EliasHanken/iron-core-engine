@@ -97,6 +97,13 @@ private:
     int       pendingHudHeight_ = 0;
     bool      pendingHudValid_  = false;
 
+    // M11 — like HUD, debug-line flushing is deferred until endFrame so
+    // the lines land ON TOP of the lit pass instead of being overwritten
+    // by it.
+    Mat4  pendingDebugView_       = Mat4::identity();
+    Mat4  pendingDebugProjection_ = Mat4::identity();
+    bool  pendingDebugFlush_      = false;
+
     Mat4 computeLightViewProj() const;
 };
 

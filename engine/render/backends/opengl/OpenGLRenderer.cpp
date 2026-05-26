@@ -455,7 +455,14 @@ void OpenGLRenderer::endFrame() {
                           fog_.color, kHorizonFogBand);
     }
 
-    // --- Pass 5: drain any buffered HUD as the final operation so it
+    // --- Pass 5: drain queued debug lines AFTER the scene pass so they
+    // overlay the final lit framebuffer. ---
+    if (pendingDebugFlush_) {
+        debugLines_.flush(pendingDebugView_, pendingDebugProjection_);
+        pendingDebugFlush_ = false;
+    }
+
+    // --- Pass 6: drain any buffered HUD as the final operation so it
     // overlays the just-finalized default framebuffer. Uses the same GL
     // state setup the old drawHud body used: no depth test, alpha blend. ---
     if (pendingHudValid_) {
@@ -495,7 +502,11 @@ void OpenGLRenderer::drawLine(Vec3 a, Vec3 b, Vec3 color) {
 }
 
 void OpenGLRenderer::flushDebugLines(const Mat4& view, const Mat4& projection) {
-    debugLines_.flush(view, projection);
+    // M11 — buffer the (view, projection) pair; the actual GL draw happens
+    // at the tail of endFrame so lines overlay the completed lit pass.
+    pendingDebugView_       = view;
+    pendingDebugProjection_ = projection;
+    pendingDebugFlush_      = true;
 }
 
 void OpenGLRenderer::drawHud(const HudBatch& batch, int framebufferWidth,

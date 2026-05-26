@@ -419,6 +419,12 @@ int main(int argc, char** argv) {
     // Network stats widget (top-right)
     auto netStatsHud = hud.addNetworkStatsWidget(
         iron::Vec2{static_cast<float>(kScreenWidth) - 12.0f, 12.0f});
+    // Gizmo toggle indicator (bottom-right, yellow; avoids kill-feed at bottom-left)
+    const iron::HudId gizmoText = hud.addText("Gizmos: ON (F3)",
+                                              iron::Vec2{static_cast<float>(kScreenWidth) - 180.0f,
+                                                         static_cast<float>(kScreenHeight) - 24.0f},
+                                              1.5f,
+                                              iron::Vec4{1.0f, 1.0f, 0.4f, 1.0f});
 
     // -----------------------------------------------------------------------
     // Arena geometry (deterministic; same seed on all peers)
@@ -1559,6 +1565,9 @@ int main(int argc, char** argv) {
         // "Syncing..." overlay (client only, until ClockSync ready)
         const bool showSync = !peers.isHost() && haveIdentity && !peers.clockSync().ready();
         hud.setVisible(syncText, showSync);
+
+        // Gizmo toggle indicator (reflects current gizmosOn state)
+        hud.setText(gizmoText, gizmosOn ? "Gizmos: ON (F3)" : "Gizmos: OFF (F3)");
 
         // Network stats
         iron::ConnectionId statsConn = iron::kInvalidConnection;
