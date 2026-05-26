@@ -56,5 +56,42 @@ int main() {
         CHECK(r3.lines.size() == 0);
     }
 
+    // Disabled categories emit no lines.
+    {
+        GizmoRegistry g;
+        g.addLine("on",  {0,0,0}, {1,0,0}, {1,1,1});
+        g.addLine("off", {0,0,0}, {2,0,0}, {1,1,1});
+        g.enable("off", false);
+        MockRenderer r;
+        g.tick(0.016f, r);
+        CHECK(r.lines.size() == 1);
+        CHECK_NEAR(r.lines[0].b.x, 1.0f);
+    }
+
+    // enableAll(false) suppresses every category.
+    {
+        GizmoRegistry g;
+        g.addLine("a", {0,0,0}, {1,0,0}, {1,1,1});
+        g.addLine("b", {0,0,0}, {2,0,0}, {1,1,1});
+        g.enableAll(false);
+        MockRenderer r;
+        g.tick(0.016f, r);
+        CHECK(r.lines.size() == 0);
+
+        g.enableAll(true);
+        MockRenderer r2;
+        g.tick(0.016f, r2);
+        CHECK(r2.lines.size() == 2);
+    }
+
+    // isEnabled reflects the most recent enable() call.
+    {
+        GizmoRegistry g;
+        g.enable("x", false);
+        CHECK(!g.isEnabled("x"));
+        g.enable("x", true);
+        CHECK(g.isEnabled("x"));
+    }
+
     return iron_test_result();
 }
