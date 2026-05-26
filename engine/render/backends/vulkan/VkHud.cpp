@@ -68,7 +68,11 @@ bool VkHud::init(VkContext& ctx, VkRenderPass scenePass) {
     VK_CHECK(vkCreateShaderModule(ctx.device(), &smInfo, nullptr, &vsm));
     smInfo.codeSize = fspv.size() * sizeof(std::uint32_t);
     smInfo.pCode = fspv.data();
-    VK_CHECK(vkCreateShaderModule(ctx.device(), &smInfo, nullptr, &fsm));
+    if (vkCreateShaderModule(ctx.device(), &smInfo, nullptr, &fsm) != VK_SUCCESS) {
+        vkDestroyShaderModule(ctx.device(), vsm, nullptr);
+        Log::error("VkHud: fragment shader module creation failed");
+        return false;
+    }
 
     VkDescriptorSetLayoutBinding b[2]{};
     b[0].binding = 0;
@@ -225,7 +229,10 @@ void VkHud::record(VkCommandBuffer cb, VkDevice device, VkFrameRing& frames,
             continue;
         }
 
-        const VkTextureResource& tex = textures.get(group.texture);
+        const TextureHandle th = (group.texture == kInvalidHandle)
+                                     ? textures.whiteTexture()
+                                     : group.texture;
+        const VkTextureResource& tex = textures.get(th);
 
         VkDescriptorSetAllocateInfo daInfo{};
         daInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
