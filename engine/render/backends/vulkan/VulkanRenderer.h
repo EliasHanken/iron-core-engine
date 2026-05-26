@@ -9,6 +9,7 @@
 #include "render/backends/vulkan/VkSwapchain.h"
 #include "render/backends/vulkan/VkDebugLines.h"
 #include "render/backends/vulkan/VkHud.h"
+#include "render/backends/vulkan/VkShadowMap.h"
 #include "render/backends/vulkan/VkTexture.h"
 
 #include <cstdint>
@@ -142,6 +143,13 @@ private:
     // M13 — camera world position, extracted from view matrix at beginFrame.
     // Used by submit() for Blinn-Phong specular highlights in the lit shader.
     Vec3 pendingCameraPos_ = {0.0f, 0.0f, 0.0f};
+
+    // M14 — directional-light shadow state.
+    Vec3  pendingShadowCenter_  = {0.0f, 0.0f, 0.0f};
+    float pendingShadowRadius_  = 20.0f;
+    float pendingShadowBias_    = 0.002f;
+    Mat4  pendingLightViewProj_ = Mat4::identity();
+    VkShadowMap shadowMap_;
 
     // M14 — frame-flow state for defer-and-replay rendering.
     std::vector<DrawCall> sceneDraws_;

@@ -22,18 +22,20 @@ layout(location = 3) in vec3 aTangent;
 layout(set = 0, binding = 0) uniform LitUbo {
     mat4 mvp;
     mat4 model;
+    mat4 lightViewProj;
     vec4 sunDir;
     vec4 sunColor;
     vec4 ambient;
     vec4 emissive;
     vec4 cameraPos;
-    vec4 materialParams;
+    vec4 materialParams;  // x=uvScale, y=specPower, z=reflectivity, w=shadowBias
 } u;
 
 layout(location = 0) out vec3 vWorldPos;
 layout(location = 1) out vec3 vNormal;
 layout(location = 2) out vec3 vTangent;
 layout(location = 3) out vec2 vUV;
+layout(location = 4) out vec4 vLightSpacePos;
 
 void main() {
     vec4 world = u.model * vec4(aPos, 1.0);
@@ -41,6 +43,7 @@ void main() {
     vNormal = mat3(u.model) * aNormal;
     vTangent = mat3(u.model) * aTangent;
     vUV = aUV;
+    vLightSpacePos = u.lightViewProj * world;
     gl_Position = u.mvp * vec4(aPos, 1.0);
 }
 )";
@@ -50,26 +53,46 @@ layout(location = 0) in vec3 vWorldPos;
 layout(location = 1) in vec3 vNormal;
 layout(location = 2) in vec3 vTangent;
 layout(location = 3) in vec2 vUV;
+layout(location = 4) in vec4 vLightSpacePos;
 layout(location = 0) out vec4 outColor;
 
 layout(set = 0, binding = 0) uniform LitUbo {
     mat4 mvp;
     mat4 model;
+    mat4 lightViewProj;
     vec4 sunDir;
     vec4 sunColor;
     vec4 ambient;
     vec4 emissive;
     vec4 cameraPos;
-    vec4 materialParams;  // x=uvScale, y=specPower, z=reflectivity
+    vec4 materialParams;
 } u;
 
 layout(set = 0, binding = 1) uniform sampler2D uDiffuse;
 layout(set = 0, binding = 2) uniform sampler2D uNormalMap;
 layout(set = 0, binding = 3) uniform sampler2D uSpecularMap;
+layout(set = 0, binding = 4) uniform sampler2D uShadowMap;
+
+float shadowFactor(vec4 lightSpacePos, float bias) {
+    vec3 proj = lightSpacePos.xyz / lightSpacePos.w;
+    vec2 uv = proj.xy * 0.5 + 0.5;
+    if (proj.z > 1.0) return 1.0;
+    if (uv.x < 0.0 || uv.x > 1.0 || uv.y < 0.0 || uv.y > 1.0) return 1.0;
+    vec2 texel = 1.0 / vec2(textureSize(uShadowMap, 0));
+    float sum = 0.0;
+    for (int y = -1; y <= 1; ++y) {
+        for (int x = -1; x <= 1; ++x) {
+            float stored = texture(uShadowMap, uv + vec2(x, y) * texel).r;
+            sum += (proj.z - bias > stored) ? 0.0 : 1.0;
+        }
+    }
+    return sum / 9.0;
+}
 
 void main() {
     float uvScale   = u.materialParams.x;
     float specPower = u.materialParams.y;
+    float bias      = u.materialParams.w;
     vec2 uv = vUV * uvScale;
 
     vec3 N = normalize(vNormal);
@@ -83,11 +106,13 @@ void main() {
     vec3 V = normalize(u.cameraPos.xyz - vWorldPos);
     vec3 H = normalize(L + V);
 
-    float diffuse = max(dot(perturbedN, L), 0.0);
-    float spec    = pow(max(dot(perturbedN, H), 0.0), specPower);
+    float diffuse  = max(dot(perturbedN, L), 0.0);
+    float spec     = pow(max(dot(perturbedN, H), 0.0), specPower);
     float specMask = texture(uSpecularMap, uv).r;
+    float shadow   = shadowFactor(vLightSpacePos, bias);
 
-    vec3 lighting = u.sunColor.xyz * (diffuse + spec * specMask) + u.ambient.xyz;
+    vec3 lighting = u.sunColor.xyz * (diffuse * shadow + spec * specMask * shadow)
+                  + u.ambient.xyz;
     vec3 diff = texture(uDiffuse, uv).rgb;
     vec3 lit = diff * lighting + u.emissive.xyz;
     outColor = vec4(lit, 1.0);
@@ -175,6 +200,7 @@ int main() {
     // The renderer is selected at build time via the IRON_RENDER_BACKEND define.
     auto renderer_ptr = iron::createRenderer(app.window());
     iron::Renderer& renderer = *renderer_ptr;
+    renderer.setShadowBounds(iron::Vec3{0.0f, 0.0f, 0.0f}, 5.0f);
 
     const iron::MeshHandle cube = renderer.createMesh(iron::makeCube());
     const iron::ShaderHandle shader =
