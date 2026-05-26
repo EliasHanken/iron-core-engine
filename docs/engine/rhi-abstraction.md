@@ -498,3 +498,67 @@ each of 9 texel offsets sample the shadow map and compare to
 
 After M15-M17 land, the Vulkan backend reaches full parity with the
 OpenGL lit pass.
+
+## Vulkan point lights + fog (M15)
+
+Plumbing-only milestone — extends the Vulkan lit pass with the
+remaining UBO-only features. No new render passes, no new
+pipelines, no new descriptor bindings.
+
+### LitUbo grew to 832 bytes
+
+```cpp
+struct LitUbo {
+    Mat4 mvp;
+    Mat4 model;
+    Mat4 lightViewProj;
+    Vec4 sunDir;
+    Vec4 sunColor;
+    Vec4 ambient;
+    Vec4 emissive;
+    Vec4 cameraPos;
+    Vec4 materialParams;     // x=uvScale, y=specPower, z=reflectivity, w=shadowBias
+    Vec4 fogColor;           // M15 — xyz=color, w=density
+    Vec4 lightCounts;        // M15 — x=pointLightCount (as float)
+    Vec4 pointPositions[16]; // M15 — xyz=position, w=intensity
+    Vec4 pointColors[16];    // M15 — xyz=color, w=range
+};
+```
+
+Each point light is packed across two parallel array slots so the
+std140 stride remains a clean 16 bytes. The `kMaxPointLights = 16`
+constant matches the OpenGL backend. Excess lights are silently
+dropped at `beginFrame`.
+
+`VulkanRenderer::beginFrame` already accepts `std::span<const
+PointLight>` and `const Fog&` as args (existing since M9 — were
+silently ignored until now). M15 stores them in `pendingPointLights_`
++ `pendingPointLightCount_` + `pendingFog_`; `recordSceneDraw` packs
+them into the UBO.
+
+### Shader-side point light + fog
+
+The fragment shader's existing sun + shadow + ambient lighting is
+unchanged. After that block, a `for (int i = 0; i < count; ++i)`
+loop adds each point light's contribution: `1 - smoothstep(0, range,
+dist)` falloff (no inverse-square singularity), Lambertian +
+Blinn-Phong via the perturbed normal from the M13 TBN.
+
+Fog mix happens at the very end:
+`finalColor = mix(lit, fogColor.xyz, clamp(1 - exp(-density * d), 0, 1))`
+where `d = length(cameraPos - vWorldPos)`. When density = 0,
+fogFactor = 0, mix is a no-op.
+
+### Per-draw upload cost
+
+832 bytes per draw rounds to 1024 with 256-byte UBO alignment. At
+net-shooter's ~40 draws that's 40 KB per frame, well within the
+256 KB per-frame UBO sub-allocator budget.
+
+### What's still missing
+
+- Cubemap skybox + cubemap reflection — M16.
+- Planar reflection — M17.
+
+After M16-M17 land, the Vulkan backend reaches full parity with the
+OpenGL lit pass.

@@ -12,6 +12,7 @@
 #include "render/backends/vulkan/VkShadowMap.h"
 #include "render/backends/vulkan/VkTexture.h"
 
+#include <array>
 #include <cstdint>
 #include <functional>
 #include <string>
@@ -150,6 +151,11 @@ private:
     float pendingShadowBias_    = 0.002f;
     Mat4  pendingLightViewProj_ = Mat4::identity();
     VkShadowMap shadowMap_;
+
+    // M15 — point lights + fog (existing beginFrame args, now stored).
+    std::array<PointLight, kMaxPointLights> pendingPointLights_{};
+    int  pendingPointLightCount_ = 0;
+    Fog  pendingFog_{};
 
     // M14 — frame-flow state for defer-and-replay rendering.
     std::vector<DrawCall> sceneDraws_;
