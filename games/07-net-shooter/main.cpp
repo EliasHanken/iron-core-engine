@@ -57,34 +57,55 @@ constexpr int kScreenHeight = 720;
 
 #ifdef IRON_RENDER_BACKEND_VULKAN
 
-// Vulkan path: matches the M9 single-mat4 UBO contract (set=0 binding=0).
-// Net-shooter renders unlit-textured on Vulkan for M11; full lit shader
-// port lands when a future milestone extends VulkanRenderer::submit to
-// upload a richer UBO. Reference: games/01-spinning-cube/main.cpp.
 const char* kVertexShader = R"(#version 450
 layout(location = 0) in vec3 aPos;
 layout(location = 1) in vec3 aNormal;
 layout(location = 2) in vec2 aUV;
 layout(location = 3) in vec3 aTangent;
 
-layout(set = 0, binding = 0) uniform Ubo { mat4 uMvp; } ubo;
+layout(set = 0, binding = 0) uniform LitUbo {
+    mat4 mvp;
+    mat4 model;
+    vec4 sunDir;
+    vec4 sunColor;
+    vec4 ambient;
+    vec4 emissive;
+} u;
 
 layout(location = 0) out vec2 vUV;
+layout(location = 1) out vec3 vNormal;
 
 void main() {
     vUV = aUV;
-    gl_Position = ubo.uMvp * vec4(aPos, 1.0);
+    vNormal = mat3(u.model) * aNormal;
+    gl_Position = u.mvp * vec4(aPos, 1.0);
 }
 )";
 
 const char* kFragmentShader = R"(#version 450
-layout(set = 0, binding = 1) uniform sampler2D uTex;
-
 layout(location = 0) in vec2 vUV;
+layout(location = 1) in vec3 vNormal;
 layout(location = 0) out vec4 outColor;
 
+layout(set = 0, binding = 0) uniform LitUbo {
+    mat4 mvp;
+    mat4 model;
+    vec4 sunDir;
+    vec4 sunColor;
+    vec4 ambient;
+    vec4 emissive;
+} u;
+
+layout(set = 0, binding = 1) uniform sampler2D uTex;
+
 void main() {
-    outColor = texture(uTex, vUV);
+    vec3 N = normalize(vNormal);
+    vec3 L = -normalize(u.sunDir.xyz);
+    float lambert = max(dot(N, L), 0.0);
+    vec3 lighting = u.sunColor.xyz * lambert + u.ambient.xyz;
+    vec3 diff = texture(uTex, vUV).rgb;
+    vec3 lit = diff * lighting + u.emissive.xyz;
+    outColor = vec4(lit, 1.0);
 }
 )";
 
@@ -343,9 +364,10 @@ int main(int argc, char** argv) {
     }
 
 #ifdef IRON_RENDER_BACKEND_VULKAN
-    iron::Log::warn("net-shooter Vulkan path is unlit textured "
-                    "(no lighting / shadows / cubemap / reflection / fog / emissive). "
-                    "Full lit-shader parity ships in a later milestone.");
+    iron::Log::warn("net-shooter Vulkan path: sun + ambient + emissive lit. "
+                    "Still missing point lights, fog, shadows, cubemap "
+                    "reflections, and normal/spec maps. Full parity ships "
+                    "in future milestones.");
 #endif
 
     // Skybox
