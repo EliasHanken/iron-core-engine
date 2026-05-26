@@ -46,15 +46,19 @@ bool VkFrameRing::initFrame(VkContext& ctx, Frame& f) {
     fenceInfo.flags = VK_FENCE_CREATE_SIGNALED_BIT;
     VK_CHECK(vkCreateFence(ctx.device(), &fenceInfo, nullptr, &f.inFlight));
 
-    // Descriptor pool — sized to spec (128 sets / 128 UBO / 128 sampler)
+    // Descriptor pool — sized for 128 sets, capacity for each descriptor
+    // type used by any pipeline that allocates from this pool. M10's
+    // ParticleSystem render pipeline reads from an SSBO (vertex stage),
+    // so STORAGE_BUFFER capacity is required here.
     VkDescriptorPoolSize sizes[] = {
-        {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, kMaxDescriptorSetsPerFrame},
+        {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,         kMaxDescriptorSetsPerFrame},
         {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, kMaxDescriptorSetsPerFrame},
+        {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,         kMaxDescriptorSetsPerFrame},
     };
     VkDescriptorPoolCreateInfo dpInfo{};
     dpInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
     dpInfo.maxSets = kMaxDescriptorSetsPerFrame;
-    dpInfo.poolSizeCount = 2;
+    dpInfo.poolSizeCount = 3;
     dpInfo.pPoolSizes = sizes;
     VK_CHECK(vkCreateDescriptorPool(ctx.device(), &dpInfo, nullptr, &f.descriptorPool));
 

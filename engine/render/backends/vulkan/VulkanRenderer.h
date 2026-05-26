@@ -71,6 +71,28 @@ public:
 
     void setViewport(int width, int height) override;
 
+    // --- engine-internal accessors (not part of iron::Renderer) ---
+
+    // Returns the current frame's primary command buffer. Only meaningful
+    // between Renderer::beginFrame and Renderer::endFrame. Used by
+    // external Vulkan subsystems (e.g., iron::ParticleSystem) that need
+    // to record draws into the active render pass.
+    VkCommandBuffer currentCommandBuffer();
+
+    // Exposes the frame ring so external Vulkan subsystems can allocate
+    // per-frame UBO storage and descriptor sets that live until the
+    // next time this frame index is reused.
+    VkFrameRing& frameRing();
+
+    // Engine-internal: expose the VkContext so external Vulkan subsystems
+    // can allocate their own VMA buffers + Vulkan objects.
+    VkContext& context();
+
+    // Engine-internal: the render pass for the scene's main color+depth pass.
+    // External subsystems creating their own graphics pipelines reuse it so
+    // their draws go into the same framebuffer.
+    VkRenderPass scenePass() const;
+
 private:
     void warnOnce(const char* feature);
     bool recreateSwapchainAndFramebuffers(int width, int height);
@@ -86,14 +108,10 @@ private:
     VkTextureStore  textures_;
     VkShaderStore   shaders_;
 
-    // Per-frame transient state, populated by beginFrame, consumed by endFrame.
-    struct PendingDraw {
-        MeshHandle    mesh;
-        ShaderHandle  shader;
-        TextureHandle texture;
-        Mat4          mvp;
-    };
-    std::vector<PendingDraw> pendingDraws_;
+    // Per-frame transient state. beginFrame records into the active
+    // command buffer; submit() and external systems' record paths
+    // (e.g., iron::ParticleSystem::render) read these when computing
+    // their MVPs / camera UBOs.
     Vec3      pendingClear_{0,0,0};
     Mat4      pendingView_       = Mat4::identity();
     Mat4      pendingProjection_ = Mat4::identity();
