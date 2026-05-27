@@ -592,7 +592,7 @@ void VulkanRenderer::endFrame() {
             // are read by the reflection vert shader. Zero the rest.
             LitUbo ubo{};
             ubo.model = call.model;
-            ubo.reflectionViewProj = reflectionVP * call.model;
+            ubo.reflectionViewProj = reflectionVP;
             ubo.clipPlane = Vec4{plane.normal.x, plane.normal.y, plane.normal.z,
                                   -plane.d};
 
