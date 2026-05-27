@@ -48,7 +48,12 @@ public:
     // Per-tick. `desiredVelocity` is the world-space horizontal velocity
     // (x and z; y is ignored — gravity owns y). `wantJump` is one-shot:
     // sets vy = jumpVelocity if grounded, ignored otherwise.
-    void update(float dt, Vec3 desiredVelocity, bool wantJump);
+    //
+    // `grounded` is the caller's trusted ground state (e.g., from a
+    // previous step's `isGrounded()` snapshot stored in game state). Used
+    // only to gate the jump impulse — internal Jolt state may be stale
+    // when the caller has teleported the character via setFootPosition.
+    void update(float dt, Vec3 desiredVelocity, bool wantJump, bool grounded);
 
     // State accessors.
     Vec3 footPosition() const;

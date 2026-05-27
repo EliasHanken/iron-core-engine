@@ -77,14 +77,14 @@ void CharacterController::destroy(PhysicsWorld&) {
     impl_->system    = nullptr;
 }
 
-void CharacterController::update(float dt, Vec3 desiredVelocity, bool wantJump) {
+void CharacterController::update(float dt, Vec3 desiredVelocity, bool wantJump, bool grounded) {
     if (!impl_->character || !impl_->system || !impl_->world) return;
     auto& ch = *impl_->character;
 
     JPH::Vec3 v = ch.GetLinearVelocity();
     v.SetX(desiredVelocity.x);
     v.SetZ(desiredVelocity.z);
-    if (wantJump && ch.GetGroundState() == JPH::CharacterVirtual::EGroundState::OnGround) {
+    if (wantJump && grounded) {
         v.SetY(impl_->cfg.jumpVelocity);
     } else {
         v.SetY(v.GetY() + impl_->cfg.gravity * dt);
