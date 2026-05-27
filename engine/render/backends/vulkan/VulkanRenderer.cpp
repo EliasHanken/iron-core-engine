@@ -27,6 +27,12 @@ VulkanRenderer::~VulkanRenderer() {
         skybox_.destroy(context_);
         shadowMap_.destroy(context_);
         debugLines_.destroy(context_);
+        if (reflectionPipeline_)       vkDestroyPipeline(context_.device(), reflectionPipeline_, nullptr);
+        if (reflectionPipelineLayout_) vkDestroyPipelineLayout(context_.device(), reflectionPipelineLayout_, nullptr);
+        if (reflectionSetLayout_)      vkDestroyDescriptorSetLayout(context_.device(), reflectionSetLayout_, nullptr);
+        if (reflectionVertModule_)     vkDestroyShaderModule(context_.device(), reflectionVertModule_, nullptr);
+        if (reflectionFragModule_)     vkDestroyShaderModule(context_.device(), reflectionFragModule_, nullptr);
+        reflection_.destroy(context_);
         pipelines_.destroy(context_);
         frames_.destroy(context_);
         swapchain_.destroy(context_);
@@ -73,6 +79,14 @@ bool VulkanRenderer::init(Window& window) {
     }
     if (!skybox_.init(context_, scenePass())) {
         Log::error("VulkanRenderer: VkSkybox init failed");
+        return false;
+    }
+    if (!reflection_.init(context_, textures_.sampler())) {
+        Log::error("VulkanRenderer: VkReflectionTarget init failed");
+        return false;
+    }
+    if (!buildReflectionPipeline()) {
+        Log::error("VulkanRenderer: reflection pipeline build failed");
         return false;
     }
     initOk_ = true;
@@ -219,6 +233,63 @@ void setSceneViewport(VkCommandBuffer cb, VkExtent2D extent) {
     VkRect2D scissor{{0, 0}, extent};
     vkCmdSetScissor(cb, 0, 1, &scissor);
 }
+
+const char* kReflectionVert = R"(#version 450
+layout(location = 0) in vec3 aPos;
+layout(location = 1) in vec3 aNormal;
+layout(location = 2) in vec2 aUV;
+layout(location = 3) in vec3 aTangent;
+
+// Full LitUbo std140 layout (928 bytes after M17). We reference only
+// `model`, `reflectionViewProj`, and `clipPlane`.
+layout(set = 0, binding = 0) uniform LitUbo {
+    mat4 mvp;
+    mat4 model;
+    mat4 lightViewProj;
+    vec4 sunDir;
+    vec4 sunColor;
+    vec4 ambient;
+    vec4 emissive;
+    vec4 cameraPos;
+    vec4 materialParams;
+    vec4 fogColor;
+    vec4 lightCounts;
+    vec4 pointPositions[16];
+    vec4 pointColors[16];
+    mat4 reflectionViewProj;
+    vec4 reflectionParams;
+    vec4 clipPlane;
+} u;
+
+out gl_PerVertex {
+    vec4 gl_Position;
+    float gl_ClipDistance[1];
+};
+
+layout(location = 0) out vec2 vUV;
+layout(location = 1) out vec3 vNormal;
+
+void main() {
+    vec4 worldPos = u.model * vec4(aPos, 1.0);
+    vUV = aUV;
+    vNormal = mat3(u.model) * aNormal;
+    gl_ClipDistance[0] = dot(worldPos.xyz, u.clipPlane.xyz) + u.clipPlane.w;
+    gl_Position = u.reflectionViewProj * worldPos;
+}
+)";
+
+const char* kReflectionFrag = R"(#version 450
+layout(location = 0) in vec2 vUV;
+layout(location = 1) in vec3 vNormal;
+layout(set = 0, binding = 1) uniform sampler2D uDiffuse;
+layout(location = 0) out vec4 outColor;
+void main() {
+    vec3 n = normalize(vNormal);
+    float diffuse = max(dot(n, normalize(vec3(0.3, 1.0, 0.2))), 0.0);
+    vec4 texel = texture(uDiffuse, vUV);
+    outColor = vec4(texel.rgb * (0.3 + 0.7 * diffuse), texel.a);
+}
+)";
 }  // namespace
 
 void VulkanRenderer::beginFrame(Vec3 clearColor, const DirectionalLight& light,
@@ -573,6 +644,147 @@ void VulkanRenderer::enqueueDeferredScenePass(
         std::function<void(VkCommandBuffer)> fn) {
     if (skipFrame_) return;
     deferredScenePass_.push_back(std::move(fn));
+}
+
+bool VulkanRenderer::buildReflectionPipeline() {
+    // --- Descriptor set layout: UBO (0) + diffuse (1) ---
+    VkDescriptorSetLayoutBinding b[2]{};
+    b[0].binding = 0;
+    b[0].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+    b[0].descriptorCount = 1;
+    b[0].stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
+    b[1].binding = 1;
+    b[1].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    b[1].descriptorCount = 1;
+    b[1].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+
+    VkDescriptorSetLayoutCreateInfo sli{};
+    sli.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+    sli.bindingCount = 2;
+    sli.pBindings = b;
+    VK_CHECK(vkCreateDescriptorSetLayout(context_.device(), &sli, nullptr,
+                                          &reflectionSetLayout_));
+
+    // --- Pipeline layout ---
+    VkPipelineLayoutCreateInfo pli{};
+    pli.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+    pli.setLayoutCount = 1;
+    pli.pSetLayouts = &reflectionSetLayout_;
+    VK_CHECK(vkCreatePipelineLayout(context_.device(), &pli, nullptr,
+                                     &reflectionPipelineLayout_));
+
+    // --- Compile shaders to SPIR-V via the engine's existing helper ---
+    auto vertSpv = compileGlsl(VK_SHADER_STAGE_VERTEX_BIT, kReflectionVert);
+    if (vertSpv.empty()) {
+        Log::error("VulkanRenderer: reflection vert SPIR-V compile failed");
+        return false;
+    }
+    auto fragSpv = compileGlsl(VK_SHADER_STAGE_FRAGMENT_BIT, kReflectionFrag);
+    if (fragSpv.empty()) {
+        Log::error("VulkanRenderer: reflection frag SPIR-V compile failed");
+        return false;
+    }
+
+    VkShaderModuleCreateInfo smInfo{};
+    smInfo.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
+    smInfo.codeSize = vertSpv.size() * sizeof(uint32_t);
+    smInfo.pCode    = vertSpv.data();
+    VK_CHECK(vkCreateShaderModule(context_.device(), &smInfo, nullptr,
+                                   &reflectionVertModule_));
+    smInfo.codeSize = fragSpv.size() * sizeof(uint32_t);
+    smInfo.pCode    = fragSpv.data();
+    VK_CHECK(vkCreateShaderModule(context_.device(), &smInfo, nullptr,
+                                   &reflectionFragModule_));
+
+    VkPipelineShaderStageCreateInfo stages[2]{};
+    stages[0].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+    stages[0].stage = VK_SHADER_STAGE_VERTEX_BIT;
+    stages[0].module = reflectionVertModule_;
+    stages[0].pName = "main";
+    stages[1].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+    stages[1].stage = VK_SHADER_STAGE_FRAGMENT_BIT;
+    stages[1].module = reflectionFragModule_;
+    stages[1].pName = "main";
+
+    // --- Vertex input — match VkMesh layout (Pos, Normal, UV, Tangent) ---
+    VkVertexInputBindingDescription bind{};
+    bind.binding = 0;
+    bind.stride = 11 * sizeof(float);  // 3+3+2+3 = 11 floats
+    bind.inputRate = VK_VERTEX_INPUT_RATE_VERTEX;
+
+    VkVertexInputAttributeDescription attrs[4]{};
+    attrs[0] = {0, 0, VK_FORMAT_R32G32B32_SFLOAT, 0};
+    attrs[1] = {1, 0, VK_FORMAT_R32G32B32_SFLOAT, 3 * sizeof(float)};
+    attrs[2] = {2, 0, VK_FORMAT_R32G32_SFLOAT,    6 * sizeof(float)};
+    attrs[3] = {3, 0, VK_FORMAT_R32G32B32_SFLOAT, 8 * sizeof(float)};
+
+    VkPipelineVertexInputStateCreateInfo vinfo{};
+    vinfo.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
+    vinfo.vertexBindingDescriptionCount = 1;
+    vinfo.pVertexBindingDescriptions = &bind;
+    vinfo.vertexAttributeDescriptionCount = 4;
+    vinfo.pVertexAttributeDescriptions = attrs;
+
+    VkPipelineInputAssemblyStateCreateInfo iaInfo{};
+    iaInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO;
+    iaInfo.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+
+    VkPipelineViewportStateCreateInfo vpInfo{};
+    vpInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO;
+    vpInfo.viewportCount = 1;
+    vpInfo.scissorCount = 1;
+
+    VkPipelineRasterizationStateCreateInfo rs{};
+    rs.sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO;
+    rs.polygonMode = VK_POLYGON_MODE_FILL;
+    rs.cullMode = VK_CULL_MODE_NONE;  // mirror flips winding; disable cull
+    rs.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE;
+    rs.lineWidth = 1.0f;
+
+    VkPipelineMultisampleStateCreateInfo ms{};
+    ms.sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO;
+    ms.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
+
+    VkPipelineDepthStencilStateCreateInfo ds{};
+    ds.sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO;
+    ds.depthTestEnable = VK_TRUE;
+    ds.depthWriteEnable = VK_TRUE;
+    ds.depthCompareOp = VK_COMPARE_OP_LESS;
+
+    VkPipelineColorBlendAttachmentState cba{};
+    cba.colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT |
+                         VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
+
+    VkPipelineColorBlendStateCreateInfo cb{};
+    cb.sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO;
+    cb.attachmentCount = 1;
+    cb.pAttachments = &cba;
+
+    VkDynamicState dyn[] = {VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR};
+    VkPipelineDynamicStateCreateInfo dynInfo{};
+    dynInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO;
+    dynInfo.dynamicStateCount = 2;
+    dynInfo.pDynamicStates = dyn;
+
+    VkGraphicsPipelineCreateInfo gp{};
+    gp.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
+    gp.stageCount = 2;
+    gp.pStages = stages;
+    gp.pVertexInputState   = &vinfo;
+    gp.pInputAssemblyState = &iaInfo;
+    gp.pViewportState      = &vpInfo;
+    gp.pRasterizationState = &rs;
+    gp.pMultisampleState   = &ms;
+    gp.pDepthStencilState  = &ds;
+    gp.pColorBlendState    = &cb;
+    gp.pDynamicState       = &dynInfo;
+    gp.layout = reflectionPipelineLayout_;
+    gp.renderPass = reflection_.renderPass();
+    gp.subpass = 0;
+
+    VK_CHECK(vkCreateGraphicsPipelines(context_.device(), VK_NULL_HANDLE,
+                                        1, &gp, nullptr, &reflectionPipeline_));
+    return true;
 }
 
 }  // namespace iron
