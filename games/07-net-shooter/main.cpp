@@ -796,6 +796,7 @@ int main(int argc, char** argv) {
         std::uint32_t  projectileId;
         std::uint32_t  ownerPeerId;
         double         spawnTimeSec;
+        iron::Vec3     initialVelocity;   // M21 fixup: re-applied each tick
     };
     std::unordered_map<std::uint32_t, HostRocket> hostRockets;
 
@@ -1261,7 +1262,7 @@ int main(int argc, char** argv) {
             iron::BodyId body = worldShared.createDynamicSphere(spawnPos, kRadius, kMass);
             worldShared.setVelocity(body, velocity);
 
-            hostRockets[projId] = HostRocket{body, projId, *pid, nowSec()};
+            hostRockets[projId] = HostRocket{body, projId, *pid, nowSec(), velocity};
 
             peers.broadcastToAll<iron::netshooter::SpawnProjectileMsg>(
                 iron::netshooter::SpawnProjectileMsg{
@@ -1568,7 +1569,7 @@ int main(int argc, char** argv) {
                             };
                             iron::BodyId body = worldShared.createDynamicSphere(rocketSpawn, kRadius, kMass);
                             worldShared.setVelocity(body, velocity);
-                            hostRockets[projId] = HostRocket{body, projId, 0u, localNow};
+                            hostRockets[projId] = HostRocket{body, projId, 0u, localNow, velocity};
 
                             peers.broadcastToAll<iron::netshooter::SpawnProjectileMsg>(
                                 iron::netshooter::SpawnProjectileMsg{
@@ -1624,14 +1625,11 @@ int main(int argc, char** argv) {
                 // it inline.
                 worldShared.step(simDt);
 
-                // Cancel gravity by clamping each rocket's vy >= 0. Rockets
-                // are kinematic-feeling (constant velocity).
+                // M21 fixup — re-apply each rocket's initial velocity. This both
+                // cancels gravity AND preserves the user's intended aim direction
+                // (including downward shots — clamping vy >= 0 was the M20 bug).
                 for (const auto& [id, rocket] : hostRockets) {
-                    iron::Vec3 v = worldShared.velocityOf(rocket.body);
-                    if (v.y < 0.0f) {
-                        v.y = 0.0f;
-                        worldShared.setVelocity(rocket.body, v);
-                    }
+                    worldShared.setVelocity(rocket.body, rocket.initialVelocity);
                 }
 
                 // Process contact-driven despawns.
