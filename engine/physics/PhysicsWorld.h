@@ -5,6 +5,7 @@
 #include "math/Vec.h"
 
 #include <cstdint>
+#include <functional>
 #include <memory>
 
 namespace iron {
@@ -24,6 +25,13 @@ inline constexpr JointId kInvalidJoint {};
 
 inline bool operator==(BodyId  a, BodyId  b) { return a.value == b.value; }
 inline bool operator==(JointId a, JointId b) { return a.value == b.value; }
+
+struct ContactEvent {
+    BodyId bodyA;
+    BodyId bodyB;
+    Vec3   point;    // world-space contact point
+    Vec3   normal;   // world-space contact normal (points from bodyB into bodyA)
+};
 
 // Thin engine wrapper around Jolt Physics. Hides all Jolt types from
 // public headers via pimpl: game code includes only this header and the
@@ -66,6 +74,7 @@ public:
     void applyImpulse     (BodyId, Vec3 impulse);
     void applyForceAtPoint(BodyId, Vec3 force, Vec3 worldPoint);
     void setVelocity      (BodyId, Vec3 vel);
+    Vec3 velocityOf(BodyId) const;
 
     // --- Queries ---
     struct RaycastHit {
@@ -93,6 +102,13 @@ public:
                              float minAngleRad, float maxAngleRad);
 
     void destroyJoint(JointId);
+
+    // --- Contact callback ---
+    // Fires when two bodies start touching. Called DURING step(); the
+    // callback MUST NOT mutate the PhysicsWorld. Record into a queue and
+    // process after step() returns. Setting a new callback replaces the
+    // previous one. Pass nullptr to disable.
+    void onContactStarted(std::function<void(const ContactEvent&)> cb);
 
     // Internal pimpl — exposed in header so other engine TUs (Ragdoll,
     // CharacterController, future joint/constraint helpers) can reach

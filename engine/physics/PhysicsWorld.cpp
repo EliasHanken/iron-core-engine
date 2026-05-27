@@ -21,8 +21,12 @@
 #include <Jolt/Physics/Body/BodyLockInterface.h>
 #include <Jolt/Physics/Constraints/SwingTwistConstraint.h>
 #include <Jolt/Physics/Constraints/HingeConstraint.h>
+#include <Jolt/Physics/Collision/ContactListener.h>
+#include <Jolt/Physics/Body/BodyLockInterface.h>
 #include <Jolt/RegisterTypes.h>
 
+#include <functional>
+#include <utility>
 #include <vector>
 
 namespace iron {
@@ -100,6 +104,39 @@ inline JPH::BodyID toJoltBodyId(BodyId b) {
     return JPH::BodyID(b.value);
 }
 
+class ContactListenerImpl final : public JPH::ContactListener {
+public:
+    using UserCallback = std::function<void(const ContactEvent&)>;
+    void setUserCallback(UserCallback cb) { user_ = std::move(cb); }
+
+    void OnContactAdded(const JPH::Body& body1, const JPH::Body& body2,
+                        const JPH::ContactManifold& manifold,
+                        JPH::ContactSettings& /*settings*/) override {
+        if (!user_) return;
+        ContactEvent evt;
+        evt.bodyA = BodyId{body1.GetID().GetIndexAndSequenceNumber()};
+        evt.bodyB = BodyId{body2.GetID().GetIndexAndSequenceNumber()};
+        if (manifold.mRelativeContactPointsOn1.size() > 0) {
+            const JPH::RVec3 base = manifold.mBaseOffset;
+            const JPH::Vec3 p1    = manifold.mRelativeContactPointsOn1[0];
+            evt.point = Vec3{
+                static_cast<float>(base.GetX()) + p1.GetX(),
+                static_cast<float>(base.GetY()) + p1.GetY(),
+                static_cast<float>(base.GetZ()) + p1.GetZ(),
+            };
+        } else {
+            evt.point = Vec3{};
+        }
+        evt.normal = Vec3{manifold.mWorldSpaceNormal.GetX(),
+                          manifold.mWorldSpaceNormal.GetY(),
+                          manifold.mWorldSpaceNormal.GetZ()};
+        user_(evt);
+    }
+
+private:
+    UserCallback user_;
+};
+
 }  // namespace
 
 struct PhysicsWorld::Impl {
@@ -113,6 +150,8 @@ struct PhysicsWorld::Impl {
     // Joints: linear table indexed by JointId::value-1. Entry 0 reserved
     // as kInvalidJoint; valid entries start at index 0 with JointId.value = 1.
     std::vector<JPH::Ref<JPH::TwoBodyConstraint>> joints;
+
+    ContactListenerImpl contactListener;
 };
 
 PhysicsWorld::PhysicsWorld() : impl_(std::make_unique<Impl>()) {}
@@ -140,6 +179,7 @@ bool PhysicsWorld::init() {
         impl_->broadphaseLayers,
         impl_->objectVsBroadphase,
         impl_->objectVsObject);
+    impl_->system->SetContactListener(&impl_->contactListener);
     impl_->system->SetGravity(JPH::Vec3(0.0f, -9.81f, 0.0f));
 
     Log::info("PhysicsWorld: Jolt initialized (deterministic single-threaded mode)");
@@ -249,6 +289,11 @@ void PhysicsWorld::setVelocity(BodyId b, Vec3 v) {
     if (!b.isValid()) return;
     impl_->system->GetBodyInterface().SetLinearVelocity(toJoltBodyId(b), toJ(v));
 }
+Vec3 PhysicsWorld::velocityOf(BodyId b) const {
+    if (!b.isValid()) return {};
+    const JPH::Vec3 v = impl_->system->GetBodyInterface().GetLinearVelocity(toJoltBodyId(b));
+    return Vec3{v.GetX(), v.GetY(), v.GetZ()};
+}
 
 PhysicsWorld::RaycastHit PhysicsWorld::raycast(Vec3 o, Vec3 d, float maxDist) const {
     RaycastHit out;
@@ -263,8 +308,15 @@ PhysicsWorld::RaycastHit PhysicsWorld::raycast(Vec3 o, Vec3 d, float maxDist) co
     out.t = hit.mFraction;
     const JPH::Vec3 pt = ray.GetPointOnRay(hit.mFraction);
     out.point = toI(pt);
-    // Normal extraction requires body locking — placeholder for v1.
-    out.normal = Vec3{0.0f, 1.0f, 0.0f};
+    // Lock the hit body to extract the real surface normal.
+    {
+        JPH::BodyLockRead lock(impl_->system->GetBodyLockInterface(), hit.mBodyID);
+        if (lock.Succeeded()) {
+            const JPH::Body& body = lock.GetBody();
+            const JPH::Vec3 n = body.GetWorldSpaceSurfaceNormal(hit.mSubShapeID2, pt);
+            out.normal = Vec3{n.GetX(), n.GetY(), n.GetZ()};
+        }
+    }
     return out;
 }
 
@@ -335,6 +387,10 @@ void PhysicsWorld::destroyJoint(JointId j) {
         impl_->system->RemoveConstraint(c);
         c = nullptr;
     }
+}
+
+void PhysicsWorld::onContactStarted(std::function<void(const ContactEvent&)> cb) {
+    impl_->contactListener.setUserCallback(std::move(cb));
 }
 
 namespace internal {

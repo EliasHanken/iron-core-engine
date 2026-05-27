@@ -76,5 +76,36 @@ int main() {
         CHECK_NEAR(pa.z, pb.z);
     }
 
+    // --- Raycast normal: ray straight down onto a horizontal ground top ---
+    {
+        PhysicsWorld w; w.init();
+        w.createStaticBox({0.0f, -0.5f, 0.0f}, {25.0f, 0.5f, 25.0f});  // top at y=0
+        w.step(1.0f / 60.0f);  // commit body to broadphase
+
+        auto hit = w.raycast({0.0f, 10.0f, 0.0f}, {0.0f, -1.0f, 0.0f}, 20.0f);
+        CHECK(hit.hit);
+        // Surface normal of the top face points UP.
+        CHECK(hit.normal.y > 0.9f);
+    }
+
+    // --- Contact callback fires when a dynamic box lands on a static ground ---
+    {
+        PhysicsWorld w; w.init();
+        w.createStaticBox({0.0f, -0.5f, 0.0f}, {25.0f, 0.5f, 25.0f});
+        BodyId dyn = w.createDynamicBox({0.0f, 5.0f, 0.0f}, {0.5f, 0.5f, 0.5f}, 1.0f);
+
+        int contactCount = 0;
+        w.onContactStarted([&](const ContactEvent& evt) {
+            if (evt.bodyA == dyn || evt.bodyB == dyn) {
+                ++contactCount;
+            }
+        });
+
+        // 3 seconds is more than enough for the box to fall and touch ground.
+        for (int i = 0; i < 180; ++i) w.step(1.0f / 60.0f);
+
+        CHECK(contactCount >= 1);
+    }
+
     return iron_test_result();
 }
