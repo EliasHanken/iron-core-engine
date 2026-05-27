@@ -38,20 +38,21 @@ Related: [[render-pipeline]], [[transforms-and-projection]]
 The engine ships two parallel render backends behind the abstract
 `iron::Renderer` interface:
 
-- **OpenGL 3.3** (`engine/render/backends/opengl/`) — the default. Full
-  feature set: shadow map, cubemap skybox, planar reflection, HUD,
-  debug lines.
-- **Vulkan 1.3** (`engine/render/backends/vulkan/`) — foundation only as
-  of M9. Implements mesh / texture / shader / single render pass.
-  Cubemap, skybox, shadow, reflection, debug-lines, and HUD methods log a
-  one-time warning and return safely. Subsequent milestones port each
-  feature.
+- **Vulkan 1.3** (`engine/render/backends/vulkan/`) — the default and
+  the actively-developed backend. Full feature set: shadow map, cubemap
+  skybox, cubemap reflection, planar reflection, HUD, debug lines,
+  GPU compute particles.
+- **OpenGL 3.3** (`engine/render/backends/opengl/`) — **deprecated and
+  frozen** as of M17 (2026-05-27). No new features land here. Still
+  compiles and runs the demos it shipped with (`02-strandbound`,
+  `04-net-pingpong`, `05-net-cubes`, `06-net-tag`). Same feature set
+  as Vulkan minus the GPU compute particle system.
 
 Selection is build-time:
 
 ```
-cmake -S . -B build -DIRON_RENDER_BACKEND=opengl    # default
-cmake -S . -B build -DIRON_RENDER_BACKEND=vulkan
+cmake -S . -B build                                  # Vulkan (default)
+cmake -S . -B build -DIRON_RENDER_BACKEND=opengl     # OpenGL (deprecated)
 ```
 
 Only the chosen backend is compiled and linked. Game code calls

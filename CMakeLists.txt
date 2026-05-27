@@ -56,17 +56,17 @@ endif()
 find_package(GameNetworkingSockets CONFIG REQUIRED)
 find_package(Jolt CONFIG REQUIRED)
 
-set(IRON_RENDER_BACKEND "opengl" CACHE STRING
-    "Render backend: opengl or vulkan")
-set_property(CACHE IRON_RENDER_BACKEND PROPERTY STRINGS opengl vulkan)
+set(IRON_RENDER_BACKEND "vulkan" CACHE STRING
+    "Render backend: vulkan (default) or opengl (deprecated, frozen)")
+set_property(CACHE IRON_RENDER_BACKEND PROPERTY STRINGS vulkan opengl)
 
 if (IRON_RENDER_BACKEND STREQUAL "vulkan")
     find_package(Vulkan REQUIRED)
     find_package(VulkanMemoryAllocator CONFIG REQUIRED)
     find_package(glslang CONFIG REQUIRED)
-    message(STATUS "Iron: building with Vulkan backend")
+    message(STATUS "Iron: building with Vulkan backend (default)")
 else()
-    message(STATUS "Iron: building with OpenGL backend (default)")
+    message(STATUS "Iron: building with OpenGL backend (deprecated)")
 endif()
 
 add_subdirectory(third_party)

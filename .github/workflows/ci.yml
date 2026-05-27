@@ -74,4 +74,9 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Test
-        run: ctest --test-dir build -C Debug --output-on-failure
+        env:
+          # GPU-touching tests check this and skip — no real GPU/ICD on the runner.
+          IRON_CI: '1'
+        # --timeout 60 is a defense-in-depth: if a test hangs despite IRON_CI,
+        # ctest kills it as a failure after 60s so we see which one.
+        run: ctest --test-dir build -C Debug --output-on-failure --timeout 60
