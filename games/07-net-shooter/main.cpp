@@ -77,6 +77,9 @@ layout(set = 0, binding = 0) uniform LitUbo {
     vec4 lightCounts;
     vec4 pointPositions[16];
     vec4 pointColors[16];
+    mat4 reflectionViewProj;  // M17 (unused in scene shader, here for layout parity)
+    vec4 reflectionParams;    // M17 x=useReflectionPlane, yz=screenSize, w=0
+    vec4 clipPlane;           // M17 — used only by reflection-pass shader
 } u;
 
 layout(location = 0) out vec3 vWorldPos;
@@ -118,6 +121,9 @@ layout(set = 0, binding = 0) uniform LitUbo {
     vec4 lightCounts;
     vec4 pointPositions[16];
     vec4 pointColors[16];
+    mat4 reflectionViewProj;  // M17 (unused in scene shader, here for layout parity)
+    vec4 reflectionParams;    // M17 x=useReflectionPlane, yz=screenSize, w=0
+    vec4 clipPlane;           // M17 — used only by reflection-pass shader
 } u;
 
 layout(set = 0, binding = 1) uniform sampler2D uDiffuse;
@@ -125,6 +131,7 @@ layout(set = 0, binding = 2) uniform sampler2D uNormalMap;
 layout(set = 0, binding = 3) uniform sampler2D uSpecularMap;
 layout(set = 0, binding = 4) uniform sampler2D uShadowMap;
 layout(set = 0, binding = 5) uniform samplerCube uSkyCubemap;
+layout(set = 0, binding = 6) uniform sampler2D uReflection;
 
 float shadowFactor(vec4 lightSpacePos, float bias) {
     vec3 proj = lightSpacePos.xyz / lightSpacePos.w;
@@ -187,9 +194,13 @@ void main() {
     vec3 diff = texture(uDiffuse, uv).rgb;
     vec3 lit = diff * lighting + u.emissive.xyz;
 
-    // M16 — cubemap reflection (planar reflection comes in M17).
+    // M17 — planar reflection (preferred when active) with M16 cubemap fallback.
     float reflectivity = u.materialParams.z;
-    if (reflectivity > 0.0) {
+    if (u.reflectionParams.x > 0.5) {
+        vec2 ndc = gl_FragCoord.xy / u.reflectionParams.yz;
+        vec3 reflectColor = texture(uReflection, ndc).rgb;
+        lit = mix(lit, reflectColor, reflectivity);
+    } else if (reflectivity > 0.0) {
         vec3 viewDir = normalize(vWorldPos - u.cameraPos.xyz);
         vec3 reflectDir = reflect(viewDir, perturbedN);
         vec3 reflectColor = texture(uSkyCubemap, reflectDir).rgb;

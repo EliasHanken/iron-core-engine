@@ -92,8 +92,8 @@ ShaderHandle VkShaderStore::create(VkContext& ctx,
         return kInvalidHandle;
     }
 
-    // M16 — descriptor set layout: UBO + 5 samplers (diffuse, normal, spec, shadow, sky cubemap).
-    VkDescriptorSetLayoutBinding bindings[6]{};
+    // M17 — descriptor set layout: UBO + 6 samplers (diffuse, normal, spec, shadow, sky cubemap, planar reflection).
+    VkDescriptorSetLayoutBinding bindings[7]{};
     bindings[0].binding = 0;
     bindings[0].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
     bindings[0].descriptorCount = 1;
@@ -118,10 +118,14 @@ ShaderHandle VkShaderStore::create(VkContext& ctx,
     bindings[5].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
     bindings[5].descriptorCount = 1;
     bindings[5].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+    bindings[6].binding = 6;  // planar reflection RTT (M17)
+    bindings[6].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    bindings[6].descriptorCount = 1;
+    bindings[6].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
 
     VkDescriptorSetLayoutCreateInfo dslInfo{};
     dslInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-    dslInfo.bindingCount = 6;
+    dslInfo.bindingCount = 7;
     dslInfo.pBindings = bindings;
     VK_CHECK(vkCreateDescriptorSetLayout(ctx.device(), &dslInfo, nullptr, &s.setLayout));
 

@@ -53,7 +53,7 @@ bool VkFrameRing::initFrame(VkContext& ctx, Frame& f) {
     // so STORAGE_BUFFER capacity is required here.
     VkDescriptorPoolSize sizes[] = {
         {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,         kMaxDescriptorSetsPerFrame},
-        {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 5 * kMaxDescriptorSetsPerFrame},  // M16: 5 samplers per lit set
+        {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 6 * kMaxDescriptorSetsPerFrame},  // M17: 6 samplers per lit set
         {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,         kMaxDescriptorSetsPerFrame},
     };
     VkDescriptorPoolCreateInfo dpInfo{};
