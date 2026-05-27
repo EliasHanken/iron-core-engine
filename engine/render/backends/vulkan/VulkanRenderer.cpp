@@ -27,6 +27,12 @@ VulkanRenderer::~VulkanRenderer() {
         skybox_.destroy(context_);
         shadowMap_.destroy(context_);
         debugLines_.destroy(context_);
+        if (reflectionPipeline_)       vkDestroyPipeline(context_.device(), reflectionPipeline_, nullptr);
+        if (reflectionPipelineLayout_) vkDestroyPipelineLayout(context_.device(), reflectionPipelineLayout_, nullptr);
+        if (reflectionSetLayout_)      vkDestroyDescriptorSetLayout(context_.device(), reflectionSetLayout_, nullptr);
+        if (reflectionVertModule_)     vkDestroyShaderModule(context_.device(), reflectionVertModule_, nullptr);
+        if (reflectionFragModule_)     vkDestroyShaderModule(context_.device(), reflectionFragModule_, nullptr);
+        reflection_.destroy(context_);
         pipelines_.destroy(context_);
         frames_.destroy(context_);
         swapchain_.destroy(context_);
@@ -75,6 +81,54 @@ bool VulkanRenderer::init(Window& window) {
         Log::error("VulkanRenderer: VkSkybox init failed");
         return false;
     }
+    if (!reflection_.init(context_, textures_.sampler())) {
+        Log::error("VulkanRenderer: VkReflectionTarget init failed");
+        return false;
+    }
+    if (!buildReflectionPipeline()) {
+        Log::error("VulkanRenderer: reflection pipeline build failed");
+        return false;
+    }
+
+    // M17 — perform a one-shot empty clear of the reflection target so its
+    // color image transitions from UNDEFINED to SHADER_READ_ONLY_OPTIMAL
+    // (per the renderpass finalLayout). This avoids a Vulkan validation
+    // warning on the first scene draw when no plane is set (the shader
+    // still skips the sample via reflectionParams.x, but the binding is
+    // written every frame).
+    {
+        VkCommandPoolCreateInfo pi{};
+        pi.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
+        pi.queueFamilyIndex = context_.graphicsFamily();
+        pi.flags = VK_COMMAND_POOL_CREATE_TRANSIENT_BIT;
+        VkCommandPool pool = VK_NULL_HANDLE;
+        VK_CHECK(vkCreateCommandPool(context_.device(), &pi, nullptr, &pool));
+        VkCommandBufferAllocateInfo cbi{};
+        cbi.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
+        cbi.commandPool = pool;
+        cbi.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+        cbi.commandBufferCount = 1;
+        VkCommandBuffer cb = VK_NULL_HANDLE;
+        VK_CHECK(vkAllocateCommandBuffers(context_.device(), &cbi, &cb));
+
+        VkCommandBufferBeginInfo bb{};
+        bb.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+        bb.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+        VK_CHECK(vkBeginCommandBuffer(cb, &bb));
+        const float clearC[4] = {0.0f, 0.0f, 0.0f, 0.0f};
+        reflection_.beginPass(cb, clearC);
+        reflection_.endPass(cb);
+        VK_CHECK(vkEndCommandBuffer(cb));
+
+        VkSubmitInfo submit{};
+        submit.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+        submit.commandBufferCount = 1;
+        submit.pCommandBuffers = &cb;
+        VK_CHECK(vkQueueSubmit(context_.graphicsQueue(), 1, &submit, VK_NULL_HANDLE));
+        VK_CHECK(vkQueueWaitIdle(context_.graphicsQueue()));
+        vkDestroyCommandPool(context_.device(), pool, nullptr);
+    }
+
     initOk_ = true;
     Log::info("VulkanRenderer: context + swapchain + frames + pipeline + textures up");
     return true;
@@ -123,8 +177,16 @@ void VulkanRenderer::setShadowBounds(Vec3 center, float radius) {
     pendingShadowCenter_ = center;
     pendingShadowRadius_ = radius;
 }
-void VulkanRenderer::setReflectionPlane(Vec3, float) { warnOnce("setReflectionPlane"); }
-void VulkanRenderer::disableReflectionPlane() { warnOnce("disableReflectionPlane"); }
+void VulkanRenderer::setReflectionPlane(Vec3 normal, float d) {
+    ReflectionPlane plane;
+    plane.normal = normal;
+    plane.d = d;
+    reflectionPlane_ = plane;
+}
+
+void VulkanRenderer::disableReflectionPlane() {
+    reflectionPlane_.reset();
+}
 void VulkanRenderer::drawLine(Vec3 a, Vec3 b, Vec3 color) {
     debugLines_.queue(a, b, color);
 }
@@ -147,9 +209,9 @@ void VulkanRenderer::drawHud(const HudBatch& batch, int fbW, int fbH) {
 
 namespace {
 
-// M12+M13+M14+M15 — per-draw UBO uploaded by submit. std140 layout: all
-// members are mat4 (64-byte aligned) or vec4 (16-byte aligned), so no
-// straddling. Total 832 bytes.
+// M12+M13+M14+M15+M17 — per-draw UBO uploaded by submit. std140 layout:
+// all members are mat4 (64-byte aligned) or vec4 (16-byte aligned), so no
+// straddling. Total 928 bytes (M17 added reflectionViewProj + reflectionParams + clipPlane).
 struct LitUbo {
     Mat4 mvp;                 // 64
     Mat4 model;               // 64
@@ -164,8 +226,11 @@ struct LitUbo {
     Vec4 lightCounts;         // 16  M15 — x=pointLightCount (as float), y/z/w padding
     Vec4 pointPositions[16];  // 256 M15 — xyz=position, w=intensity
     Vec4 pointColors[16];     // 256 M15 — xyz=color, w=range
+    Mat4 reflectionViewProj;  // 64  M17 — scene: identity; reflection: P * V * mirror
+    Vec4 reflectionParams;    // 16  M17 — x=useReflectionPlane (0/1), y=screenW, z=screenH, w=0
+    Vec4 clipPlane;           // 16  M17 — (normal.xyz, -d) for reflection pass; ignored in scene
 };
-static_assert(sizeof(LitUbo) == 832, "LitUbo std140 layout");
+static_assert(sizeof(LitUbo) == 928, "LitUbo std140 layout (M17)");
 
 // Extracts the camera's world-space position from a view matrix.
 // Assumes view is a pure rigid transform [R | t; 0 0 0 1] (rotation +
@@ -219,6 +284,63 @@ void setSceneViewport(VkCommandBuffer cb, VkExtent2D extent) {
     VkRect2D scissor{{0, 0}, extent};
     vkCmdSetScissor(cb, 0, 1, &scissor);
 }
+
+const char* kReflectionVert = R"(#version 450
+layout(location = 0) in vec3 aPos;
+layout(location = 1) in vec3 aNormal;
+layout(location = 2) in vec2 aUV;
+layout(location = 3) in vec3 aTangent;
+
+// Full LitUbo std140 layout (928 bytes after M17). We reference only
+// `model`, `reflectionViewProj`, and `clipPlane`.
+layout(set = 0, binding = 0) uniform LitUbo {
+    mat4 mvp;
+    mat4 model;
+    mat4 lightViewProj;
+    vec4 sunDir;
+    vec4 sunColor;
+    vec4 ambient;
+    vec4 emissive;
+    vec4 cameraPos;
+    vec4 materialParams;
+    vec4 fogColor;
+    vec4 lightCounts;
+    vec4 pointPositions[16];
+    vec4 pointColors[16];
+    mat4 reflectionViewProj;
+    vec4 reflectionParams;
+    vec4 clipPlane;
+} u;
+
+out gl_PerVertex {
+    vec4 gl_Position;
+    float gl_ClipDistance[1];
+};
+
+layout(location = 0) out vec2 vUV;
+layout(location = 1) out vec3 vNormal;
+
+void main() {
+    vec4 worldPos = u.model * vec4(aPos, 1.0);
+    vUV = aUV;
+    vNormal = mat3(u.model) * aNormal;
+    gl_ClipDistance[0] = dot(worldPos.xyz, u.clipPlane.xyz) + u.clipPlane.w;
+    gl_Position = u.reflectionViewProj * worldPos;
+}
+)";
+
+const char* kReflectionFrag = R"(#version 450
+layout(location = 0) in vec2 vUV;
+layout(location = 1) in vec3 vNormal;
+layout(set = 0, binding = 1) uniform sampler2D uDiffuse;
+layout(location = 0) out vec4 outColor;
+void main() {
+    vec3 n = normalize(vNormal);
+    float diffuse = max(dot(n, normalize(vec3(0.3, 1.0, 0.2))), 0.0);
+    vec4 texel = texture(uDiffuse, vUV);
+    outColor = vec4(texel.rgb * (0.3 + 0.7 * diffuse), texel.a);
+}
+)";
 }  // namespace
 
 void VulkanRenderer::beginFrame(Vec3 clearColor, const DirectionalLight& light,
@@ -339,6 +461,20 @@ void VulkanRenderer::recordSceneDraw(VkCommandBuffer cb, const DrawCall& call) {
         ubo.pointColors[i]    = Vec4{0.0f, 0.0f, 0.0f, 0.0f};
     }
 
+    // M17 — scene pass: pass-through reflectionViewProj (unused by scene
+    // shader), planar-reflection flag from material, screen size for
+    // projective sampling. clipPlane is ignored in the scene pass.
+    ubo.reflectionViewProj = Mat4::identity();
+    const float useRefl = (call.material.useReflectionPlane && reflectionPlane_.has_value())
+                          ? 1.0f : 0.0f;
+    ubo.reflectionParams = Vec4{
+        useRefl,
+        static_cast<float>(swapchain_.extent().width),
+        static_cast<float>(swapchain_.extent().height),
+        0.0f,
+    };
+    ubo.clipPlane = Vec4{0.0f, 0.0f, 0.0f, 0.0f};
+
     const VkShader& sh = shaders_.get(call.shader);
     ::VkPipeline pipe = pipelines_.pipelineFor(context_, swapchain_, sh);
     vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, pipe);
@@ -376,7 +512,7 @@ void VulkanRenderer::recordSceneDraw(VkCommandBuffer cb, const DrawCall& call) {
         : cubemaps_.blackCubemap();
     const auto& skyTex = cubemaps_.get(skyHandle);
 
-    VkDescriptorImageInfo imgInfos[5]{};
+    VkDescriptorImageInfo imgInfos[6]{};
     imgInfos[0].sampler     = diffuse.sampler;
     imgInfos[0].imageView   = diffuse.view;
     imgInfos[0].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
@@ -392,45 +528,26 @@ void VulkanRenderer::recordSceneDraw(VkCommandBuffer cb, const DrawCall& call) {
     imgInfos[4].sampler     = skyTex.sampler;
     imgInfos[4].imageView   = skyTex.view;
     imgInfos[4].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    // M17 — binding 6: planar reflection RTT (or a stale/empty texture
+    // when no plane is active — shader guards via reflectionParams.x).
+    imgInfos[5] = reflection_.descriptorImageInfo();
 
-    VkWriteDescriptorSet writes[6]{};
+    VkWriteDescriptorSet writes[7]{};
     writes[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
     writes[0].dstSet = set;
     writes[0].dstBinding = 0;
     writes[0].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
     writes[0].descriptorCount = 1;
     writes[0].pBufferInfo = &bufInfo;
-    writes[1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-    writes[1].dstSet = set;
-    writes[1].dstBinding = 1;
-    writes[1].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-    writes[1].descriptorCount = 1;
-    writes[1].pImageInfo = &imgInfos[0];
-    writes[2].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-    writes[2].dstSet = set;
-    writes[2].dstBinding = 2;
-    writes[2].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-    writes[2].descriptorCount = 1;
-    writes[2].pImageInfo = &imgInfos[1];
-    writes[3].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-    writes[3].dstSet = set;
-    writes[3].dstBinding = 3;
-    writes[3].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-    writes[3].descriptorCount = 1;
-    writes[3].pImageInfo = &imgInfos[2];
-    writes[4].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-    writes[4].dstSet = set;
-    writes[4].dstBinding = 4;
-    writes[4].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-    writes[4].descriptorCount = 1;
-    writes[4].pImageInfo = &imgInfos[3];
-    writes[5].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-    writes[5].dstSet = set;
-    writes[5].dstBinding = 5;
-    writes[5].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-    writes[5].descriptorCount = 1;
-    writes[5].pImageInfo = &imgInfos[4];
-    vkUpdateDescriptorSets(context_.device(), 6, writes, 0, nullptr);
+    for (int i = 0; i < 6; ++i) {
+        writes[i + 1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        writes[i + 1].dstSet = set;
+        writes[i + 1].dstBinding = i + 1;
+        writes[i + 1].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        writes[i + 1].descriptorCount = 1;
+        writes[i + 1].pImageInfo = &imgInfos[i];
+    }
+    vkUpdateDescriptorSets(context_.device(), 7, writes, 0, nullptr);
 
     vkCmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_GRAPHICS,
                             sh.pipelineLayout, 0, 1, &set, 0, nullptr);
@@ -454,6 +571,81 @@ void VulkanRenderer::endFrame() {
     // --- Pass 1: shadow ---
     shadowMap_.record(cb, context_.device(), frames_, meshes_,
                      pendingLightViewProj_, sceneDraws_);
+
+    // --- Pass 2: planar reflection (if a plane is set) ---
+    if (reflectionPlane_.has_value()) {
+        const ReflectionPlane& plane = *reflectionPlane_;
+        const Mat4 mirror = reflectionMatrix(plane);
+        const Mat4 reflectionVP = pendingProjection_ * (pendingView_ * mirror);
+
+        const float clearC[4] = {pendingClear_.x, pendingClear_.y,
+                                 pendingClear_.z, 1.0f};
+        reflection_.beginPass(cb, clearC);
+        vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                          reflectionPipeline_);
+
+        for (const DrawCall& call : sceneDraws_) {
+            if (call.material.useReflectionPlane) continue;  // skip mirror itself
+            if (!meshes_.has(call.mesh)) continue;
+
+            // Build a mini-LitUbo: only model, reflectionViewProj, clipPlane
+            // are read by the reflection vert shader. Zero the rest.
+            LitUbo ubo{};
+            ubo.model = call.model;
+            ubo.reflectionViewProj = reflectionVP;
+            ubo.clipPlane = Vec4{plane.normal.x, plane.normal.y, plane.normal.z,
+                                  -plane.d};
+
+            const VkDeviceSize uboOffset = frames_.allocateUbo(&ubo, sizeof(ubo));
+            VkDescriptorBufferInfo bufInfo{};
+            bufInfo.buffer = f.uboBuffer;
+            bufInfo.offset = uboOffset;
+            bufInfo.range  = sizeof(ubo);
+
+            VkDescriptorSetAllocateInfo dsInfo{};
+            dsInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+            dsInfo.descriptorPool = f.descriptorPool;
+            dsInfo.descriptorSetCount = 1;
+            dsInfo.pSetLayouts = &reflectionSetLayout_;
+            VkDescriptorSet rset = VK_NULL_HANDLE;
+            VK_CHECK(vkAllocateDescriptorSets(context_.device(), &dsInfo, &rset));
+
+            const auto& diffuse = textures_.has(call.material.texture)
+                ? textures_.get(call.material.texture)
+                : textures_.get(textures_.whiteTexture());
+
+            VkDescriptorImageInfo imgInfo{};
+            imgInfo.sampler     = diffuse.sampler;
+            imgInfo.imageView   = diffuse.view;
+            imgInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+
+            VkWriteDescriptorSet rWrites[2]{};
+            rWrites[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+            rWrites[0].dstSet = rset;
+            rWrites[0].dstBinding = 0;
+            rWrites[0].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+            rWrites[0].descriptorCount = 1;
+            rWrites[0].pBufferInfo = &bufInfo;
+            rWrites[1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+            rWrites[1].dstSet = rset;
+            rWrites[1].dstBinding = 1;
+            rWrites[1].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+            rWrites[1].descriptorCount = 1;
+            rWrites[1].pImageInfo = &imgInfo;
+            vkUpdateDescriptorSets(context_.device(), 2, rWrites, 0, nullptr);
+
+            vkCmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                                    reflectionPipelineLayout_, 0, 1, &rset, 0, nullptr);
+
+            const auto& mesh = meshes_.get(call.mesh);
+            VkDeviceSize offsets[1] = {0};
+            vkCmdBindVertexBuffers(cb, 0, 1, &mesh.vertexBuffer, offsets);
+            vkCmdBindIndexBuffer(cb, mesh.indexBuffer, 0, VK_INDEX_TYPE_UINT32);
+            vkCmdDrawIndexed(cb, mesh.indexCount, 1, 0, 0, 0);
+        }
+
+        reflection_.endPass(cb);
+    }
 
     // --- Scene pass ---
     {
@@ -573,6 +765,147 @@ void VulkanRenderer::enqueueDeferredScenePass(
         std::function<void(VkCommandBuffer)> fn) {
     if (skipFrame_) return;
     deferredScenePass_.push_back(std::move(fn));
+}
+
+bool VulkanRenderer::buildReflectionPipeline() {
+    // --- Descriptor set layout: UBO (0) + diffuse (1) ---
+    VkDescriptorSetLayoutBinding b[2]{};
+    b[0].binding = 0;
+    b[0].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+    b[0].descriptorCount = 1;
+    b[0].stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
+    b[1].binding = 1;
+    b[1].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    b[1].descriptorCount = 1;
+    b[1].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+
+    VkDescriptorSetLayoutCreateInfo sli{};
+    sli.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+    sli.bindingCount = 2;
+    sli.pBindings = b;
+    VK_CHECK(vkCreateDescriptorSetLayout(context_.device(), &sli, nullptr,
+                                          &reflectionSetLayout_));
+
+    // --- Pipeline layout ---
+    VkPipelineLayoutCreateInfo pli{};
+    pli.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+    pli.setLayoutCount = 1;
+    pli.pSetLayouts = &reflectionSetLayout_;
+    VK_CHECK(vkCreatePipelineLayout(context_.device(), &pli, nullptr,
+                                     &reflectionPipelineLayout_));
+
+    // --- Compile shaders to SPIR-V via the engine's existing helper ---
+    auto vertSpv = compileGlsl(VK_SHADER_STAGE_VERTEX_BIT, kReflectionVert);
+    if (vertSpv.empty()) {
+        Log::error("VulkanRenderer: reflection vert SPIR-V compile failed");
+        return false;
+    }
+    auto fragSpv = compileGlsl(VK_SHADER_STAGE_FRAGMENT_BIT, kReflectionFrag);
+    if (fragSpv.empty()) {
+        Log::error("VulkanRenderer: reflection frag SPIR-V compile failed");
+        return false;
+    }
+
+    VkShaderModuleCreateInfo smInfo{};
+    smInfo.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
+    smInfo.codeSize = vertSpv.size() * sizeof(uint32_t);
+    smInfo.pCode    = vertSpv.data();
+    VK_CHECK(vkCreateShaderModule(context_.device(), &smInfo, nullptr,
+                                   &reflectionVertModule_));
+    smInfo.codeSize = fragSpv.size() * sizeof(uint32_t);
+    smInfo.pCode    = fragSpv.data();
+    VK_CHECK(vkCreateShaderModule(context_.device(), &smInfo, nullptr,
+                                   &reflectionFragModule_));
+
+    VkPipelineShaderStageCreateInfo stages[2]{};
+    stages[0].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+    stages[0].stage = VK_SHADER_STAGE_VERTEX_BIT;
+    stages[0].module = reflectionVertModule_;
+    stages[0].pName = "main";
+    stages[1].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+    stages[1].stage = VK_SHADER_STAGE_FRAGMENT_BIT;
+    stages[1].module = reflectionFragModule_;
+    stages[1].pName = "main";
+
+    // --- Vertex input — match VkMesh layout (Pos, Normal, UV, Tangent) ---
+    VkVertexInputBindingDescription bind{};
+    bind.binding = 0;
+    bind.stride = 11 * sizeof(float);  // 3+3+2+3 = 11 floats
+    bind.inputRate = VK_VERTEX_INPUT_RATE_VERTEX;
+
+    VkVertexInputAttributeDescription attrs[4]{};
+    attrs[0] = {0, 0, VK_FORMAT_R32G32B32_SFLOAT, 0};
+    attrs[1] = {1, 0, VK_FORMAT_R32G32B32_SFLOAT, 3 * sizeof(float)};
+    attrs[2] = {2, 0, VK_FORMAT_R32G32_SFLOAT,    6 * sizeof(float)};
+    attrs[3] = {3, 0, VK_FORMAT_R32G32B32_SFLOAT, 8 * sizeof(float)};
+
+    VkPipelineVertexInputStateCreateInfo vinfo{};
+    vinfo.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
+    vinfo.vertexBindingDescriptionCount = 1;
+    vinfo.pVertexBindingDescriptions = &bind;
+    vinfo.vertexAttributeDescriptionCount = 4;
+    vinfo.pVertexAttributeDescriptions = attrs;
+
+    VkPipelineInputAssemblyStateCreateInfo iaInfo{};
+    iaInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO;
+    iaInfo.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+
+    VkPipelineViewportStateCreateInfo vpInfo{};
+    vpInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO;
+    vpInfo.viewportCount = 1;
+    vpInfo.scissorCount = 1;
+
+    VkPipelineRasterizationStateCreateInfo rs{};
+    rs.sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO;
+    rs.polygonMode = VK_POLYGON_MODE_FILL;
+    rs.cullMode = VK_CULL_MODE_NONE;  // mirror flips winding; disable cull
+    rs.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE;
+    rs.lineWidth = 1.0f;
+
+    VkPipelineMultisampleStateCreateInfo ms{};
+    ms.sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO;
+    ms.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
+
+    VkPipelineDepthStencilStateCreateInfo ds{};
+    ds.sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO;
+    ds.depthTestEnable = VK_TRUE;
+    ds.depthWriteEnable = VK_TRUE;
+    ds.depthCompareOp = VK_COMPARE_OP_LESS;
+
+    VkPipelineColorBlendAttachmentState cba{};
+    cba.colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT |
+                         VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
+
+    VkPipelineColorBlendStateCreateInfo cb{};
+    cb.sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO;
+    cb.attachmentCount = 1;
+    cb.pAttachments = &cba;
+
+    VkDynamicState dyn[] = {VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR};
+    VkPipelineDynamicStateCreateInfo dynInfo{};
+    dynInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO;
+    dynInfo.dynamicStateCount = 2;
+    dynInfo.pDynamicStates = dyn;
+
+    VkGraphicsPipelineCreateInfo gp{};
+    gp.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
+    gp.stageCount = 2;
+    gp.pStages = stages;
+    gp.pVertexInputState   = &vinfo;
+    gp.pInputAssemblyState = &iaInfo;
+    gp.pViewportState      = &vpInfo;
+    gp.pRasterizationState = &rs;
+    gp.pMultisampleState   = &ms;
+    gp.pDepthStencilState  = &ds;
+    gp.pColorBlendState    = &cb;
+    gp.pDynamicState       = &dynInfo;
+    gp.layout = reflectionPipelineLayout_;
+    gp.renderPass = reflection_.renderPass();
+    gp.subpass = 0;
+
+    VK_CHECK(vkCreateGraphicsPipelines(context_.device(), VK_NULL_HANDLE,
+                                        1, &gp, nullptr, &reflectionPipeline_));
+    return true;
 }
 
 }  // namespace iron

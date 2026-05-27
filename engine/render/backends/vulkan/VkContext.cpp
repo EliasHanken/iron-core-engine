@@ -201,12 +201,19 @@ bool VkContext::createLogicalDevice() {
 
     const char* deviceExtensions[] = { VK_KHR_SWAPCHAIN_EXTENSION_NAME };
 
+    // M17 — enable shaderClipDistance so gl_ClipDistance[0] in the
+    // reflection-pass vertex shader hardware-clips geometry on the
+    // wrong side of the mirror plane. Core Vulkan 1.0 feature.
+    VkPhysicalDeviceFeatures features{};
+    features.shaderClipDistance = VK_TRUE;
+
     VkDeviceCreateInfo info{};
     info.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO;
     info.queueCreateInfoCount = 1;
     info.pQueueCreateInfos = &queueInfo;
     info.enabledExtensionCount = 1;
     info.ppEnabledExtensionNames = deviceExtensions;
+    info.pEnabledFeatures = &features;
 
     VK_CHECK(vkCreateDevice(phys_, &info, nullptr, &device_));
     if (device_ == VK_NULL_HANDLE) return false;

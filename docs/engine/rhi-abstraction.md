@@ -638,3 +638,15 @@ block is skipped entirely.
 
 After M17 lands, the Vulkan backend reaches full parity with the
 OpenGL lit pass.
+
+## M17 — Vulkan planar reflection (2026-05-27)
+
+Vulkan backend reaches OpenGL parity. `VkReflectionTarget` owns a 1024² RGBA8+D32 RTT with its own render pass and an entry+exit subpass dependency. `VkContext::createDevice` enables `shaderClipDistance` so the reflection vertex shader can use `gl_ClipDistance[0]` to discard geometry on the wrong side of the mirror plane.
+
+A separate shared reflection pipeline (2-binding layout: UBO + diffuse, `CULL_MODE_NONE`) is created once at `VulkanRenderer::init`. The pipeline shares the 928-byte LitUbo buffer with the scene pass; its descriptor layout binds only `LitUbo.model`, `LitUbo.reflectionViewProj`, and `LitUbo.clipPlane`.
+
+The lit pass descriptor set grows from 6 → 7 bindings (binding 6 = reflection RTT). Sampler pool capacity bumped 5× → 6× `kMaxDescriptorSetsPerFrame` in `VkFrameRing`.
+
+Materials with `useReflectionPlane=true` sample binding 6 projectively (`gl_FragCoord.xy / screenSize`) when a reflection plane is active. The M16 cubemap reflection path applies as a fallback when no plane is set.
+
+Demo: `games/03-showcase` builds under both OpenGL and Vulkan via `iron::createRenderer(window)`. Mirror floor at y=-0.1 reflects the rotating sphere + metallic cylinder + sunset skybox.

@@ -13,10 +13,13 @@
 #include "render/backends/vulkan/VkTexture.h"
 #include "render/backends/vulkan/VkCubemap.h"
 #include "render/backends/vulkan/VkSkybox.h"
+#include "render/backends/vulkan/VkReflectionTarget.h"
+#include "render/ReflectionPlane.h"
 
 #include <array>
 #include <cstdint>
 #include <functional>
+#include <optional>
 #include <string>
 #include <unordered_set>
 #include <vector>
@@ -115,6 +118,7 @@ private:
     void warnOnce(const char* feature);
     bool recreateSwapchainAndFramebuffers(int width, int height);
     void recordSceneDraw(VkCommandBuffer cb, const DrawCall& call);
+    bool buildReflectionPipeline();
 
     bool initOk_ = false;
     std::unordered_set<std::string> warnedFeatures_;
@@ -158,6 +162,15 @@ private:
     VkCubemapStore cubemaps_;
     VkSkybox       skybox_;
     CubemapHandle  pendingSkybox_ = kInvalidHandle;
+
+    // M17 — planar reflection RTT + shared pipeline + currently-set plane.
+    VkReflectionTarget    reflection_;
+    VkDescriptorSetLayout reflectionSetLayout_ = VK_NULL_HANDLE;
+    VkPipelineLayout      reflectionPipelineLayout_ = VK_NULL_HANDLE;
+    ::VkPipeline          reflectionPipeline_ = VK_NULL_HANDLE;
+    VkShaderModule        reflectionVertModule_ = VK_NULL_HANDLE;
+    VkShaderModule        reflectionFragModule_ = VK_NULL_HANDLE;
+    std::optional<ReflectionPlane> reflectionPlane_;
 
     // M15 — point lights + fog (existing beginFrame args, now stored).
     std::array<PointLight, kMaxPointLights> pendingPointLights_{};

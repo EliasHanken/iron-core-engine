@@ -39,6 +39,11 @@ public:
     const VkTextureResource& get(TextureHandle h) const;
     bool has(TextureHandle h) const { return textures_.count(h) != 0; }
 
+    // Returns the store's shared CLAMP_TO_EDGE LINEAR sampler. Other
+    // Vulkan subsystems (skybox, reflection target) reuse this rather
+    // than allocating their own.
+    VkSampler sampler() const { return sharedSampler_; }
+
 private:
     void uploadRgba(VkContext& ctx, VkTextureResource& tex,
                     int width, int height, const unsigned char* rgba);
