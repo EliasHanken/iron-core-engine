@@ -371,6 +371,117 @@ rocket logic now lives inline in net-shooter's main.cpp.
 - Future: hitscan-on-Jolt swap, once ragdolls/dynamic targets need to
   be hit (currently engine `Ray` math against arena AABBs is sufficient).
 
+## M21 — Death-into-ragdoll in net-shooter
+
+When a player's HP drops to 0, net-shooter now spawns a tumbling
+`iron::Ragdoll` (M18) at the death position instead of instantly
+hiding the corpse cube. The ragdoll lives 2 seconds — matching the
+existing respawn timer — then despawns as the player respawns at a
+new position.
+
+### Per-peer `worldShared`
+
+Where M20 had `worldShared` populated only on the host (containing
+arena + rockets), M21 ensures **every peer** (host + clients) has its
+own `worldShared` populated with arena collision via
+`populateArenaCollision(world, arena)`. Host's also holds rockets;
+clients only ragdolls. Clients step `worldShared` once per render
+frame; the host continues to step it in its sim tick.
+
+### `DeathMsg` wire
+
+```cpp
+struct DeathMsg {
+    static constexpr std::uint8_t kTag = 11;
+    std::uint32_t victimPeerId;
+    float x, y, z;                          // foot position
+    float impulseX, impulseY, impulseZ;     // torso impulse (pre-scaled)
+};
+```
+
+Host broadcasts on every fatal hit; clients spawn a local ragdoll on
+receipt. **No per-tick bone-transform sync** — ragdolls are
+cosmetic-only and only live 2 seconds, so cosmetic divergence between
+peers is acceptable. `kGameId` bumped from NSTS (0x4E535453) to NSTT
+(0x4E535454) so old clients can't connect to new hosts.
+
+### Impulse computation
+
+At the kill site (host-side), the impulse direction comes from the
+killing weapon:
+- **Hitscan**: `aimDir * 30` (corpse flies away from shooter).
+- **Rocket**: `(victim - explosionPos).normalize() * 50`, with a +1.0
+  upward bias on the y-component before normalizing for satisfying
+  knockback. Degenerate fallback (`mag ≈ 0`) → `(0,1,0)`.
+
+Both magnitudes are `velocity × mass` (Jolt's `applyImpulse`
+convention). Torso mass ≈ 27 kg (0.36 fraction of 75 kg), so 30 N·s
+≈ 1.1 m/s nudge; 50 N·s ≈ 1.85 m/s knockback. Tuned to look
+realistic without rocket-jumping the corpse.
+
+Three kill sites broadcast `DeathMsg`:
+1. The host's `FireHitscanMsg` handler (clients shooting host or other
+   clients) — uses `msg.dx/dy/dz` aim direction.
+2. The host's rocket `pendingDespawns` processing — uses
+   `(victim - explosionPoint)` direction. All rocket kills (host or
+   client origin) flow through here because M20 unified rocket
+   bookkeeping.
+3. The host's **local** hitscan-fire path (host shooting clients) —
+   uses `fmsg.dx/dy/dz`. Symmetric with the FireHitscanMsg handler.
+   Without this third site, the host firing their own rifle would
+   skip the ragdoll effect.
+
+### Render integration
+
+The existing player-cube render loops gain one extra skip — if the
+peer's id is in `activeRagdolls`, the cube is not drawn. A parallel
+loop renders each ragdoll's 11 bones as colored cubes via
+`Ragdoll::boneTransform / boneHalfExtents / boneColor`, using
+`material.emissive = color * 0.6f` (matches the rocket/tracer/
+explosion tint pattern).
+
+### State
+
+`ActiveRagdoll` carries `{victimPeerId, spawnTimeSec, ragdoll}`,
+stored in `std::unordered_map<u32, std::unique_ptr<ActiveRagdoll>>
+activeRagdolls`. The `unique_ptr` indirection lets the map handle
+the `iron::Ragdoll` without requiring move semantics. The
+`spawnLocalRagdoll` helper despawns any existing ragdoll for the
+peer before creating a new one — handles the edge case of two fatal
+hits in the same tick.
+
+### Cleanup
+
+- Per-frame: ragdolls older than 2 seconds are despawned (matches
+  respawn timer).
+- `onPeerLeft`: any active ragdoll for the leaving peer is despawned.
+
+## Physics overhaul track complete
+
+M18-M21 ships the foundation for TF2/Overwatch-class movement +
+shooting + death feel:
+- **M18** — Jolt integration + `iron::PhysicsWorld` + `iron::Ragdoll`
+  + 09-physics-playground
+- **M19** — `iron::CharacterController` + net-shooter movement port
+  (slopes, stairs, jump, gravity, wall collision)
+- **M20** — Net-shooter rocket projectiles → Jolt + PhysicsWorld
+  extensions (raycast normal, `onContactStarted`, `velocityOf`)
+- **M21** — Death-into-ragdoll wiring in net-shooter
+
+## What's next
+
+Engine tracks with the largest remaining gap to a polished
+TF2/Overwatch-class game:
+- **Skeletal animation + glTF asset pipeline.** Replace capsule
+  characters and cube ragdoll bones with skinned 3D meshes.
+- **PBR shading upgrade.** Replace Blinn-Phong with metallic/
+  roughness + bloom + tone-mapping.
+- **Editor track.** A simple ImGui scene editor + scene serialization
+  for content authoring.
+- **Audio.** The engine has zero audio today.
+- **Player-vs-projectile direct hits + player-vs-ragdoll collision**
+  — currently absent because of M19's per-peer world isolation.
+
 ## See also
 
 - Upstream Jolt docs: <https://jrouwe.github.io/JoltPhysics/>
