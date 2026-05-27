@@ -1,94 +1,56 @@
 // Compiles the game-side RocketLauncher.cpp directly (mirrors test_rope_walker).
+//
+// M20: host-side rocket logic moved from RocketLauncher into main.cpp
+// (Jolt-driven). RocketLauncher.cpp now only exposes the client-side
+// surface: `tryFireRocketClient` (cooldown gate) and `tickRocketClient`
+// (linear extrapolation of ghost rockets).
 
 #include "test_framework.h"
 #include "RocketLauncher.h"
 
-#include <array>
+#include <span>
 
 using namespace iron;
 using namespace iron::netshooter;
 
 int main() {
-    const Vec3 half = kPlayerHalfExtents;
-
-    // spawnRocketHost: spawn time + velocity sanity.
+    // tryFireRocketClient: cooldown gates rapid fire.
     {
         RocketLauncher w;
-        const FireRocketMsg msg{0, 0, 0,  1, 0, 0,  0.0};
-        const auto spawn = spawnRocketHost(
-            w, /*nowSec=*/100.0, /*shooter=*/1, msg,
-            /*projectileId=*/42, /*authShooter=*/Vec3{0, 0, 0});
-        CHECK(spawn.has_value());
-        CHECK_NEAR(static_cast<float>(spawn->announce.spawnTimeSec), 100.0f);
-        CHECK_NEAR(spawn->announce.vx, RocketLauncher::kMuzzleSpeed);
-        CHECK_NEAR(spawn->announce.vy, 0.0f);
-        CHECK(spawn->announce.projectileId == 42);
+        const Vec3 muzzle{0, 1, 0};
+        const Vec3 dir{1, 0, 0};
+        const auto first = tryFireRocketClient(w, 0.0, muzzle, dir, 0.0);
+        CHECK(first.has_value());
+        const auto blocked = tryFireRocketClient(w, 0.5, muzzle, dir, 0.0);
+        CHECK(!blocked.has_value());
+        // After cooldown, fires again.
+        const auto third = tryFireRocketClient(
+            w, RocketLauncher::kCooldownSec + 0.01, muzzle, dir, 0.0);
+        CHECK(third.has_value());
+        CHECK_NEAR(third->ox, muzzle.x);
+        CHECK_NEAR(third->dx, dir.x);
     }
 
-    // Spoof: muzzle 5 m from authoritative shooter pos → rejected.
+    // tickRocketClient: linear extrapolation, ignores world boxes.
     {
-        RocketLauncher w;
-        const FireRocketMsg msg{5.0f, 0, 0,  1, 0, 0,  0.0};
-        const auto spawn = spawnRocketHost(
-            w, 0.0, 1, msg, 1, Vec3{0, 0, 0});
-        CHECK(!spawn.has_value());
+        Projectile ghost;
+        ghost.position = Vec3{0.0f, 1.0f, 0.0f};
+        ghost.velocity = Vec3{10.0f, 0.0f, 0.0f};
+        ghost.alive = true;
+        tickRocketClient(ghost, /*dt=*/0.1f, std::span<const Aabb>{});
+        CHECK_NEAR(ghost.position.x, 1.0f);
+        CHECK_NEAR(ghost.position.y, 1.0f);
+        CHECK(ghost.alive);
     }
 
-    // Splash falloff at radius/2 ≈ half damage.
+    // tickRocketClient: dead ghosts don't move.
     {
-        Projectile p;
-        p.id = 1;
-        p.ownerPeerId = 1;
-        p.position = Vec3{0.0f, 1.0f, 0.0f};
-        p.velocity = Vec3{0.1f, 0.0f, 0.0f};
-        p.spawnTimeSec = 0.0;
-        p.alive = true;
-
-        // Force the rocket to expire this tick: nowSec >> spawnTimeSec
-        // + lifetime. Place a target player 2 m away from detonation.
-        LagCompensator lc;
-        lc.recordPosition(2, 999.0, Vec3{2.0f, 1.0f, 0.0f});
-        const std::array<std::uint32_t, 1> alive{2};
-
-        const auto res = tickRocketHost(
-            p, /*nowSec=*/999.0, /*dt=*/0.001f,
-            lc,
-            std::span<const Aabb>{},
-            std::span<const std::uint32_t>{alive},
-            half);
-        CHECK(res.expired);
-        CHECK(res.splashHits.size() == 1);
-        // Player AABB closest point to detonation: x-half=1.6, y is in
-        // range, z is in range → distance to surface ≈ 1.6.
-        // Falloff t = 1.6 / 4.0 = 0.4, damage = round(80 * 0.6) = 48.
-        CHECK(res.splashHits[0].damage == 48);
-        CHECK(res.splashHits[0].attackerPeerId == 1);
-        CHECK(res.splashHits[0].victimPeerId == 2);
-    }
-
-    // Self-damage: shooter standing on detonation point appears in
-    // splashHits at center damage.
-    {
-        Projectile p;
-        p.id = 1;
-        p.ownerPeerId = 1;
-        p.position = Vec3{0.0f, 1.0f, 0.0f};
-        p.velocity = Vec3{0.1f, 0.0f, 0.0f};
-        p.spawnTimeSec = 0.0;
-        p.alive = true;
-        LagCompensator lc;
-        lc.recordPosition(1, 999.0, Vec3{0.0f, 1.0f, 0.0f});
-        const std::array<std::uint32_t, 1> alive{1};
-
-        const auto res = tickRocketHost(
-            p, 999.0, 0.001f, lc,
-            std::span<const Aabb>{},
-            std::span<const std::uint32_t>{alive},
-            half);
-        CHECK(res.expired);
-        CHECK(res.splashHits.size() == 1);
-        CHECK(res.splashHits[0].victimPeerId == 1);
-        CHECK(res.splashHits[0].damage == 80);
+        Projectile ghost;
+        ghost.position = Vec3{0.0f, 1.0f, 0.0f};
+        ghost.velocity = Vec3{10.0f, 0.0f, 0.0f};
+        ghost.alive = false;
+        tickRocketClient(ghost, 0.1f, std::span<const Aabb>{});
+        CHECK_NEAR(ghost.position.x, 0.0f);
     }
 
     return iron_test_result();

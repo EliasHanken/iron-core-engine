@@ -24,7 +24,6 @@ add_library(ironcore STATIC
   physics/Ragdoll.cpp
   physics/CharacterController.cpp
   game/Collision.cpp
-  game/ProjectileSim.cpp
   render/RendererFactory.cpp
   render/ReflectionPlane.cpp
   render/TextureLoader.cpp
