@@ -2,6 +2,8 @@
 // expected concrete type for the current build's backend. Uses a
 // hidden GLFW window to stay headless.
 
+#define _CRT_SECURE_NO_WARNINGS  // for std::getenv on MSVC
+
 #include "test_framework.h"
 #include "core/Window.h"
 #include "render/Renderer.h"
@@ -16,9 +18,21 @@
 
 #include <GLFW/glfw3.h>
 
+#include <cstdlib>
+
 using namespace iron;
 
 int main() {
+    // CI runners have a desktop session (so the GLFW window succeeds) but no
+    // real GPU/ICD. Under Vulkan-default, `createRenderer` calls into Jolt
+    // and the Vulkan loader, where some calls hang indefinitely on a headless
+    // runner. Skip the test in CI — local dev still runs it against a real
+    // GPU. CI sets IRON_CI=1 in .github/workflows/ci.yml.
+    if (const char* ci = std::getenv("IRON_CI"); ci && *ci != '\0' && *ci != '0') {
+        std::printf("OK - skipped (IRON_CI=%s, no GPU on runner)\n", ci);
+        return 0;
+    }
+
     glfwInit();
     glfwWindowHint(GLFW_VISIBLE, GLFW_FALSE);
     Window window(64, 64, "test_renderer_factory");
