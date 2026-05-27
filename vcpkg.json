@@ -4,6 +4,7 @@
   "dependencies": [
     "gamenetworkingsockets",
     "joltphysics",
+    "tinygltf",
     "vulkan-headers",
     "vulkan-loader",
     "glslang",

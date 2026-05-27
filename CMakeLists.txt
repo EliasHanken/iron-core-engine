@@ -56,6 +56,11 @@ endif()
 find_package(GameNetworkingSockets CONFIG REQUIRED)
 find_package(Jolt CONFIG REQUIRED)
 
+# tinygltf is header-only on vcpkg and does not ship a CMake config package.
+# Locate its include dir via find_path; engine/CMakeLists.txt adds it to the
+# ironcore target as a PRIVATE include directory (only GltfLoader.cpp needs it).
+find_path(TINYGLTF_INCLUDE_DIRS "tiny_gltf.h" REQUIRED)
+
 set(IRON_RENDER_BACKEND "vulkan" CACHE STRING
     "Render backend: vulkan (default) or opengl (deprecated, frozen)")
 set_property(CACHE IRON_RENDER_BACKEND PROPERTY STRINGS vulkan opengl)

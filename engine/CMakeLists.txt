@@ -23,6 +23,7 @@ add_library(ironcore STATIC
   physics/PhysicsWorld.cpp
   physics/Ragdoll.cpp
   physics/CharacterController.cpp
+  asset/GltfLoader.cpp
   game/Collision.cpp
   render/RendererFactory.cpp
   render/ReflectionPlane.cpp
@@ -38,6 +39,9 @@ target_link_libraries(ironcore PUBLIC
 
 target_link_libraries(ironcore PRIVATE
   Jolt::Jolt)
+
+# tinygltf is header-only; just expose its include directory privately.
+target_include_directories(ironcore PRIVATE ${TINYGLTF_INCLUDE_DIRS})
 
 if (IRON_RENDER_BACKEND STREQUAL "vulkan")
     target_sources(ironcore PRIVATE
