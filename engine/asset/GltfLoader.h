@@ -7,25 +7,36 @@
 
 namespace iron {
 
-// Loads the first primitive of the first mesh of the first node of the
-// default scene from a glTF or GLB file. Returns std::nullopt on parse
-// failure, missing required attributes (POSITION, NORMAL, or indices),
-// or unsupported accessor types.
+// Absolute paths to a glTF material's textures. Empty string means
+// "not present in the file" (or unsupported — e.g., embedded data URIs
+// are skipped in v1, leaving the path empty).
+struct GltfMaterialPaths {
+    std::string albedo;          // pbrMetallicRoughness.baseColorTexture
+    std::string normal;          // normalTexture
+    std::string metalRoughness;  // pbrMetallicRoughness.metallicRoughnessTexture
+                                  // (engine treats G channel as roughness →
+                                  // inverted to spec via loadRoughnessAsSpec)
+};
+
+struct GltfModel {
+    MeshData            mesh;
+    GltfMaterialPaths   materialPaths;
+};
+
+// Load mesh + material texture paths from a glTF or GLB file.
 //
-// `path` can be .gltf (with adjacent .bin) or .glb (single binary file).
-// tinygltf auto-detects from the extension.
+// Same scene-walk and attribute mapping as loadGltfMesh below.
+// Additionally reads the first primitive's `material` (if present) and
+// resolves the three texture URIs relative to the .gltf file's parent
+// directory. Image data is NOT loaded — the caller invokes its own
+// texture-load path with the returned absolute paths.
 //
-// Attribute mapping (glTF -> engine Vertex):
-//   POSITION   (vec3 float)  -> Vertex::position    [required]
-//   NORMAL     (vec3 float)  -> Vertex::normal      [required]
-//   TEXCOORD_0 (vec2 float)  -> Vertex::uv          [optional; defaults to (0,0)]
-//   TANGENT    (vec4 float)  -> Vertex::tangent     [optional; xyz only, w sign dropped;
-//                                                   defaults to (1,0,0)]
-//   indices    (u16 or u32)  -> u32 indices         [required; u16 promoted to u32]
-//
-// No texture / material / skin / animation data is loaded -- M22 scope
-// is geometry only. Game code passes engine default textures
-// (whiteTexture / flatNormalTexture / noSpecularTexture).
+// Embedded base64 textures (data: URIs) are NOT supported — those
+// paths come back empty. File-URI textures only.
+std::optional<GltfModel> loadGltfModel(const std::string& path);
+
+// Backward-compatible: returns just the mesh (drops material paths).
+// Implemented as a thin wrapper over loadGltfModel.
 std::optional<MeshData> loadGltfMesh(const std::string& path);
 
 }  // namespace iron

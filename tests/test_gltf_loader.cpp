@@ -2,6 +2,7 @@
 #include "test_framework.h"
 
 #include <cmath>
+#include <filesystem>
 #include <string>
 
 int main() {
@@ -38,6 +39,20 @@ int main() {
             }
             CHECK(sawNonZeroUv);
         }
+    }
+
+    // --- M22.5: BoxTextured.gltf has a material with a base-color texture ---
+    {
+        auto model = loadGltfModel(base + "/BoxTextured.gltf");
+        CHECK(model.has_value());
+        CHECK(!model->materialPaths.albedo.empty());
+        // Path should resolve to CesiumLogoFlat.png (using filesystem helper
+        // for cross-platform path comparison).
+        CHECK(std::filesystem::path(model->materialPaths.albedo).filename().string()
+              == "CesiumLogoFlat.png");
+        // BoxTextured has no normal or metallic-roughness texture.
+        CHECK(model->materialPaths.normal.empty());
+        CHECK(model->materialPaths.metalRoughness.empty());
     }
 
     // --- Triangle.gltf: the Khronos sample has only POSITION + indices, no

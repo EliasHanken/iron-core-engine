@@ -3,7 +3,7 @@
 // Free-fly camera (WASD + mouse, Space/Ctrl for up/down, ESC to quit).
 //
 // HUD shows vertex/triangle counts so this acts as a visual validator
-// for iron::loadGltfMesh (M22 Task 1).
+// for iron::loadGltfModel (M22 Task 1, textures via M22.5).
 
 #include "asset/GltfLoader.h"
 #include "core/Application.h"
@@ -18,6 +18,7 @@
 #include "render/Material.h"
 #include "render/Renderer.h"
 #include "render/RendererFactory.h"
+#include "render/TextureLoader.h"
 #include "scene/FreeFlyCamera.h"
 #include "scene/Mesh.h"
 #include "ui/BuiltinFont.h"
@@ -245,15 +246,33 @@ int main() {
     // CMake POST_BUILD step.
     const std::string modelPath = iron::executableDir()
         + "/assets/damaged-helmet/DamagedHelmet.gltf";
-    auto data = iron::loadGltfMesh(modelPath);
-    if (!data) {
+    auto model = iron::loadGltfModel(modelPath);
+    if (!model) {
         iron::Log::error("gltf-viewer: failed to load %s", modelPath.c_str());
         return 1;
     }
     iron::Log::info("gltf-viewer: loaded %zu verts, %zu indices",
-                    data->vertices.size(), data->indices.size());
+                    model->mesh.vertices.size(), model->mesh.indices.size());
 
-    const iron::MeshHandle mesh = renderer.createMesh(*data);
+    const iron::MeshHandle mesh = renderer.createMesh(model->mesh);
+
+    // M22.5 — load material textures via existing engine helpers.
+    const iron::TextureHandle albedo = model->materialPaths.albedo.empty()
+        ? renderer.whiteTexture()
+        : renderer.loadTexture(model->materialPaths.albedo);
+    const iron::TextureHandle normalMap = model->materialPaths.normal.empty()
+        ? renderer.flatNormalTexture()
+        : renderer.loadTexture(model->materialPaths.normal);
+
+    iron::TextureHandle spec = renderer.noSpecularTexture();
+    if (!model->materialPaths.metalRoughness.empty()) {
+        int w = 0, h = 0;
+        auto specBytes = iron::loadRoughnessAsSpec(
+            model->materialPaths.metalRoughness, w, h);
+        if (!specBytes.empty()) {
+            spec = renderer.createTexture(w, h, specBytes.data());
+        }
+    }
     const iron::ShaderHandle shader =
         renderer.createShader(kVertexShader, kFragmentShader);
     if (mesh == iron::kInvalidHandle || shader == iron::kInvalidHandle) {
@@ -282,7 +301,7 @@ int main() {
     char statsBuf[128];
     std::snprintf(statsBuf, sizeof(statsBuf),
                   "Verts: %zu  Tris: %zu",
-                  data->vertices.size(), data->indices.size() / 3);
+                  model->mesh.vertices.size(), model->mesh.indices.size() / 3);
     hud.addText(statsBuf, iron::Vec2{10, 10}, 2.0f,
                 iron::Vec4{1.0f, 1.0f, 1.0f, 1.0f});
     hud.addText("WASD: move  mouse: look  Space/Ctrl: up/down  ESC: quit",
@@ -315,16 +334,16 @@ int main() {
                             std::span<const iron::PointLight>{},
                             iron::Fog{}, view, proj);
 
-        // M22 scope: geometry-only viewer. No diffuse/normal/spec textures
-        // are loaded from the glTF — engine defaults give a flat-shaded
-        // pale-white look that proves the mesh geometry is correct.
+        // M22.5: material textures (albedo / normal / metal-roughness→spec)
+        // are loaded from the glTF when present; empty slots fall back to
+        // engine defaults.
         iron::DrawCall call;
         call.mesh   = mesh;
         call.shader = shader;
         call.model  = iron::Mat4::identity();
-        call.material.texture     = renderer.whiteTexture();
-        call.material.normalMap   = renderer.flatNormalTexture();
-        call.material.specularMap = renderer.noSpecularTexture();
+        call.material.texture     = albedo;
+        call.material.normalMap   = normalMap;
+        call.material.specularMap = spec;
         call.material.emissive    = iron::Vec3{0.05f, 0.05f, 0.05f};
         renderer.submit(call);
 

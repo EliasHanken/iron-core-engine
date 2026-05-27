@@ -123,7 +123,7 @@ std::vector<std::uint32_t> readIndicesAccessor(const tinygltf::Model& model, int
 
 }  // namespace
 
-std::optional<MeshData> loadGltfMesh(const std::string& path) {
+std::optional<GltfModel> loadGltfModel(const std::string& path) {
     tinygltf::Model model;
     tinygltf::TinyGLTF loader;
     std::string err, warn;
@@ -236,9 +236,51 @@ std::optional<MeshData> loadGltfMesh(const std::string& path) {
     }
     out.indices = std::move(indices);
 
+    // M22.5 — material texture paths. Empty if the primitive lacks a
+    // material or the material lacks the corresponding texture.
+    GltfMaterialPaths matPaths;
+    if (prim.material >= 0 &&
+        prim.material < static_cast<int>(model.materials.size())) {
+        const auto& mat = model.materials[prim.material];
+        const std::filesystem::path gltfDir =
+            std::filesystem::absolute(path).parent_path();
+
+        auto resolve = [&](int textureIndex) -> std::string {
+            if (textureIndex < 0 ||
+                textureIndex >= static_cast<int>(model.textures.size())) {
+                return {};
+            }
+            const auto& tex = model.textures[textureIndex];
+            if (tex.source < 0 ||
+                tex.source >= static_cast<int>(model.images.size())) {
+                return {};
+            }
+            const auto& img = model.images[tex.source];
+            // Skip embedded base64 (data URIs) — only file URIs supported.
+            if (img.uri.empty() || img.uri.substr(0, 5) == "data:") {
+                return {};
+            }
+            return (gltfDir / img.uri).string();
+        };
+
+        matPaths.albedo         = resolve(mat.pbrMetallicRoughness.baseColorTexture.index);
+        matPaths.normal         = resolve(mat.normalTexture.index);
+        matPaths.metalRoughness = resolve(mat.pbrMetallicRoughness.metallicRoughnessTexture.index);
+    }
+
+    GltfModel result;
+    result.mesh = std::move(out);
+    result.materialPaths = std::move(matPaths);
+
     Log::info("GltfLoader: loaded %s - %zu verts, %zu indices",
-              path.c_str(), out.vertices.size(), out.indices.size());
-    return out;
+              path.c_str(), result.mesh.vertices.size(), result.mesh.indices.size());
+    return result;
+}
+
+std::optional<MeshData> loadGltfMesh(const std::string& path) {
+    auto model = loadGltfModel(path);
+    if (!model) return std::nullopt;
+    return std::move(model->mesh);
 }
 
 }  // namespace iron
