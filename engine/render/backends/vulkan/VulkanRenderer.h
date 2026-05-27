@@ -11,6 +11,8 @@
 #include "render/backends/vulkan/VkHud.h"
 #include "render/backends/vulkan/VkShadowMap.h"
 #include "render/backends/vulkan/VkTexture.h"
+#include "render/backends/vulkan/VkCubemap.h"
+#include "render/backends/vulkan/VkSkybox.h"
 
 #include <array>
 #include <cstdint>
@@ -151,6 +153,11 @@ private:
     float pendingShadowBias_    = 0.002f;
     Mat4  pendingLightViewProj_ = Mat4::identity();
     VkShadowMap shadowMap_;
+
+    // M16 — cubemap storage + skybox subsystem + currently-set skybox.
+    VkCubemapStore cubemaps_;
+    VkSkybox       skybox_;
+    CubemapHandle  pendingSkybox_ = kInvalidHandle;
 
     // M15 — point lights + fog (existing beginFrame args, now stored).
     std::array<PointLight, kMaxPointLights> pendingPointLights_{};

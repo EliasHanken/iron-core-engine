@@ -562,3 +562,79 @@ net-shooter's ~40 draws that's 40 KB per frame, well within the
 
 After M16-M17 land, the Vulkan backend reaches full parity with the
 OpenGL lit pass.
+
+## Vulkan cubemap skybox + cubemap reflection (M16)
+
+Two cubemap-dependent features bundled because they share the
+underlying cubemap storage.
+
+### VkCubemapStore subsystem
+
+`engine/render/backends/vulkan/VkCubemap.cpp` owns cube-compatible
+images (6 array layers, `VK_IMAGE_VIEW_TYPE_CUBE`), a shared linear
+sampler with CLAMP_TO_EDGE address modes, and a built-in 1×1×6 black
+fallback. `createFromFaces(width, height, faces[6])` does a single
+staging-buffer upload of all 6 faces with one `vkCmdCopyBufferToImage`
+call + layout transitions.
+
+The black fallback is used by the lit pass when no skybox is set:
+`mix(lit, blackReflection, reflectivity)` → no contribution, matches
+the "no skybox" OpenGL behavior.
+
+### VkSkybox subsystem
+
+`engine/render/backends/vulkan/VkSkybox.cpp` owns a one-time-uploaded
+cube mesh (8 vertices, 36 indices) + a graphics pipeline:
+- Vertex shader emits `gl_Position = (vp * pos).xyww` — clip-Z = clip-W
+  → after perspective divide → NDC-Z = 1.0
+- depthCompareOp = `LESS_OR_EQUAL` so z=1 passes against the cleared
+  depth of 1.0 (sky fragments pass only where geometry hasn't written
+  closer depth)
+- Fragment shader samples the cubemap with `vDir = aPos` (the
+  vertex position IS the direction from the origin)
+- cull = NONE (we're inside the cube)
+- depth write = OFF (cube doesn't contribute to depth)
+
+`VulkanRenderer::endFrame` draws the skybox FIRST inside the scene
+render pass — before geometry — so the GPU can early-z-reject sky
+fragments behind opaque geometry. The translation is stripped from
+the view matrix CPU-side so the cube stays centered on the camera.
+
+### createCubemap + setSkybox un-stubbed
+
+`VulkanRenderer::createCubemap` (was a `warnOnce` stub since M9) now
+delegates to `VkCubemapStore::createFromFaces`. `setSkybox` stores
+the handle in `pendingSkybox_`. `endFrame` skips the skybox draw if
+`pendingSkybox_ == kInvalidHandle`.
+
+### Cubemap reflection in the lit shader
+
+The lit pass descriptor set layout grew from 5 to 6 bindings (cubemap
+sampler at binding 5). `VulkanRenderer::recordSceneDraw` writes the
+active skybox (or black fallback) as the 6th descriptor per draw.
+`VkFrameRing` descriptor pool sampler capacity bumped to `5 *
+kMaxDescriptorSetsPerFrame` (= 1280 / frame).
+
+The lit fragment shader gains a reflection block guarded by
+`materialParams.z` (reflectivity, present in LitUbo since M13):
+
+```glsl
+float reflectivity = u.materialParams.z;
+if (reflectivity > 0.0) {
+    vec3 viewDir = normalize(vWorldPos - u.cameraPos.xyz);
+    vec3 reflectDir = reflect(viewDir, perturbedN);
+    vec3 reflectColor = texture(uSkyCubemap, reflectDir).rgb;
+    lit = mix(lit, reflectColor, reflectivity);
+}
+```
+
+The branch is uniform across the draw call, so the GPU resolves it
+efficiently. When reflectivity = 0 (default for most materials), the
+block is skipped entirely.
+
+### What's still missing
+
+- Planar reflection (M17 — RTT pass with mirrored camera + clip plane).
+
+After M17 lands, the Vulkan backend reaches full parity with the
+OpenGL lit pass.

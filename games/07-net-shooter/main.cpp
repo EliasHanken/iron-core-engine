@@ -124,6 +124,7 @@ layout(set = 0, binding = 1) uniform sampler2D uDiffuse;
 layout(set = 0, binding = 2) uniform sampler2D uNormalMap;
 layout(set = 0, binding = 3) uniform sampler2D uSpecularMap;
 layout(set = 0, binding = 4) uniform sampler2D uShadowMap;
+layout(set = 0, binding = 5) uniform samplerCube uSkyCubemap;
 
 float shadowFactor(vec4 lightSpacePos, float bias) {
     vec3 proj = lightSpacePos.xyz / lightSpacePos.w;
@@ -166,7 +167,7 @@ void main() {
     vec3 lighting = u.sunColor.xyz * (diffuse * shadow + spec * specMask * shadow)
                   + u.ambient.xyz;
 
-    // M15 — point lights.
+    // Point lights (M15).
     int plCount = int(u.lightCounts.x);
     for (int i = 0; i < plCount; ++i) {
         vec3 toLight = u.pointPositions[i].xyz - vWorldPos;
@@ -186,7 +187,16 @@ void main() {
     vec3 diff = texture(uDiffuse, uv).rgb;
     vec3 lit = diff * lighting + u.emissive.xyz;
 
-    // M15 — fog. Zero density = no-op.
+    // M16 — cubemap reflection (planar reflection comes in M17).
+    float reflectivity = u.materialParams.z;
+    if (reflectivity > 0.0) {
+        vec3 viewDir = normalize(vWorldPos - u.cameraPos.xyz);
+        vec3 reflectDir = reflect(viewDir, perturbedN);
+        vec3 reflectColor = texture(uSkyCubemap, reflectDir).rgb;
+        lit = mix(lit, reflectColor, reflectivity);
+    }
+
+    // Fog (M15).
     float distFromCamera = length(u.cameraPos.xyz - vWorldPos);
     float fogFactor = 1.0 - exp(-u.fogColor.w * distFromCamera);
     vec3 finalColor = mix(lit, u.fogColor.xyz, clamp(fogFactor, 0.0, 1.0));
@@ -449,10 +459,11 @@ int main(int argc, char** argv) {
     }
 
 #ifdef IRON_RENDER_BACKEND_VULKAN
-    iron::Log::warn("net-shooter Vulkan path: sun + ambient + emissive "
-                    "+ normal/spec + shadow + point lights + fog "
-                    "(Blinn-Phong, 3x3 PCF) lit. Still missing cubemap "
-                    "reflections. Full parity ships in future milestones.");
+    iron::Log::warn("net-shooter Vulkan path: full lit pass (sun + "
+                    "ambient + emissive + normal/spec + shadow + point "
+                    "lights + fog + cubemap reflections; Blinn-Phong, "
+                    "3x3 PCF). Still missing planar reflection. Full "
+                    "parity ships in M17.");
 #endif
 
     // Skybox

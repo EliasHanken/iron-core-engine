@@ -21,8 +21,10 @@ VulkanRenderer::~VulkanRenderer() {
         vkDeviceWaitIdle(context_.device());
         meshes_.destroyAll(context_);
         textures_.destroyAll(context_);
+        cubemaps_.destroyAll(context_);
         shaders_.destroyAll(context_);
         hud_.destroy(context_);
+        skybox_.destroy(context_);
         shadowMap_.destroy(context_);
         debugLines_.destroy(context_);
         pipelines_.destroy(context_);
@@ -53,6 +55,10 @@ bool VulkanRenderer::init(Window& window) {
         Log::error("VulkanRenderer: VkTextureStore init failed");
         return false;
     }
+    if (!cubemaps_.init(context_)) {
+        Log::error("VulkanRenderer: VkCubemapStore init failed");
+        return false;
+    }
     if (!shadowMap_.init(context_)) {
         Log::error("VulkanRenderer: VkShadowMap init failed");
         return false;
@@ -63,6 +69,10 @@ bool VulkanRenderer::init(Window& window) {
     }
     if (!hud_.init(context_, scenePass())) {
         Log::error("VulkanRenderer: VkHud init failed");
+        return false;
+    }
+    if (!skybox_.init(context_, scenePass())) {
+        Log::error("VulkanRenderer: VkSkybox init failed");
         return false;
     }
     initOk_ = true;
@@ -101,12 +111,14 @@ ShaderHandle VulkanRenderer::createShader(const std::string& v,
 
 // --- M9 stubs (M10+ work) ---
 
-CubemapHandle VulkanRenderer::createCubemap(int, int,
-    const std::array<const unsigned char*, 6>&) {
-    warnOnce("createCubemap");
-    return kInvalidHandle;
+CubemapHandle VulkanRenderer::createCubemap(int width, int height,
+        const std::array<const unsigned char*, 6>& faces) {
+    return cubemaps_.createFromFaces(context_, width, height, faces);
 }
-void VulkanRenderer::setSkybox(CubemapHandle) { warnOnce("setSkybox"); }
+
+void VulkanRenderer::setSkybox(CubemapHandle sky) {
+    pendingSkybox_ = sky;
+}
 void VulkanRenderer::setShadowBounds(Vec3 center, float radius) {
     pendingShadowCenter_ = center;
     pendingShadowRadius_ = radius;
@@ -358,7 +370,13 @@ void VulkanRenderer::recordSceneDraw(VkCommandBuffer cb, const DrawCall& call) {
         ? textures_.get(call.material.specularMap)
         : textures_.get(textures_.noSpecularTexture());
 
-    VkDescriptorImageInfo imgInfos[4]{};
+    // M16 — also bind the active skybox (or black fallback) at binding 5.
+    const CubemapHandle skyHandle = cubemaps_.has(pendingSkybox_)
+        ? pendingSkybox_
+        : cubemaps_.blackCubemap();
+    const auto& skyTex = cubemaps_.get(skyHandle);
+
+    VkDescriptorImageInfo imgInfos[5]{};
     imgInfos[0].sampler     = diffuse.sampler;
     imgInfos[0].imageView   = diffuse.view;
     imgInfos[0].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
@@ -371,8 +389,11 @@ void VulkanRenderer::recordSceneDraw(VkCommandBuffer cb, const DrawCall& call) {
     imgInfos[3].sampler     = shadowMap_.sampler();
     imgInfos[3].imageView   = shadowMap_.depthView();
     imgInfos[3].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    imgInfos[4].sampler     = skyTex.sampler;
+    imgInfos[4].imageView   = skyTex.view;
+    imgInfos[4].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 
-    VkWriteDescriptorSet writes[5]{};
+    VkWriteDescriptorSet writes[6]{};
     writes[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
     writes[0].dstSet = set;
     writes[0].dstBinding = 0;
@@ -403,7 +424,13 @@ void VulkanRenderer::recordSceneDraw(VkCommandBuffer cb, const DrawCall& call) {
     writes[4].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
     writes[4].descriptorCount = 1;
     writes[4].pImageInfo = &imgInfos[3];
-    vkUpdateDescriptorSets(context_.device(), 5, writes, 0, nullptr);
+    writes[5].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    writes[5].dstSet = set;
+    writes[5].dstBinding = 5;
+    writes[5].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    writes[5].descriptorCount = 1;
+    writes[5].pImageInfo = &imgInfos[4];
+    vkUpdateDescriptorSets(context_.device(), 6, writes, 0, nullptr);
 
     vkCmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_GRAPHICS,
                             sh.pipelineLayout, 0, 1, &set, 0, nullptr);
@@ -447,6 +474,17 @@ void VulkanRenderer::endFrame() {
         rpBegin.pClearValues = clears;
         vkCmdBeginRenderPass(cb, &rpBegin, VK_SUBPASS_CONTENTS_INLINE);
         setSceneViewport(cb, swapchain_.extent());
+
+        // M16 — draw skybox first inside the scene pass.
+        if (cubemaps_.has(pendingSkybox_)) {
+            Mat4 v = pendingView_;
+            v.at(0, 3) = 0.0f;
+            v.at(1, 3) = 0.0f;
+            v.at(2, 3) = 0.0f;
+            const Mat4 vp = pendingProjection_ * v;
+            skybox_.record(cb, context_.device(), frames_,
+                          cubemaps_.get(pendingSkybox_), vp);
+        }
 
         for (const DrawCall& call : sceneDraws_) {
             recordSceneDraw(cb, call);
