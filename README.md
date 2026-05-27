@@ -7,16 +7,20 @@ The engine core (`engine/`) builds a static library `ironcore`. Games under
 `games/` link against it. Concept notes live in `docs/` and are browsable as an
 Obsidian vault.
 
-## What works today
+## Render backend
 
-- Windowing + OpenGL 3.3 context (GLFW + glad)
-- Fixed-timestep game loop
-- Keyboard / mouse input
-- Hand-written math library: `Vec2/3/4`, `Mat4`, `Quaternion`, transform and
-  projection builders — with unit tests
-- API-agnostic renderer interface (RHI) with an OpenGL backend
-- Orbit camera
-- **Demo:** `games/01-spinning-cube` — a spinning, textured cube you can orbit
+The engine has two backends behind one RHI: **Vulkan 1.3** (default, actively
+developed) and **OpenGL 3.3** (deprecated, frozen — no new features, but
+still compiles and runs the demos it shipped with). Select via CMake:
+
+```
+cmake -S . -B build                                  # Vulkan (default)
+cmake -S . -B build -DIRON_RENDER_BACKEND=opengl     # OpenGL (deprecated)
+```
+
+Vulkan demos: `01-spinning-cube`, `03-showcase`, `07-net-shooter`,
+`08-particle-storm`. OpenGL-only demos (`02-strandbound`, `04-net-pingpong`,
+`05-net-cubes`, `06-net-tag`) require `-DIRON_RENDER_BACKEND=opengl`.
 
 ## Build
 
@@ -29,13 +33,11 @@ cmake -S . -B build
 cmake --build build
 ```
 
-Run the demo:
+Run a demo (Vulkan):
 
 ```
-build/games/01-spinning-cube/Debug/spinning-cube.exe
+build/games/03-showcase/Debug/showcase.exe
 ```
-
-Controls: drag left mouse to orbit, `W`/`S` to zoom, `Escape` to quit.
 
 Run the tests:
 
@@ -54,8 +56,10 @@ docs/      Obsidian vault: math + engine concept notes
 
 ## Roadmap
 
-Next specs (each its own plan): game-state stack, a raycasting demo game,
-simple UDP multiplayer, basic lighting.
+Next track: physics overhaul (real character controllers, rigid bodies,
+collision with rotation, joints). See
+[`docs/superpowers/plans/`](docs/superpowers/plans/) for in-progress
+specs and plans.
 
 ## Design
 
