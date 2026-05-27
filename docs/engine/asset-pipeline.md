@@ -4,12 +4,15 @@ This is the home for engine-side asset import. Currently covers glTF
 mesh loading (M22+); future tracks add texture-import polish, audio
 loading, level format, etc.
 
-## glTF loader (`iron::loadGltfMesh`)
+## glTF loader (`iron::loadGltfModel`)
 
-`engine/asset/GltfLoader.{h,cpp}` ships a single-function API:
+`engine/asset/GltfLoader.{h,cpp}` ships a two-function API
+(`loadGltfMesh` is a thin wrapper for callers that don't need
+material paths — see the M22.5 section below):
 
 ```cpp
-std::optional<MeshData> loadGltfMesh(const std::string& path);
+std::optional<GltfModel> loadGltfModel(const std::string& path);
+std::optional<MeshData>  loadGltfMesh (const std::string& path);
 ```
 
 Backed by [tinygltf](https://github.com/syoyo/tinygltf) via vcpkg.
@@ -36,12 +39,11 @@ engine's mesh interface is always `std::uint32_t`.
 
 ### What's NOT loaded in M22
 
-- **Textures / materials.** The loader skips image loading entirely
-  (tinygltf's image callbacks are disabled). Game code passes engine
-  defaults: `renderer.whiteTexture()` for diffuse,
-  `renderer.flatNormalTexture()` for normal,
-  `renderer.noSpecularTexture()` for specular. Textures land in a
-  small follow-up or in M23.
+- **PBR shading.** Textures are bound through the existing Blinn-Phong
+  lit shader. Metallic-roughness conversion to "spec map" is
+  approximate (G channel only, metallic discarded). Proper PBR
+  (metallic-roughness BRDF + image-based lighting + tone-mapping) is a
+  future track.
 - **Skeletons, joints, skinning data** — M23.
 - **Animations** — M24.
 - **Multi-primitive meshes, multi-mesh scenes, scene-graph traversal
@@ -57,6 +59,44 @@ engine's mesh interface is always `std::uint32_t`.
 - **glTF 2.0 extensions** (`KHR_draco_compression`,
   `KHR_texture_basisu`, `KHR_lights_punctual`, etc.) — not supported.
 
+## M22.5 — Material textures
+
+The loader's primary API is now `loadGltfModel(path)`, returning both
+the `MeshData` and a `GltfMaterialPaths` struct with absolute file
+paths to the first primitive's material textures (base color, normal,
+metallic-roughness). `loadGltfMesh` becomes a thin wrapper for callers
+that only need geometry.
+
+```cpp
+struct GltfMaterialPaths {
+    std::string albedo;
+    std::string normal;
+    std::string metalRoughness;
+};
+
+struct GltfModel {
+    MeshData            mesh;
+    GltfMaterialPaths   materialPaths;
+};
+
+std::optional<GltfModel> loadGltfModel(const std::string& path);
+```
+
+The loader returns paths only — image data is NOT loaded. Game code
+calls `renderer.loadTexture(path)` for color + normal, and
+`iron::loadRoughnessAsSpec(path, w, h)` + `renderer.createTexture(...)`
+for the metallic-roughness map (the engine's "spec" slot expects
+bright = shiny, so the helper inverts the G channel from glTF's
+roughness convention). Empty paths fall back to engine defaults
+(`whiteTexture` / `flatNormalTexture` / `noSpecularTexture`).
+
+Embedded base64 textures (`data:` URIs) are NOT supported in v1 —
+those paths come back empty. File-URI textures only.
+
+The 10-gltf-viewer demo now shows the Damaged Helmet with its full
+texture set applied (under the existing Blinn-Phong shader — proper
+PBR is a future track).
+
 ### Visual validator: `games/10-gltf-viewer`
 
 Loads the Khronos "Damaged Helmet" CC0 sample. Vulkan-only; free-fly
@@ -66,9 +106,9 @@ camera; HUD shows vert/tri counts. Run with:
 .\build-vk\games\10-gltf-viewer\Debug\gltf-viewer.exe
 ```
 
-Helmet renders flat-shaded white (no textures applied — that's M22's
-intentional scope) but with correct geometry — proves the loader works
-end-to-end.
+Helmet renders with its full material texture set (base color, normal
+map, metal-roughness → spec) under the existing Blinn-Phong shader —
+proves both the loader and the M22.5 texture pipeline work end-to-end.
 
 ### Test assets
 
@@ -98,6 +138,5 @@ glTF asset track:
   anims on players. Stretch: ragdoll bones drive the skinned mesh on
   death for "ragdoll using the character's mesh" effect.
 
-Optional follow-up between M22 and M23: load base-color (+ normal +
-spec) textures from glTF and feed them into the existing `Material`
-fields. ~100 LOC; small fixup-style task.
+**M22.5** (shipped) added the base-color / normal / metal-roughness
+texture path loading; see section above.
