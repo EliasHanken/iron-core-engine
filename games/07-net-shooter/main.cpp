@@ -28,6 +28,8 @@
 #include "net/PredictionEngine.h"
 #include "net/TimeHistory.h"
 #include "net/backends/gns/GnsTransport.h"
+#include "physics/CharacterController.h"
+#include "physics/PhysicsWorld.h"
 #include "render/Fog.h"
 #include "render/Light.h"
 #include "render/Material.h"
@@ -45,6 +47,8 @@
 #include <cmath>
 #include <cstdio>
 #include <deque>
+#include <functional>
+#include <memory>
 #include <span>
 #include <string>
 #include <unordered_map>
@@ -445,6 +449,26 @@ double nowSec() {
     return std::chrono::duration<double>(Clock::now() - kEpoch).count();
 }
 
+// M19 — convert the arena's Aabbs into static collision in `world`. Each
+// Aabb has min/max corners; PhysicsWorld::createStaticBox takes center +
+// halfExtents.
+void populateArenaCollision(iron::PhysicsWorld& world,
+                            const iron::netshooter::Arena& arena) {
+    for (const auto& box : arena.boxes) {
+        const iron::Vec3 center{
+            (box.min.x + box.max.x) * 0.5f,
+            (box.min.y + box.max.y) * 0.5f,
+            (box.min.z + box.max.z) * 0.5f,
+        };
+        const iron::Vec3 halfExtents{
+            (box.max.x - box.min.x) * 0.5f,
+            (box.max.y - box.min.y) * 0.5f,
+            (box.max.z - box.min.z) * 0.5f,
+        };
+        world.createStaticBox(center, halfExtents);
+    }
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -591,17 +615,18 @@ int main(int argc, char** argv) {
     // Game state
     // -----------------------------------------------------------------------
     struct PlayerState {
-        float x, y, z;
+        float x  = 0.0f, y  = 0.0f, z  = 0.0f;     // foot position
+        float vx = 0.0f, vy = 0.0f, vz = 0.0f;     // velocity
+        bool  grounded = false;
         bool operator==(const PlayerState& o) const {
-            return x == o.x && y == o.y && z == o.z;
+            return x == o.x && y == o.y && z == o.z
+                && vx == o.vx && vy == o.vy && vz == o.vz
+                && grounded == o.grounded;
         }
     };
-    struct PlayerInput { float dx, dy, dz; };
-
-    // Ground-clamped simulate: keeps the player's feet at y >= 0.
-    auto simulate = [](const PlayerState& s, const PlayerInput& in, float /*dt*/) {
-        const float newY = std::max(0.0f, s.y + in.dy);
-        return PlayerState{s.x + in.dx, newY, s.z + in.dz};
+    struct PlayerInput {
+        float vx = 0.0f, vy = 0.0f, vz = 0.0f;   // world-space velocity (m/s)
+        bool  jump = false;
     };
 
     // Yaw/pitch for first-person view — camera-only, not networked.
@@ -612,10 +637,40 @@ int main(int argc, char** argv) {
         ? iron::Vec3{0.0f, 1.0f, 0.0f}
         : arena.spawnPoints[0];
 
+    // M19 — per-player PhysicsWorld + CharacterController. The local
+    // world contains the arena's static geometry + exactly one character
+    // (this client's own predicted player; or for the host, the host's
+    // local player). Host also keeps one world per remote peer (see
+    // ensureHostSim below).
+    iron::CharacterControllerConfig charCfg;  // defaults: r=0.30, hh=0.90, jump=5.5
+    iron::PhysicsWorld localWorld;
+    localWorld.init();
+    populateArenaCollision(localWorld, arena);
+
+    iron::CharacterController localChar;
+    localChar.create(localWorld, charCfg, spawnPos);
+
+    // simulate captures the local world + controller by reference. Called
+    // by PredictionEngine for prediction AND for reconciliation replay.
+    // The controller's state is restored from `s` at the start of every
+    // call so reconciliation can deterministically replay.
+    auto simulate = [&localWorld, &localChar]
+                    (const PlayerState& s, const PlayerInput& in, float dt) -> PlayerState {
+        localChar.setFootPosition({s.x, s.y, s.z});
+        localChar.setVelocity({s.vx, s.vy, s.vz});
+        localChar.update(dt, iron::Vec3{in.vx, 0.0f, in.vz}, in.jump);
+        localWorld.step(dt);
+
+        const iron::Vec3 p = localChar.footPosition();
+        const iron::Vec3 v = localChar.velocity();
+        return PlayerState{p.x, p.y, p.z, v.x, v.y, v.z, localChar.isGrounded()};
+    };
+
     iron::PredictionEngine<PlayerInput, PlayerState> predictor{
         simulate,
         /*fixedDt=*/ 1.0f / 60.0f,
-        /*initial=*/ PlayerState{spawnPos.x, spawnPos.y, spawnPos.z}};
+        /*initial=*/ PlayerState{spawnPos.x, spawnPos.y, spawnPos.z,
+                                  0.0f, 0.0f, 0.0f, true}};
 
     auto myPos = [&]() {
         const auto& s = predictor.predictedState();
@@ -673,6 +728,43 @@ int main(int argc, char** argv) {
 
     // Host-side authoritative positions
     std::unordered_map<std::uint32_t, PlayerState> authStates;
+
+    // M19 — host-only: per-peer PhysicsWorld + CharacterController. Each
+    // peer's `simulateFn` captures that peer's world + controller; it has
+    // the same pure-function shape PredictionEngine expects, just routed
+    // to the right peer's controller. The local host's own player still
+    // uses the outer `localWorld` / `localChar` / `simulate` lambda for
+    // prediction; the host-sim entry for pid==0 is used by the loopback
+    // path only (the host doesn't receive its own PlayerInputMsg).
+    struct HostPlayerSim {
+        iron::PhysicsWorld world;
+        iron::CharacterController controller;
+        std::function<PlayerState(const PlayerState&, const PlayerInput&, float)> simulateFn;
+    };
+    std::unordered_map<std::uint32_t, std::unique_ptr<HostPlayerSim>> hostSims;
+
+    auto ensureHostSim = [&](std::uint32_t pid, iron::Vec3 spawn) -> HostPlayerSim& {
+        auto it = hostSims.find(pid);
+        if (it != hostSims.end()) return *it->second;
+        auto sim = std::make_unique<HostPlayerSim>();
+        sim->world.init();
+        populateArenaCollision(sim->world, arena);
+        sim->controller.create(sim->world, charCfg, spawn);
+        auto* simPtr = sim.get();
+        sim->simulateFn = [simPtr](const PlayerState& s, const PlayerInput& in,
+                                    float dt) -> PlayerState {
+            simPtr->controller.setFootPosition({s.x, s.y, s.z});
+            simPtr->controller.setVelocity({s.vx, s.vy, s.vz});
+            simPtr->controller.update(dt, iron::Vec3{in.vx, 0.0f, in.vz}, in.jump);
+            simPtr->world.step(dt);
+            const iron::Vec3 p = simPtr->controller.footPosition();
+            const iron::Vec3 v = simPtr->controller.velocity();
+            return PlayerState{p.x, p.y, p.z, v.x, v.y, v.z,
+                                simPtr->controller.isGrounded()};
+        };
+        hostSims[pid] = std::move(sim);
+        return *hostSims[pid];
+    };
 
     // M11 — gizmo registry (lag-comp AABBs + splash spheres) + F3 toggle.
     iron::GizmoRegistry gizmos;
@@ -749,7 +841,14 @@ int main(int argc, char** argv) {
             // Initialise host-side state for this peer if new.
             if (authStates.find(pid) == authStates.end()) {
                 iron::Vec3 sp = iron::netshooter::pickRandomSpawn(arena, hostRngState);
-                authStates[pid] = PlayerState{sp.x, sp.y, sp.z};
+                authStates[pid] = PlayerState{sp.x, sp.y, sp.z,
+                                              0.0f, 0.0f, 0.0f, true};
+                // M19 — bring the per-peer host sim into existence at the
+                // same spawn position so the controller doesn't drift on
+                // first input.
+                HostPlayerSim& sim = ensureHostSim(pid, iron::Vec3{sp.x, sp.y, sp.z});
+                sim.controller.setFootPosition({sp.x, sp.y, sp.z});
+                sim.controller.setVelocity({0.0f, 0.0f, 0.0f});
             }
             if (hostPlayers.find(pid) == hostPlayers.end()) {
                 hostPlayers[pid] = HostPlayer{};
@@ -762,7 +861,11 @@ int main(int argc, char** argv) {
                     if (otherPid == pid) continue;
                     peers.send(pid,
                         iron::netshooter::AuthorityPositionMsg{
-                            otherPid, state.x, state.y, state.z, /*lastInputId=*/0},
+                            otherPid,
+                            state.x, state.y, state.z,
+                            state.vx, state.vy, state.vz,
+                            static_cast<std::uint8_t>(state.grounded ? 1 : 0),
+                            /*lastInputId=*/0u},
                         iron::SendReliability::Reliable);
                 }
                 for (const auto& [otherPid, hp] : hostPlayers) {
@@ -801,6 +904,7 @@ int main(int argc, char** argv) {
         if (peers.isHost()) {
             authStates.erase(pid);
             hostPlayers.erase(pid);
+            hostSims.erase(pid);  // M19 — release per-peer physics world
             lagComp.forgetPeer(pid);
             // Remove rockets owned by this peer.
             liveRockets.erase(
@@ -827,15 +931,23 @@ int main(int argc, char** argv) {
             auto it = hostPlayers.find(*pid);
             if (it != hostPlayers.end() && it->second.respawnAtSec >= 0.0) return;
 
-            authStates[*pid] = simulate(
-                authStates[*pid],
-                PlayerInput{msg.dx, msg.dy, msg.dz}, 0.0f);
+            // M19 — route through the per-peer host sim (capsule controller
+            // against arena collision).
+            HostPlayerSim& sim = ensureHostSim(*pid,
+                iron::Vec3{authStates[*pid].x, authStates[*pid].y, authStates[*pid].z});
+
+            const PlayerInput inP{msg.vx, msg.vy, msg.vz, msg.jump != 0};
+            authStates[*pid] = sim.simulateFn(authStates[*pid], inP, 1.0f / 60.0f);
             it->second.lastInputId = msg.inputId;
 
             const auto& s = authStates[*pid];
             peers.broadcastToAll<iron::netshooter::AuthorityPositionMsg>(
                 iron::netshooter::AuthorityPositionMsg{
-                    *pid, s.x, s.y, s.z, msg.inputId},
+                    *pid,
+                    s.x, s.y, s.z,
+                    s.vx, s.vy, s.vz,
+                    static_cast<std::uint8_t>(s.grounded ? 1 : 0),
+                    msg.inputId},
                 iron::SendReliability::Unreliable);
         });
 
@@ -855,7 +967,10 @@ int main(int argc, char** argv) {
             const std::uint32_t myId = peers.myPeerId();
             if (msg.peerId == myId) {
                 predictor.reconcile(
-                    PlayerState{msg.x, msg.y, msg.z}, msg.lastInputId);
+                    PlayerState{msg.x, msg.y, msg.z,
+                                msg.vx, msg.vy, msg.vz,
+                                msg.grounded != 0},
+                    msg.lastInputId);
             } else {
                 remotes[msg.peerId].positionHistory.push(iron::Vec3{msg.x, msg.y, msg.z});
             }
@@ -912,7 +1027,15 @@ int main(int argc, char** argv) {
             const std::uint32_t myId = peers.myPeerId();
             if (msg.peerId == myId) {
                 // Reset predictor to authoritative spawn position.
-                predictor.reset(PlayerState{msg.x, msg.y, msg.z});
+                // M19 — zero velocity, force grounded=true; controller
+                // will settle/fall as physics dictates.
+                predictor.reset(PlayerState{msg.x, msg.y, msg.z,
+                                            0.0f, 0.0f, 0.0f, true});
+                // Snap the local character controller too — predictor's
+                // reset only updates predictedState, not the captured
+                // physics body.
+                localChar.setFootPosition({msg.x, msg.y, msg.z});
+                localChar.setVelocity({0.0f, 0.0f, 0.0f});
                 localHpForHud = static_cast<int>(msg.hp);
             } else {
                 // Push new position into history for this remote player.
@@ -1122,29 +1245,50 @@ int main(int argc, char** argv) {
                 ? (hostPlayers.count(0) && hostPlayers[0].respawnAtSec >= 0.0)
                 : false;
 
+            // M19 — edge-detected jump (one frame's `true` per press).
+            static bool prevSpace = false;
+            const bool nowSpace = cursorCaptured &&
+                                  glfwGetKey(window.handle(), GLFW_KEY_SPACE) == GLFW_PRESS;
+            const bool jumpEdge = nowSpace && !prevSpace;
+            prevSpace = nowSpace;
+
             inputTicker.update(dt, [&]() {
-                constexpr float kInputRateHz  = 60.0f;
-                const float speedPerTick = kMoveSpeed / kInputRateHz;
-                PlayerInput in{
-                    moveDir.x * speedPerTick,
-                    0.0f,
-                    moveDir.z * speedPerTick,
-                };
+                // M19 — world-space velocity (m/s), NOT delta. Direction
+                // vectors (forwardXZ/rightXZ) already encode the sign
+                // convention used by the old code, so reuse moveDir and
+                // simply scale by kMoveSpeed.
+                PlayerInput in;
+                in.vx   = moveDir.x * kMoveSpeed;
+                in.vy   = 0.0f;
+                in.vz   = moveDir.z * kMoveSpeed;
+                in.jump = jumpEdge;
                 const auto inputId = predictor.applyInput(in);
 
                 if (peers.isHost()) {
                     if (!localDead) {
-                        authStates[0] = simulate(authStates[0], in, 0.0f);
+                        // M19 — host's local player IS the predictor.
+                        // applyInput just stepped localWorld + localChar
+                        // once; mirror the predicted state into authStates
+                        // (used by gizmos, lag-comp, and broadcast).
+                        // Re-running simulate here would double-step.
+                        authStates[0] = predictor.predictedState();
+                        const auto& s = authStates[0];
                         peers.broadcastToAll<iron::netshooter::AuthorityPositionMsg>(
                             iron::netshooter::AuthorityPositionMsg{
-                                0u, authStates[0].x, authStates[0].y, authStates[0].z,
+                                0u,
+                                s.x, s.y, s.z,
+                                s.vx, s.vy, s.vz,
+                                static_cast<std::uint8_t>(s.grounded ? 1 : 0),
                                 /*lastInputId=*/0u},
                             iron::SendReliability::Unreliable);
                     }
                 } else {
                     peers.send<iron::netshooter::PlayerInputMsg>(
                         0u,
-                        iron::netshooter::PlayerInputMsg{inputId, in.dx, in.dy, in.dz},
+                        iron::netshooter::PlayerInputMsg{
+                            inputId,
+                            in.vx, in.vy, in.vz,
+                            static_cast<std::uint8_t>(in.jump ? 1 : 0)},
                         iron::SendReliability::Unreliable);
                 }
             });
@@ -1358,7 +1502,11 @@ int main(int argc, char** argv) {
                     const auto& s = authStates[0];
                     peers.broadcastToAll<iron::netshooter::AuthorityPositionMsg>(
                         iron::netshooter::AuthorityPositionMsg{
-                            0u, s.x, s.y, s.z, 0u},
+                            0u,
+                            s.x, s.y, s.z,
+                            s.vx, s.vy, s.vz,
+                            static_cast<std::uint8_t>(s.grounded ? 1 : 0),
+                            /*lastInputId=*/0u},
                         iron::SendReliability::Unreliable);
                 }
 
@@ -1374,14 +1522,27 @@ int main(int argc, char** argv) {
                     hp.rocket.cooldown.reset();
 
                     iron::Vec3 sp = iron::netshooter::pickRandomSpawn(arena, hostRngState);
-                    authStates[pid] = PlayerState{sp.x, sp.y, sp.z};
+                    authStates[pid] = PlayerState{sp.x, sp.y, sp.z,
+                                                  0.0f, 0.0f, 0.0f, true};
+
+                    // M19 — snap the per-peer host sim's controller to
+                    // the spawn point too, so the next PlayerInputMsg
+                    // starts from the right place.
+                    HostPlayerSim& sim = ensureHostSim(pid, iron::Vec3{sp.x, sp.y, sp.z});
+                    sim.controller.setFootPosition({sp.x, sp.y, sp.z});
+                    sim.controller.setVelocity({0.0f, 0.0f, 0.0f});
 
                     // Host's own respawn: broadcastToAll doesn't loop back to
                     // ourselves, so reset our local predictor inline. Without
                     // this, the host's first-person camera (myPos → predictor)
                     // stays at the death position permanently.
                     if (pid == 0) {
-                        predictor.reset(PlayerState{sp.x, sp.y, sp.z});
+                        predictor.reset(PlayerState{sp.x, sp.y, sp.z,
+                                                    0.0f, 0.0f, 0.0f, true});
+                        // Snap localChar too — predictor.reset only mutates
+                        // predictedState, not the captured physics body.
+                        localChar.setFootPosition({sp.x, sp.y, sp.z});
+                        localChar.setVelocity({0.0f, 0.0f, 0.0f});
                     }
 
                     iron::netshooter::RespawnMsg rm{};
