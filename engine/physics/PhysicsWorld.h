@@ -77,6 +77,23 @@ public:
     };
     RaycastHit raycast(Vec3 origin, Vec3 direction, float maxDistance) const;
 
+    // --- Joints ---
+    // Swing-twist: spine, neck, shoulders, hips. World-space pivot +
+    // twist axis. `swingLimit` is the cone half-angle the twist axis can
+    // swing through; `twistLimit` is rotation around the twist axis.
+    // Both in radians.
+    JointId createSwingTwistJoint(BodyId a, BodyId b,
+                                  Vec3 pivotWorld, Vec3 twistAxisWorld,
+                                  float swingLimitRad, float twistLimitRad);
+
+    // Hinge: elbow, knee. World-space pivot + hinge axis + signed angle
+    // limits in radians.
+    JointId createHingeJoint(BodyId a, BodyId b,
+                             Vec3 pivotWorld, Vec3 hingeAxisWorld,
+                             float minAngleRad, float maxAngleRad);
+
+    void destroyJoint(JointId);
+
     // Internal pimpl — exposed in header so other engine TUs (Ragdoll, etc.)
     // can reach Jolt internals via friendship. Game code never touches Impl.
     struct Impl;

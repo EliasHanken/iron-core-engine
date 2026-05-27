@@ -18,7 +18,12 @@
 #include <Jolt/Physics/Collision/CastResult.h>
 #include <Jolt/Physics/Body/BodyCreationSettings.h>
 #include <Jolt/Physics/Body/BodyInterface.h>
+#include <Jolt/Physics/Body/BodyLockInterface.h>
+#include <Jolt/Physics/Constraints/SwingTwistConstraint.h>
+#include <Jolt/Physics/Constraints/HingeConstraint.h>
 #include <Jolt/RegisterTypes.h>
+
+#include <vector>
 
 namespace iron {
 
@@ -104,6 +109,10 @@ struct PhysicsWorld::Impl {
     BroadPhaseLayerInterfaceImpl       broadphaseLayers;
     ObjectVsBroadPhaseLayerFilterImpl  objectVsBroadphase;
     ObjectLayerPairFilterImpl          objectVsObject;
+
+    // Joints: linear table indexed by JointId::value-1. Entry 0 reserved
+    // as kInvalidJoint; valid entries start at index 0 with JointId.value = 1.
+    std::vector<JPH::Ref<JPH::TwoBodyConstraint>> joints;
 };
 
 PhysicsWorld::PhysicsWorld() : impl_(std::make_unique<Impl>()) {}
@@ -139,7 +148,13 @@ bool PhysicsWorld::init() {
 
 void PhysicsWorld::shutdown() {
     if (!impl_) return;
-    if (impl_->system) { delete impl_->system; impl_->system = nullptr; }
+    if (impl_->system) {
+        for (auto& j : impl_->joints) {
+            if (j != nullptr) impl_->system->RemoveConstraint(j);
+        }
+        impl_->joints.clear();
+        delete impl_->system; impl_->system = nullptr;
+    }
     if (impl_->jobs)   { delete impl_->jobs;   impl_->jobs   = nullptr; }
     if (impl_->temp)   { delete impl_->temp;   impl_->temp   = nullptr; }
 }
@@ -251,6 +266,75 @@ PhysicsWorld::RaycastHit PhysicsWorld::raycast(Vec3 o, Vec3 d, float maxDist) co
     // Normal extraction requires body locking — placeholder for v1.
     out.normal = Vec3{0.0f, 1.0f, 0.0f};
     return out;
+}
+
+namespace {
+
+JPH::Body& lockBodyForJoint(PhysicsWorld::Impl& impl, BodyId id) {
+    // Used only during scene setup (no concurrent step in progress).
+    // The lock-free interface is safe in this context.
+    return *impl.system->GetBodyLockInterfaceNoLock().TryGetBody(toJoltBodyId(id));
+}
+
+}  // namespace
+
+JointId PhysicsWorld::createSwingTwistJoint(BodyId a, BodyId b,
+                                            Vec3 pivotWorld, Vec3 twistAxisWorld,
+                                            float swingLimitRad, float twistLimitRad) {
+    JPH::SwingTwistConstraintSettings s;
+    s.mPosition1 = toJ(pivotWorld);
+    s.mPosition2 = toJ(pivotWorld);
+    JPH::Vec3 twist = toJ(twistAxisWorld).Normalized();
+    s.mTwistAxis1 = twist;
+    s.mTwistAxis2 = twist;
+    JPH::Vec3 plane = twist.GetNormalizedPerpendicular();
+    s.mPlaneAxis1 = plane;
+    s.mPlaneAxis2 = plane;
+    s.mNormalHalfConeAngle = swingLimitRad;
+    s.mPlaneHalfConeAngle  = swingLimitRad;
+    s.mTwistMinAngle = -twistLimitRad;
+    s.mTwistMaxAngle =  twistLimitRad;
+
+    JPH::Body& ba = lockBodyForJoint(*impl_, a);
+    JPH::Body& bb = lockBodyForJoint(*impl_, b);
+    JPH::Ref<JPH::TwoBodyConstraint> c = s.Create(ba, bb);
+    impl_->system->AddConstraint(c);
+    impl_->joints.push_back(c);
+    return JointId{static_cast<std::uint32_t>(impl_->joints.size())};
+}
+
+JointId PhysicsWorld::createHingeJoint(BodyId a, BodyId b,
+                                        Vec3 pivotWorld, Vec3 hingeAxisWorld,
+                                        float minAngleRad, float maxAngleRad) {
+    JPH::HingeConstraintSettings s;
+    s.mPoint1 = toJ(pivotWorld);
+    s.mPoint2 = toJ(pivotWorld);
+    JPH::Vec3 axis = toJ(hingeAxisWorld).Normalized();
+    s.mHingeAxis1 = axis;
+    s.mHingeAxis2 = axis;
+    JPH::Vec3 normal = axis.GetNormalizedPerpendicular();
+    s.mNormalAxis1 = normal;
+    s.mNormalAxis2 = normal;
+    s.mLimitsMin = minAngleRad;
+    s.mLimitsMax = maxAngleRad;
+
+    JPH::Body& ba = lockBodyForJoint(*impl_, a);
+    JPH::Body& bb = lockBodyForJoint(*impl_, b);
+    JPH::Ref<JPH::TwoBodyConstraint> c = s.Create(ba, bb);
+    impl_->system->AddConstraint(c);
+    impl_->joints.push_back(c);
+    return JointId{static_cast<std::uint32_t>(impl_->joints.size())};
+}
+
+void PhysicsWorld::destroyJoint(JointId j) {
+    if (!j.isValid()) return;
+    const std::size_t idx = j.value - 1;
+    if (idx >= impl_->joints.size()) return;
+    auto& c = impl_->joints[idx];
+    if (c != nullptr) {
+        impl_->system->RemoveConstraint(c);
+        c = nullptr;
+    }
 }
 
 }  // namespace iron

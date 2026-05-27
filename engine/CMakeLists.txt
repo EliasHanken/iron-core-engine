@@ -21,6 +21,7 @@ add_library(ironcore STATIC
   ui/Hud.cpp
   physics/Rope.cpp
   physics/PhysicsWorld.cpp
+  physics/Ragdoll.cpp
   game/Collision.cpp
   game/ProjectileSim.cpp
   render/RendererFactory.cpp
