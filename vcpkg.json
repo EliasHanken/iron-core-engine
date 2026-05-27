@@ -3,6 +3,7 @@
   "version-string": "0.0.0",
   "dependencies": [
     "gamenetworkingsockets",
+    "joltphysics",
     "vulkan-headers",
     "vulkan-loader",
     "glslang",

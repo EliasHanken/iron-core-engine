@@ -54,6 +54,7 @@ endif()
 #     congestion control. Brought in via vcpkg manifest mode; see
 #     docs/engine/build-setup.md for the one-time vcpkg toolchain setup.
 find_package(GameNetworkingSockets CONFIG REQUIRED)
+find_package(Jolt CONFIG REQUIRED)
 
 set(IRON_RENDER_BACKEND "opengl" CACHE STRING
     "Render backend: opengl or vulkan")
@@ -79,4 +80,5 @@ add_subdirectory(games/05-net-cubes)
 add_subdirectory(games/06-net-tag)
 add_subdirectory(games/07-net-shooter)
 add_subdirectory(games/08-particle-storm)
+add_subdirectory(games/09-physics-playground)
 add_subdirectory(tests)
