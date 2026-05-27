@@ -608,6 +608,13 @@ int main(int argc, char** argv) {
     // -----------------------------------------------------------------------
     const iron::netshooter::Arena arena = iron::netshooter::buildArena(0xA5A5);
 
+    // M21 — every peer maintains its own worldShared. Host also adds
+    // rockets to it (M20). Clients only use it for ragdolls (M21).
+    // Stepped: host in sim tick, clients in render loop.
+    iron::PhysicsWorld worldShared;
+    worldShared.init();
+    populateArenaCollision(worldShared, arena);
+
     // Build arena mesh handles (one draw call per box for simplicity)
     // We store the box AABBs and reuse cubeMesh scaled+translated.
     // (No separate mesh per box — scale the unit cube per AABB.)
@@ -774,12 +781,12 @@ int main(int argc, char** argv) {
     bool gizmosOn = true;
     std::unordered_map<std::uint32_t, iron::GizmoId> lagcompGizmoFor;
 
-    // M20 — Host-side projectile world. Contains arena geometry + active
-    // rocket bodies. Lives alongside the per-peer character worlds.
-    // Characters do NOT enter this world (preserves M19 isolation).
-    iron::PhysicsWorld worldShared;
-    worldShared.init();
-    populateArenaCollision(worldShared, arena);
+    // M20 — Host-side projectile world (worldShared, declared above).
+    // Contains arena geometry + active rocket bodies. Lives alongside the
+    // per-peer character worlds. Characters do NOT enter this world
+    // (preserves M19 isolation). M21 — clients also have worldShared for
+    // ragdolls; the host-only bits (rockets, despawns, contact listener)
+    // remain here.
 
     // Host-side rocket tracking. Each entry is one in-flight rocket whose
     // Jolt body lives in worldShared.
@@ -1692,6 +1699,14 @@ int main(int argc, char** argv) {
         // -----------------------------------------------------------------------
         // Render
         // -----------------------------------------------------------------------
+        // M21 — clients step worldShared each frame for ragdoll physics.
+        // Host already steps it in the sim tick (see worldShared.step in
+        // the sim block above).
+        if (!peers.isHost()) {
+            const float worldDt = std::min(dt, 1.0f / 30.0f);
+            worldShared.step(worldDt);
+        }
+
         constexpr float kFovYDeg = 75.0f;
         const iron::Mat4 projection = iron::perspective(
             kFovYDeg * 3.14159265f / 180.0f,

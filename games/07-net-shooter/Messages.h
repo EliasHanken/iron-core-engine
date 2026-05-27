@@ -9,7 +9,8 @@ namespace iron::netshooter {
 // "NSTR" — net shooter. PeerManager validates this on Hello.
 // M19 bump (NSTS = 0x4E535453) — wire format break (velocity + jump in
 // PlayerInputMsg; velocity + grounded in AuthorityPositionMsg).
-constexpr std::uint32_t kGameId = 0x4E535453u;
+// M21 bump (NSTT = 0x4E535454) — adds DeathMsg (tag 11) for ragdolls.
+constexpr std::uint32_t kGameId = 0x4E535454u;   // M21 bump — NSTT, wire-format change
 
 // Player AABB half-extents (0.8 m wide, 2 m tall). Defined here so host
 // and client agree; used by LagCompensator + splash damage.
@@ -100,6 +101,17 @@ struct ScoreUpdateMsg {
     std::uint32_t peerId;
     std::uint32_t kills;
     std::uint32_t deaths;
+};
+
+// Host -> Clients: broadcast when a player dies (HP -> 0). Carries the
+// death foot position + a pre-computed impulse vector for the ragdoll
+// torso. Each peer spawns its own ragdoll on receipt; no per-tick
+// bone-transform sync (ragdolls are cosmetic-only, 2s lifetime).
+struct DeathMsg {
+    static constexpr std::uint8_t kTag = 11;
+    std::uint32_t victimPeerId;
+    float x, y, z;
+    float impulseX, impulseY, impulseZ;
 };
 
 }  // namespace iron::netshooter
