@@ -31,6 +31,7 @@
 #include "net/backends/gns/GnsTransport.h"
 #include "physics/CharacterController.h"
 #include "physics/PhysicsWorld.h"
+#include "physics/Ragdoll.h"
 #include "render/Fog.h"
 #include "render/Light.h"
 #include "render/Material.h"
@@ -814,6 +815,38 @@ int main(int argc, char** argv) {
         }
     });
 
+    // M21 — Death ragdolls. Stored on every peer (host + clients) so
+    // every peer renders the tumbling corpse locally. Despawned after 2s.
+    struct ActiveRagdoll {
+        std::uint32_t victimPeerId = 0;
+        double        spawnTimeSec = 0.0;
+        iron::Ragdoll ragdoll;
+    };
+    // unique_ptr so emplace doesn't require Ragdoll to be movable.
+    std::unordered_map<std::uint32_t, std::unique_ptr<ActiveRagdoll>> activeRagdolls;
+
+    auto spawnLocalRagdoll = [&](std::uint32_t pid, iron::Vec3 footPos,
+                                  iron::Vec3 impulse) {
+        // Despawn any existing ragdoll for this peer (edge case: two
+        // fatal hits in the same tick).
+        auto existing = activeRagdolls.find(pid);
+        if (existing != activeRagdolls.end()) {
+            existing->second->ragdoll.despawn(worldShared);
+            activeRagdolls.erase(existing);
+        }
+
+        auto ar = std::make_unique<ActiveRagdoll>();
+        ar->victimPeerId = pid;
+        ar->spawnTimeSec = nowSec();
+        ar->ragdoll.spawn(worldShared, iron::RagdollSpec{}, footPos);
+
+        // Impulse on the torso bone (M18's bone index constant).
+        const iron::BodyId torso = ar->ragdoll.boneBody(iron::Ragdoll::kTorso);
+        worldShared.applyImpulse(torso, impulse);
+
+        activeRagdolls.emplace(pid, std::move(ar));
+    };
+
     std::uint32_t nextProjectileId = 1;
     std::uint32_t hostRngState = 0xBEEF1234u;
 
@@ -943,6 +976,13 @@ int main(int argc, char** argv) {
 
     peers.setOnPeerLeft([&](std::uint32_t pid) {
         remotes.erase(pid);
+        // M21 — clean up active ragdoll if the leaving peer has one.
+        // Runs on every peer (host + client).
+        auto rdit = activeRagdolls.find(pid);
+        if (rdit != activeRagdolls.end()) {
+            rdit->second->ragdoll.despawn(worldShared);
+            activeRagdolls.erase(rdit);
+        }
         if (peers.isHost()) {
             authStates.erase(pid);
             hostPlayers.erase(pid);
@@ -1090,6 +1130,27 @@ int main(int argc, char** argv) {
             }
         });
 
+    // CLIENT: death — spawn local ragdoll mirror.
+    registry.registerHandler<iron::netshooter::DeathMsg>(
+        [&](iron::ConnectionId, const iron::netshooter::DeathMsg& msg) {
+            if (peers.isHost()) return;  // host already spawned locally via spawnLocalRagdoll
+            spawnLocalRagdoll(
+                msg.victimPeerId,
+                iron::Vec3{msg.x, msg.y, msg.z},
+                iron::Vec3{msg.impulseX, msg.impulseY, msg.impulseZ});
+
+            // Flip the hpForHud to 0 so the existing cube-hide guard kicks
+            // in even if DamageMsg arrives later (out-of-order send).
+            if (msg.victimPeerId == peers.myPeerId()) {
+                localHpForHud = 0;
+            } else {
+                auto rit = remotes.find(msg.victimPeerId);
+                if (rit != remotes.end()) {
+                    rit->second.hpForHud = 0;
+                }
+            }
+        });
+
     // ALL: score update.
     registry.registerHandler<iron::netshooter::ScoreUpdateMsg>(
         [&](iron::ConnectionId, const iron::netshooter::ScoreUpdateMsg& msg) {
@@ -1147,6 +1208,29 @@ int main(int argc, char** argv) {
                 peers.broadcastToAll<iron::netshooter::ScoreUpdateMsg>(
                     iron::netshooter::ScoreUpdateMsg{dm.victimPeerId, vit->second.kills, vit->second.deaths},
                     iron::SendReliability::Reliable);
+
+                // M21 — compute hitscan death impulse along the ray
+                // direction. msg.dx/dy/dz is the normalized aim direction
+                // sent by the client (tryFireHitscanClient).
+                constexpr float kHitscanImpulseMag = 30.0f;
+                const iron::Vec3 impulse{
+                    msg.dx * kHitscanImpulseMag,
+                    msg.dy * kHitscanImpulseMag,
+                    msg.dz * kHitscanImpulseMag,
+                };
+                const iron::Vec3 deathPos{
+                    authStates[dm.victimPeerId].x,
+                    authStates[dm.victimPeerId].y,
+                    authStates[dm.victimPeerId].z,
+                };
+                peers.broadcastToAll<iron::netshooter::DeathMsg>(
+                    iron::netshooter::DeathMsg{
+                        dm.victimPeerId,
+                        deathPos.x, deathPos.y, deathPos.z,
+                        impulse.x, impulse.y, impulse.z,
+                    },
+                    iron::SendReliability::Reliable);
+                spawnLocalRagdoll(dm.victimPeerId, deathPos, impulse);
             }
         });
 
@@ -1427,6 +1511,27 @@ int main(int argc, char** argv) {
                                     peers.broadcastToAll<iron::netshooter::ScoreUpdateMsg>(
                                         iron::netshooter::ScoreUpdateMsg{dm.victimPeerId, vit->second.kills, vit->second.deaths},
                                         iron::SendReliability::Reliable);
+
+                                    // M21 — death ragdoll for host-fired hitscan kills.
+                                    constexpr float kHitscanImpulseMagH = 30.0f;
+                                    const iron::Vec3 impulseH{
+                                        fmsg.dx * kHitscanImpulseMagH,
+                                        fmsg.dy * kHitscanImpulseMagH,
+                                        fmsg.dz * kHitscanImpulseMagH,
+                                    };
+                                    const iron::Vec3 deathPosH{
+                                        authStates[dm.victimPeerId].x,
+                                        authStates[dm.victimPeerId].y,
+                                        authStates[dm.victimPeerId].z,
+                                    };
+                                    peers.broadcastToAll<iron::netshooter::DeathMsg>(
+                                        iron::netshooter::DeathMsg{
+                                            dm.victimPeerId,
+                                            deathPosH.x, deathPosH.y, deathPosH.z,
+                                            impulseH.x, impulseH.y, impulseH.z,
+                                        },
+                                        iron::SendReliability::Reliable);
+                                    spawnLocalRagdoll(dm.victimPeerId, deathPosH, impulseH);
                                 }
                             }
                         }
@@ -1589,6 +1694,44 @@ int main(int argc, char** argv) {
                                 iron::netshooter::ScoreUpdateMsg{
                                     pid, vit->second.kills, vit->second.deaths},
                                 iron::SendReliability::Reliable);
+
+                            // M21 — rocket death impulse: away from
+                            // explosion, with upward bias.
+                            const iron::Vec3 vpos{
+                                authStates[pid].x,
+                                authStates[pid].y,
+                                authStates[pid].z,
+                            };
+                            iron::Vec3 fromExplosion{
+                                vpos.x - d.point.x,
+                                vpos.y - d.point.y + 1.0f,
+                                vpos.z - d.point.z,
+                            };
+                            const float mag = std::sqrt(
+                                fromExplosion.x*fromExplosion.x +
+                                fromExplosion.y*fromExplosion.y +
+                                fromExplosion.z*fromExplosion.z);
+                            if (mag > 0.001f) {
+                                fromExplosion.x /= mag;
+                                fromExplosion.y /= mag;
+                                fromExplosion.z /= mag;
+                            } else {
+                                fromExplosion = iron::Vec3{0.0f, 1.0f, 0.0f};
+                            }
+                            constexpr float kRocketImpulseMag = 50.0f;
+                            const iron::Vec3 impulseR{
+                                fromExplosion.x * kRocketImpulseMag,
+                                fromExplosion.y * kRocketImpulseMag,
+                                fromExplosion.z * kRocketImpulseMag,
+                            };
+                            peers.broadcastToAll<iron::netshooter::DeathMsg>(
+                                iron::netshooter::DeathMsg{
+                                    pid,
+                                    vpos.x, vpos.y, vpos.z,
+                                    impulseR.x, impulseR.y, impulseR.z,
+                                },
+                                iron::SendReliability::Reliable);
+                            spawnLocalRagdoll(pid, vpos, impulseR);
                         }
                     }
 
@@ -1707,6 +1850,20 @@ int main(int argc, char** argv) {
             worldShared.step(worldDt);
         }
 
+        // M21 — despawn ragdolls older than 2s (matches respawn timer).
+        // Runs on every peer (host + client).
+        {
+            const double now = nowSec();
+            for (auto it = activeRagdolls.begin(); it != activeRagdolls.end(); ) {
+                if (now - it->second->spawnTimeSec > 2.0) {
+                    it->second->ragdoll.despawn(worldShared);
+                    it = activeRagdolls.erase(it);
+                } else {
+                    ++it;
+                }
+            }
+        }
+
         constexpr float kFovYDeg = 75.0f;
         const iron::Mat4 projection = iron::perspective(
             kFovYDeg * 3.14159265f / 180.0f,
@@ -1788,6 +1945,8 @@ int main(int argc, char** argv) {
                     it != hostPlayers.end() && it->second.respawnAtSec >= 0.0) {
                     continue;                                // dead — hide corpse
                 }
+                // M21 — ragdoll renders in place of the cube.
+                if (activeRagdolls.find(pid) != activeRagdolls.end()) continue;
                 submitPlayerCube(pid, iron::Vec3{state.x, state.y, state.z});
             }
         } else {
@@ -1796,9 +1955,31 @@ int main(int argc, char** argv) {
             for (const auto& [pid, remote] : remotes) {
                 if (pid == myId) continue;                  // already guarded in join, defensive
                 if (remote.hpForHud <= 0) continue;          // dead — hide corpse
+                // M21 — ragdoll renders in place of the cube.
+                if (activeRagdolls.find(pid) != activeRagdolls.end()) continue;
                 auto pos = remote.positionHistory.sampleAtDelay(kDisplayDelay);
                 if (!pos) continue;
                 submitPlayerCube(pid, *pos);
+            }
+        }
+
+        // M21 — render active ragdolls as colored bone cubes.
+        for (const auto& [pid, ar] : activeRagdolls) {
+            for (int i = 0; i < ar->ragdoll.boneCount(); ++i) {
+                const iron::Mat4 model = ar->ragdoll.boneTransform(i);
+                const iron::Vec3 he    = ar->ragdoll.boneHalfExtents(i);
+                const iron::Vec3 color = ar->ragdoll.boneColor(i);
+
+                iron::DrawCall call;
+                call.mesh   = cubeMesh;
+                call.shader = litShader;
+                call.model  = model * iron::scaling(iron::Vec3{
+                    he.x * 2.0f, he.y * 2.0f, he.z * 2.0f});
+                call.material.texture     = renderer.whiteTexture();
+                call.material.normalMap   = renderer.flatNormalTexture();
+                call.material.specularMap = renderer.noSpecularTexture();
+                call.material.emissive    = color * 0.6f;
+                renderer.submit(call);
             }
         }
 
