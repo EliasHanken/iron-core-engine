@@ -31,6 +31,7 @@ public:
     VkFramebuffer framebuffer() const { return framebuffer_; }
     VkImageView   colorView()   const { return colorView_; }
     VkSampler     sampler()     const { return sampler_; }
+    VkDescriptorImageInfo descriptorImageInfo() const;
 
     // Begin/end the reflection pass on the active command buffer.
     // beginPass also issues vkCmdSetViewport/Scissor to kResolution^2.

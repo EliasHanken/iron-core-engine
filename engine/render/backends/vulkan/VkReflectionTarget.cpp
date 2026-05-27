@@ -102,15 +102,25 @@ bool VkReflectionTarget::init(VkContext& ctx, VkSampler sharedSampler) {
     subpass.pColorAttachments = &colorRef;
     subpass.pDepthStencilAttachment = &depthRef;
 
+    // Entry dep: EXTERNAL -> 0, FRAGMENT_SHADER -> COLOR_ATTACHMENT_OUTPUT
+    // so frame N's scene-pass sampler reads of this color image complete
+    // before frame N+1's reflection pass overwrites it.
+    VkSubpassDependency deps[2]{};
+    deps[0].srcSubpass    = VK_SUBPASS_EXTERNAL;
+    deps[0].dstSubpass    = 0;
+    deps[0].srcStageMask  = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
+    deps[0].dstStageMask  = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+    deps[0].srcAccessMask = VK_ACCESS_SHADER_READ_BIT;
+    deps[0].dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+
     // Exit dep: 0 -> EXTERNAL, COLOR_ATTACHMENT_OUTPUT -> FRAGMENT_SHADER
     // so the scene pass can sample the color texture safely.
-    VkSubpassDependency exitDep{};
-    exitDep.srcSubpass = 0;
-    exitDep.dstSubpass = VK_SUBPASS_EXTERNAL;
-    exitDep.srcStageMask  = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
-    exitDep.dstStageMask  = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
-    exitDep.srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
-    exitDep.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+    deps[1].srcSubpass    = 0;
+    deps[1].dstSubpass    = VK_SUBPASS_EXTERNAL;
+    deps[1].srcStageMask  = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+    deps[1].dstStageMask  = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
+    deps[1].srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+    deps[1].dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
 
     VkRenderPassCreateInfo rpInfo{};
     rpInfo.sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO;
@@ -118,8 +128,8 @@ bool VkReflectionTarget::init(VkContext& ctx, VkSampler sharedSampler) {
     rpInfo.pAttachments = attachments;
     rpInfo.subpassCount = 1;
     rpInfo.pSubpasses = &subpass;
-    rpInfo.dependencyCount = 1;
-    rpInfo.pDependencies = &exitDep;
+    rpInfo.dependencyCount = 2;
+    rpInfo.pDependencies = deps;
     VK_CHECK(vkCreateRenderPass(ctx.device(), &rpInfo, nullptr, &renderPass_));
 
     // --- Framebuffer ---
@@ -144,6 +154,14 @@ void VkReflectionTarget::destroy(VkContext& ctx) {
     if (depthView_)   { vkDestroyImageView(ctx.device(), depthView_, nullptr); depthView_ = VK_NULL_HANDLE; }
     if (colorImage_)  { vmaDestroyImage(ctx.allocator(), colorImage_, colorAlloc_); colorImage_ = VK_NULL_HANDLE; colorAlloc_ = VK_NULL_HANDLE; }
     if (depthImage_)  { vmaDestroyImage(ctx.allocator(), depthImage_, depthAlloc_); depthImage_ = VK_NULL_HANDLE; depthAlloc_ = VK_NULL_HANDLE; }
+}
+
+VkDescriptorImageInfo VkReflectionTarget::descriptorImageInfo() const {
+    VkDescriptorImageInfo info{};
+    info.sampler     = sampler_;
+    info.imageView   = colorView_;
+    info.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    return info;
 }
 
 void VkReflectionTarget::beginPass(VkCommandBuffer cb, const float clearColor[4]) const {
