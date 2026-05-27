@@ -94,9 +94,11 @@ public:
 
     void destroyJoint(JointId);
 
-    // Internal pimpl — exposed in header so other engine TUs (Ragdoll, etc.)
-    // can reach Jolt internals via friendship. Game code never touches Impl.
+    // Internal pimpl — exposed in header so other engine TUs (Ragdoll,
+    // CharacterController, future joint/constraint helpers) can reach
+    // Jolt internals via this accessor. Game code MUST NOT touch this.
     struct Impl;
+    Impl* engineImpl() { return impl_.get(); }
 
 private:
     std::unique_ptr<Impl> impl_;

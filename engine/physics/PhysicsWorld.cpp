@@ -337,4 +337,21 @@ void PhysicsWorld::destroyJoint(JointId j) {
     }
 }
 
+namespace internal {
+
+// Engine-internal bridges so other engine TUs (CharacterController,
+// future joint/constraint helpers) can reach Jolt state owned by
+// PhysicsWorld::Impl without exposing Jolt headers publicly.
+JPH::PhysicsSystem* getPhysicsSystem(PhysicsWorld& world) {
+    auto* impl = world.engineImpl();
+    return impl ? impl->system : nullptr;
+}
+
+JPH::TempAllocator* getTempAllocator(PhysicsWorld& world) {
+    auto* impl = world.engineImpl();
+    return impl ? impl->temp : nullptr;
+}
+
+}  // namespace internal
+
 }  // namespace iron
