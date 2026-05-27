@@ -12,6 +12,7 @@
 #include "Messages.h"
 #include "RocketLauncher.h"
 
+#include "game/Collision.h"
 #include "game/Health.h"
 #include "core/FixedTickScheduler.h"
 #include "core/Log.h"
@@ -806,8 +807,6 @@ int main(int argc, char** argv) {
         }
     });
 
-    // Live rockets on host (legacy — Task 3 will remove; left empty by M20 Task 2)
-    std::vector<iron::Projectile> liveRockets;
     std::uint32_t nextProjectileId = 1;
     std::uint32_t hostRngState = 0xBEEF1234u;
 
@@ -830,7 +829,7 @@ int main(int argc, char** argv) {
         static_cast<long long>(iron::netshooter::kInterpDelaySec * 1000)};
 
     // Ghost rockets (client visual only)
-    std::unordered_map<std::uint32_t, iron::Projectile> ghostRockets;
+    std::unordered_map<std::uint32_t, iron::netshooter::Projectile> ghostRockets;
 
     // Explosion FX — small expanding emissive sphere rendered for both
     // host and client at the detonation point. ~0.4s lifetime.
@@ -909,14 +908,17 @@ int main(int argc, char** argv) {
                             iron::SendReliability::Reliable);
                     }
                 }
-                for (const auto& rocket : liveRockets) {
-                    if (!rocket.alive) continue;
+                // M20 — broadcast in-flight rockets so the late joiner
+                // sees the current trajectory. Source = host's Jolt bodies.
+                for (const auto& [rid, hr] : hostRockets) {
+                    const iron::Vec3 p = worldShared.bodyPosition(hr.body);
+                    const iron::Vec3 v = worldShared.velocityOf(hr.body);
                     peers.send(pid,
                         iron::netshooter::SpawnProjectileMsg{
-                            rocket.id, rocket.ownerPeerId,
-                            rocket.position.x, rocket.position.y, rocket.position.z,
-                            rocket.velocity.x, rocket.velocity.y, rocket.velocity.z,
-                            rocket.spawnTimeSec},
+                            hr.projectileId, hr.ownerPeerId,
+                            p.x, p.y, p.z,
+                            v.x, v.y, v.z,
+                            hr.spawnTimeSec},
                         iron::SendReliability::Reliable);
                 }
             }
@@ -939,12 +941,7 @@ int main(int argc, char** argv) {
             hostPlayers.erase(pid);
             hostSims.erase(pid);  // M19 — release per-peer physics world
             lagComp.forgetPeer(pid);
-            // Remove rockets owned by this peer.
-            liveRockets.erase(
-                std::remove_if(liveRockets.begin(), liveRockets.end(),
-                    [&](const iron::Projectile& p) { return p.ownerPeerId == pid; }),
-                liveRockets.end());
-            // M20 — also clean up Jolt bodies for rockets owned by the leaving peer.
+            // M20 — clean up Jolt bodies for rockets owned by the leaving peer.
             for (auto hrit = hostRockets.begin(); hrit != hostRockets.end(); ) {
                 if (hrit->second.ownerPeerId == pid) {
                     worldShared.destroyBody(hrit->second.body);
@@ -1022,7 +1019,7 @@ int main(int argc, char** argv) {
     registry.registerHandler<iron::netshooter::SpawnProjectileMsg>(
         [&](iron::ConnectionId, const iron::netshooter::SpawnProjectileMsg& msg) {
             if (peers.isHost()) return;
-            iron::Projectile ghost;
+            iron::netshooter::Projectile ghost;
             ghost.id = msg.projectileId;
             ghost.ownerPeerId = msg.ownerPeerId;
             ghost.position = iron::Vec3{msg.x, msg.y, msg.z};
@@ -1791,11 +1788,26 @@ int main(int argc, char** argv) {
         }
 
         // Ghost rockets (client-side visual)
-        const auto& rockets = peers.isHost() ? liveRockets
-            : [&]() -> const std::vector<iron::Projectile>& {
-                // Build a flat view from the ghost map.
-                // We need a persistent container — use a local static per frame.
-                static std::vector<iron::Projectile> ghostVec;
+        const auto& rockets = peers.isHost()
+            ? [&]() -> const std::vector<iron::netshooter::Projectile>& {
+                // Host: project Jolt bodies into Projectile PODs for rendering.
+                static std::vector<iron::netshooter::Projectile> hostVec;
+                hostVec.clear();
+                for (const auto& [id, hr] : hostRockets) {
+                    iron::netshooter::Projectile p;
+                    p.id           = hr.projectileId;
+                    p.ownerPeerId  = hr.ownerPeerId;
+                    p.position     = worldShared.bodyPosition(hr.body);
+                    p.velocity     = worldShared.velocityOf(hr.body);
+                    p.spawnTimeSec = hr.spawnTimeSec;
+                    p.alive        = true;
+                    hostVec.push_back(p);
+                }
+                return hostVec;
+            }()
+            : [&]() -> const std::vector<iron::netshooter::Projectile>& {
+                // Client: flat view of ghost rockets.
+                static std::vector<iron::netshooter::Projectile> ghostVec;
                 ghostVec.clear();
                 for (const auto& [id, g] : ghostRockets) {
                     if (g.alive) ghostVec.push_back(g);
