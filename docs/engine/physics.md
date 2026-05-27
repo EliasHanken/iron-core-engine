@@ -190,6 +190,105 @@ put for non-physics queries (frustum culling debug, gizmo picking,
 geometric utilities). `PhysicsWorld::raycast` is for queries against
 registered bodies only.
 
+## M19 — Capsule character controller
+
+`iron::CharacterController` (`engine/physics/CharacterController.{h,cpp}`)
+wraps `JPH::CharacterVirtual` — Jolt's purpose-built kinematic character
+controller. One instance owns one capsule registered with a
+`PhysicsWorld`.
+
+Usage:
+
+```cpp
+iron::PhysicsWorld world; world.init();
+// ... populate world with static collision ...
+
+iron::CharacterController player;
+iron::CharacterControllerConfig cfg;   // 0.3m radius, 0.9m halfHeight, jump 5.5 m/s
+player.create(world, cfg, /*footPosition=*/ {0, 0, 0});
+
+// Per frame:
+player.update(dt, iron::Vec3{vx, 0, vz}, jumpPressedThisFrame);
+world.step(dt);
+
+iron::Vec3 footPos = player.footPosition();
+iron::Vec3 vel     = player.velocity();
+bool grounded      = player.isGrounded();
+```
+
+The wrapper owns a `JPH::Ref<CharacterVirtual>`; lifetime ends with
+`destroy(world)` or the wrapper's destructor. Direct mutators
+(`setFootPosition`, `setVelocity`) exist for reconciliation replay — the
+`simulate` lambda in net-shooter restores controller state at the start
+of every call so `PredictionEngine` replays work correctly.
+
+**`PhysicsWorld` lifetime contract:** any `CharacterController` created
+with a `PhysicsWorld&` must be destroyed (or its owning world destroyed)
+before the world itself goes out of scope. The controller borrows a
+`PhysicsWorld*` internally for temp-allocator access during `update()`.
+
+### Bridge: how the controller reaches into `PhysicsWorld`
+
+`PhysicsWorld.h` exposes a public `Impl* engineImpl()` accessor — its
+opaque forward-declared `struct Impl;` lets other engine TUs reach the
+underlying `JPH::PhysicsSystem` without leaking Jolt headers to game
+code. `PhysicsWorld.cpp` defines two bridge functions in
+`iron::internal`: `getPhysicsSystem(PhysicsWorld&)` and
+`getTempAllocator(PhysicsWorld&)`. `CharacterController.cpp` declares
+both as extern and calls them. This pattern generalizes to future
+engine subsystems that need raw access (joints, constraints, custom
+queries).
+
+### Per-player physics worlds in net-shooter (v1)
+
+Net-shooter creates one `PhysicsWorld` + one `CharacterController` per
+simulated player. The client owns one (its local predicted player); the
+host owns one per peer (in a `HostPlayerSim` struct: world + controller
++ a captured `simulateFn`). Each world contains the arena's static AABBs
++ exactly one character. **Players do not collide with each other in
+v1** — that's a future track. Hitscan + rocket splash still resolve
+hits via the existing `LagCompensator` against the same arena AABBs and
+player AABBs from the game-side history.
+
+The shape of the static arena collision is a literal port of the
+existing `iron::netshooter::Arena::boxes` vector — each `Aabb` becomes a
+`world.createStaticBox(center, halfExtents)` call at startup via the
+game-side `populateArenaCollision` helper.
+
+### Wire-format change (M19)
+
+`PlayerInputMsg` was renamed `dx/dy/dz` → `vx/vy/vz` (semantic flip:
+world-space velocity in m/s, not per-tick deltas) and gained a `jump`
+byte. `vy` is reserved (unused, always 0 on the wire).
+
+`AuthorityPositionMsg` gained `vx/vy/vz` (velocity) and `grounded`
+(uint8). Required so client reconciliation can restore full character
+state, not just position — otherwise the controller's velocity drifts
+between predicted and authoritative.
+
+`kGameId` bumped from `0x4E535452` ("NSTR") to `0x4E535453` ("NSTS").
+Old clients cannot connect to new hosts; the PeerManager Hello
+handshake (M8.4) validates exact equality.
+
+### Determinism
+
+Per-player worlds means each `simulate(state, input, dt)` call is
+self-contained — the only "world" the call advances is the local
+controller's. `PredictionEngine` reconciliation replay calls
+`simulate` N times in a row; each call restores controller state at
+entry. As long as the static geometry (arena) is identical across
+client and host (it is — same procedural seed), simulate is
+deterministic.
+
+### What's next
+
+- M20 — projectile rigid bodies + raycasts in net-shooter. Net-shooter
+  rockets → Jolt rigid bodies; hitscan → Jolt raycasts.
+- M21 — death-into-ragdoll wiring (uses M18's `iron::Ragdoll`).
+- Future: player-vs-player physics collision (single shared world,
+  player-layer filtering), capsule visual rendering, movement polish
+  (crouch, sprint, slide).
+
 ## See also
 
 - Upstream Jolt docs: <https://jrouwe.github.io/JoltPhysics/>
