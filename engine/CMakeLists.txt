@@ -20,6 +20,7 @@ add_library(ironcore STATIC
   ui/BuiltinFont.cpp
   ui/Hud.cpp
   physics/Rope.cpp
+  physics/PhysicsWorld.cpp
   game/Collision.cpp
   game/ProjectileSim.cpp
   render/RendererFactory.cpp
@@ -33,6 +34,9 @@ target_link_libraries(ironcore PUBLIC
   glfw
   stb_image
   GameNetworkingSockets::GameNetworkingSockets)
+
+target_link_libraries(ironcore PRIVATE
+  Jolt::Jolt)
 
 if (IRON_RENDER_BACKEND STREQUAL "vulkan")
     target_sources(ironcore PRIVATE

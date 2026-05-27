@@ -54,6 +54,7 @@ endif()
 #     congestion control. Brought in via vcpkg manifest mode; see
 #     docs/engine/build-setup.md for the one-time vcpkg toolchain setup.
 find_package(GameNetworkingSockets CONFIG REQUIRED)
+find_package(Jolt CONFIG REQUIRED)
 
 set(IRON_RENDER_BACKEND "opengl" CACHE STRING
     "Render backend: opengl or vulkan")
