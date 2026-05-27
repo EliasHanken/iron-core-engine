@@ -55,6 +55,31 @@ int main() {
         CHECK(model->materialPaths.metalRoughness.empty());
     }
 
+    // --- M23: RiggedSimple.gltf has a skin with bones + weighted vertices ---
+    {
+        auto model = loadGltfModel(base + "/RiggedSimple.gltf");
+        CHECK(model.has_value());
+        CHECK(model->skinnedMesh.has_value());
+        const auto& sm = *model->skinnedMesh;
+        // RiggedSimple typically has 2 bones (root + child); some asset
+        // variants may have 3. Accept either.
+        CHECK(sm.skeleton.bones.size() >= 2);
+        // Exactly one root + at least one child.
+        int rootCount = 0;
+        int childCount = 0;
+        for (const auto& b : sm.skeleton.bones) {
+            if (b.parentIndex < 0) ++rootCount;
+            else ++childCount;
+        }
+        CHECK(rootCount == 1);
+        CHECK(childCount >= 1);
+        // Each vertex has weights summing to ~1.0 (normalized at load time).
+        for (const auto& v : sm.vertices) {
+            const float wsum = v.weights[0] + v.weights[1] + v.weights[2] + v.weights[3];
+            CHECK(wsum > 0.99f && wsum < 1.01f);
+        }
+    }
+
     // --- Triangle.gltf: the Khronos sample has only POSITION + indices, no
     //     NORMAL. Our loader requires NORMAL, so this must return nullopt.
     //     This exercises the "missing required attribute" error path.

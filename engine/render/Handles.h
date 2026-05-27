@@ -11,7 +11,10 @@ using TextureHandle = std::uint32_t;
 using ShaderHandle = std::uint32_t;
 // Cubemap textures (skyboxes, environment maps). 0 = invalid.
 using CubemapHandle = std::uint32_t;
+// Skinned meshes (M23+). 0 = invalid.
+using SkinnedMeshHandle = std::uint32_t;
 
 inline constexpr std::uint32_t kInvalidHandle = 0;
+inline constexpr SkinnedMeshHandle kInvalidSkinnedMesh = 0;
 
 } // namespace iron
