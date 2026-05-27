@@ -51,6 +51,7 @@ if (IRON_RENDER_BACKEND STREQUAL "vulkan")
       render/backends/vulkan/VkShadowMap.cpp
       render/backends/vulkan/VkCubemap.cpp
       render/backends/vulkan/VkSkybox.cpp
+      render/backends/vulkan/VkReflectionTarget.cpp
     )
     target_compile_definitions(ironcore PUBLIC IRON_RENDER_BACKEND_VULKAN)
     target_link_libraries(ironcore PUBLIC
