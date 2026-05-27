@@ -1392,11 +1392,18 @@ int main(int argc, char** argv) {
                 ? (hostPlayers.count(0) && hostPlayers[0].respawnAtSec >= 0.0)
                 : false;
 
-            // M19 — edge-detected jump (one frame's `true` per press).
-            static bool prevSpace = false;
+            // M19 — edge-detected jump with sticky latch (M21 fixup).
+            // The render loop usually runs faster than the 60 Hz input
+            // ticker, so a single-frame jumpEdge can be missed if no
+            // ticker callback fires that frame. Latch the press into
+            // jumpPending and consume it inside the ticker callback.
+            static bool prevSpace   = false;
+            static bool jumpPending = false;
             const bool nowSpace = cursorCaptured &&
                                   glfwGetKey(window.handle(), GLFW_KEY_SPACE) == GLFW_PRESS;
-            const bool jumpEdge = nowSpace && !prevSpace;
+            if (nowSpace && !prevSpace) {
+                jumpPending = true;
+            }
             prevSpace = nowSpace;
 
             inputTicker.update(dt, [&]() {
@@ -1408,7 +1415,8 @@ int main(int argc, char** argv) {
                 in.vx   = moveDir.x * kMoveSpeed;
                 in.vy   = 0.0f;
                 in.vz   = moveDir.z * kMoveSpeed;
-                in.jump = jumpEdge;
+                in.jump = jumpPending;
+                jumpPending = false;  // consumed
                 const auto inputId = predictor.applyInput(in);
 
                 if (peers.isHost()) {
