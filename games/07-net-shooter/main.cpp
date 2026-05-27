@@ -773,7 +773,40 @@ int main(int argc, char** argv) {
     bool gizmosOn = true;
     std::unordered_map<std::uint32_t, iron::GizmoId> lagcompGizmoFor;
 
-    // Live rockets on host
+    // M20 — Host-side projectile world. Contains arena geometry + active
+    // rocket bodies. Lives alongside the per-peer character worlds.
+    // Characters do NOT enter this world (preserves M19 isolation).
+    iron::PhysicsWorld worldShared;
+    worldShared.init();
+    populateArenaCollision(worldShared, arena);
+
+    // Host-side rocket tracking. Each entry is one in-flight rocket whose
+    // Jolt body lives in worldShared.
+    struct HostRocket {
+        iron::BodyId   body;
+        std::uint32_t  projectileId;
+        std::uint32_t  ownerPeerId;
+        double         spawnTimeSec;
+    };
+    std::unordered_map<std::uint32_t, HostRocket> hostRockets;
+
+    // Despawn queue, populated from the worldShared contact listener.
+    // Processed AFTER worldShared.step() each tick.
+    struct DespawnEvent {
+        std::uint32_t projectileId;
+        iron::Vec3    point;
+    };
+    std::vector<DespawnEvent> pendingDespawns;
+
+    worldShared.onContactStarted([&](const iron::ContactEvent& evt) {
+        for (auto& [id, rocket] : hostRockets) {
+            if (rocket.body == evt.bodyA || rocket.body == evt.bodyB) {
+                pendingDespawns.push_back({id, evt.point});
+            }
+        }
+    });
+
+    // Live rockets on host (legacy — Task 3 will remove; left empty by M20 Task 2)
     std::vector<iron::Projectile> liveRockets;
     std::uint32_t nextProjectileId = 1;
     std::uint32_t hostRngState = 0xBEEF1234u;
@@ -911,6 +944,15 @@ int main(int argc, char** argv) {
                 std::remove_if(liveRockets.begin(), liveRockets.end(),
                     [&](const iron::Projectile& p) { return p.ownerPeerId == pid; }),
                 liveRockets.end());
+            // M20 — also clean up Jolt bodies for rockets owned by the leaving peer.
+            for (auto hrit = hostRockets.begin(); hrit != hostRockets.end(); ) {
+                if (hrit->second.ownerPeerId == pid) {
+                    worldShared.destroyBody(hrit->second.body);
+                    hrit = hostRockets.erase(hrit);
+                } else {
+                    ++hrit;
+                }
+            }
         } else {
             // Host left — close.
             glfwSetWindowShouldClose(window.handle(), GLFW_TRUE);
@@ -1114,17 +1156,33 @@ int main(int argc, char** argv) {
             if (it == hostPlayers.end()) return;
             if (it->second.respawnAtSec >= 0.0) return;  // dead
 
-            const auto& authPos = authStates[*pid];
-            const iron::Vec3 shooterPos{authPos.x, authPos.y, authPos.z};
+            // Server-side cooldown gate (preserves M8.6 anti-spam).
+            if (!it->second.rocket.cooldown.tryFire(nowSec())) return;
 
-            auto spawn = iron::netshooter::spawnRocketHost(
-                it->second.rocket, nowSec(), *pid, msg,
-                nextProjectileId++, shooterPos);
+            const std::uint32_t projId = nextProjectileId++;
+            constexpr float kRadius = 0.10f;
+            constexpr float kMass   = 0.5f;
 
-            if (!spawn) return;
-            liveRockets.push_back(spawn->live);
+            const iron::Vec3 spawnPos{msg.ox, msg.oy, msg.oz};
+            const iron::Vec3 velocity{
+                msg.dx * iron::netshooter::RocketLauncher::kMuzzleSpeed,
+                msg.dy * iron::netshooter::RocketLauncher::kMuzzleSpeed,
+                msg.dz * iron::netshooter::RocketLauncher::kMuzzleSpeed,
+            };
+
+            iron::BodyId body = worldShared.createDynamicSphere(spawnPos, kRadius, kMass);
+            worldShared.setVelocity(body, velocity);
+
+            hostRockets[projId] = HostRocket{body, projId, *pid, nowSec()};
+
             peers.broadcastToAll<iron::netshooter::SpawnProjectileMsg>(
-                spawn->announce, iron::SendReliability::Reliable);
+                iron::netshooter::SpawnProjectileMsg{
+                    projId, *pid,
+                    spawnPos.x, spawnPos.y, spawnPos.z,
+                    velocity.x, velocity.y, velocity.z,
+                    nowSec(),
+                },
+                iron::SendReliability::Reliable);
         });
 
     // -----------------------------------------------------------------------
@@ -1386,19 +1444,31 @@ int main(int argc, char** argv) {
                 } else {
                     // Rocket launcher
                     if (peers.isHost()) {
-                        iron::netshooter::FireRocketMsg fmsg{
-                            muzzle.x, muzzle.y, muzzle.z,
-                            dir.x, dir.y, dir.z,
-                            viewTime};
-                        const auto& authPos = authStates[0];
-                        const iron::Vec3 shooterPos{authPos.x, authPos.y, authPos.z};
-                        auto spawn = iron::netshooter::spawnRocketHost(
-                            hostPlayers[0].rocket, localNow, 0u, fmsg,
-                            nextProjectileId++, shooterPos);
-                        if (spawn) {
-                            liveRockets.push_back(spawn->live);
+                        // M20 — local host-firing path (cooldown + Jolt spawn).
+                        // Mirrors the FireRocketMsg handler.
+                        if (hostPlayers[0].rocket.cooldown.tryFire(localNow)) {
+                            const std::uint32_t projId = nextProjectileId++;
+                            constexpr float kRadius = 0.10f;
+                            constexpr float kMass   = 0.5f;
+
+                            const iron::Vec3 rocketSpawn = muzzle;
+                            const iron::Vec3 velocity{
+                                dir.x * iron::netshooter::RocketLauncher::kMuzzleSpeed,
+                                dir.y * iron::netshooter::RocketLauncher::kMuzzleSpeed,
+                                dir.z * iron::netshooter::RocketLauncher::kMuzzleSpeed,
+                            };
+                            iron::BodyId body = worldShared.createDynamicSphere(rocketSpawn, kRadius, kMass);
+                            worldShared.setVelocity(body, velocity);
+                            hostRockets[projId] = HostRocket{body, projId, 0u, localNow};
+
                             peers.broadcastToAll<iron::netshooter::SpawnProjectileMsg>(
-                                spawn->announce, iron::SendReliability::Reliable);
+                                iron::netshooter::SpawnProjectileMsg{
+                                    projId, 0u,
+                                    rocketSpawn.x, rocketSpawn.y, rocketSpawn.z,
+                                    velocity.x, velocity.y, velocity.z,
+                                    localNow,
+                                },
+                                iron::SendReliability::Reliable);
                         }
                     } else {
                         auto opt = iron::netshooter::tryFireRocketClient(
@@ -1440,60 +1510,116 @@ int main(int argc, char** argv) {
                     if (hp.respawnAtSec < 0.0) alivePeers.push_back(p);
                 }
 
-                // Tick rockets.
-                for (auto it = liveRockets.begin(); it != liveRockets.end(); ) {
-                    auto result = iron::netshooter::tickRocketHost(
-                        *it, simNow, simDt,
-                        lagComp,
-                        std::span<const iron::Aabb>(arena.boxes),
-                        std::span<const std::uint32_t>(alivePeers),
-                        iron::netshooter::kPlayerHalfExtents);
+                // M20 — Step worldShared once per sim tick. The contact
+                // listener callback populates `pendingDespawns`. Process
+                // it inline.
+                worldShared.step(simDt);
 
-                    if (result.expired) {
-                        // Broadcast despawn.
-                        peers.broadcastToAll<iron::netshooter::DespawnProjectileMsg>(
-                            result.despawn, iron::SendReliability::Reliable);
-                        // Local FX for the host (clients spawn theirs in the
-                        // DespawnProjectileMsg handler).
-                        explosions.push_back(ExplosionFx{
-                            iron::Vec3{result.despawn.x, result.despawn.y, result.despawn.z},
-                            simNow});
-                        // M11 — splash radius gizmo (timed, matches ExplosionFx lifetime).
-                        gizmos.addSphere("splash",
-                                         iron::Vec3{result.despawn.x, result.despawn.y, result.despawn.z},
-                                         iron::netshooter::RocketLauncher::kSplashRadius,
-                                         iron::Vec3{1.0f, 0.6f, 0.0f},
-                                         /*lifetimeSec=*/0.4f);
-                        // Apply splash damage.
-                        for (auto& dm : result.splashHits) {
-                            auto vit = hostPlayers.find(dm.victimPeerId);
-                            if (vit == hostPlayers.end()) continue;
-                            iron::applyDamage(vit->second.hp, static_cast<int>(dm.damage));
-                            dm.victimHpAfter = static_cast<std::uint16_t>(
-                                std::max(0, vit->second.hp.current));
-                            peers.broadcastToAll<iron::netshooter::DamageMsg>(
-                                dm, iron::SendReliability::Reliable);
-                            if (!iron::isAlive(vit->second.hp)) {
-                                const std::uint32_t attacker = dm.attackerPeerId;
-                                pushKillFeed(attacker, dm.victimPeerId);
-                                auto ait = hostPlayers.find(attacker);
-                                if (ait != hostPlayers.end()) ait->second.kills++;
-                                vit->second.deaths++;
-                                vit->second.respawnAtSec = simNow + 2.0;
-                                lagComp.forgetPeer(dm.victimPeerId);
-                                if (ait != hostPlayers.end()) {
-                                    peers.broadcastToAll<iron::netshooter::ScoreUpdateMsg>(
-                                        iron::netshooter::ScoreUpdateMsg{attacker, ait->second.kills, ait->second.deaths},
-                                        iron::SendReliability::Reliable);
-                                }
+                // Cancel gravity by clamping each rocket's vy >= 0. Rockets
+                // are kinematic-feeling (constant velocity).
+                for (const auto& [id, rocket] : hostRockets) {
+                    iron::Vec3 v = worldShared.velocityOf(rocket.body);
+                    if (v.y < 0.0f) {
+                        v.y = 0.0f;
+                        worldShared.setVelocity(rocket.body, v);
+                    }
+                }
+
+                // Process contact-driven despawns.
+                for (const auto& d : pendingDespawns) {
+                    auto hr = hostRockets.find(d.projectileId);
+                    if (hr == hostRockets.end()) continue;  // already removed
+                    const HostRocket rocket = hr->second;  // copy before erase
+
+                    // Splash damage (preserves M8.6 logic from the prior loop).
+                    for (const auto pid : alivePeers) {
+                        auto vit = hostPlayers.find(pid);
+                        if (vit == hostPlayers.end()) continue;
+                        const auto aabb = lagComp.aabbAt(pid, simNow,
+                                                          iron::netshooter::kPlayerHalfExtents);
+                        if (!aabb) continue;
+                        if (!iron::sphereOverlapAabb(
+                                d.point,
+                                iron::netshooter::RocketLauncher::kSplashRadius,
+                                *aabb)) continue;
+                        // Linear falloff over splash radius.
+                        const float cx = std::clamp(d.point.x, aabb->min.x, aabb->max.x);
+                        const float cy = std::clamp(d.point.y, aabb->min.y, aabb->max.y);
+                        const float cz = std::clamp(d.point.z, aabb->min.z, aabb->max.z);
+                        const float dxx = d.point.x - cx;
+                        const float dyy = d.point.y - cy;
+                        const float dzz = d.point.z - cz;
+                        const float distA = std::sqrt(dxx*dxx + dyy*dyy + dzz*dzz);
+                        const float tt = std::clamp(
+                            distA / iron::netshooter::RocketLauncher::kSplashRadius,
+                            0.0f, 1.0f);
+                        const int dmg = static_cast<int>(std::round(
+                            iron::netshooter::RocketLauncher::kCenterDamage * (1.0f - tt)));
+                        if (dmg <= 0) continue;
+
+                        iron::applyDamage(vit->second.hp, dmg);
+                        iron::netshooter::DamageMsg dmsg{};
+                        dmsg.attackerPeerId = rocket.ownerPeerId;
+                        dmsg.victimPeerId   = pid;
+                        dmsg.damage         = static_cast<std::uint16_t>(dmg);
+                        dmsg.victimHpAfter  = static_cast<std::uint16_t>(
+                            std::max(0, vit->second.hp.current));
+                        peers.broadcastToAll<iron::netshooter::DamageMsg>(
+                            dmsg, iron::SendReliability::Reliable);
+
+                        if (!iron::isAlive(vit->second.hp)) {
+                            const std::uint32_t attacker = dmsg.attackerPeerId;
+                            pushKillFeed(attacker, pid);
+                            auto ait = hostPlayers.find(attacker);
+                            if (ait != hostPlayers.end()) ait->second.kills++;
+                            vit->second.deaths++;
+                            vit->second.respawnAtSec = simNow + 2.0;
+                            lagComp.forgetPeer(pid);
+                            if (ait != hostPlayers.end()) {
                                 peers.broadcastToAll<iron::netshooter::ScoreUpdateMsg>(
-                                    iron::netshooter::ScoreUpdateMsg{dm.victimPeerId, vit->second.kills, vit->second.deaths},
+                                    iron::netshooter::ScoreUpdateMsg{
+                                        attacker, ait->second.kills, ait->second.deaths},
                                     iron::SendReliability::Reliable);
                             }
+                            peers.broadcastToAll<iron::netshooter::ScoreUpdateMsg>(
+                                iron::netshooter::ScoreUpdateMsg{
+                                    pid, vit->second.kills, vit->second.deaths},
+                                iron::SendReliability::Reliable);
                         }
-                        it = liveRockets.erase(it);
+                    }
+
+                    // Broadcast despawn + spawn local FX (host).
+                    iron::netshooter::DespawnProjectileMsg dpm{
+                        rocket.projectileId, d.point.x, d.point.y, d.point.z,
+                    };
+                    peers.broadcastToAll<iron::netshooter::DespawnProjectileMsg>(
+                        dpm, iron::SendReliability::Reliable);
+                    explosions.push_back(ExplosionFx{d.point, simNow});
+                    gizmos.addSphere("splash",
+                                     d.point,
+                                     iron::netshooter::RocketLauncher::kSplashRadius,
+                                     iron::Vec3{1.0f, 0.6f, 0.0f},
+                                     /*lifetimeSec=*/0.4f);
+
+                    worldShared.destroyBody(rocket.body);
+                    hostRockets.erase(hr);
+                }
+                pendingDespawns.clear();
+
+                // Lifetime cap — force-despawn rockets older than 5s.
+                for (auto hrit = hostRockets.begin(); hrit != hostRockets.end(); ) {
+                    if (simNow - hrit->second.spawnTimeSec > 5.0) {
+                        const auto pos = worldShared.bodyPosition(hrit->second.body);
+                        iron::netshooter::DespawnProjectileMsg dpm{
+                            hrit->first, pos.x, pos.y, pos.z,
+                        };
+                        peers.broadcastToAll<iron::netshooter::DespawnProjectileMsg>(
+                            dpm, iron::SendReliability::Reliable);
+                        explosions.push_back(ExplosionFx{pos, simNow});
+                        worldShared.destroyBody(hrit->second.body);
+                        hrit = hostRockets.erase(hrit);
                     } else {
-                        ++it;
+                        ++hrit;
                     }
                 }
 
