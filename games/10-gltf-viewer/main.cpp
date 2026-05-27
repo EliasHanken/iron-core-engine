@@ -26,6 +26,7 @@
 
 #include <GLFW/glfw3.h>
 
+#include <algorithm>
 #include <array>
 #include <cstdio>
 #include <numbers>
@@ -81,6 +82,64 @@ void main() {
     vUV = aUV;
     vLightSpacePos = u.lightViewProj * world;
     gl_Position = u.mvp * vec4(aPos, 1.0);
+}
+)";
+
+// M23 — Skinned vertex shader: same LitUbo at binding 0 as kVertexShader,
+// plus joint/weight attributes (locations 4,5) and the bone-matrix UBO at
+// binding 7. Reuses kFragmentShader unchanged.
+const char* kSkinnedVertexShader = R"(#version 450
+layout(location = 0) in vec3 aPos;
+layout(location = 1) in vec3 aNormal;
+layout(location = 2) in vec2 aUV;
+layout(location = 3) in vec3 aTangent;
+layout(location = 4) in uvec4 aJoints;
+layout(location = 5) in vec4 aWeights;
+
+layout(set = 0, binding = 0) uniform LitUbo {
+    mat4 mvp;
+    mat4 model;
+    mat4 lightViewProj;
+    vec4 sunDir;
+    vec4 sunColor;
+    vec4 ambient;
+    vec4 emissive;
+    vec4 cameraPos;
+    vec4 materialParams;
+    vec4 fogColor;
+    vec4 lightCounts;
+    vec4 pointPositions[16];
+    vec4 pointColors[16];
+    mat4 reflectionViewProj;  // M17 (unused in scene shader, here for layout parity)
+    vec4 reflectionParams;    // M17 x=useReflectionPlane, yz=screenSize, w=0
+    vec4 clipPlane;           // M17 — used only by reflection-pass shader
+} u;
+
+layout(set = 0, binding = 7) uniform BoneUbo {
+    mat4 bones[128];
+} bones;
+
+layout(location = 0) out vec3 vWorldPos;
+layout(location = 1) out vec3 vNormal;
+layout(location = 2) out vec3 vTangent;
+layout(location = 3) out vec2 vUV;
+layout(location = 4) out vec4 vLightSpacePos;
+
+void main() {
+    // Weighted skinning: blend 4 bone matrices.
+    mat4 skinMat = aWeights.x * bones.bones[aJoints.x]
+                 + aWeights.y * bones.bones[aJoints.y]
+                 + aWeights.z * bones.bones[aJoints.z]
+                 + aWeights.w * bones.bones[aJoints.w];
+
+    vec4 skinnedPos = skinMat * vec4(aPos, 1.0);
+    vec4 world      = u.model * skinnedPos;
+    vWorldPos = world.xyz;
+    vNormal   = mat3(u.model) * (mat3(skinMat) * aNormal);
+    vTangent  = mat3(u.model) * (mat3(skinMat) * aTangent);
+    vUV       = aUV;
+    vLightSpacePos = u.lightViewProj * world;
+    gl_Position = u.mvp * skinnedPos;
 }
 )";
 
@@ -204,8 +263,10 @@ void main() {
 
 }  // namespace
 
-int main() {
+int main(int argc, char** argv) {
 #ifndef IRON_RENDER_BACKEND_VULKAN
+    (void)argc;
+    (void)argv;
     iron::Log::error("gltf-viewer requires the Vulkan backend");
     return 1;
 #else
@@ -242,19 +303,54 @@ int main() {
     renderer.setShadowBounds(iron::Vec3{0.0f, 0.0f, 0.0f}, 8.0f);
     renderer.disableReflectionPlane();
 
+    // Parse --model arg. Default to damaged-helmet.
+    std::string modelName = "damaged-helmet";
+    for (int i = 1; i < argc; ++i) {
+        const std::string a = argv[i];
+        if (a == "--model" && i + 1 < argc) {
+            modelName = argv[++i];
+        }
+    }
+
+    // Map model name → glTF file path.
+    // Add more entries here as additional samples are vendored.
+    std::string gltfFileName;
+    if (modelName == "rigged-simple") {
+        gltfFileName = "RiggedSimple.gltf";
+    } else {
+        modelName = "damaged-helmet";  // unknown name → default
+        gltfFileName = "DamagedHelmet.gltf";
+    }
+
     // Load the model. Assets are copied next to the exe by the
     // CMake POST_BUILD step.
     const std::string modelPath = iron::executableDir()
-        + "/assets/damaged-helmet/DamagedHelmet.gltf";
+        + "/assets/" + modelName + "/" + gltfFileName;
     auto model = iron::loadGltfModel(modelPath);
     if (!model) {
         iron::Log::error("gltf-viewer: failed to load %s", modelPath.c_str());
         return 1;
     }
-    iron::Log::info("gltf-viewer: loaded %zu verts, %zu indices",
-                    model->mesh.vertices.size(), model->mesh.indices.size());
+    const bool isSkinned = model->skinnedMesh.has_value();
+    iron::Log::info("gltf-viewer: loaded %s (%s, %zu verts, %zu indices)",
+                    modelPath.c_str(),
+                    isSkinned ? "skinned" : "static",
+                    model->mesh.vertices.size(),
+                    model->mesh.indices.size());
 
-    const iron::MeshHandle mesh = renderer.createMesh(model->mesh);
+    iron::MeshHandle        staticMesh  = iron::kInvalidHandle;
+    iron::SkinnedMeshHandle skinnedMesh = iron::kInvalidSkinnedMesh;
+    iron::ShaderHandle      shader      = iron::kInvalidHandle;
+
+    if (isSkinned) {
+        skinnedMesh = renderer.createSkinnedMesh(*model->skinnedMesh);
+        shader      = renderer.createSkinnedShader(kSkinnedVertexShader, kFragmentShader);
+        iron::Log::info("gltf-viewer: skinned bone count = %zu",
+                        model->skinnedMesh->skeleton.bones.size());
+    } else {
+        staticMesh = renderer.createMesh(model->mesh);
+        shader     = renderer.createShader(kVertexShader, kFragmentShader);
+    }
 
     // M22.5 — load material textures via existing engine helpers.
     const iron::TextureHandle albedo = model->materialPaths.albedo.empty()
@@ -273,9 +369,9 @@ int main() {
             spec = renderer.createTexture(w, h, specBytes.data());
         }
     }
-    const iron::ShaderHandle shader =
-        renderer.createShader(kVertexShader, kFragmentShader);
-    if (mesh == iron::kInvalidHandle || shader == iron::kInvalidHandle) {
+    if ((isSkinned && (skinnedMesh == iron::kInvalidSkinnedMesh)) ||
+        (!isSkinned && (staticMesh == iron::kInvalidHandle)) ||
+        shader == iron::kInvalidHandle) {
         iron::Log::error("gltf-viewer: mesh/shader create failed");
         return 1;
     }
@@ -298,10 +394,12 @@ int main() {
     const iron::BitmapFont font = iron::builtinFont(fontTexture);
 
     iron::Hud hud;
-    char statsBuf[128];
+    char statsBuf[160];
     std::snprintf(statsBuf, sizeof(statsBuf),
-                  "Verts: %zu  Tris: %zu",
-                  model->mesh.vertices.size(), model->mesh.indices.size() / 3);
+                  "Verts: %zu  Tris: %zu  [%s]",
+                  model->mesh.vertices.size(),
+                  model->mesh.indices.size() / 3,
+                  isSkinned ? "skinned" : "static");
     hud.addText(statsBuf, iron::Vec2{10, 10}, 2.0f,
                 iron::Vec4{1.0f, 1.0f, 1.0f, 1.0f});
     hud.addText("WASD: move  mouse: look  Space/Ctrl: up/down  ESC: quit",
@@ -337,15 +435,35 @@ int main() {
         // M22.5: material textures (albedo / normal / metal-roughness→spec)
         // are loaded from the glTF when present; empty slots fall back to
         // engine defaults.
-        iron::DrawCall call;
-        call.mesh   = mesh;
-        call.shader = shader;
-        call.model  = iron::Mat4::identity();
-        call.material.texture     = albedo;
-        call.material.normalMap   = normalMap;
-        call.material.specularMap = spec;
-        call.material.emissive    = iron::Vec3{0.05f, 0.05f, 0.05f};
-        renderer.submit(call);
+        // M23: dispatch on isSkinned — skinned path uploads bone matrices
+        // (bind pose = identity for now; animation lands in a later task).
+        if (isSkinned) {
+            std::array<iron::Mat4, iron::kMaxBonesPerSkinnedMesh> bonesPose;
+            for (auto& m : bonesPose) m = iron::Mat4::identity();
+            const std::size_t boneCount = model->skinnedMesh->skeleton.bones.size();
+
+            iron::SkinnedDrawCall call;
+            call.skinnedMesh = skinnedMesh;
+            call.shader      = shader;
+            call.model       = iron::Mat4::identity();
+            call.material.texture     = albedo;
+            call.material.normalMap   = normalMap;
+            call.material.specularMap = spec;
+            call.material.emissive    = iron::Vec3{0.05f, 0.05f, 0.05f};
+            call.boneMatrices = std::span<const iron::Mat4>{
+                bonesPose.data(), std::min(boneCount, bonesPose.size())};
+            renderer.submitSkinnedDraw(call);
+        } else {
+            iron::DrawCall call;
+            call.mesh   = staticMesh;
+            call.shader = shader;
+            call.model  = iron::Mat4::identity();
+            call.material.texture     = albedo;
+            call.material.normalMap   = normalMap;
+            call.material.specularMap = spec;
+            call.material.emissive    = iron::Vec3{0.05f, 0.05f, 0.05f};
+            renderer.submit(call);
+        }
 
         renderer.drawHud(hud.build(font, renderer.whiteTexture()),
                          kScreenW, kScreenH);
