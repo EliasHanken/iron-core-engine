@@ -30,7 +30,7 @@ int main() {
         c.create(w, cfg, Vec3{0.0f, 10.0f, 0.0f});
 
         for (int i = 0; i < 60; ++i) {
-            c.update(1.0f / 60.0f, Vec3{0,0,0}, false);
+            c.update(1.0f / 60.0f, Vec3{0,0,0}, false, c.isGrounded());
             w.step(1.0f / 60.0f);
         }
         const Vec3 p = c.footPosition();
@@ -48,7 +48,7 @@ int main() {
         c.create(w, cfg, Vec3{0.0f, 5.0f, 0.0f});
 
         for (int i = 0; i < 180; ++i) {
-            c.update(1.0f / 60.0f, Vec3{0,0,0}, false);
+            c.update(1.0f / 60.0f, Vec3{0,0,0}, false, c.isGrounded());
             w.step(1.0f / 60.0f);
         }
         const Vec3 p = c.footPosition();
@@ -69,12 +69,12 @@ int main() {
 
         // Settle on the ground.
         for (int i = 0; i < 30; ++i) {
-            c.update(1.0f / 60.0f, Vec3{0,0,0}, false);
+            c.update(1.0f / 60.0f, Vec3{0,0,0}, false, c.isGrounded());
             w.step(1.0f / 60.0f);
         }
         // Walk forward at 6 m/s for 1s.
         for (int i = 0; i < 60; ++i) {
-            c.update(1.0f / 60.0f, Vec3{0,0,6.0f}, false);
+            c.update(1.0f / 60.0f, Vec3{0,0,6.0f}, false, c.isGrounded());
             w.step(1.0f / 60.0f);
         }
         const Vec3 p = c.footPosition();
@@ -91,18 +91,19 @@ int main() {
         c.create(w, cfg, Vec3{0.0f, 0.0f, 0.0f});
 
         for (int i = 0; i < 30; ++i) {
-            c.update(1.0f / 60.0f, Vec3{0,0,0}, false);
+            c.update(1.0f / 60.0f, Vec3{0,0,0}, false, c.isGrounded());
             w.step(1.0f / 60.0f);
         }
-        CHECK(c.isGrounded());
+        const bool wasGrounded = c.isGrounded();
+        CHECK(wasGrounded);
 
-        c.update(1.0f / 60.0f, Vec3{0,0,0}, true);
+        c.update(1.0f / 60.0f, Vec3{0,0,0}, true, wasGrounded);
         w.step(1.0f / 60.0f);
         const Vec3 v = c.velocity();
         CHECK(v.y > 4.0f);
 
         for (int i = 0; i < 90; ++i) {
-            c.update(1.0f / 60.0f, Vec3{0,0,0}, false);
+            c.update(1.0f / 60.0f, Vec3{0,0,0}, false, c.isGrounded());
             w.step(1.0f / 60.0f);
         }
         const Vec3 p = c.footPosition();

@@ -667,7 +667,7 @@ int main(int argc, char** argv) {
                     (const PlayerState& s, const PlayerInput& in, float dt) -> PlayerState {
         localChar.setFootPosition({s.x, s.y, s.z});
         localChar.setVelocity({s.vx, s.vy, s.vz});
-        localChar.update(dt, iron::Vec3{in.vx, 0.0f, in.vz}, in.jump);
+        localChar.update(dt, iron::Vec3{in.vx, 0.0f, in.vz}, in.jump, s.grounded);
         localWorld.step(dt);
 
         const iron::Vec3 p = localChar.footPosition();
@@ -764,7 +764,7 @@ int main(int argc, char** argv) {
                                     float dt) -> PlayerState {
             simPtr->controller.setFootPosition({s.x, s.y, s.z});
             simPtr->controller.setVelocity({s.vx, s.vy, s.vz});
-            simPtr->controller.update(dt, iron::Vec3{in.vx, 0.0f, in.vz}, in.jump);
+            simPtr->controller.update(dt, iron::Vec3{in.vx, 0.0f, in.vz}, in.jump, s.grounded);
             simPtr->world.step(dt);
             const iron::Vec3 p = simPtr->controller.footPosition();
             const iron::Vec3 v = simPtr->controller.velocity();
