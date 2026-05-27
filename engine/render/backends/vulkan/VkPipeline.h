@@ -24,6 +24,12 @@ public:
     // Cached by shader pointer.
     ::VkPipeline pipelineFor(VkContext& ctx, VkSwapchain& swap, const VkShader& sh);
 
+    // M23 — build (or fetch) a graphics pipeline for a skinned shader.
+    // Identical to pipelineFor() except the vertex input layout matches
+    // SkinnedVertex (6 attributes, 76-byte stride). Cached separately.
+    ::VkPipeline skinnedPipelineFor(VkContext& ctx, VkSwapchain& swap,
+                                     const VkShader& sh);
+
     VkRenderPass  renderPass()                    const { return renderPass_; }
     VkFramebuffer framebuffer(std::uint32_t i)    const { return framebuffers_[i]; }
 
@@ -32,6 +38,8 @@ private:
     std::vector<VkFramebuffer> framebuffers_;
     // One pipeline per (shader pointer) value.
     std::vector<std::pair<const VkShader*, ::VkPipeline>> pipelines_;
+    // M23 — separate cache for the skinned vertex-input pipeline.
+    std::vector<std::pair<const VkShader*, ::VkPipeline>> skinnedPipelines_;
 };
 
 }  // namespace iron

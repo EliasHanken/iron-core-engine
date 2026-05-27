@@ -52,7 +52,7 @@ bool VkFrameRing::initFrame(VkContext& ctx, Frame& f) {
     // ParticleSystem render pipeline reads from an SSBO (vertex stage),
     // so STORAGE_BUFFER capacity is required here.
     VkDescriptorPoolSize sizes[] = {
-        {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,         kMaxDescriptorSetsPerFrame},
+        {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,         2 * kMaxDescriptorSetsPerFrame},  // M23: skinned draws use 2 UBOs (scene + bones)
         {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 6 * kMaxDescriptorSetsPerFrame},  // M17: 6 samplers per lit set
         {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,         kMaxDescriptorSetsPerFrame},
     };

@@ -9,6 +9,8 @@
 #include "render/Material.h"
 #include "render/ReflectionPlane.h"
 #include "scene/Mesh.h"
+#include "asset/Skeleton.h"
+#include "scene/SkinnedMesh.h"
 
 #include <array>
 #include <span>
@@ -31,6 +33,25 @@ struct DrawCall {
     ShaderHandle shader = kInvalidHandle;
     Mat4 model = Mat4::identity();
     Material material{};
+};
+
+// M23 — maximum bone matrices uploaded per skinned draw call. The
+// skinned vertex shader's `uBones` array is sized to this constant; any
+// excess bones supplied via SkinnedDrawCall::boneMatrices are silently
+// dropped (the joint indices in the mesh wouldn't reference them anyway
+// for well-formed glTF imports).
+inline constexpr std::size_t kMaxBonesPerSkinnedMesh = 128;
+
+// M23 — one skinned thing to draw. Mirrors DrawCall (mesh+shader+model+material)
+// but adds a per-instance array of bone matrices (one mat4 per skeleton
+// joint, in skeleton order). The skinning shader multiplies vertex
+// positions/normals by the four-weighted blend of these matrices.
+struct SkinnedDrawCall {
+    SkinnedMeshHandle skinnedMesh = kInvalidSkinnedMesh;
+    ShaderHandle      shader      = kInvalidHandle;
+    Mat4              model       = Mat4::identity();
+    Material          material{};
+    std::span<const Mat4> boneMatrices;  // size <= kMaxBonesPerSkinnedMesh
 };
 
 // Render Hardware Interface: a graphics-API-agnostic renderer. Game code talks
@@ -71,6 +92,22 @@ public:
     // failure.
     virtual ShaderHandle createShader(const std::string& vertexSrc,
                                       const std::string& fragmentSrc) = 0;
+
+    // --- M23: Skinned mesh + draw API ---
+    // Creates a GPU-resident skinned mesh from CPU-side SkinnedMeshData.
+    // Returns kInvalidSkinnedMesh on failure or empty input. Vulkan-only;
+    // the OpenGL backend stubs this and warns once.
+    virtual SkinnedMeshHandle createSkinnedMesh(const SkinnedMeshData& data) = 0;
+    // Creates a shader for the skinned pipeline. The vertex shader must
+    // accept the SkinnedVertex layout (position, normal, uv, tangent,
+    // joints[uvec4], weights[vec4]) and sample bone matrices from
+    // descriptor set binding 7 (a uniform buffer of mat4[kMaxBonesPerSkinnedMesh]).
+    virtual ShaderHandle createSkinnedShader(const std::string& vertexSrc,
+                                              const std::string& fragmentSrc) = 0;
+    // Records one skinned draw call for this frame. boneMatrices contains
+    // the per-joint transforms in skeleton order; missing slots default to
+    // identity.
+    virtual void submitSkinnedDraw(const SkinnedDrawCall& call) = 0;
 
     // Creates a cubemap texture from six RGBA face arrays. Each face is
     // `width * height * 4` bytes. Face order: +X, -X, +Y, -Y, +Z, -Z.

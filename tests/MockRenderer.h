@@ -30,6 +30,9 @@ public:
     TextureHandle flatNormalTexture() const override { return kInvalidHandle; }
     TextureHandle noSpecularTexture() const override { return kInvalidHandle; }
     ShaderHandle createShader(const std::string&, const std::string&) override { return kInvalidHandle; }
+    SkinnedMeshHandle createSkinnedMesh(const SkinnedMeshData&) override { return kInvalidSkinnedMesh; }
+    ShaderHandle createSkinnedShader(const std::string&, const std::string&) override { return kInvalidHandle; }
+    void submitSkinnedDraw(const SkinnedDrawCall&) override {}
     CubemapHandle createCubemap(int, int, const std::array<const unsigned char*, 6>&) override { return kInvalidHandle; }
     void setSkybox(CubemapHandle) override {}
 
