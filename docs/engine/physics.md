@@ -289,6 +289,88 @@ deterministic.
   player-layer filtering), capsule visual rendering, movement polish
   (crouch, sprint, slide).
 
+## M20 — Projectiles on Jolt
+
+`iron::PhysicsWorld` gained three pieces:
+
+- `RaycastHit::normal` now contains the real surface normal — M18 was a
+  placeholder. Implementation: `JPH::BodyLockRead` + `GetWorldSpaceSurfaceNormal`.
+- `Vec3 velocityOf(BodyId) const` accessor — mirror of `setVelocity`.
+- `void onContactStarted(std::function<void(const ContactEvent&)>)`
+  registers a callback fired during `step()` when two bodies start
+  touching. The callback MUST NOT mutate the `PhysicsWorld` — record
+  into a queue and process events after step returns. Implementation:
+  one `JPH::ContactListener` subclass owned by `PhysicsWorld::Impl`.
+
+```cpp
+iron::PhysicsWorld world; world.init();
+world.onContactStarted([&](const iron::ContactEvent& evt) {
+    // evt.bodyA, evt.bodyB, evt.point, evt.normal
+});
+```
+
+### Net-shooter's projectile architecture (M20)
+
+Net-shooter's host gained one shared `worldShared` (alongside the
+per-peer character worlds from M19). It contains:
+- The static arena geometry (same `populateArenaCollision` helper).
+- Active rocket bodies — Jolt dynamic spheres (radius 0.10m, mass 0.5kg).
+
+**Gravity is cancelled per tick** by clamping each rocket's vy ≥ 0.
+Rockets fly in straight lines at constant velocity and explode on first
+arena contact. A `setGravityFactor(BodyId, float)` engine helper would
+be cleaner — flagged as a small follow-up.
+
+Per host sim tick:
+1. `worldShared.step(simDt)` advances all rocket bodies.
+2. `ContactListener` populates `pendingDespawns` for any rocket that
+   touched arena geometry (or another rocket).
+3. Game loop drains `pendingDespawns`: applies splash damage against
+   rewound player AABBs (unchanged from M8.6 splash logic), broadcasts
+   `DespawnProjectileMsg`, destroys the rocket body.
+4. Lifetime cap force-despawns rockets older than 5s.
+
+Clients **do not run physics for rockets**. They store
+`iron::netshooter::Projectile` ghosts updated by `SpawnProjectileMsg`,
+extrapolate linearly each frame, and replace with explosion FX on
+`DespawnProjectileMsg`. The rocket has constant velocity → no drift.
+
+### Hitscan path (NOT changed in M20)
+
+The hitscan rifle still uses `engine/math/Ray.h` + `intersectRayAabb`
+against arena AABBs inside `resolveHitscanHost`. The world-vs-player
+comparison was already in place before M20 (the rifle has never shot
+through walls — a misread in the M20 spec). Migrating hitscan onto
+Jolt raycast would only matter once dynamic bodies (ragdolls, etc.)
+need to be hit by bullets, since the arena is a small static set
+where the engine's Ray math is cheaper than Jolt's broadphase.
+
+### Retirement
+
+`engine/game/ProjectileSim.{h,cpp}` and `tests/test_projectile_sim.cpp`
+are gone. The `iron::Projectile` POD relocated to
+`games/07-net-shooter/Projectile.h` as `iron::netshooter::Projectile`
+— still used by client-side ghost rendering and the
+`SpawnProjectileMsg` payload. Host-side rocket tracking now lives in
+the `HostRocket` struct in main.cpp (body + projectileId + ownerPeerId
++ spawnTimeSec). `RocketLauncher.cpp` lost `spawnRocketHost`,
+`tickRocketHost`, `RocketSpawn`, and `RocketTickResult` — the host's
+rocket logic now lives inline in net-shooter's main.cpp.
+
+### What's next
+
+- **M21** — Death-into-ragdoll wiring in net-shooter. When a player's
+  HP drops to 0, swap their character for a spawned `iron::Ragdoll` at
+  the death position. Mostly game-side; the ragdoll machinery already
+  exists from M18.
+- Future: player-vs-projectile direct hits (rocket capsule overlap →
+  immediate detonation at full damage). Out of v1 because capsules and
+  rocket bodies live in different worlds.
+- Future: `iron::PhysicsWorld::setGravityFactor(BodyId, float)` —
+  replace the per-tick velocity-clamp hack.
+- Future: hitscan-on-Jolt swap, once ragdolls/dynamic targets need to
+  be hit (currently engine `Ray` math against arena AABBs is sufficient).
+
 ## See also
 
 - Upstream Jolt docs: <https://jrouwe.github.io/JoltPhysics/>
