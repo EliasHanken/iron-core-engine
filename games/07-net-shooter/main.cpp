@@ -2109,7 +2109,7 @@ int main(int argc, char** argv) {
             // velocity), so the fox tracks the player's aim even when standing
             // still and doesn't moonwalk while running forward.
             call.model        = iron::translation(pos)
-                              * iron::rotationY(yawRadians)
+                              * iron::rotationY(yawRadians + 3.14159265f)
                               * iron::scaling(iron::Vec3{kFoxScale, kFoxScale, kFoxScale});
             call.material.texture     = renderer.whiteTexture();
             call.material.normalMap   = renderer.flatNormalTexture();
