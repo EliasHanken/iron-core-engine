@@ -142,5 +142,55 @@ int main() {
         CHECK_NEAR(out[0].at(0, 3), 5.0f);
     }
 
+    // Empty sampler (loader pushes one for failed reads to preserve indices):
+    // a channel pointing at an empty sampler must early-return identity/zero,
+    // leaving the bone at its bind-pose value. This mirrors the loader
+    // invariant on AnimationClip::samplers.
+    {
+        const Skeleton sk = makeTrivialSkeleton();
+        AnimationClip clip;
+        clip.name = "with-empty";
+        clip.duration = 1.0f;
+
+        // sampler 0: empty (simulates a failed-read sampler placeholder).
+        clip.samplers.push_back(AnimationSampler{});
+
+        // sampler 1: real translation track.
+        AnimationSampler samp;
+        samp.inputs = {0.0f, 1.0f};
+        samp.outputs = {0,0,0,  7,0,0};
+        samp.interpolation = AnimationInterpolation::Linear;
+        clip.samplers.push_back(samp);
+
+        // Channel referencing the empty sampler must be a no-op (identity).
+        AnimationChannel chEmpty;
+        chEmpty.targetBone = 0;
+        chEmpty.path = AnimationPath::Rotation;
+        chEmpty.samplerIndex = 0;
+        clip.channels.push_back(chEmpty);
+
+        // Channel referencing the real sampler must still drive its bone:
+        // proves channel.samplerIndex stays aligned even with the empty
+        // sampler in front of it.
+        AnimationChannel chReal;
+        chReal.targetBone = 0;
+        chReal.path = AnimationPath::Translation;
+        chReal.samplerIndex = 1;
+        clip.channels.push_back(chReal);
+
+        AnimationPlayer p;
+        p.setSkeleton(&sk);
+        p.setClip(&clip);
+        p.setTime(1.0f);
+        std::array<Mat4, 1> out{};
+        p.evaluate(out);
+        // Translation x should be 7 (from sampler 1, end keyframe).
+        CHECK_NEAR(out[0].at(0, 3), 7.0f);
+        // Rotation untouched by the empty sampler => identity diagonal.
+        CHECK_NEAR(out[0].at(0, 0), 1.0f);
+        CHECK_NEAR(out[0].at(1, 1), 1.0f);
+        CHECK_NEAR(out[0].at(2, 2), 1.0f);
+    }
+
     return iron_test_result();
 }

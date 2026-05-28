@@ -55,6 +55,10 @@ struct AnimationChannel {
 struct AnimationClip {
     std::string                   name;
     float                         duration = 0.0f;
+    // One per glTF sampler in load order. Samplers whose inputs/outputs failed
+    // to load are present but empty (inputs/outputs vectors are empty); the
+    // player's sample functions early-return identity for empty samplers. This
+    // preserves channel.samplerIndex alignment with the source file.
     std::vector<AnimationSampler> samplers;
     std::vector<AnimationChannel> channels;
 };

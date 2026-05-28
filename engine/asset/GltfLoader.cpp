@@ -557,14 +557,27 @@ std::optional<GltfModel> loadGltfModel(const std::string& path) {
                 } else {
                     samp.interpolation = AnimationInterpolation::Linear;
                 }
+                // On failure we still push an empty sampler so that channel
+                // samplerIndex values (which are absolute indices from the
+                // glTF file) stay aligned with clip.samplers. The player's
+                // sample functions early-return identity/zero for empty
+                // samplers, so this is safe.
                 if (!readPackedFloatAccessor(model, gs.input, samp.inputs)) {
                     Log::warn("GltfLoader: animation sampler has unreadable "
-                              "input accessor; skipping");
+                              "input accessor; keeping empty sampler to "
+                              "preserve channel indices");
+                    samp.inputs.clear();
+                    samp.outputs.clear();
+                    clip.samplers.push_back(std::move(samp));
                     continue;
                 }
                 if (!readPackedFloatAccessor(model, gs.output, samp.outputs)) {
                     Log::warn("GltfLoader: animation sampler has unreadable "
-                              "output accessor; skipping");
+                              "output accessor; keeping empty sampler to "
+                              "preserve channel indices");
+                    samp.inputs.clear();
+                    samp.outputs.clear();
+                    clip.samplers.push_back(std::move(samp));
                     continue;
                 }
                 clip.samplers.push_back(std::move(samp));
@@ -582,12 +595,16 @@ std::optional<GltfModel> loadGltfModel(const std::string& path) {
                     ch.path = AnimationPath::Rotation;
                 } else if (p == "scale") {
                     ch.path = AnimationPath::Scale;
-                } else {
+                } else if (p == "weights") {
                     if (!warnedWeightsPath) {
                         Log::warn("GltfLoader: animation 'weights' path "
                                   "not supported; skipping channel");
                         warnedWeightsPath = true;
                     }
+                    continue;
+                } else {
+                    Log::warn("GltfLoader: animation has unknown target "
+                              "path '%s'; skipping channel", p.c_str());
                     continue;
                 }
 
