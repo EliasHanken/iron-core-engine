@@ -2393,7 +2393,8 @@ int main(int argc, char** argv) {
         // (first-person), so the per-other-player loop below skips it. Without
         // this block the local player would never hear their own footsteps.
         // State derivation matches submitPlayerFox's mapping exactly.
-        {
+        // Skipped while dead — the death-cam is flying, not walking.
+        if (!localDead) {
             iron::Vec3 selfPos{}, selfVel{};
             bool selfGrounded = true;
             std::uint32_t selfId = 0;
