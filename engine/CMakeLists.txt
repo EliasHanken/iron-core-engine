@@ -31,6 +31,7 @@ add_library(ironcore STATIC
   render/RendererFactory.cpp
   render/ReflectionPlane.cpp
   render/TextureLoader.cpp
+  util/FileWatcher.cpp
   debug/GizmoRegistry.cpp
 )
 

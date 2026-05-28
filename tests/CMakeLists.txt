@@ -24,6 +24,7 @@ iron_add_test(test_character_animator test_character_animator.cpp)
 iron_add_test(test_audio_engine test_audio_engine.cpp)
 target_compile_definitions(test_audio_engine PRIVATE
   IRON_REPO_ROOT="${CMAKE_SOURCE_DIR}")
+iron_add_test(test_file_watcher test_file_watcher.cpp)
 iron_add_test(test_ray test_ray.cpp)
 iron_add_test(test_collision test_collision.cpp)
 iron_add_test(test_weapon_cooldown test_weapon_cooldown.cpp)
