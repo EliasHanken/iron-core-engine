@@ -60,6 +60,9 @@ public:
     SkinnedMeshHandle createSkinnedMesh(const SkinnedMeshData& data) override;
     ShaderHandle createSkinnedShader(const std::string& vertexSrc,
                                       const std::string& fragmentSrc) override;
+    bool reloadShader(ShaderHandle handle,
+                      const std::string& vertexSrc,
+                      const std::string& fragmentSrc) override;
     void submitSkinnedDraw(const SkinnedDrawCall& call) override;
     CubemapHandle createCubemap(int width, int height,
         const std::array<const unsigned char*, 6>& faces) override;

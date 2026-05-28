@@ -207,6 +207,48 @@ ShaderHandle VkShaderStore::createSkinned(VkContext& ctx,
     return h;
 }
 
+bool VkShaderStore::reload(VkContext& ctx, ShaderHandle h,
+                           const std::string& vertSrc, const std::string& fragSrc) {
+    auto it = shaders_.find(h);
+    if (it == shaders_.end()) {
+        Log::error("VkShaderStore::reload: unknown handle %u", h);
+        return false;
+    }
+
+    // Compile first; if either stage fails, keep the old modules untouched.
+    auto vspv = compileGlsl(VK_SHADER_STAGE_VERTEX_BIT, vertSrc);
+    auto fspv = compileGlsl(VK_SHADER_STAGE_FRAGMENT_BIT, fragSrc);
+    if (vspv.empty() || fspv.empty()) {
+        Log::error("VkShaderStore::reload: compile failed; keeping last-good shader");
+        return false;
+    }
+
+    auto makeModule = [&](const std::vector<std::uint32_t>& code) -> VkShaderModule {
+        VkShaderModuleCreateInfo info{};
+        info.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
+        info.codeSize = code.size() * sizeof(std::uint32_t);
+        info.pCode = code.data();
+        VkShaderModule m = VK_NULL_HANDLE;
+        VK_CHECK(vkCreateShaderModule(ctx.device(), &info, nullptr, &m));
+        return m;
+    };
+    VkShaderModule newVert = makeModule(vspv);
+    VkShaderModule newFrag = makeModule(fspv);
+    if (newVert == VK_NULL_HANDLE || newFrag == VK_NULL_HANDLE) {
+        if (newVert) vkDestroyShaderModule(ctx.device(), newVert, nullptr);
+        if (newFrag) vkDestroyShaderModule(ctx.device(), newFrag, nullptr);
+        return false;
+    }
+
+    // Swap in place: destroy old modules, keep setLayout + pipelineLayout.
+    VkShader& s = it->second;
+    if (s.vertexModule)   vkDestroyShaderModule(ctx.device(), s.vertexModule, nullptr);
+    if (s.fragmentModule) vkDestroyShaderModule(ctx.device(), s.fragmentModule, nullptr);
+    s.vertexModule   = newVert;
+    s.fragmentModule = newFrag;
+    return true;
+}
+
 void VkShaderStore::destroyAll(VkContext& ctx) {
     for (auto& [h, s] : shaders_) {
         if (s.pipelineLayout) vkDestroyPipelineLayout(ctx.device(), s.pipelineLayout, nullptr);

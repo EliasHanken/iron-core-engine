@@ -104,6 +104,19 @@ public:
     // descriptor set binding 7 (a uniform buffer of mat4[kMaxBonesPerSkinnedMesh]).
     virtual ShaderHandle createSkinnedShader(const std::string& vertexSrc,
                                               const std::string& fragmentSrc) = 0;
+
+    // M28 — hot-reload: replace the GLSL behind an existing shader handle.
+    // Recompiles to SPIR-V, recreates the shader modules (keeping the same
+    // descriptor + pipeline layout — the shader interface must be unchanged),
+    // and invalidates any pipeline cached against the shader so the next draw
+    // rebuilds it. Returns true on success. On compile failure the previous
+    // shader stays bound and false is returned (a typo in a live edit keeps
+    // the last-good shader instead of crashing). Vulkan-only; OpenGL warns
+    // once and returns false.
+    virtual bool reloadShader(ShaderHandle handle,
+                              const std::string& vertexSrc,
+                              const std::string& fragmentSrc) = 0;
+
     // Records one skinned draw call for this frame. boneMatrices contains
     // the per-joint transforms in skeleton order; missing slots default to
     // identity.

@@ -30,6 +30,12 @@ public:
     ::VkPipeline skinnedPipelineFor(VkContext& ctx, VkSwapchain& swap,
                                      const VkShader& sh);
 
+    // M28 — drop the cached pipeline(s) built against `sh` (both the scene
+    // and skinned caches are checked). The matching VkPipeline is destroyed;
+    // the next pipelineFor/skinnedPipelineFor call rebuilds it. Caller must
+    // ensure the device is idle (no in-flight use of the pipeline).
+    void invalidate(VkContext& ctx, const VkShader* sh);
+
     VkRenderPass  renderPass()                    const { return renderPass_; }
     VkFramebuffer framebuffer(std::uint32_t i)    const { return framebuffers_[i]; }
 
