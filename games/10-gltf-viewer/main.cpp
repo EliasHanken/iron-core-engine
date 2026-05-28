@@ -457,8 +457,9 @@ int main(int argc, char** argv) {
         // M22.5: material textures (albedo / normal / metal-roughness→spec)
         // are loaded from the glTF when present; empty slots fall back to
         // engine defaults.
-        // M23: dispatch on isSkinned — skinned path uploads bone matrices
-        // (bind pose = identity for now; animation lands in a later task).
+        // M23: dispatch on isSkinned — skinned path uploads bone matrices.
+        // M24: bone matrices are sampled from the active animation each
+        // frame by AnimationPlayer.evaluate() below.
         if (isSkinned) {
             std::array<iron::Mat4, iron::kMaxBonesPerSkinnedMesh> bonesPose;
             for (auto& m : bonesPose) m = iron::Mat4::identity();

@@ -273,3 +273,129 @@ matches what an equivalent static render would show.
   have slightly off normals (use inverse-transpose if needed).
 - Scene-walk depth-first traversal picks the first mesh found —
   multi-mesh scenes would need explicit selection.
+
+## M24 — Animation playback
+
+The engine now samples glTF animation curves at runtime and drives the
+M23 bone palette from them. M24 closes the skeletal-animation track
+(M22 → M22.5 → M23 → M24): static glTFs already loaded, then materials,
+then skin data, and now the curves that animate the skin.
+
+### Engine types
+
+```cpp
+// engine/asset/Animation.h — POD-only, no engine dependencies
+enum class AnimationInterpolation : std::uint8_t { Linear, Step, CubicSpline };
+enum class AnimationPath         : std::uint8_t { Translation, Rotation, Scale };
+
+struct AnimationSampler {
+    std::vector<float>     inputs;   // strictly increasing timestamps (s)
+    std::vector<float>     outputs;  // 3 floats / keyframe for T/S, 4 for R
+    AnimationInterpolation interpolation = AnimationInterpolation::Linear;
+};
+
+struct AnimationChannel {
+    int           targetBone   = -1;  // < 0 → channel dropped at load
+    AnimationPath path         = AnimationPath::Translation;
+    int           samplerIndex = -1;
+};
+
+struct AnimationClip {
+    std::string                   name;
+    float                         duration = 0.0f;  // max sampler input
+    std::vector<AnimationSampler> samplers;
+    std::vector<AnimationChannel> channels;
+};
+```
+
+```cpp
+// engine/asset/AnimationPlayer.h — non-owning runtime
+class AnimationPlayer {
+    void setSkeleton(const Skeleton* skeleton);
+    void setClip   (const AnimationClip* clip);
+    void update    (float dt);                  // wraps at clip.duration
+    void evaluate  (std::span<Mat4> out) const; // writes the bone palette
+};
+```
+
+`evaluate` walks the skeleton in parent-before-child order, samples
+each channel against `time()`, composes a local TRS per bone (defaulting
+to the M23 bind values for components no channel drives), multiplies by
+the parent's world transform, and writes
+`worldTransform * inverseBindMatrix` into `out`. With no clip bound it
+writes the bind-pose palette (parents composed against M23's
+`localBindTransform`), so a skinned mesh whose `AnimationPlayer` is
+configured but unset renders the same as M23.
+
+### Runtime data flow
+
+```
+.gltf  ──loadGltfModel──▶  GltfModel{ mesh, skinnedMesh, materialPaths,
+                                       animations }
+                                                │
+                                                ▼
+                          AnimationPlayer.setSkeleton(&skel)
+                          AnimationPlayer.setClip(&clip[0])
+                                                │
+                            per frame:  update(dt) → evaluate(bones)
+                                                │
+                                                ▼
+                          SkinnedDrawCall.boneMatrices  ──▶  Vulkan UBO
+                                                              binding 7
+```
+
+The bone matrices flow into the same skinned descriptor set M23
+established — binding 7 of the skinned pipeline — so no shader or
+pipeline changes were needed in M24. Replacing identity matrices with
+sampled ones is the only behavioral change on the GPU side.
+
+### glTF loader extension
+
+`GltfModel::animations` is a `std::vector<AnimationClip>` populated when
+the .gltf has top-level animations. For each animation the loader:
+
+- Reads every `sampler.input` (scalar float accessor → seconds) and
+  `sampler.output` (vec3 or vec4 float accessor).
+- Maps glTF interpolation strings to the enum
+  (`STEP` / `LINEAR` / `CUBICSPLINE` — CubicSpline is downgraded to
+  Linear with a one-shot warning).
+- Resolves each channel's `target.node` against the skin's `joints[]` to
+  produce a `targetBone` index into `Skeleton::bones`. Channels whose
+  node is outside the skin (or whose path is `weights`) are dropped
+  with a warn-once.
+- Computes `clip.duration` as the max `sampler.inputs.back()` across all
+  samplers in the clip.
+- Preserves sampler-array indices even for samplers that fail to load
+  (failed samplers remain in the vector with empty inputs/outputs — the
+  player's samplers early-return identity for empty inputs, keeping
+  `channel.samplerIndex` stable).
+
+### Visual validator: `games/10-gltf-viewer --model rigged-simple`
+
+The viewer binds the first animation clip when one is present:
+
+```powershell
+.\build-vk\games\10-gltf-viewer\Debug\gltf-viewer.exe --model rigged-simple
+```
+
+RiggedSimple's cylinder bends and waves continuously — replacing the
+M23 bind-pose render with a live one. The default `damaged-helmet`
+model still renders identically (no skin → no animation player binding).
+
+### Known v1 limitations
+
+- **One clip per player**, played on loop. No blending, no state
+  machine, no events. A second-clip crossfade or animation-graph layer
+  would be its own track.
+- **CubicSpline downgraded to Linear** at load time (with warning).
+  Most authored content still looks reasonable; smooth tangents are
+  not preserved.
+- **Morph-target `weights` channels are dropped** (warn-once). The
+  skinned vertex format has no per-vertex morph slots in v1.
+- **Channels targeting nodes outside the skin's `joints[]`** are
+  dropped (warn-once). Object-level animation (e.g. animating the
+  whole mesh's parent node) is not exposed.
+- **Player owns no input** — caller manages skeleton + clip lifetimes
+  and supplies the output span each frame.
+- **No retargeting / no inverse kinematics** — animations play on the
+  exact skeleton they were authored against.
