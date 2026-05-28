@@ -2081,7 +2081,9 @@ int main(int argc, char** argv) {
             iron::SkinnedDrawCall call;
             call.skinnedMesh  = foxMesh;
             call.shader       = foxShader;
-            call.model        = iron::translation(pos);
+            // Fox.glb is authored at cm scale (~79 units = 1 fox-height); rescale to m.
+            constexpr float kFoxScale = 0.01f;
+            call.model        = iron::translation(pos) * iron::scaling(iron::Vec3{kFoxScale, kFoxScale, kFoxScale});
             call.material.texture     = renderer.whiteTexture();
             call.material.normalMap   = renderer.flatNormalTexture();
             call.material.specularMap = renderer.noSpecularTexture();

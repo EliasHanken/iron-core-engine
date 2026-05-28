@@ -5,6 +5,7 @@
 #include "asset/Animation.h"
 #include "asset/GltfLoader.h"
 #include "core/Log.h"
+#include "math/Quaternion.h"  // for iron::Quat (bone TRS rotation)
 #include "math/Transform.h"   // for iron::translation
 
 // tinygltf needs these defines in exactly one TU before its header.
@@ -575,16 +576,40 @@ std::optional<GltfModel> loadGltfModel(const std::string& path) {
                                 }
                             }
                         } else {
-                            // TRS path: only translation in v1.
-                            // TODO(M24): apply rotation (quaternion) + scale.
-                            Mat4 t = Mat4::identity();
+                            // TRS path. Compose translation × rotation × scale in column-major
+                            // form. glTF stores rotation as a unit quaternion (xyzw) and scale
+                            // as a vec3. Missing components default to identity.
+                            Vec3 t{0, 0, 0};
                             if (jnode.translation.size() == 3) {
-                                t = iron::translation(Vec3{
+                                t = Vec3{
                                     static_cast<float>(jnode.translation[0]),
                                     static_cast<float>(jnode.translation[1]),
-                                    static_cast<float>(jnode.translation[2])});
+                                    static_cast<float>(jnode.translation[2])};
                             }
-                            b.localBindTransform = t;
+                            Quat q = Quat::identity();
+                            if (jnode.rotation.size() == 4) {
+                                q = Quat{
+                                    static_cast<float>(jnode.rotation[0]),
+                                    static_cast<float>(jnode.rotation[1]),
+                                    static_cast<float>(jnode.rotation[2]),
+                                    static_cast<float>(jnode.rotation[3])};
+                            }
+                            Vec3 s{1, 1, 1};
+                            if (jnode.scale.size() == 3) {
+                                s = Vec3{
+                                    static_cast<float>(jnode.scale[0]),
+                                    static_cast<float>(jnode.scale[1]),
+                                    static_cast<float>(jnode.scale[2])};
+                            }
+                            // M = T * R * S  (matches the column-major convention used by
+                            // AnimationPlayer's composeTRS).
+                            Mat4 R = q.toMat4();
+                            R.at(0, 0) *= s.x; R.at(1, 0) *= s.x; R.at(2, 0) *= s.x;
+                            R.at(0, 1) *= s.y; R.at(1, 1) *= s.y; R.at(2, 1) *= s.y;
+                            R.at(0, 2) *= s.z; R.at(1, 2) *= s.z; R.at(2, 2) *= s.z;
+                            R.at(0, 3) = t.x; R.at(1, 3) = t.y; R.at(2, 3) = t.z;
+                            R.at(3, 3) = 1.0f;
+                            b.localBindTransform = R;
                         }
                     }
                     sm.skeleton.bones.push_back(b);
