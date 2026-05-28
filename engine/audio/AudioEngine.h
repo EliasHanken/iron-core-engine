@@ -62,6 +62,13 @@ public:
     // the listener's orientation; match the rendering camera.
     void setListener(Vec3 cameraPos, Vec3 forward, Vec3 up);
 
+    // M28 — re-decode any loaded sound whose source WAV changed on disk
+    // since load, swapping the OpenAL buffer in place (the SoundHandle
+    // stays valid). Call once per frame. No-op if the engine failed to
+    // init. Polls each loaded sound's file mtime internally — no external
+    // watcher needed.
+    void pollHotReload();
+
     bool initialized() const;
 
 private:
