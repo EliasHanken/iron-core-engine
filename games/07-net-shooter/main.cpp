@@ -758,7 +758,12 @@ int main(int argc, char** argv) {
     // (this client's own predicted player; or for the host, the host's
     // local player). Host also keeps one world per remote peer (see
     // ensureHostSim below).
-    iron::CharacterControllerConfig charCfg;  // defaults: r=0.30, hh=0.90, jump=5.5
+    // M27 — fox-sized capsule. Engine defaults (r=0.30, hh=0.90) are
+    // human-sized; override for net-shooter's fox player. Jump velocity
+    // unchanged so the controls still feel responsive.
+    iron::CharacterControllerConfig charCfg;
+    charCfg.radius     = 0.25f;
+    charCfg.halfHeight = 0.35f;
     iron::PhysicsWorld localWorld;
     localWorld.init();
     populateArenaCollision(localWorld, arena);
@@ -797,7 +802,7 @@ int main(int argc, char** argv) {
     constexpr float kMoveSpeed  = 6.0f;
     constexpr float kMouseSens  = 0.0025f;
     constexpr float kPitchLimit = 1.45f;
-    constexpr float kEyeHeight  = 1.6f;   // metres above feet
+    constexpr float kEyeHeight  = 0.5f;   // M27 — fox eye height above feet
 
     // First-person camera: eyes at player position + eyeHeight.
     auto eyePos = [&]() {

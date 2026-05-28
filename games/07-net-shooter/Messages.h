@@ -15,9 +15,11 @@ namespace iron::netshooter {
 // player's look direction (not just velocity).
 constexpr std::uint32_t kGameId = 0x4E535455u;   // M25 bump — NSTU, wire-format change
 
-// Player AABB half-extents (0.8 m wide, 2 m tall). Defined here so host
-// and client agree; used by LagCompensator + splash damage.
-constexpr Vec3 kPlayerHalfExtents = Vec3{0.4f, 1.0f, 0.4f};
+// M27 — fox-sized player. Foxes are longer than tall; Z is the long axis
+// in model space (head-to-tail), Y is the upright dimension. Numbers chosen
+// to roughly bound the rendered Fox.glb mesh after scale=0.01 in main.cpp.
+// Used by LagCompensator + splash damage; host and client agree at compile.
+constexpr Vec3 kPlayerHalfExtents = Vec3{0.25f, 0.35f, 0.5f};
 
 // Client interpolation delay — clients render remote players from
 // TimeHistory at (renderNow - kInterpDelaySec). Same value drives
