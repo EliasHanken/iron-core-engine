@@ -14,6 +14,7 @@
 
 #include "asset/CharacterAnimator.h"
 #include "asset/GltfLoader.h"
+#include "audio/AudioEngine.h"
 #include "game/Collision.h"
 #include "game/Health.h"
 #include "core/FixedTickScheduler.h"
@@ -638,6 +639,15 @@ int main(int argc, char** argv) {
                         "to cube rendering for players");
     }
 
+    // --- M26 -------------------------------------------------------------
+    // Audio engine. Failure to init is non-fatal — the game runs silent.
+    iron::AudioEngine audio;
+    if (!audio.init()) {
+        iron::Log::warn("net-shooter: AudioEngine init failed; running silent");
+    }
+    const iron::SoundHandle boomSfx =
+        audio.loadSound("assets/sfx/rocket-explode.wav");
+
     // Lighting + atmosphere
     iron::DirectionalLight sun;
     sun.direction = iron::normalize(iron::Vec3{-0.4f, -1.0f, -0.3f});
@@ -1198,6 +1208,7 @@ int main(int argc, char** argv) {
             ghostRockets.erase(msg.projectileId);
             explosions.push_back(
                 ExplosionFx{iron::Vec3{msg.x, msg.y, msg.z}, nowSec()});
+            audio.playSoundAt(boomSfx, iron::Vec3{msg.x, msg.y, msg.z});
             // M11 — splash radius gizmo (timed, matches ExplosionFx lifetime).
             gizmos.addSphere("splash",
                              iron::Vec3{msg.x, msg.y, msg.z},
@@ -1867,6 +1878,7 @@ int main(int argc, char** argv) {
                     peers.broadcastToAll<iron::netshooter::DespawnProjectileMsg>(
                         dpm, iron::SendReliability::Reliable);
                     explosions.push_back(ExplosionFx{d.point, simNow});
+                    audio.playSoundAt(boomSfx, d.point);
                     gizmos.addSphere("splash",
                                      d.point,
                                      iron::netshooter::RocketLauncher::kSplashRadius,
@@ -1888,6 +1900,7 @@ int main(int argc, char** argv) {
                         peers.broadcastToAll<iron::netshooter::DespawnProjectileMsg>(
                             dpm, iron::SendReliability::Reliable);
                         explosions.push_back(ExplosionFx{pos, simNow});
+                        audio.playSoundAt(boomSfx, pos);
                         worldShared.destroyBody(hrit->second.body);
                         hrit = hostRockets.erase(hrit);
                     } else {
@@ -2004,6 +2017,9 @@ int main(int argc, char** argv) {
             eye.z + aimDir().z,
         };
         const iron::Mat4 view = iron::lookAt(eye, target, iron::Vec3{0.0f, 1.0f, 0.0f});
+
+        // M26 — listener follows the rendering camera each frame.
+        audio.setListener(eye, aimDir(), iron::Vec3{0.0f, 1.0f, 0.0f});
 
         renderer.beginFrame(iron::Vec3{0.5f, 0.6f, 0.8f},
                             sun,
