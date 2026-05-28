@@ -1,6 +1,7 @@
 #pragma once
 
 #include "scene/Mesh.h"
+#include "scene/SkinnedMesh.h"
 
 #include <optional>
 #include <string>
@@ -19,8 +20,9 @@ struct GltfMaterialPaths {
 };
 
 struct GltfModel {
-    MeshData            mesh;
-    GltfMaterialPaths   materialPaths;
+    MeshData                       mesh;
+    GltfMaterialPaths              materialPaths;
+    std::optional<SkinnedMeshData> skinnedMesh;  // populated if glTF has a skin
 };
 
 // Load mesh + material texture paths from a glTF or GLB file.

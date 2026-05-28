@@ -4,6 +4,7 @@
 #include "render/backends/vulkan/VkContext.h"
 #include "render/backends/vulkan/VkFrameRing.h"
 #include "render/backends/vulkan/VkMesh.h"
+#include "render/backends/vulkan/VkSkinnedMesh.h"
 #include "render/backends/vulkan/VkPipeline.h"
 #include "render/backends/vulkan/VkShader.h"
 #include "render/backends/vulkan/VkSwapchain.h"
@@ -55,6 +56,11 @@ public:
     TextureHandle noSpecularTexture() const override;
     ShaderHandle createShader(const std::string& vertexSrc,
                               const std::string& fragmentSrc) override;
+    // M23 — skinned mesh + draw API (Vulkan-only).
+    SkinnedMeshHandle createSkinnedMesh(const SkinnedMeshData& data) override;
+    ShaderHandle createSkinnedShader(const std::string& vertexSrc,
+                                      const std::string& fragmentSrc) override;
+    void submitSkinnedDraw(const SkinnedDrawCall& call) override;
     CubemapHandle createCubemap(int width, int height,
         const std::array<const unsigned char*, 6>& faces) override;
     void setSkybox(CubemapHandle sky) override;
@@ -118,6 +124,8 @@ private:
     void warnOnce(const char* feature);
     bool recreateSwapchainAndFramebuffers(int width, int height);
     void recordSceneDraw(VkCommandBuffer cb, const DrawCall& call);
+    void recordSkinnedDraw(VkCommandBuffer cb, const SkinnedDrawCall& call,
+                           const std::vector<Mat4>& bones);
     bool buildReflectionPipeline();
 
     bool initOk_ = false;
@@ -128,6 +136,7 @@ private:
     VkFrameRing  frames_;
     VkPipeline   pipelines_;
     VkMeshStore     meshes_;
+    VkSkinnedMeshStore skinnedMeshes_;  // M23
     VkTextureStore  textures_;
     VkShaderStore   shaders_;
     VkDebugLines    debugLines_;
@@ -180,6 +189,13 @@ private:
     // M14 — frame-flow state for defer-and-replay rendering.
     std::vector<DrawCall> sceneDraws_;
     std::vector<std::function<void(VkCommandBuffer)>> deferredScenePass_;
+
+    // M23 — buffered skinned draws + a deep-copy of each call's bone
+    // matrices. SkinnedDrawCall holds a std::span, which is non-owning;
+    // submitSkinnedDraw copies the matrices into the stash so the caller
+    // can free the source range before endFrame replays them.
+    std::vector<SkinnedDrawCall>     skinnedDraws_;
+    std::vector<std::vector<Mat4>>   skinnedBoneMatricesStash_;
 
     Mat4 pendingDebugView_       = Mat4::identity();
     Mat4 pendingDebugProj_       = Mat4::identity();

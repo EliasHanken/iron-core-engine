@@ -526,4 +526,33 @@ void OpenGLRenderer::setViewport(int width, int height) {
     glViewport(0, 0, width, height);
 }
 
+// --- M23 Vulkan-only skinning API: stubs on the frozen OpenGL backend ---
+
+SkinnedMeshHandle OpenGLRenderer::createSkinnedMesh(const SkinnedMeshData&) {
+    static bool warned = false;
+    if (!warned) {
+        Log::warn("OpenGLRenderer: createSkinnedMesh not supported (Vulkan-only feature)");
+        warned = true;
+    }
+    return kInvalidSkinnedMesh;
+}
+
+ShaderHandle OpenGLRenderer::createSkinnedShader(const std::string&,
+                                                  const std::string&) {
+    static bool warned = false;
+    if (!warned) {
+        Log::warn("OpenGLRenderer: createSkinnedShader not supported (Vulkan-only feature)");
+        warned = true;
+    }
+    return kInvalidHandle;
+}
+
+void OpenGLRenderer::submitSkinnedDraw(const SkinnedDrawCall&) {
+    static bool warned = false;
+    if (!warned) {
+        Log::warn("OpenGLRenderer: submitSkinnedDraw not supported (Vulkan-only feature)");
+        warned = true;
+    }
+}
+
 } // namespace iron

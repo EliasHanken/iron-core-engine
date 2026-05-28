@@ -9,6 +9,7 @@
 #include "render/backends/vulkan/VkUtils.h"
 
 #include "scene/Mesh.h"
+#include "scene/SkinnedMesh.h"
 
 namespace iron {
 
@@ -75,28 +76,9 @@ VkRenderPass createRenderPass(VkContext& ctx, VkFormat color, VkFormat depth) {
     return rp;
 }
 
-::VkPipeline createGraphicsPipeline(VkContext& ctx, VkSwapchain& swap,
-                                     VkRenderPass rp, const VkShader& sh) {
-    // Vertex input: position, normal, uv, tangent — match scene::Vertex.
-    // Confirmed: iron::Vertex = { Vec3 position; Vec3 normal; Vec2 uv; Vec3 tangent; }
-    VkVertexInputBindingDescription binding{};
-    binding.binding = 0;
-    binding.stride = sizeof(Vertex);  // from scene/Mesh.h
-    binding.inputRate = VK_VERTEX_INPUT_RATE_VERTEX;
-
-    VkVertexInputAttributeDescription attrs[4]{};
-    attrs[0] = {0, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(Vertex, position)};
-    attrs[1] = {1, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(Vertex, normal)};
-    attrs[2] = {2, 0, VK_FORMAT_R32G32_SFLOAT,     offsetof(Vertex, uv)};
-    attrs[3] = {3, 0, VK_FORMAT_R32G32B32_SFLOAT,  offsetof(Vertex, tangent)};
-
-    VkPipelineVertexInputStateCreateInfo vi{};
-    vi.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
-    vi.vertexBindingDescriptionCount = 1;
-    vi.pVertexBindingDescriptions = &binding;
-    vi.vertexAttributeDescriptionCount = 4;
-    vi.pVertexAttributeDescriptions = attrs;
-
+::VkPipeline createGraphicsPipelineImpl(
+        VkContext& ctx, VkSwapchain& swap, VkRenderPass rp, const VkShader& sh,
+        const VkPipelineVertexInputStateCreateInfo& vi) {
     VkPipelineInputAssemblyStateCreateInfo ia{};
     ia.sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO;
     ia.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
@@ -172,6 +154,59 @@ VkRenderPass createRenderPass(VkContext& ctx, VkFormat color, VkFormat depth) {
     return pipeline;
 }
 
+::VkPipeline createGraphicsPipeline(VkContext& ctx, VkSwapchain& swap,
+                                     VkRenderPass rp, const VkShader& sh) {
+    // Vertex input: position, normal, uv, tangent — match scene::Vertex.
+    // Confirmed: iron::Vertex = { Vec3 position; Vec3 normal; Vec2 uv; Vec3 tangent; }
+    VkVertexInputBindingDescription binding{};
+    binding.binding = 0;
+    binding.stride = sizeof(Vertex);  // from scene/Mesh.h
+    binding.inputRate = VK_VERTEX_INPUT_RATE_VERTEX;
+
+    VkVertexInputAttributeDescription attrs[4]{};
+    attrs[0] = {0, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(Vertex, position)};
+    attrs[1] = {1, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(Vertex, normal)};
+    attrs[2] = {2, 0, VK_FORMAT_R32G32_SFLOAT,     offsetof(Vertex, uv)};
+    attrs[3] = {3, 0, VK_FORMAT_R32G32B32_SFLOAT,  offsetof(Vertex, tangent)};
+
+    VkPipelineVertexInputStateCreateInfo vi{};
+    vi.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
+    vi.vertexBindingDescriptionCount = 1;
+    vi.pVertexBindingDescriptions = &binding;
+    vi.vertexAttributeDescriptionCount = 4;
+    vi.pVertexAttributeDescriptions = attrs;
+
+    return createGraphicsPipelineImpl(ctx, swap, rp, sh, vi);
+}
+
+// M23 — SkinnedVertex pipeline. 6 attributes (Pos, Normal, UV, Tangent,
+// joints[uvec4], weights[vec4]) at 76-byte stride. Everything else
+// (rasterization, depth, blend, render pass) matches the static path.
+::VkPipeline createSkinnedGraphicsPipeline(VkContext& ctx, VkSwapchain& swap,
+                                            VkRenderPass rp, const VkShader& sh) {
+    VkVertexInputBindingDescription binding{};
+    binding.binding   = 0;
+    binding.stride    = static_cast<std::uint32_t>(sizeof(SkinnedVertex));
+    binding.inputRate = VK_VERTEX_INPUT_RATE_VERTEX;
+
+    VkVertexInputAttributeDescription attrs[6]{};
+    attrs[0] = {0, 0, VK_FORMAT_R32G32B32_SFLOAT,    offsetof(SkinnedVertex, position)};
+    attrs[1] = {1, 0, VK_FORMAT_R32G32B32_SFLOAT,    offsetof(SkinnedVertex, normal)};
+    attrs[2] = {2, 0, VK_FORMAT_R32G32_SFLOAT,       offsetof(SkinnedVertex, uv)};
+    attrs[3] = {3, 0, VK_FORMAT_R32G32B32_SFLOAT,    offsetof(SkinnedVertex, tangent)};
+    attrs[4] = {4, 0, VK_FORMAT_R32G32B32A32_UINT,   offsetof(SkinnedVertex, joints)};
+    attrs[5] = {5, 0, VK_FORMAT_R32G32B32A32_SFLOAT, offsetof(SkinnedVertex, weights)};
+
+    VkPipelineVertexInputStateCreateInfo vi{};
+    vi.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
+    vi.vertexBindingDescriptionCount = 1;
+    vi.pVertexBindingDescriptions = &binding;
+    vi.vertexAttributeDescriptionCount = 6;
+    vi.pVertexAttributeDescriptions = attrs;
+
+    return createGraphicsPipelineImpl(ctx, swap, rp, sh, vi);
+}
+
 }  // namespace
 
 bool VkPipeline::init(VkContext& ctx, VkSwapchain& swap) {
@@ -185,6 +220,10 @@ void VkPipeline::destroy(VkContext& ctx) {
         if (pipe) vkDestroyPipeline(ctx.device(), pipe, nullptr);
     }
     pipelines_.clear();
+    for (auto& [sh, pipe] : skinnedPipelines_) {
+        if (pipe) vkDestroyPipeline(ctx.device(), pipe, nullptr);
+    }
+    skinnedPipelines_.clear();
     for (auto fb : framebuffers_) if (fb) vkDestroyFramebuffer(ctx.device(), fb, nullptr);
     framebuffers_.clear();
     if (renderPass_) {
@@ -220,6 +259,16 @@ bool VkPipeline::recreateFramebuffers(VkContext& ctx, VkSwapchain& swap) {
     }
     auto p = createGraphicsPipeline(ctx, swap, renderPass_, sh);
     pipelines_.emplace_back(&sh, p);
+    return p;
+}
+
+::VkPipeline VkPipeline::skinnedPipelineFor(VkContext& ctx, VkSwapchain& swap,
+                                              const VkShader& sh) {
+    for (const auto& [s, p] : skinnedPipelines_) {
+        if (s == &sh) return p;
+    }
+    auto p = createSkinnedGraphicsPipeline(ctx, swap, renderPass_, sh);
+    skinnedPipelines_.emplace_back(&sh, p);
     return p;
 }
 

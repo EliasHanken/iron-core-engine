@@ -123,20 +123,153 @@ Three small Khronos CC0 samples are vendored under
   NORMAL. Used as a **negative test**: confirms the loader returns
   `nullopt` when required attributes are missing.
 
-## What's next
+## M23 — Skeleton + GPU skinning
 
-This is the first milestone of a 4-milestone skeletal-animation +
-glTF asset track:
+The engine now supports skinned meshes via a parallel render path
+alongside the static path. M23 ships the foundation; M24 will add
+animation playback on top.
 
-- **M23** — Skeleton + GPU skinning shader. Extend the loader to read
-  `skin` data; new `iron::Skeleton` + `iron::SkinnedMesh` types; new
-  Vulkan skinning vertex shader. Render the same model with its
-  skeleton in bind pose.
-- **M24** — Animation curves + playback. Sample glTF animation curves
-  at runtime to compute bone transforms.
+### Engine types
+
+```cpp
+// engine/asset/Skeleton.h
+struct Bone {
+    int  parentIndex = -1;            // -1 for root
+    Mat4 inverseBindMatrix;
+    Mat4 localBindTransform;          // translation only in v1; rotation/scale → M24
+    std::string name;
+};
+
+struct Skeleton {
+    std::vector<Bone> bones;
+};
+
+// engine/scene/SkinnedMesh.h
+struct SkinnedVertex {
+    Vec3          position;
+    Vec3          normal;
+    Vec2          uv;
+    Vec3          tangent;
+    std::uint32_t joints[4];   // bone indices into Skeleton::bones
+    float         weights[4];  // normalized: sum to 1.0
+};
+
+struct SkinnedMeshData {
+    std::vector<SkinnedVertex>  vertices;
+    std::vector<std::uint32_t>  indices;
+    Skeleton                    skeleton;
+};
+```
+
+### Renderer API
+
+```cpp
+inline constexpr std::size_t kMaxBonesPerSkinnedMesh = 128;
+
+struct SkinnedDrawCall {
+    SkinnedMeshHandle skinnedMesh;
+    ShaderHandle      shader;
+    Mat4              model;
+    Material          material;
+    std::span<const Mat4> boneMatrices;  // size ≤ kMaxBonesPerSkinnedMesh
+};
+
+class Renderer {
+    virtual SkinnedMeshHandle createSkinnedMesh(const SkinnedMeshData&) = 0;
+    virtual ShaderHandle createSkinnedShader(vertSrc, fragSrc) = 0;
+    virtual void submitSkinnedDraw(const SkinnedDrawCall&) = 0;
+};
+```
+
+`boneMatrices` is the array of joint matrices (`worldTransform × inverseBindMatrix`).
+For **bind pose**, all identity (the visual M23 validator). M24's
+`AnimationPlayer` will sample animation curves to compute these per frame.
+
+OpenGL backend stubs the three methods (warn-once + return invalid handles)
+— it's been frozen since PR #35 and isn't getting new feature parity.
+
+### glTF integration
+
+`loadGltfModel(path).skinnedMesh` is populated when the .gltf has a
+`skin` referenced by the host node. The static `mesh` field is
+populated regardless, so callers that don't care about skinning can
+ignore `skinnedMesh` entirely.
+
+The loader:
+- Reads `JOINTS_0` (u8 or u16 → uint32) and `WEIGHTS_0` (vec4 float) per-vertex attributes.
+- Reads `skin.inverseBindMatrices` (MAT4 float accessor).
+- Builds the bone hierarchy by walking each joint node's children + matching against `skin.joints[]` to resolve `parentIndex`.
+- Normalizes per-vertex weights to sum to 1.0 (defense for non-strict assets).
+- Bone `localBindTransform` reads the node's matrix (column-major) OR its `translation` TRS — rotation + scale TRS are deferred to M24 (RiggedSimple uses identity rot/scale, so M23 works without them).
+- Scene-walk is a depth-first traversal (RiggedSimple's mesh is 3 levels deep: `Z_UP → Armature → Cylinder`, deeper than the single-level walk M22 used).
+
+### Vulkan path
+
+- **New descriptor set layout** for skinned meshes: 8 bindings — same
+  7 as scene (UBO + 4 textures + cubemap + reflection) + binding 7 =
+  bone matrix UBO (vertex stage only). Built via
+  `VkShaderStore::createSkinned`.
+- **New pipeline** with SkinnedVertex input layout (6 attributes, 76
+  byte stride). Cached separately in `VkPipeline::skinnedPipelineFor`.
+  The static pipeline build was refactored into a shared helper to
+  avoid drift.
+- **128-bone cap per skinned mesh**. Bone UBO is 8 KB per draw.
+- **UBO descriptor pool capacity bumped to 2×** `kMaxDescriptorSetsPerFrame`
+  since each skinned draw uses 2 UBOs (scene + bones).
+- **Recording**: `recordSkinnedDraw` mirrors `recordSceneDraw` — same
+  LitUbo construction and 6 texture writes — adds an 8 KB bones-UBO
+  allocation and writes binding 7. Replayed after the static-draw
+  loop inside `endFrame`'s scene pass.
+- **Bone matrices padded to 128 identity** on the host side before
+  upload so the shader can index safely beyond the actual bone count.
+
+### Skinning vertex shader
+
+Standard 4-influence weighted skinning:
+
+```glsl
+mat4 skinMat = aWeights.x * bones.bones[aJoints.x]
+             + aWeights.y * bones.bones[aJoints.y]
+             + aWeights.z * bones.bones[aJoints.z]
+             + aWeights.w * bones.bones[aJoints.w];
+
+vec4 skinnedPos = skinMat * vec4(aPos, 1.0);
+vec4 world      = u.model * skinnedPos;
+vNormal  = mat3(u.model) * (mat3(skinMat) * aNormal);
+gl_Position = u.mvp * skinnedPos;
+```
+
+Fragment shader is unchanged from the scene path — skinning is purely
+a vertex stage concern.
+
+### Visual validator: `games/10-gltf-viewer --model rigged-simple`
+
+The viewer's `--model` CLI arg selects between vendored samples:
+- `damaged-helmet` (default, from M22) — static path, M22.5 textures applied
+- `rigged-simple` — skinned path, RiggedSimple.gltf in bind pose
+
+Identity bone matrices produce identity transforms — the skinned mesh
+renders at the same place a static render of the same vertices would.
+Bind-pose validation: if the skinning math is correct, the result
+matches what an equivalent static render would show.
+
+### What's next
+
+- **M24** — Animation curves + playback. Read `animation.channels` +
+  `animation.samplers` from glTF; sample at runtime to compute bone
+  matrices that replace the M23 identity matrices.
 - **M25** — Wire skinned characters into net-shooter. Idle/walk
-  anims on players. Stretch: ragdoll bones drive the skinned mesh on
-  death for "ragdoll using the character's mesh" effect.
+  anim on players; ragdoll bones on death drive a skinned mesh.
 
-**M22.5** (shipped) added the base-color / normal / metal-roughness
-texture path loading; see section above.
+### Known v1 limitations
+
+- 4-influence skinning only (`JOINTS_0` / `WEIGHTS_0`); no `JOINTS_1` /
+  `WEIGHTS_1` for 8-influence skinning.
+- Bone `localBindTransform` reads matrix OR translation-only TRS —
+  rotation (quaternion) + non-uniform scale handling lands in M24.
+- Single primitive per mesh (multi-primitive meshes deferred).
+- Normal/tangent skinning uses `mat3(skinMat)` directly — exact for
+  rigid (rotation+translation) bones; non-uniform-scaled bones would
+  have slightly off normals (use inverse-transpose if needed).
+- Scene-walk depth-first traversal picks the first mesh found —
+  multi-mesh scenes would need explicit selection.

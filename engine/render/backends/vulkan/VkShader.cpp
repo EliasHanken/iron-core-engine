@@ -145,6 +145,68 @@ const VkShader& VkShaderStore::get(ShaderHandle h) const {
     return it->second;  // caller-checked via has()
 }
 
+ShaderHandle VkShaderStore::createSkinned(VkContext& ctx,
+                                           const std::string& vertSrc,
+                                           const std::string& fragSrc) {
+    auto vspv = compileGlsl(VK_SHADER_STAGE_VERTEX_BIT, vertSrc);
+    auto fspv = compileGlsl(VK_SHADER_STAGE_FRAGMENT_BIT, fragSrc);
+    if (vspv.empty() || fspv.empty()) {
+        Log::error("VkShaderStore::createSkinned: shader compile failed");
+        return kInvalidHandle;
+    }
+
+    VkShader s{};
+
+    auto makeModule = [&](const std::vector<std::uint32_t>& code, VkShaderModule& out) {
+        VkShaderModuleCreateInfo info{};
+        info.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
+        info.codeSize = code.size() * sizeof(std::uint32_t);
+        info.pCode = code.data();
+        VK_CHECK(vkCreateShaderModule(ctx.device(), &info, nullptr, &out));
+        return out != VK_NULL_HANDLE;
+    };
+    if (!makeModule(vspv, s.vertexModule))   return kInvalidHandle;
+    if (!makeModule(fspv, s.fragmentModule)) {
+        vkDestroyShaderModule(ctx.device(), s.vertexModule, nullptr);
+        return kInvalidHandle;
+    }
+
+    // M23 — 8 bindings: same 7 as the scene path + binding 7 = bone-matrices
+    // UBO (vertex stage). Allows the skinned vertex shader to read up to
+    // kMaxBonesPerSkinnedMesh mat4 transforms per draw.
+    VkDescriptorSetLayoutBinding bindings[8]{};
+    bindings[0].binding = 0;
+    bindings[0].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+    bindings[0].descriptorCount = 1;
+    bindings[0].stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
+    for (int i = 1; i < 7; ++i) {
+        bindings[i].binding = static_cast<std::uint32_t>(i);
+        bindings[i].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        bindings[i].descriptorCount = 1;
+        bindings[i].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+    }
+    bindings[7].binding = 7;  // bone matrices (M23)
+    bindings[7].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+    bindings[7].descriptorCount = 1;
+    bindings[7].stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
+
+    VkDescriptorSetLayoutCreateInfo dslInfo{};
+    dslInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+    dslInfo.bindingCount = 8;
+    dslInfo.pBindings = bindings;
+    VK_CHECK(vkCreateDescriptorSetLayout(ctx.device(), &dslInfo, nullptr, &s.setLayout));
+
+    VkPipelineLayoutCreateInfo plInfo{};
+    plInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+    plInfo.setLayoutCount = 1;
+    plInfo.pSetLayouts = &s.setLayout;
+    VK_CHECK(vkCreatePipelineLayout(ctx.device(), &plInfo, nullptr, &s.pipelineLayout));
+
+    const ShaderHandle h = nextHandle_++;
+    shaders_[h] = s;
+    return h;
+}
+
 void VkShaderStore::destroyAll(VkContext& ctx) {
     for (auto& [h, s] : shaders_) {
         if (s.pipelineLayout) vkDestroyPipelineLayout(ctx.device(), s.pipelineLayout, nullptr);

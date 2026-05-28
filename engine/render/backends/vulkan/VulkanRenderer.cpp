@@ -20,6 +20,7 @@ VulkanRenderer::~VulkanRenderer() {
     if (initOk_) {
         vkDeviceWaitIdle(context_.device());
         meshes_.destroyAll(context_);
+        skinnedMeshes_.destroyAll(context_);  // M23
         textures_.destroyAll(context_);
         cubemaps_.destroyAll(context_);
         shaders_.destroyAll(context_);
@@ -161,6 +162,25 @@ TextureHandle VulkanRenderer::noSpecularTexture() const { return textures_.noSpe
 ShaderHandle VulkanRenderer::createShader(const std::string& v,
                                            const std::string& f) {
     return shaders_.create(context_, v, f);
+}
+
+// --- M23 skinned mesh + shader + submit ---
+
+SkinnedMeshHandle VulkanRenderer::createSkinnedMesh(const SkinnedMeshData& data) {
+    return skinnedMeshes_.create(context_, data);
+}
+
+ShaderHandle VulkanRenderer::createSkinnedShader(const std::string& vertexSrc,
+                                                  const std::string& fragmentSrc) {
+    return shaders_.createSkinned(context_, vertexSrc, fragmentSrc);
+}
+
+void VulkanRenderer::submitSkinnedDraw(const SkinnedDrawCall& call) {
+    if (skipFrame_) return;
+    if (!skinnedMeshes_.has(call.skinnedMesh) || !shaders_.has(call.shader)) return;
+    skinnedDraws_.push_back(call);
+    skinnedBoneMatricesStash_.emplace_back(call.boneMatrices.begin(),
+                                            call.boneMatrices.end());
 }
 
 // --- M9 stubs (M10+ work) ---
@@ -403,6 +423,8 @@ void VulkanRenderer::beginFrame(Vec3 clearColor, const DirectionalLight& light,
     VK_CHECK(vkBeginCommandBuffer(cb, &begin));
 
     sceneDraws_.clear();
+    skinnedDraws_.clear();
+    skinnedBoneMatricesStash_.clear();
     deferredScenePass_.clear();
     pendingDebugFlush_ = false;
     pendingHudValid_   = false;
@@ -559,6 +581,173 @@ void VulkanRenderer::recordSceneDraw(VkCommandBuffer cb, const DrawCall& call) {
     vkCmdDrawIndexed(cb, mesh.indexCount, 1, 0, 0, 0);
 }
 
+// M23 — record one skinned draw. Mirrors recordSceneDraw: same LitUbo,
+// same 7 scene-pass descriptors, plus an 8th UBO binding (binding 7)
+// of bone matrices (vertex stage). Uses skinnedPipelineFor (SkinnedVertex
+// input layout) and binds the skinned vertex+index buffers.
+void VulkanRenderer::recordSkinnedDraw(VkCommandBuffer cb,
+                                         const SkinnedDrawCall& call,
+                                         const std::vector<Mat4>& bones) {
+    if (!skinnedMeshes_.has(call.skinnedMesh) || !shaders_.has(call.shader)) return;
+
+    VkFrameRing::Frame& f = frames_.current();
+
+    // --- 1. Build LitUbo (copied verbatim from recordSceneDraw) ---
+    LitUbo ubo;
+    ubo.mvp      = pendingProjection_ * pendingView_ * call.model;
+    ubo.model    = call.model;
+    ubo.sunDir   = Vec4{pendingSunDir_.x,   pendingSunDir_.y,   pendingSunDir_.z,   0.0f};
+    ubo.sunColor = Vec4{pendingSunColor_.x, pendingSunColor_.y, pendingSunColor_.z, 0.0f};
+    ubo.ambient  = Vec4{pendingAmbient_.x,  pendingAmbient_.y,  pendingAmbient_.z,  0.0f};
+    ubo.emissive = Vec4{call.material.emissive.x,
+                        call.material.emissive.y,
+                        call.material.emissive.z,
+                        0.0f};
+    ubo.lightViewProj = pendingLightViewProj_;
+    ubo.cameraPos = Vec4{pendingCameraPos_.x,
+                         pendingCameraPos_.y,
+                         pendingCameraPos_.z,
+                         0.0f};
+    ubo.materialParams = Vec4{
+        call.material.uvScale,
+        call.material.specPower,
+        call.material.reflectivity,
+        pendingShadowBias_,
+    };
+    ubo.fogColor = Vec4{
+        pendingFog_.color.x, pendingFog_.color.y, pendingFog_.color.z,
+        pendingFog_.density,
+    };
+    ubo.lightCounts = Vec4{
+        static_cast<float>(pendingPointLightCount_), 0.0f, 0.0f, 0.0f,
+    };
+    for (int i = 0; i < pendingPointLightCount_; ++i) {
+        const PointLight& pl = pendingPointLights_[i];
+        ubo.pointPositions[i] = Vec4{
+            pl.position.x, pl.position.y, pl.position.z, pl.intensity,
+        };
+        ubo.pointColors[i] = Vec4{
+            pl.color.x, pl.color.y, pl.color.z, pl.range,
+        };
+    }
+    for (int i = pendingPointLightCount_; i < kMaxPointLights; ++i) {
+        ubo.pointPositions[i] = Vec4{0.0f, 0.0f, 0.0f, 0.0f};
+        ubo.pointColors[i]    = Vec4{0.0f, 0.0f, 0.0f, 0.0f};
+    }
+    ubo.reflectionViewProj = Mat4::identity();
+    const float useRefl = (call.material.useReflectionPlane && reflectionPlane_.has_value())
+                          ? 1.0f : 0.0f;
+    ubo.reflectionParams = Vec4{
+        useRefl,
+        static_cast<float>(swapchain_.extent().width),
+        static_cast<float>(swapchain_.extent().height),
+        0.0f,
+    };
+    ubo.clipPlane = Vec4{0.0f, 0.0f, 0.0f, 0.0f};
+
+    const VkDeviceSize uboOffset = frames_.allocateUbo(&ubo, sizeof(ubo));
+
+    // --- 2. Build bone-matrix UBO. Pad to kMaxBonesPerSkinnedMesh with
+    // identity so the shader can index safely even if weights point past
+    // the actual joint count. ---
+    std::array<Mat4, kMaxBonesPerSkinnedMesh> bonePadded;
+    for (auto& m : bonePadded) m = Mat4::identity();
+    const std::size_t copyN = std::min(bones.size(), kMaxBonesPerSkinnedMesh);
+    for (std::size_t i = 0; i < copyN; ++i) bonePadded[i] = bones[i];
+    const VkDeviceSize bonesOffset = frames_.allocateUbo(
+        bonePadded.data(), sizeof(Mat4) * kMaxBonesPerSkinnedMesh);
+
+    // --- 3. Bind pipeline + allocate descriptor set ---
+    const VkShader& sh = shaders_.get(call.shader);
+    ::VkPipeline pipe = pipelines_.skinnedPipelineFor(context_, swapchain_, sh);
+    vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, pipe);
+
+    VkDescriptorSetAllocateInfo dsInfo{};
+    dsInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+    dsInfo.descriptorPool = f.descriptorPool;
+    dsInfo.descriptorSetCount = 1;
+    dsInfo.pSetLayouts = &sh.setLayout;
+    VkDescriptorSet set = VK_NULL_HANDLE;
+    VK_CHECK(vkAllocateDescriptorSets(context_.device(), &dsInfo, &set));
+
+    VkDescriptorBufferInfo bufInfo{};
+    bufInfo.buffer = f.uboBuffer;
+    bufInfo.offset = uboOffset;
+    bufInfo.range  = sizeof(ubo);
+
+    // --- 4. Resolve textures (same fallbacks as scene path) ---
+    const auto& diffuse = textures_.has(call.material.texture)
+        ? textures_.get(call.material.texture)
+        : textures_.get(textures_.whiteTexture());
+    const auto& normal = textures_.has(call.material.normalMap)
+        ? textures_.get(call.material.normalMap)
+        : textures_.get(textures_.flatNormalTexture());
+    const auto& spec = textures_.has(call.material.specularMap)
+        ? textures_.get(call.material.specularMap)
+        : textures_.get(textures_.noSpecularTexture());
+
+    const CubemapHandle skyHandle = cubemaps_.has(pendingSkybox_)
+        ? pendingSkybox_
+        : cubemaps_.blackCubemap();
+    const auto& skyTex = cubemaps_.get(skyHandle);
+
+    VkDescriptorImageInfo imgInfos[6]{};
+    imgInfos[0].sampler     = diffuse.sampler;
+    imgInfos[0].imageView   = diffuse.view;
+    imgInfos[0].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    imgInfos[1].sampler     = normal.sampler;
+    imgInfos[1].imageView   = normal.view;
+    imgInfos[1].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    imgInfos[2].sampler     = spec.sampler;
+    imgInfos[2].imageView   = spec.view;
+    imgInfos[2].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    imgInfos[3].sampler     = shadowMap_.sampler();
+    imgInfos[3].imageView   = shadowMap_.depthView();
+    imgInfos[3].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    imgInfos[4].sampler     = skyTex.sampler;
+    imgInfos[4].imageView   = skyTex.view;
+    imgInfos[4].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    imgInfos[5] = reflection_.descriptorImageInfo();
+
+    VkDescriptorBufferInfo bonesInfo{};
+    bonesInfo.buffer = f.uboBuffer;
+    bonesInfo.offset = bonesOffset;
+    bonesInfo.range  = sizeof(Mat4) * kMaxBonesPerSkinnedMesh;
+
+    VkWriteDescriptorSet writes[8]{};
+    writes[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    writes[0].dstSet = set;
+    writes[0].dstBinding = 0;
+    writes[0].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+    writes[0].descriptorCount = 1;
+    writes[0].pBufferInfo = &bufInfo;
+    for (int i = 0; i < 6; ++i) {
+        writes[i + 1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        writes[i + 1].dstSet = set;
+        writes[i + 1].dstBinding = i + 1;
+        writes[i + 1].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        writes[i + 1].descriptorCount = 1;
+        writes[i + 1].pImageInfo = &imgInfos[i];
+    }
+    writes[7].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    writes[7].dstSet = set;
+    writes[7].dstBinding = 7;
+    writes[7].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+    writes[7].descriptorCount = 1;
+    writes[7].pBufferInfo = &bonesInfo;
+    vkUpdateDescriptorSets(context_.device(), 8, writes, 0, nullptr);
+
+    vkCmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                            sh.pipelineLayout, 0, 1, &set, 0, nullptr);
+
+    // --- 5. Bind vertex/index buffers + draw ---
+    const auto& mesh = skinnedMeshes_.get(call.skinnedMesh);
+    VkDeviceSize offsets[1] = {0};
+    vkCmdBindVertexBuffers(cb, 0, 1, &mesh.vertexBuffer, offsets);
+    vkCmdBindIndexBuffer(cb, mesh.indexBuffer, 0, VK_INDEX_TYPE_UINT32);
+    vkCmdDrawIndexed(cb, mesh.indexCount, 1, 0, 0, 0);
+}
+
 void VulkanRenderer::endFrame() {
     if (skipFrame_) {
         frames_.advance();
@@ -680,6 +869,11 @@ void VulkanRenderer::endFrame() {
 
         for (const DrawCall& call : sceneDraws_) {
             recordSceneDraw(cb, call);
+        }
+
+        // M23 — skinned draws replay after static ones, before deferred passes.
+        for (std::size_t i = 0; i < skinnedDraws_.size(); ++i) {
+            recordSkinnedDraw(cb, skinnedDraws_[i], skinnedBoneMatricesStash_[i]);
         }
 
         for (auto& fn : deferredScenePass_) {

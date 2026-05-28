@@ -4,6 +4,7 @@
 
 #include "asset/GltfLoader.h"
 #include "core/Log.h"
+#include "math/Transform.h"   // for iron::translation
 
 // tinygltf needs these defines in exactly one TU before its header.
 #define TINYGLTF_IMPLEMENTATION
@@ -14,6 +15,7 @@
 #define TINYGLTF_NO_EXTERNAL_IMAGE
 #include <tiny_gltf.h>
 
+#include <array>
 #include <cstdint>
 #include <cstring>
 #include <filesystem>
@@ -121,6 +123,99 @@ std::vector<std::uint32_t> readIndicesAccessor(const tinygltf::Model& model, int
     return out;
 }
 
+// Read a vec4 of u8 or u16 (JOINTS_0).
+std::vector<std::array<std::uint32_t, 4>> readJointsAccessor(
+    const tinygltf::Model& model, int accessorIdx) {
+    std::vector<std::array<std::uint32_t, 4>> out;
+    if (accessorIdx < 0 || accessorIdx >= static_cast<int>(model.accessors.size())) {
+        return out;
+    }
+    const auto& acc = model.accessors[accessorIdx];
+    if (acc.type != TINYGLTF_TYPE_VEC4) return out;
+    if (acc.bufferView < 0 ||
+        acc.bufferView >= static_cast<int>(model.bufferViews.size())) {
+        return out;
+    }
+    const auto& view = model.bufferViews[acc.bufferView];
+    const auto& buf  = model.buffers[view.buffer];
+    const std::size_t byteStride = acc.ByteStride(view);
+    const unsigned char* base = buf.data.data() + view.byteOffset + acc.byteOffset;
+    out.reserve(acc.count);
+    for (std::size_t i = 0; i < acc.count; ++i) {
+        const unsigned char* p = base + i * byteStride;
+        std::array<std::uint32_t, 4> j{};
+        switch (acc.componentType) {
+            case TINYGLTF_COMPONENT_TYPE_UNSIGNED_BYTE:
+                j[0] = p[0]; j[1] = p[1]; j[2] = p[2]; j[3] = p[3];
+                break;
+            case TINYGLTF_COMPONENT_TYPE_UNSIGNED_SHORT: {
+                std::uint16_t tmp[4];
+                std::memcpy(tmp, p, sizeof(tmp));
+                j[0] = tmp[0]; j[1] = tmp[1]; j[2] = tmp[2]; j[3] = tmp[3];
+            } break;
+            default: return {};
+        }
+        out.push_back(j);
+    }
+    return out;
+}
+
+// Read a vec4 of float (WEIGHTS_0).
+std::vector<std::array<float, 4>> readVec4FloatAccessor(
+    const tinygltf::Model& model, int accessorIdx) {
+    std::vector<std::array<float, 4>> out;
+    if (accessorIdx < 0 || accessorIdx >= static_cast<int>(model.accessors.size())) {
+        return out;
+    }
+    const auto& acc = model.accessors[accessorIdx];
+    if (acc.componentType != TINYGLTF_COMPONENT_TYPE_FLOAT) return out;
+    if (acc.type != TINYGLTF_TYPE_VEC4) return out;
+    if (acc.bufferView < 0 ||
+        acc.bufferView >= static_cast<int>(model.bufferViews.size())) {
+        return out;
+    }
+    const auto& view = model.bufferViews[acc.bufferView];
+    const auto& buf  = model.buffers[view.buffer];
+    const std::size_t byteStride = acc.ByteStride(view);
+    const unsigned char* base = buf.data.data() + view.byteOffset + acc.byteOffset;
+    out.reserve(acc.count);
+    for (std::size_t i = 0; i < acc.count; ++i) {
+        const unsigned char* p = base + i * byteStride;
+        std::array<float, 4> w{};
+        std::memcpy(w.data(), p, sizeof(w));
+        out.push_back(w);
+    }
+    return out;
+}
+
+// Read a mat4-float accessor (inverseBindMatrices). glTF stores
+// mat4s as 16 floats column-major - matches iron::Mat4 storage.
+std::vector<Mat4> readMat4Accessor(const tinygltf::Model& model, int accessorIdx) {
+    std::vector<Mat4> out;
+    if (accessorIdx < 0 || accessorIdx >= static_cast<int>(model.accessors.size())) {
+        return out;
+    }
+    const auto& acc = model.accessors[accessorIdx];
+    if (acc.componentType != TINYGLTF_COMPONENT_TYPE_FLOAT) return out;
+    if (acc.type != TINYGLTF_TYPE_MAT4) return out;
+    if (acc.bufferView < 0 ||
+        acc.bufferView >= static_cast<int>(model.bufferViews.size())) {
+        return out;
+    }
+    const auto& view = model.bufferViews[acc.bufferView];
+    const auto& buf  = model.buffers[view.buffer];
+    const std::size_t byteStride = acc.ByteStride(view);
+    const unsigned char* base = buf.data.data() + view.byteOffset + acc.byteOffset;
+    out.reserve(acc.count);
+    for (std::size_t i = 0; i < acc.count; ++i) {
+        const unsigned char* p = base + i * byteStride;
+        Mat4 m;
+        std::memcpy(&m, p, sizeof(Mat4));
+        out.push_back(m);
+    }
+    return out;
+}
+
 }  // namespace
 
 std::optional<GltfModel> loadGltfModel(const std::string& path) {
@@ -163,18 +258,26 @@ std::optional<GltfModel> loadGltfModel(const std::string& path) {
         return std::nullopt;
     }
 
-    // Walk scene -> node (and one level of children) to find the first mesh.
+    // Walk scene -> node DFS to find the first mesh (M23: depth-unbounded;
+    // RiggedSimple buries the mesh under Z_UP -> Armature -> Cylinder).
     int meshIdx = -1;
-    for (const int nodeIdx : scene.nodes) {
-        if (nodeIdx < 0 || nodeIdx >= static_cast<int>(model.nodes.size())) continue;
-        const auto& node = model.nodes[nodeIdx];
-        if (node.mesh >= 0) { meshIdx = node.mesh; break; }
-        for (const int childIdx : node.children) {
-            if (childIdx < 0 || childIdx >= static_cast<int>(model.nodes.size())) continue;
-            const auto& child = model.nodes[childIdx];
-            if (child.mesh >= 0) { meshIdx = child.mesh; break; }
+    int hostNodeIdx = -1;
+    {
+        std::vector<int> stack(scene.nodes.rbegin(), scene.nodes.rend());
+        while (!stack.empty()) {
+            const int nodeIdx = stack.back();
+            stack.pop_back();
+            if (nodeIdx < 0 || nodeIdx >= static_cast<int>(model.nodes.size())) continue;
+            const auto& node = model.nodes[nodeIdx];
+            if (node.mesh >= 0) {
+                meshIdx = node.mesh;
+                hostNodeIdx = nodeIdx;
+                break;
+            }
+            for (auto it = node.children.rbegin(); it != node.children.rend(); ++it) {
+                stack.push_back(*it);
+            }
         }
-        if (meshIdx >= 0) break;
     }
     if (meshIdx < 0 || meshIdx >= static_cast<int>(model.meshes.size())) {
         Log::error("GltfLoader: no mesh found in scene");
@@ -268,12 +371,119 @@ std::optional<GltfModel> loadGltfModel(const std::string& path) {
         matPaths.metalRoughness = resolve(mat.pbrMetallicRoughness.metallicRoughnessTexture.index);
     }
 
+    // M23 - skinned mesh data. Populated only if the primitive has
+    // JOINTS_0/WEIGHTS_0 AND the host node references a skin.
+    std::optional<SkinnedMeshData> skinnedMesh;
+    auto jointsIt  = prim.attributes.find("JOINTS_0");
+    auto weightsIt = prim.attributes.find("WEIGHTS_0");
+    const bool hasSkinAttrs =
+        (jointsIt != prim.attributes.end()) && (weightsIt != prim.attributes.end());
+
+    if (hasSkinAttrs && hostNodeIdx >= 0 &&
+        hostNodeIdx < static_cast<int>(model.nodes.size())) {
+        const auto& hostNode = model.nodes[hostNodeIdx];
+        if (hostNode.skin >= 0 &&
+            hostNode.skin < static_cast<int>(model.skins.size())) {
+            const auto& skin = model.skins[hostNode.skin];
+
+            const auto jointTuples  = readJointsAccessor (model, jointsIt->second);
+            const auto weightTuples = readVec4FloatAccessor(model, weightsIt->second);
+            const auto invBinds     = readMat4Accessor   (model, skin.inverseBindMatrices);
+
+            const std::size_t nVerts = positions.size();
+            if (jointTuples.size() == nVerts &&
+                weightTuples.size() == nVerts &&
+                invBinds.size() == skin.joints.size()) {
+
+                SkinnedMeshData sm;
+                sm.indices = out.indices;  // same index buffer as the MeshData
+
+                sm.vertices.reserve(nVerts);
+                for (std::size_t i = 0; i < nVerts; ++i) {
+                    SkinnedVertex sv;
+                    sv.position = positions[i];
+                    sv.normal   = normals[i];
+                    sv.uv       = (i < uvs.size())      ? uvs[i]      : Vec2{0,0};
+                    sv.tangent  = (i < tangents.size()) ? tangents[i] : Vec3{1,0,0};
+                    sv.joints[0]  = jointTuples[i][0];
+                    sv.joints[1]  = jointTuples[i][1];
+                    sv.joints[2]  = jointTuples[i][2];
+                    sv.joints[3]  = jointTuples[i][3];
+                    // Normalize weights (in case glTF asset isn't strict).
+                    float wsum = weightTuples[i][0] + weightTuples[i][1]
+                               + weightTuples[i][2] + weightTuples[i][3];
+                    if (wsum < 1e-6f) wsum = 1.0f;
+                    sv.weights[0] = weightTuples[i][0] / wsum;
+                    sv.weights[1] = weightTuples[i][1] / wsum;
+                    sv.weights[2] = weightTuples[i][2] / wsum;
+                    sv.weights[3] = weightTuples[i][3] / wsum;
+                    sm.vertices.push_back(sv);
+                }
+
+                // Build the Skeleton: one Bone per skin.joints entry.
+                sm.skeleton.bones.reserve(skin.joints.size());
+                for (std::size_t i = 0; i < skin.joints.size(); ++i) {
+                    const int jointNodeIdx = skin.joints[i];
+                    Bone b;
+                    b.inverseBindMatrix  = invBinds[i];
+                    b.localBindTransform = Mat4::identity();
+                    b.parentIndex        = -1;
+                    if (jointNodeIdx >= 0 &&
+                        jointNodeIdx < static_cast<int>(model.nodes.size())) {
+                        const auto& jnode = model.nodes[jointNodeIdx];
+                        b.name = jnode.name;
+                        // Build localBindTransform from the node's TRS or matrix.
+                        if (jnode.matrix.size() == 16) {
+                            // glTF spec: matrices stored column-major. Same as iron::Mat4.
+                            for (int r = 0; r < 4; ++r) {
+                                for (int c = 0; c < 4; ++c) {
+                                    b.localBindTransform.at(r, c) =
+                                        static_cast<float>(jnode.matrix[c * 4 + r]);
+                                }
+                            }
+                        } else {
+                            // TRS path: only translation in v1.
+                            // TODO(M24): apply rotation (quaternion) + scale.
+                            Mat4 t = Mat4::identity();
+                            if (jnode.translation.size() == 3) {
+                                t = iron::translation(Vec3{
+                                    static_cast<float>(jnode.translation[0]),
+                                    static_cast<float>(jnode.translation[1]),
+                                    static_cast<float>(jnode.translation[2])});
+                            }
+                            b.localBindTransform = t;
+                        }
+                    }
+                    sm.skeleton.bones.push_back(b);
+                }
+                // Resolve parent indices by walking each joint node's children.
+                for (std::size_t i = 0; i < skin.joints.size(); ++i) {
+                    const int jointNodeIdx = skin.joints[i];
+                    if (jointNodeIdx < 0 ||
+                        jointNodeIdx >= static_cast<int>(model.nodes.size())) continue;
+                    for (const int childNodeIdx : model.nodes[jointNodeIdx].children) {
+                        for (std::size_t j = 0; j < skin.joints.size(); ++j) {
+                            if (skin.joints[j] == childNodeIdx) {
+                                sm.skeleton.bones[j].parentIndex = static_cast<int>(i);
+                                break;
+                            }
+                        }
+                    }
+                }
+
+                skinnedMesh = std::move(sm);
+            }
+        }
+    }
+
     GltfModel result;
     result.mesh = std::move(out);
     result.materialPaths = std::move(matPaths);
+    result.skinnedMesh = std::move(skinnedMesh);
 
-    Log::info("GltfLoader: loaded %s - %zu verts, %zu indices",
-              path.c_str(), result.mesh.vertices.size(), result.mesh.indices.size());
+    Log::info("GltfLoader: loaded %s - %zu verts, %zu indices%s",
+              path.c_str(), result.mesh.vertices.size(), result.mesh.indices.size(),
+              result.skinnedMesh.has_value() ? " (skinned)" : "");
     return result;
 }
 

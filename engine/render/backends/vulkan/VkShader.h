@@ -32,6 +32,11 @@ public:
     ShaderHandle create(VkContext& ctx,
                         const std::string& vertSrc,
                         const std::string& fragSrc);
+    // M23 — like create(), but builds an 8-binding descriptor set layout
+    // (the 7 scene bindings + binding 7 = vertex-stage UBO of bone matrices).
+    ShaderHandle createSkinned(VkContext& ctx,
+                                const std::string& vertSrc,
+                                const std::string& fragSrc);
     const VkShader& get(ShaderHandle h) const;
     bool has(ShaderHandle h) const { return shaders_.count(h) != 0; }
     void destroyAll(VkContext& ctx);

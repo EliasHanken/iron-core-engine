@@ -35,6 +35,10 @@ public:
     TextureHandle noSpecularTexture() const override;
     ShaderHandle createShader(const std::string& vertexSrc,
                               const std::string& fragmentSrc) override;
+    SkinnedMeshHandle createSkinnedMesh(const SkinnedMeshData& data) override;
+    ShaderHandle createSkinnedShader(const std::string& vertexSrc,
+                                      const std::string& fragmentSrc) override;
+    void submitSkinnedDraw(const SkinnedDrawCall& call) override;
     CubemapHandle createCubemap(
         int width, int height,
         const std::array<const unsigned char*, 6>& faces) override;
