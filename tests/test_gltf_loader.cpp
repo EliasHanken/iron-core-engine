@@ -1,4 +1,5 @@
 #include "asset/GltfLoader.h"
+#include "render/Renderer.h"  // kMaxBonesPerSkinnedMesh
 #include "test_framework.h"
 
 #include <cmath>
@@ -162,6 +163,25 @@ int main() {
                 const float len = std::sqrt(n.x * n.x + n.y * n.y + n.z * n.z);
                 CHECK(std::fabs(len - 1.0f) < 1e-3f);
             }
+        }
+    }
+
+    // --- M25 Task 3: Fox.glb skin + three named clips smoke test. Asserts
+    //     the M25-specific contract that the loader wires the Khronos Fox
+    //     sample's skin and exposes its three animations (Survey/Walk/Run)
+    //     by name via findClip.
+    {
+        auto model = loadGltfModel(base + "/Fox.glb");
+        CHECK(model.has_value());
+        if (model.has_value()) {
+            CHECK(model->skinnedMesh.has_value());
+            if (model->skinnedMesh.has_value()) {
+                CHECK(model->skinnedMesh->skeleton.bones.size() > 0);
+                CHECK(model->skinnedMesh->skeleton.bones.size() <= kMaxBonesPerSkinnedMesh);
+            }
+            CHECK(model->findClip("Survey") != nullptr);
+            CHECK(model->findClip("Walk")   != nullptr);
+            CHECK(model->findClip("Run")    != nullptr);
         }
     }
 
