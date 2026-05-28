@@ -673,3 +673,136 @@ Fire rockets from either peer. Expected: each detonation produces a
 positional boom at the impact site on both screens. Rotate the camera
 before firing to confirm 3D positioning — the boom should pan according
 to the listener's current orientation.
+
+## M27 — SFX pass + fox-sized player
+
+M27 layers an SFX pass onto the M26 audio foundation: nine CC0 one-shots
+covering shooting, footsteps, hits, jumps, and death — wired into the
+existing message handlers in `net-shooter` so that **no new packets are
+introduced and the wire protocol does not bump**. The same milestone
+right-sizes the player to fox dimensions (half the previous height) so
+the player capsule and camera match the fox model already used for
+remote peers since M25. No engine APIs change; everything ships as
+game-side wiring on top of the M26 `AudioEngine`.
+
+### Assets added
+
+All assets are CC0, mono WAV, LFS-tracked under
+`games/07-net-shooter/assets/sfx/`. Lengths are approximate; gain is the
+per-play multiplier passed to `playSoundAt`.
+
+| File                 | Length | Gain | Trigger                                                |
+| -------------------- | ------ | ---- | ------------------------------------------------------ |
+| `gunshot-rifle.wav`  | ~0.3s  | 1.0  | hitscan fire (local input-tick + host `FireHitscanMsg`)|
+| `rocket-launch.wav`  | ~0.5s  | 0.9  | rocket fire (local + host `FireRocketMsg` + `SpawnProjectileMsg`) |
+| `footstep-01.wav`    | ~0.2s  | 0.4  | random variant pick per cadence tick                   |
+| `footstep-02.wav`    | ~0.2s  | 0.4  | random variant pick per cadence tick                   |
+| `footstep-03.wav`    | ~0.2s  | 0.4  | random variant pick per cadence tick                   |
+| `footstep-04.wav`    | ~0.2s  | 0.4  | random variant pick per cadence tick                   |
+| `hit.wav`            | ~0.2s  | 0.8  | `DamageMsg` handler at victim position                 |
+| `jump.wav`           | ~0.3s  | 0.5  | local input-tick + remote `grounded` falling-edge      |
+| `death.wav`          | ~0.5s  | 1.0  | `DamageMsg` with `victimHpAfter == 0`                  |
+
+Four footstep variants are enough to defeat the obvious lockstep tell
+without ballooning the asset budget; dropping more files under
+`assets/sfx/` named `footstep-NN.wav` extends the pool — the variant
+picker is data-driven on the loaded handle count.
+
+### Trigger map (zero new packets)
+
+Each event is wired onto a message handler that already exists in the
+M22.5 / M21 / M20 net layer. No new packet types, no protocol bump.
+
+| Event                       | Source signal                                              | Network packet involved |
+| --------------------------- | ---------------------------------------------------------- | ----------------------- |
+| Local hitscan fire          | local input-tick (shooter peer)                            | —                       |
+| Remote hitscan (host view)  | host's `FireHitscanMsg` handler                            | `FireHitscanMsg`        |
+| Remote hitscan (observer)   | impact-site fallback inside `DamageMsg` handler            | `DamageMsg`             |
+| Local rocket fire           | local input-tick (shooter peer)                            | —                       |
+| Remote rocket (host view)   | host's `FireRocketMsg` handler                             | `FireRocketMsg`         |
+| Remote rocket (observer)    | `SpawnProjectileMsg` consumer at spawn pos                 | `SpawnProjectileMsg`    |
+| Footsteps                   | per-frame derived from fox-animator state (M25 walk/run)   | —                       |
+| Hit                         | `DamageMsg` handler at victim position                     | `DamageMsg`             |
+| Death                       | `DamageMsg` handler when `victimHpAfter == 0`              | `DamageMsg`             |
+| Local jump                  | local input-tick (jumper peer)                             | —                       |
+| Remote jump                 | `grounded: true → false` edge in `AuthorityPositionMsg`    | `AuthorityPositionMsg`  |
+
+The remote-attacker gunshot specifically piggybacks on `DamageMsg`
+rather than introducing a "fired" broadcast — see limitations below
+for the trade-off.
+
+### Footstep cadence + variant picker
+
+Footsteps run off the existing M25 fox-animator state (`Walk` / `Run`),
+not off the network. Each `RemotePlayer` carries:
+
+- a `footstepTimer` accumulator,
+- a per-peer xorshift PRNG seeded from the peer id,
+- a `lastFootstepIdx` to avoid back-to-back repeats.
+
+Cadence is fixed per state: `0.5s` between footsteps in `Walk`,
+`0.3s` in `Run`. On every tick the PRNG picks an index in
+`[0, footstepHandles.size())`, rerolling once if it matches
+`lastFootstepIdx`, then `playSoundAt(footstepHandles[idx], peerPos,
+0.4f)`. Because each peer has its own PRNG seed, two peers walking in
+unison no longer pick the same variant on the same beat — the audible
+lockstep tell is gone.
+
+### Remote jump edge detection
+
+`AuthorityPositionMsg` already carries the authoritative `grounded`
+flag (M20). The net-shooter `RemotePlayer` gains one new field —
+`lastGrounded` — and the message handler fires a one-shot jump SFX
+on the `true → false` edge. No new packet, no new field on the wire.
+
+### Fox-sized player (game-side overrides)
+
+The player capsule and camera height shipped human-sized through M26
+(`hh ≈ 0.9m`, eye height ≈ `1.6m`) — fine for a placeholder cube but
+wrong now that the local player is conceptually the same fox the remote
+peers render as. M27 overrides three game-side constants in net-shooter:
+
+| Constant                          | Old (human)            | New (fox)              |
+| --------------------------------- | ---------------------- | ---------------------- |
+| Player half-extents (AABB)        | `{0.5, 0.9, 0.5}`      | `{0.25, 0.35, 0.5}`    |
+| Eye height (camera offset)        | `1.6m`                 | `0.5m`                 |
+| Character-controller capsule      | `r=0.4 hh=0.9`         | `r=0.25 hh=0.35`       |
+
+These are **game-side overrides**, not engine changes: the engine's
+`CharacterControllerConfig` defaults stay human-sized so other games
+(and future test scenes) aren't surprised. Net-shooter sets the values
+on its local `charCfg` struct at construction; the engine API is
+untouched.
+
+### Limitations / non-goals (deferred to M28+)
+
+- **No music loops, no ambient beds.** A first ambient layer + music
+  bus is M28.
+- **No reverb / EFX / environmental DSP.** M28 — OpenAL EFX is the
+  obvious vehicle but isn't wired.
+- **No occlusion raycasting.** Sounds heard through walls are at full
+  geometric gain — M28+.
+- **No looping audio API.** `playSoundAt` is still one-shot only;
+  `playLooping` / `stop(SoundHandle)` arrive with the M28 ambient bed.
+- **No hit-zone differentiation.** Headshot / limb-shot / armor hits
+  all play the same `hit.wav` — gameplay milestone, not asset-pipeline.
+- **Remote-attacker gunshot plays at impact site, not muzzle.** This
+  is the accepted v1 trade for zero new packets — adding a broadcast
+  "I fired" message just for SFX positioning was rejected as bandwidth
+  noise. Local shooters and host-observed peers still get muzzle-correct
+  audio; only the third-peer-observing-a-distant-fight case drifts to
+  the impact site.
+
+### Verification
+
+```powershell
+cmake --build build-vk --target net-shooter --config Debug
+.\build-vk\games\07-net-shooter\Debug\net-shooter.exe --host
+# in a second terminal:
+.\build-vk\games\07-net-shooter\Debug\net-shooter.exe --client 127.0.0.1
+```
+
+Expected: all nine SFX events fire at the right times and world
+positions on both peers; movement feels fox-low (camera at ~0.5m
+above ground, capsule clears terrain at fox scale); two peers walking
+together no longer click in unison.

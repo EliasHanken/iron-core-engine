@@ -56,6 +56,7 @@
 #include <memory>
 #include <span>
 #include <string>
+#include <string_view>
 #include <unordered_map>
 #include <vector>
 
@@ -648,6 +649,21 @@ int main(int argc, char** argv) {
     const iron::SoundHandle boomSfx =
         audio.loadSound("assets/sfx/rocket-explode.wav");
 
+    // M27 — full SFX set. All optional: a missing file produces kInvalidSound,
+    // and playSoundAt is a no-op for invalid handles, so the game runs even if
+    // any individual asset is missing.
+    const iron::SoundHandle gunshotSfx      = audio.loadSound("assets/sfx/gunshot-rifle.wav");
+    const iron::SoundHandle rocketLaunchSfx = audio.loadSound("assets/sfx/rocket-launch.wav");
+    const iron::SoundHandle hitSfx          = audio.loadSound("assets/sfx/hit.wav");
+    const iron::SoundHandle jumpSfx         = audio.loadSound("assets/sfx/jump.wav");
+    const iron::SoundHandle deathSfx        = audio.loadSound("assets/sfx/death.wav");
+    const std::array<iron::SoundHandle, 4> footstepSfx = {
+        audio.loadSound("assets/sfx/footstep-01.wav"),
+        audio.loadSound("assets/sfx/footstep-02.wav"),
+        audio.loadSound("assets/sfx/footstep-03.wav"),
+        audio.loadSound("assets/sfx/footstep-04.wav"),
+    };
+
     // Lighting + atmosphere
     iron::DirectionalLight sun;
     sun.direction = iron::normalize(iron::Vec3{-0.4f, -1.0f, -0.3f});
@@ -758,7 +774,12 @@ int main(int argc, char** argv) {
     // (this client's own predicted player; or for the host, the host's
     // local player). Host also keeps one world per remote peer (see
     // ensureHostSim below).
-    iron::CharacterControllerConfig charCfg;  // defaults: r=0.30, hh=0.90, jump=5.5
+    // M27 — fox-sized capsule. Engine defaults (r=0.30, hh=0.90) are
+    // human-sized; override for net-shooter's fox player. Jump velocity
+    // unchanged so the controls still feel responsive.
+    iron::CharacterControllerConfig charCfg;
+    charCfg.radius     = 0.25f;
+    charCfg.halfHeight = 0.35f;
     iron::PhysicsWorld localWorld;
     localWorld.init();
     populateArenaCollision(localWorld, arena);
@@ -797,7 +818,14 @@ int main(int argc, char** argv) {
     constexpr float kMoveSpeed  = 6.0f;
     constexpr float kMouseSens  = 0.0025f;
     constexpr float kPitchLimit = 1.45f;
-    constexpr float kEyeHeight  = 1.6f;   // metres above feet
+    constexpr float kEyeHeight  = 0.5f;   // M27 — fox eye height above feet
+
+    // M27 fixup — death-cam state. When the player dies, the camera detaches
+    // from the predictor and enters a flying freecam (WASD + Space/Ctrl move
+    // position, mouse rotates). On respawn, freecam state is discarded.
+    bool       prevLocalDead = false;
+    iron::Vec3 deathCamPos{0.0f, 0.0f, 0.0f};
+    constexpr float kDeathCamSpeed = 6.0f;  // m/s
 
     // First-person camera: eyes at player position + eyeHeight.
     auto eyePos = [&]() {
@@ -848,6 +876,12 @@ int main(int argc, char** argv) {
     // M25 — per-peer skinned-character state (lazy: created on first sight).
     std::unordered_map<std::uint32_t, iron::CharacterAnimator> playerAnimators;
     std::unordered_map<std::uint32_t, iron::Vec3>             playerPrevPos;
+
+    // M27 — per-peer footstep timing + variant RNG. The xorshift seed is
+    // initialized from pid so different peers don't lockstep into the same
+    // footstep rhythm.
+    std::unordered_map<std::uint32_t, double>        playerLastFootstepAtSec;
+    std::unordered_map<std::uint32_t, std::uint32_t> playerFootstepRng;
 
     // M19 — host-only: per-peer PhysicsWorld + CharacterController. Each
     // peer's `simulateFn` captures that peer's world + controller; it has
@@ -976,6 +1010,7 @@ int main(int argc, char** argv) {
         std::uint32_t kills = 0;
         std::uint32_t deaths = 0;
         float yaw = 0.0f;                          // M25 — last-known look yaw (radians)
+        bool  lastGrounded = true;                 // M27 — for true->false jump-edge detection
     };
     std::unordered_map<std::uint32_t, RemotePlayer> remotes;
     constexpr auto kDisplayDelay = std::chrono::milliseconds{
@@ -1093,6 +1128,9 @@ int main(int argc, char** argv) {
         // M25 — release per-peer skinned-character animation state.
         playerAnimators.erase(pid);
         playerPrevPos.erase(pid);
+        // M27 — release per-peer footstep timing + RNG state.
+        playerLastFootstepAtSec.erase(pid);
+        playerFootstepRng.erase(pid);
         // M21 — clean up active ragdoll if the leaving peer has one.
         // Runs on every peer (host + client).
         auto rdit = activeRagdolls.find(pid);
@@ -1170,6 +1208,8 @@ int main(int argc, char** argv) {
             if (!peers.hasIdentity()) {
                 remotes[msg.peerId].positionHistory.push(iron::Vec3{msg.x, msg.y, msg.z});
                 remotes[msg.peerId].yaw = msg.yaw;
+                // M27 — bookkeeping only; no SFX (no peer identity to compare against).
+                remotes[msg.peerId].lastGrounded = msg.grounded != 0;
                 return;
             }
 
@@ -1184,6 +1224,14 @@ int main(int argc, char** argv) {
             } else {
                 remotes[msg.peerId].positionHistory.push(iron::Vec3{msg.x, msg.y, msg.z});
                 remotes[msg.peerId].yaw = msg.yaw;
+                // M27 — remote jump SFX on the grounded:true->false edge.
+                const bool newGrounded = msg.grounded != 0;
+                if (remotes[msg.peerId].lastGrounded && !newGrounded) {
+                    audio.playSoundAt(jumpSfx,
+                                      iron::Vec3{msg.x, msg.y, msg.z},
+                                      0.5f);
+                }
+                remotes[msg.peerId].lastGrounded = newGrounded;
             }
         });
 
@@ -1199,6 +1247,13 @@ int main(int argc, char** argv) {
             ghost.spawnTimeSec = msg.spawnTimeSec;
             ghost.alive = true;
             ghostRockets[msg.projectileId] = ghost;
+            // M27 — remote-peer rocket launch SFX (host's own rocket also
+            // arrives here on clients via the broadcast). Owner of the
+            // local-fire site already played their own SFX above, so they
+            // don't reach this handler (peers.isHost() guards the host).
+            audio.playSoundAt(rocketLaunchSfx,
+                              iron::Vec3{msg.x, msg.y, msg.z},
+                              0.9f);
         });
 
     // CLIENT: rocket despawned.
@@ -1229,6 +1284,30 @@ int main(int argc, char** argv) {
             }
             if (msg.victimHpAfter == 0) {
                 pushKillFeed(msg.attackerPeerId, msg.victimPeerId);
+            }
+            // M27 — hit feedback. Locate the victim's position. We use the
+            // predictor for ourselves, or the interpolated remote sample
+            // otherwise (the host path takes a different code route — see
+            // the host-inline damage sites).
+            // M27 fixup — non-positional when the local listener is the victim.
+            // Client path: self is peers.myPeerId().
+            const std::uint32_t myIdDmg = peers.isHost() ? 0u : peers.myPeerId();
+            const bool victimIsSelf = msg.victimPeerId == myIdDmg;
+            if (victimIsSelf) {
+                audio.playSoundLocal(hitSfx, 0.8f);
+                if (msg.victimHpAfter == 0) {
+                    audio.playSoundLocal(deathSfx, 1.0f);
+                }
+            } else {
+                iron::Vec3 victimPos{0.0f, 0.0f, 0.0f};
+                if (auto it = remotes.find(msg.victimPeerId); it != remotes.end()) {
+                    auto sample = it->second.positionHistory.sampleAtDelay(kDisplayDelay);
+                    if (sample) victimPos = *sample;
+                }
+                audio.playSoundAt(hitSfx, victimPos, 0.8f);
+                if (msg.victimHpAfter == 0) {
+                    audio.playSoundAt(deathSfx, victimPos, 1.0f);
+                }
             }
         });
 
@@ -1318,6 +1397,30 @@ int main(int argc, char** argv) {
 
             peers.broadcastToAll<iron::netshooter::DamageMsg>(dm, iron::SendReliability::Reliable);
 
+            // M27 — host plays hit/death SFX at victim's authoritative pos
+            // (mirrors client DamageMsg handler).
+            // M27 fixup — non-positional when the host itself is the victim
+            // (a remote shooter hit the host); host's self pid is 0.
+            {
+                const std::uint32_t myIdHostHit = peers.isHost() ? 0u : peers.myPeerId();
+                const bool victimIsSelf = dm.victimPeerId == myIdHostHit;
+                if (victimIsSelf) {
+                    audio.playSoundLocal(hitSfx, 0.8f);
+                    if (dm.victimHpAfter == 0) {
+                        audio.playSoundLocal(deathSfx, 1.0f);
+                    }
+                } else {
+                    iron::Vec3 victimPosSfx{0.0f, 0.0f, 0.0f};
+                    if (auto ait = authStates.find(dm.victimPeerId); ait != authStates.end()) {
+                        victimPosSfx = iron::Vec3{ait->second.x, ait->second.y, ait->second.z};
+                    }
+                    audio.playSoundAt(hitSfx, victimPosSfx, 0.8f);
+                    if (dm.victimHpAfter == 0) {
+                        audio.playSoundAt(deathSfx, victimPosSfx, 1.0f);
+                    }
+                }
+            }
+
             if (!iron::isAlive(vit->second.hp)) {
                 // Kill event.
                 pushKillFeed(dm.attackerPeerId, dm.victimPeerId);
@@ -1358,6 +1461,10 @@ int main(int argc, char** argv) {
                     iron::SendReliability::Reliable);
                 spawnLocalRagdoll(dm.victimPeerId, deathPos, impulse);
             }
+            // M27 — host plays the remote shooter's gunshot at the shot origin.
+            audio.playSoundAt(gunshotSfx,
+                              iron::Vec3{msg.ox, msg.oy, msg.oz},
+                              1.0f);
         });
 
     // HOST: rocket fire.
@@ -1397,6 +1504,10 @@ int main(int argc, char** argv) {
                     nowSec(),
                 },
                 iron::SendReliability::Reliable);
+            // M27 — host plays the remote shooter's rocket launch at origin.
+            audio.playSoundAt(rocketLaunchSfx,
+                              iron::Vec3{msg.ox, msg.oy, msg.oz},
+                              0.9f);
         });
 
     // -----------------------------------------------------------------------
@@ -1508,23 +1619,61 @@ int main(int argc, char** argv) {
         const float xzLen = std::sqrt(moveDir.x * moveDir.x + moveDir.z * moveDir.z);
         if (xzLen > 1.0f) { moveDir.x /= xzLen; moveDir.z /= xzLen; }
 
+        // --- Local-death flag (visible to render scope too) ---------------
+        // Determine if local player is alive on host, and if so whether we
+        // should allow firing. On host we just check hostPlayers; on client
+        // we fire optimistically and let the host discard if dead.
+        // M27 fixup — hoisted out of the haveIdentity block so the render
+        // lambda can read it to drive the death-cam swap.
+        const bool localDead = peers.isHost()
+            ? (hostPlayers.count(0) && hostPlayers[0].respawnAtSec >= 0.0)
+            : false;
+
         // --- Input tick (~30 Hz) ----------------------------------------
         if (haveIdentity) {
-            // Determine if local player is alive on host, and if so whether we
-            // should allow firing. On host we just check hostPlayers; on client
-            // we fire optimistically and let the host discard if dead.
-            const bool localDead = peers.isHost()
-                ? (hostPlayers.count(0) && hostPlayers[0].respawnAtSec >= 0.0)
-                : false;
+
+            // M27 fixup — death-cam: on the alive->dead transition, snapshot
+            // the current eye as the freecam starting point. While dead,
+            // advance the freecam each frame from raw key input (no physics,
+            // no network). On respawn, freecam state is simply abandoned —
+            // next frame's eye comes from the predictor again.
+            if (localDead && !prevLocalDead) {
+                deathCamPos = eyePos();   // capture last-alive eye
+            }
+            if (localDead) {
+                // Reuse the existing moveDir (WASD projected onto yaw XZ plane).
+                iron::Vec3 freecamMove = moveDir;
+                if (glfwGetKey(window.handle(), GLFW_KEY_SPACE) == GLFW_PRESS) {
+                    freecamMove.y += 1.0f;
+                }
+                if (glfwGetKey(window.handle(), GLFW_KEY_LEFT_CONTROL) == GLFW_PRESS ||
+                    glfwGetKey(window.handle(), GLFW_KEY_LEFT_SHIFT)   == GLFW_PRESS) {
+                    freecamMove.y -= 1.0f;
+                }
+                const float fLen = std::sqrt(freecamMove.x * freecamMove.x
+                                           + freecamMove.y * freecamMove.y
+                                           + freecamMove.z * freecamMove.z);
+                if (fLen > 1.0f) {
+                    freecamMove.x /= fLen;
+                    freecamMove.y /= fLen;
+                    freecamMove.z /= fLen;
+                }
+                deathCamPos.x += freecamMove.x * kDeathCamSpeed * dt;
+                deathCamPos.y += freecamMove.y * kDeathCamSpeed * dt;
+                deathCamPos.z += freecamMove.z * kDeathCamSpeed * dt;
+            }
+            prevLocalDead = localDead;
 
             // M19 — edge-detected jump with sticky latch (M21 fixup).
             // The render loop usually runs faster than the 60 Hz input
             // ticker, so a single-frame jumpEdge can be missed if no
             // ticker callback fires that frame. Latch the press into
             // jumpPending and consume it inside the ticker callback.
+            // M27 fixup — gate on !localDead so Space-as-freecam-up doesn't
+            // silently queue a jump that fires on respawn.
             static bool prevSpace   = false;
             static bool jumpPending = false;
-            const bool nowSpace = cursorCaptured &&
+            const bool nowSpace = cursorCaptured && !localDead &&
                                   glfwGetKey(window.handle(), GLFW_KEY_SPACE) == GLFW_PRESS;
             if (nowSpace && !prevSpace) {
                 jumpPending = true;
@@ -1542,7 +1691,16 @@ int main(int argc, char** argv) {
                 in.vz   = moveDir.z * kMoveSpeed;
                 in.jump = jumpPending;
                 jumpPending = false;  // consumed
+                // M27 — capture pre-jump grounded state so the SFX only fires
+                // on a real takeoff. Without this, spamming Space in the air
+                // would play jump every input tick.
+                const bool wasGrounded = predictor.predictedState().grounded;
                 const auto inputId = predictor.applyInput(in);
+                if (in.jump && wasGrounded) {
+                    // M27 fixup — self-sourced ego sound: play non-
+                    // positionally so it stays centered as the listener moves.
+                    audio.playSoundLocal(jumpSfx, 0.5f);
+                }
 
                 if (peers.isHost()) {
                     if (!localDead) {
@@ -1618,6 +1776,9 @@ int main(int argc, char** argv) {
                                        muzzle.y + dir.y * kTracerLengthM,
                                        muzzle.z + dir.z * kTracerLengthM},
                             localNow});
+                        // M27 — host's own gunshot SFX (mirrors client local SFX).
+                        // M27 fixup — self-sourced ego sound: non-positional.
+                        audio.playSoundLocal(gunshotSfx, 1.0f);
                         // Inline host hitscan resolution
                         std::vector<std::uint32_t> alivePeers;
                         for (const auto& [p, hp] : hostPlayers) {
@@ -1638,6 +1799,28 @@ int main(int argc, char** argv) {
                                     std::max(0, vit->second.hp.current));
                                 peers.broadcastToAll<iron::netshooter::DamageMsg>(
                                     dm, iron::SendReliability::Reliable);
+                                // M27 — host hit/death SFX at victim pos.
+                                // M27 fixup — if the victim is the local
+                                // listener (host = pid 0), play non-positionally.
+                                {
+                                    const std::uint32_t localId = peers.isHost() ? 0u : peers.myPeerId();
+                                    const bool victimIsSelf = dm.victimPeerId == localId;
+                                    if (victimIsSelf) {
+                                        audio.playSoundLocal(hitSfx, 0.8f);
+                                        if (dm.victimHpAfter == 0) {
+                                            audio.playSoundLocal(deathSfx, 1.0f);
+                                        }
+                                    } else {
+                                        iron::Vec3 victimPosSfx{0.0f, 0.0f, 0.0f};
+                                        if (auto ait = authStates.find(dm.victimPeerId); ait != authStates.end()) {
+                                            victimPosSfx = iron::Vec3{ait->second.x, ait->second.y, ait->second.z};
+                                        }
+                                        audio.playSoundAt(hitSfx, victimPosSfx, 0.8f);
+                                        if (dm.victimHpAfter == 0) {
+                                            audio.playSoundAt(deathSfx, victimPosSfx, 1.0f);
+                                        }
+                                    }
+                                }
                                 if (!iron::isAlive(vit->second.hp)) {
                                     pushKillFeed(0u, dm.victimPeerId);
                                     hostPlayers[0].kills++;
@@ -1687,6 +1870,8 @@ int main(int argc, char** argv) {
                                 localNow});
                             peers.send<iron::netshooter::FireHitscanMsg>(
                                 0u, *opt, iron::SendReliability::Reliable);
+                            // M27 fixup — self-sourced ego sound: non-positional.
+                            audio.playSoundLocal(gunshotSfx, 1.0f);
                         }
                     }
                 } else {
@@ -1717,6 +1902,9 @@ int main(int argc, char** argv) {
                                     localNow,
                                 },
                                 iron::SendReliability::Reliable);
+                            // M27 — host's own rocket-launch SFX.
+                            // M27 fixup — self-sourced ego sound: non-positional.
+                            audio.playSoundLocal(rocketLaunchSfx, 0.9f);
                         }
                     } else {
                         auto opt = iron::netshooter::tryFireRocketClient(
@@ -1724,6 +1912,8 @@ int main(int argc, char** argv) {
                         if (opt) {
                             peers.send<iron::netshooter::FireRocketMsg>(
                                 0u, *opt, iron::SendReliability::Reliable);
+                            // M27 fixup — self-sourced ego sound: non-positional.
+                            audio.playSoundLocal(rocketLaunchSfx, 0.9f);
                         }
                     }
                 }
@@ -1811,6 +2001,28 @@ int main(int argc, char** argv) {
                             std::max(0, vit->second.hp.current));
                         peers.broadcastToAll<iron::netshooter::DamageMsg>(
                             dmsg, iron::SendReliability::Reliable);
+                        // M27 — host hit/death SFX for rocket splash.
+                        // M27 fixup — non-positional if the local listener is
+                        // the victim (host's own pid is 0).
+                        {
+                            const std::uint32_t myIdSplash = peers.isHost() ? 0u : peers.myPeerId();
+                            const bool victimIsSelf = pid == myIdSplash;
+                            if (victimIsSelf) {
+                                audio.playSoundLocal(hitSfx, 0.8f);
+                                if (dmsg.victimHpAfter == 0) {
+                                    audio.playSoundLocal(deathSfx, 1.0f);
+                                }
+                            } else {
+                                iron::Vec3 victimPosSfx{0.0f, 0.0f, 0.0f};
+                                if (auto ait = authStates.find(pid); ait != authStates.end()) {
+                                    victimPosSfx = iron::Vec3{ait->second.x, ait->second.y, ait->second.z};
+                                }
+                                audio.playSoundAt(hitSfx, victimPosSfx, 0.8f);
+                                if (dmsg.victimHpAfter == 0) {
+                                    audio.playSoundAt(deathSfx, victimPosSfx, 1.0f);
+                                }
+                            }
+                        }
 
                         if (!iron::isAlive(vit->second.hp)) {
                             const std::uint32_t attacker = dmsg.attackerPeerId;
@@ -2010,7 +2222,9 @@ int main(int argc, char** argv) {
             0.1f, 200.0f);
 
         // First-person view: camera at eye height, looking along aimDir.
-        const iron::Vec3 eye = eyePos();
+        // M27 fixup — when dead, the eye comes from the death-cam freecam
+        // instead of the predictor, so the player can look around the arena.
+        const iron::Vec3 eye = localDead ? deathCamPos : eyePos();
         const iron::Vec3 target{
             eye.x + aimDir().x,
             eye.y + aimDir().y,
@@ -2084,7 +2298,7 @@ int main(int argc, char** argv) {
         // the caller-provided `grounded` flag.
         auto submitPlayerFox = [&](std::uint32_t pid, const iron::Vec3& pos,
                                     const iron::Vec3& velocity, bool grounded,
-                                    float yawRadians, float frameDt) {
+                                    float yawRadians, float frameDt) -> std::string_view {
             auto [animIt, inserted] = playerAnimators.try_emplace(pid);
             if (inserted) {
                 animIt->second.setSkeleton(&foxModel->skinnedMesh->skeleton);
@@ -2134,7 +2348,79 @@ int main(int argc, char** argv) {
             call.boneMatrices = std::span<const iron::Mat4>(bones.data(),
                                                             std::min(n, bones.size()));
             renderer.submitSkinnedDraw(call);
+            return std::string_view{state};
         };
+
+        // M27 — emit a randomized footstep variant if the per-peer cadence
+        // elapsed. `state` is the same movement state submitPlayerFox returned;
+        // idle resets the timer so the next step plays immediately on movement
+        // resume (no half-second delay after starting to walk).
+        auto maybeEmitFootstep = [&](std::uint32_t pid, const iron::Vec3& footPos,
+                                      std::string_view state, double nowSecArg,
+                                      bool isLocalPlayer) {
+            if (state != "walk" && state != "run") {
+                playerLastFootstepAtSec[pid] = nowSecArg;
+                return;
+            }
+            const double cadence = (state == "run") ? 0.30 : 0.50;
+            auto it = playerLastFootstepAtSec.find(pid);
+            if (it == playerLastFootstepAtSec.end()) {
+                playerLastFootstepAtSec[pid] = nowSecArg;
+                return;
+            }
+            if (nowSecArg - it->second < cadence) return;
+
+            // xorshift32 — fast non-cryptographic PRNG for variant selection.
+            auto& seed = playerFootstepRng[pid];
+            if (seed == 0) seed = pid * 2654435761u + 1u;  // splittable mix; never 0
+            seed ^= seed << 13;
+            seed ^= seed >> 17;
+            seed ^= seed << 5;
+
+            const std::size_t variant = seed % footstepSfx.size();
+            // M27 fixup — local footsteps play non-positionally (ego sound,
+            // would otherwise pan with strafe due to listener-lag). Remote
+            // peers' footsteps stay 3D so you can hear them around you.
+            if (isLocalPlayer) {
+                audio.playSoundLocal(footstepSfx[variant], 0.4f);
+            } else {
+                audio.playSoundAt(footstepSfx[variant], footPos, 0.4f);
+            }
+            it->second = nowSecArg;
+        };
+
+        // M27 — emit footsteps for the LOCAL player too. Self isn't drawn
+        // (first-person), so the per-other-player loop below skips it. Without
+        // this block the local player would never hear their own footsteps.
+        // State derivation matches submitPlayerFox's mapping exactly.
+        // Skipped while dead — the death-cam is flying, not walking.
+        if (!localDead) {
+            iron::Vec3 selfPos{}, selfVel{};
+            bool selfGrounded = true;
+            std::uint32_t selfId = 0;
+            if (peers.isHost()) {
+                selfId = 0;
+                if (auto it = authStates.find(selfId); it != authStates.end()) {
+                    selfPos = iron::Vec3{it->second.x, it->second.y, it->second.z};
+                    selfVel = iron::Vec3{it->second.vx, it->second.vy, it->second.vz};
+                    selfGrounded = it->second.grounded;
+                }
+            } else if (peers.hasIdentity()) {
+                selfId = peers.myPeerId();
+                const auto p = predictor.predictedState();
+                selfPos = iron::Vec3{p.x, p.y, p.z};
+                selfVel = iron::Vec3{p.vx, p.vy, p.vz};
+                selfGrounded = p.grounded;
+            }
+            const float speed = std::sqrt(selfVel.x * selfVel.x + selfVel.z * selfVel.z);
+            const char* selfState =
+                  !selfGrounded ? "idle"
+                : speed < 0.3f  ? "idle"
+                : speed < 2.5f  ? "walk"
+                :                 "run";
+            maybeEmitFootstep(selfId, selfPos, std::string_view{selfState}, nowSec(),
+                              /*isLocalPlayer=*/true);
+        }
 
         if (peers.isHost()) {
             // HOST: render other players directly from authoritative state
@@ -2150,12 +2436,17 @@ int main(int argc, char** argv) {
                 // Authoritative grounded flag lives on PlayerState (the
                 // host-side sim writes it each tick).
                 if (foxReady) {
-                    submitPlayerFox(pid,
-                                    iron::Vec3{state.x, state.y, state.z},
-                                    iron::Vec3{state.vx, state.vy, state.vz},
-                                    state.grounded,
-                                    state.yaw,
-                                    dt);
+                    const std::string_view st = submitPlayerFox(
+                        pid,
+                        iron::Vec3{state.x, state.y, state.z},
+                        iron::Vec3{state.vx, state.vy, state.vz},
+                        state.grounded,
+                        state.yaw,
+                        dt);
+                    maybeEmitFootstep(pid,
+                                      iron::Vec3{state.x, state.y, state.z},
+                                      st, nowSec(),
+                                      /*isLocalPlayer=*/false);
                 } else {
                     submitPlayerCube(pid, iron::Vec3{state.x, state.y, state.z});
                 }
@@ -2193,7 +2484,10 @@ int main(int argc, char** argv) {
                 playerPrevPos[pid] = cur;  // keep updated for the next frame's grounded check
 
                 if (foxReady) {
-                    submitPlayerFox(pid, cur, velocity, grounded, remote.yaw, dt);
+                    const std::string_view st = submitPlayerFox(
+                        pid, cur, velocity, grounded, remote.yaw, dt);
+                    maybeEmitFootstep(pid, cur, st, nowSec(),
+                                      /*isLocalPlayer=*/false);
                 } else {
                     submitPlayerCube(pid, cur);
                 }

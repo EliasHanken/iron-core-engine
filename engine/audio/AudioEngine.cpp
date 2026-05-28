@@ -183,6 +183,44 @@ void AudioEngine::playSoundAt(SoundHandle h, Vec3 worldPos, float gain) {
     alSourcePlay(chosen);
 }
 
+void AudioEngine::playSoundLocal(SoundHandle h, float gain) {
+    if (!impl_->initialized || h == kInvalidSound) return;
+    auto it = impl_->buffers.find(h);
+    if (it == impl_->buffers.end()) return;
+
+    // Find an idle source; voice-steal round-robin on exhaustion (same as
+    // playSoundAt — the underlying source-pool logic is shared).
+    ALuint chosen = 0;
+    for (std::size_t i = 0; i < impl_->sources.size(); ++i) {
+        const ALuint s = impl_->sources[i];
+        ALint state = 0;
+        alGetSourcei(s, AL_SOURCE_STATE, &state);
+        if (state != AL_PLAYING) {
+            chosen = s;
+            break;
+        }
+    }
+    if (chosen == 0) {
+        if (!impl_->warnedExhaustion) {
+            Log::warn("AudioEngine: source pool exhausted; voice-stealing");
+            impl_->warnedExhaustion = true;
+        }
+        chosen = impl_->sources[impl_->nextSource];
+        impl_->nextSource = (impl_->nextSource + 1) % impl_->sources.size();
+        alSourceStop(chosen);
+    }
+
+    alSourcei (chosen, AL_BUFFER,           static_cast<ALint>(it->second));
+    alSource3f(chosen, AL_POSITION,         0.0f, 0.0f, 0.0f);
+    alSource3f(chosen, AL_VELOCITY,         0.0f, 0.0f, 0.0f);
+    alSourcef (chosen, AL_GAIN,             gain);
+    // AL_SOURCE_RELATIVE=TRUE means the source position is interpreted in
+    // listener-local space; position (0,0,0) = "right at the listener", so
+    // OpenAL skips spatialization and plays the sound centered.
+    alSourcei (chosen, AL_SOURCE_RELATIVE,  AL_TRUE);
+    alSourcePlay(chosen);
+}
+
 void AudioEngine::setListener(Vec3 cameraPos, Vec3 forward, Vec3 up) {
     if (!impl_->initialized) return;
     alListener3f(AL_POSITION, cameraPos.x, cameraPos.y, cameraPos.z);
