@@ -5,6 +5,7 @@
 // HUD shows vertex/triangle counts so this acts as a visual validator
 // for iron::loadGltfModel (M22 Task 1, textures via M22.5).
 
+#include "asset/AnimationPlayer.h"
 #include "asset/GltfLoader.h"
 #include "core/Application.h"
 #include "core/Input.h"
@@ -376,6 +377,24 @@ int main(int argc, char** argv) {
         return 1;
     }
 
+    // M24 — animation playback. Non-owning pointers into `model`, which
+    // outlives the player here. Disabled (no skeleton bound) for static
+    // models; the evaluate() call below is a no-op in that case.
+    iron::AnimationPlayer animPlayer;
+    if (isSkinned) {
+        animPlayer.setSkeleton(&model->skinnedMesh->skeleton);
+        if (!model->animations.empty()) {
+            animPlayer.setClip(&model->animations[0]);
+            iron::Log::info(
+                "gltf-viewer: playing animation '%s' (duration %.2fs, %zu channels)",
+                model->animations[0].name.c_str(),
+                model->animations[0].duration,
+                model->animations[0].channels.size());
+        } else {
+            iron::Log::info("gltf-viewer: model has skeleton but no animations; showing bind pose");
+        }
+    }
+
     iron::FreeFlyCamera cam;
     cam.position = {0.0f, 0.0f, 3.0f};
 
@@ -419,6 +438,9 @@ int main(int argc, char** argv) {
                    input.keyDown(GLFW_KEY_LEFT_CONTROL),
                    input.keyDown(GLFW_KEY_SPACE),
                    3.0f);
+        // M24 — advance animation time. No-op when no skeleton/clip is bound,
+        // so the static (damaged-helmet) path is unaffected.
+        animPlayer.update(t.deltaSeconds);
     });
 
     app.setRender([&]() {
@@ -441,6 +463,12 @@ int main(int argc, char** argv) {
             std::array<iron::Mat4, iron::kMaxBonesPerSkinnedMesh> bonesPose;
             for (auto& m : bonesPose) m = iron::Mat4::identity();
             const std::size_t boneCount = model->skinnedMesh->skeleton.bones.size();
+            // M24 — evaluate the bone palette from the current animation
+            // time. If no clip is bound, this writes the bind pose; if no
+            // skeleton is bound (impossible here since isSkinned), it's a
+            // no-op and the bonesPose initializer above stands.
+            animPlayer.evaluate(std::span<iron::Mat4>(
+                bonesPose.data(), std::min(boneCount, bonesPose.size())));
 
             iron::SkinnedDrawCall call;
             call.skinnedMesh = skinnedMesh;
