@@ -12,6 +12,8 @@
 #include "Messages.h"
 #include "RocketLauncher.h"
 
+#include "asset/CharacterAnimator.h"
+#include "asset/GltfLoader.h"
 #include "game/Collision.h"
 #include "game/Health.h"
 #include "core/FixedTickScheduler.h"
@@ -102,6 +104,64 @@ void main() {
     vUV = aUV;
     vLightSpacePos = u.lightViewProj * world;
     gl_Position = u.mvp * vec4(aPos, 1.0);
+}
+)";
+
+// M23 — Skinned vertex shader: same LitUbo at binding 0 as kVertexShader,
+// plus joint/weight attributes (locations 4,5) and the bone-matrix UBO at
+// binding 7. Reuses kFragmentShader unchanged.
+const char* kSkinnedVertexShader = R"(#version 450
+layout(location = 0) in vec3 aPos;
+layout(location = 1) in vec3 aNormal;
+layout(location = 2) in vec2 aUV;
+layout(location = 3) in vec3 aTangent;
+layout(location = 4) in uvec4 aJoints;
+layout(location = 5) in vec4 aWeights;
+
+layout(set = 0, binding = 0) uniform LitUbo {
+    mat4 mvp;
+    mat4 model;
+    mat4 lightViewProj;
+    vec4 sunDir;
+    vec4 sunColor;
+    vec4 ambient;
+    vec4 emissive;
+    vec4 cameraPos;
+    vec4 materialParams;
+    vec4 fogColor;
+    vec4 lightCounts;
+    vec4 pointPositions[16];
+    vec4 pointColors[16];
+    mat4 reflectionViewProj;  // M17 (unused in scene shader, here for layout parity)
+    vec4 reflectionParams;    // M17 x=useReflectionPlane, yz=screenSize, w=0
+    vec4 clipPlane;           // M17 — used only by reflection-pass shader
+} u;
+
+layout(set = 0, binding = 7) uniform BoneUbo {
+    mat4 bones[128];
+} bones;
+
+layout(location = 0) out vec3 vWorldPos;
+layout(location = 1) out vec3 vNormal;
+layout(location = 2) out vec3 vTangent;
+layout(location = 3) out vec2 vUV;
+layout(location = 4) out vec4 vLightSpacePos;
+
+void main() {
+    // Weighted skinning: blend 4 bone matrices.
+    mat4 skinMat = aWeights.x * bones.bones[aJoints.x]
+                 + aWeights.y * bones.bones[aJoints.y]
+                 + aWeights.z * bones.bones[aJoints.z]
+                 + aWeights.w * bones.bones[aJoints.w];
+
+    vec4 skinnedPos = skinMat * vec4(aPos, 1.0);
+    vec4 world      = u.model * skinnedPos;
+    vWorldPos = world.xyz;
+    vNormal   = mat3(u.model) * (mat3(skinMat) * aNormal);
+    vTangent  = mat3(u.model) * (mat3(skinMat) * aTangent);
+    vUV       = aUV;
+    vLightSpacePos = u.lightViewProj * world;
+    gl_Position = u.mvp * skinnedPos;
 }
 )";
 
@@ -544,6 +604,40 @@ int main(int argc, char** argv) {
     iron::appendBox(cubeData, iron::Vec3{0, 0, 0}, iron::Vec3{1, 1, 1});
     const iron::MeshHandle cubeMesh = renderer.createMesh(cubeData);
 
+    // --- M25 ---------------------------------------------------------------
+    // Load Fox.glb once; build the skinned mesh + skinned shader; cache the
+    // three named animation clips by pointer. Each peer gets its own
+    // CharacterAnimator below; the mesh and shader are shared across all of them.
+    const auto foxModelOpt = iron::loadGltfModel("assets/fox/Fox.glb");
+    if (!foxModelOpt || !foxModelOpt->skinnedMesh) {
+        iron::Log::warn("net-shooter: Fox.glb missing or has no skin; players "
+                        "will render as cubes (M22.5 fallback)");
+    }
+    const iron::GltfModel* foxModel = foxModelOpt ? &*foxModelOpt : nullptr;
+    const iron::SkinnedMeshHandle foxMesh =
+        (foxModel && foxModel->skinnedMesh)
+            ? renderer.createSkinnedMesh(*foxModel->skinnedMesh)
+            : iron::kInvalidSkinnedMesh;
+    const iron::ShaderHandle foxShader =
+        (foxMesh != iron::kInvalidSkinnedMesh)
+            ? renderer.createSkinnedShader(kSkinnedVertexShader, kFragmentShader)
+            : iron::kInvalidHandle;
+
+    const iron::AnimationClip* foxIdleClip =
+        foxModel ? foxModel->findClip("Survey") : nullptr;
+    const iron::AnimationClip* foxWalkClip =
+        foxModel ? foxModel->findClip("Walk")   : nullptr;
+    const iron::AnimationClip* foxRunClip  =
+        foxModel ? foxModel->findClip("Run")    : nullptr;
+
+    const bool foxReady = foxMesh != iron::kInvalidSkinnedMesh &&
+                          foxShader != iron::kInvalidHandle &&
+                          foxIdleClip && foxWalkClip && foxRunClip;
+    if (!foxReady) {
+        iron::Log::warn("net-shooter: fox skinned path not ready; falling back "
+                        "to cube rendering for players");
+    }
+
     // Lighting + atmosphere
     iron::DirectionalLight sun;
     sun.direction = iron::normalize(iron::Vec3{-0.4f, -1.0f, -0.3f});
@@ -737,6 +831,10 @@ int main(int argc, char** argv) {
 
     // Host-side authoritative positions
     std::unordered_map<std::uint32_t, PlayerState> authStates;
+
+    // M25 — per-peer skinned-character state (lazy: created on first sight).
+    std::unordered_map<std::uint32_t, iron::CharacterAnimator> playerAnimators;
+    std::unordered_map<std::uint32_t, iron::Vec3>             playerPrevPos;
 
     // M19 — host-only: per-peer PhysicsWorld + CharacterController. Each
     // peer's `simulateFn` captures that peer's world + controller; it has
@@ -977,6 +1075,9 @@ int main(int argc, char** argv) {
 
     peers.setOnPeerLeft([&](std::uint32_t pid) {
         remotes.erase(pid);
+        // M25 — release per-peer skinned-character animation state.
+        playerAnimators.erase(pid);
+        playerPrevPos.erase(pid);
         // M21 — clean up active ragdoll if the leaving peer has one.
         // Runs on every peer (host + client).
         auto rdit = activeRagdolls.find(pid);
@@ -1942,6 +2043,54 @@ int main(int argc, char** argv) {
             renderer.submit(call);
         };
 
+        // M25 — submit a skinned fox at world position `pos` for peer `pid`. The
+        // per-player CharacterAnimator is created lazily on first sight. State
+        // selection (idle / walk / run) is derived from this frame's speed and
+        // the caller-provided `grounded` flag.
+        auto submitPlayerFox = [&](std::uint32_t pid, const iron::Vec3& pos,
+                                    bool grounded, float frameDt) {
+            auto [animIt, inserted] = playerAnimators.try_emplace(pid);
+            if (inserted) {
+                animIt->second.setSkeleton(&foxModel->skinnedMesh->skeleton);
+                animIt->second.setClipForState("idle", foxIdleClip);
+                animIt->second.setClipForState("walk", foxWalkClip);
+                animIt->second.setClipForState("run",  foxRunClip);
+                playerPrevPos[pid] = pos;  // first sample; no speed this frame
+            }
+
+            const iron::Vec3 prev = playerPrevPos[pid];
+            const float speed = (frameDt > 1e-6f)
+                ? iron::length(iron::Vec3{pos.x - prev.x, pos.y - prev.y, pos.z - prev.z}) / frameDt
+                : 0.0f;
+            playerPrevPos[pid] = pos;
+
+            const char* state =
+                  !grounded         ? "walk"
+                : speed < 0.5f      ? "idle"
+                : speed < 3.5f      ? "walk"
+                :                     "run";
+            animIt->second.switchTo(state);
+            animIt->second.update(frameDt);
+
+            std::array<iron::Mat4, iron::kMaxBonesPerSkinnedMesh> bones;
+            for (auto& m : bones) m = iron::Mat4::identity();
+            const std::size_t n = foxModel->skinnedMesh->skeleton.bones.size();
+            animIt->second.evaluate(std::span<iron::Mat4>(bones.data(),
+                                                          std::min(n, bones.size())));
+
+            iron::SkinnedDrawCall call;
+            call.skinnedMesh  = foxMesh;
+            call.shader       = foxShader;
+            call.model        = iron::translation(pos);
+            call.material.texture     = renderer.whiteTexture();
+            call.material.normalMap   = renderer.flatNormalTexture();
+            call.material.specularMap = renderer.noSpecularTexture();
+            call.material.emissive    = colorForPeer(pid) * 0.3f;
+            call.boneMatrices = std::span<const iron::Mat4>(bones.data(),
+                                                            std::min(n, bones.size()));
+            renderer.submitSkinnedDraw(call);
+        };
+
         if (peers.isHost()) {
             // HOST: render other players directly from authoritative state
             // (no interpolation needed; host runs the sim itself).
@@ -1953,7 +2102,14 @@ int main(int argc, char** argv) {
                 }
                 // M21 — ragdoll renders in place of the cube.
                 if (activeRagdolls.find(pid) != activeRagdolls.end()) continue;
-                submitPlayerCube(pid, iron::Vec3{state.x, state.y, state.z});
+                // Authoritative grounded flag lives on PlayerState (the
+                // host-side sim writes it each tick).
+                const bool grounded = state.grounded;
+                if (foxReady) {
+                    submitPlayerFox(pid, iron::Vec3{state.x, state.y, state.z}, grounded, dt);
+                } else {
+                    submitPlayerCube(pid, iron::Vec3{state.x, state.y, state.z});
+                }
             }
         } else {
             // CLIENT: render remote players (including host at pid 0)
@@ -1965,7 +2121,16 @@ int main(int argc, char** argv) {
                 if (activeRagdolls.find(pid) != activeRagdolls.end()) continue;
                 auto pos = remote.positionHistory.sampleAtDelay(kDisplayDelay);
                 if (!pos) continue;
-                submitPlayerCube(pid, *pos);
+                const iron::Vec3 cur = *pos;
+                auto prevIt = playerPrevPos.find(pid);
+                const bool grounded =
+                    (prevIt == playerPrevPos.end()) ? true
+                                                    : std::abs(cur.y - prevIt->second.y) < 0.05f;
+                if (foxReady) {
+                    submitPlayerFox(pid, cur, grounded, dt);
+                } else {
+                    submitPlayerCube(pid, cur);
+                }
             }
         }
 
