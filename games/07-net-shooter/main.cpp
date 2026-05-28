@@ -53,6 +53,7 @@
 #include <deque>
 #include <functional>
 #include <memory>
+#include <numbers>
 #include <span>
 #include <string>
 #include <unordered_map>
@@ -835,6 +836,10 @@ int main(int argc, char** argv) {
     // M25 — per-peer skinned-character state (lazy: created on first sight).
     std::unordered_map<std::uint32_t, iron::CharacterAnimator> playerAnimators;
     std::unordered_map<std::uint32_t, iron::Vec3>             playerPrevPos;
+
+    // M25 fixup — last-known horizontal facing yaw per peer. Updated only when
+    // the peer is moving fast enough to derive direction; held otherwise.
+    std::unordered_map<std::uint32_t, float> playerFacingYaw;
 
     // M19 — host-only: per-peer PhysicsWorld + CharacterController. Each
     // peer's `simulateFn` captures that peer's world + controller; it has
@@ -2048,29 +2053,41 @@ int main(int argc, char** argv) {
         // selection (idle / walk / run) is derived from this frame's speed and
         // the caller-provided `grounded` flag.
         auto submitPlayerFox = [&](std::uint32_t pid, const iron::Vec3& pos,
-                                    bool grounded, float frameDt) {
+                                    const iron::Vec3& velocity, bool grounded,
+                                    float frameDt) {
             auto [animIt, inserted] = playerAnimators.try_emplace(pid);
             if (inserted) {
                 animIt->second.setSkeleton(&foxModel->skinnedMesh->skeleton);
                 animIt->second.setClipForState("idle", foxIdleClip);
                 animIt->second.setClipForState("walk", foxWalkClip);
                 animIt->second.setClipForState("run",  foxRunClip);
-                playerPrevPos[pid] = pos;  // first sample; no speed this frame
             }
 
-            const iron::Vec3 prev = playerPrevPos[pid];
-            const float speed = (frameDt > 1e-6f)
-                ? iron::length(iron::Vec3{pos.x - prev.x, pos.y - prev.y, pos.z - prev.z}) / frameDt
-                : 0.0f;
-            playerPrevPos[pid] = pos;
+            // Horizontal speed (ignore vertical velocity — jumping doesn't change anim).
+            const float speed = std::sqrt(velocity.x * velocity.x + velocity.z * velocity.z);
 
+            // State selection:
+            //   * in the air -> idle (fox has no jump anim; frozen-pose looks better
+            //     than walking through air)
+            //   * grounded + moving slowly -> idle
+            //   * grounded + moving -> walk
+            //   * grounded + sprinting -> run
             const char* state =
-                  !grounded         ? "walk"
-                : speed < 0.5f      ? "idle"
-                : speed < 3.5f      ? "walk"
+                  !grounded         ? "idle"
+                : speed < 0.3f      ? "idle"
+                : speed < 2.5f      ? "walk"
                 :                     "run";
             animIt->second.switchTo(state);
             animIt->second.update(frameDt);
+
+            // Update facing only when moving fast enough to have a reliable direction.
+            // Engine uses Y-up; map velocity (vx, vz) to a yaw angle measured around Y.
+            // atan2(x, z) gives an angle where 0 points along +Z. Fox.glb's mesh faces
+            // along -Z in model space, so we add pi to align.
+            if (speed > 0.3f) {
+                playerFacingYaw[pid] = std::atan2(velocity.x, velocity.z) + std::numbers::pi_v<float>;
+            }
+            const float yaw = playerFacingYaw.count(pid) ? playerFacingYaw[pid] : 0.0f;
 
             std::array<iron::Mat4, iron::kMaxBonesPerSkinnedMesh> bones;
             for (auto& m : bones) m = iron::Mat4::identity();
@@ -2083,7 +2100,9 @@ int main(int argc, char** argv) {
             call.shader       = foxShader;
             // Fox.glb is authored at cm scale (~79 units = 1 fox-height); rescale to m.
             constexpr float kFoxScale = 0.01f;
-            call.model        = iron::translation(pos) * iron::scaling(iron::Vec3{kFoxScale, kFoxScale, kFoxScale});
+            call.model        = iron::translation(pos)
+                              * iron::rotationY(yaw)
+                              * iron::scaling(iron::Vec3{kFoxScale, kFoxScale, kFoxScale});
             call.material.texture     = renderer.whiteTexture();
             call.material.normalMap   = renderer.flatNormalTexture();
             call.material.specularMap = renderer.noSpecularTexture();
@@ -2106,9 +2125,12 @@ int main(int argc, char** argv) {
                 if (activeRagdolls.find(pid) != activeRagdolls.end()) continue;
                 // Authoritative grounded flag lives on PlayerState (the
                 // host-side sim writes it each tick).
-                const bool grounded = state.grounded;
                 if (foxReady) {
-                    submitPlayerFox(pid, iron::Vec3{state.x, state.y, state.z}, grounded, dt);
+                    submitPlayerFox(pid,
+                                    iron::Vec3{state.x, state.y, state.z},
+                                    iron::Vec3{state.vx, state.vy, state.vz},
+                                    state.grounded,
+                                    dt);
                 } else {
                     submitPlayerCube(pid, iron::Vec3{state.x, state.y, state.z});
                 }
@@ -2124,12 +2146,29 @@ int main(int argc, char** argv) {
                 auto pos = remote.positionHistory.sampleAtDelay(kDisplayDelay);
                 if (!pos) continue;
                 const iron::Vec3 cur = *pos;
+
+                // Derive a smoothed velocity by sampling the position history 50ms before
+                // the display time too. cur is at kDisplayDelay; older is 50ms earlier;
+                // (cur - older) / 0.05 ≈ velocity.
+                constexpr auto kVelocitySampleSpacing = std::chrono::milliseconds{50};
+                auto older = remote.positionHistory.sampleAtDelay(kDisplayDelay + kVelocitySampleSpacing);
+                iron::Vec3 velocity{0, 0, 0};
+                if (older) {
+                    const float invDt = 1.0f / std::chrono::duration<float>(kVelocitySampleSpacing).count();
+                    velocity = iron::Vec3{
+                        (cur.x - older->x) * invDt,
+                        (cur.y - older->y) * invDt,
+                        (cur.z - older->z) * invDt};
+                }
+
                 auto prevIt = playerPrevPos.find(pid);
                 const bool grounded =
                     (prevIt == playerPrevPos.end()) ? true
                                                     : std::abs(cur.y - prevIt->second.y) < 0.05f;
+                playerPrevPos[pid] = cur;  // keep updated for the next frame's grounded check
+
                 if (foxReady) {
-                    submitPlayerFox(pid, cur, grounded, dt);
+                    submitPlayerFox(pid, cur, velocity, grounded, dt);
                 } else {
                     submitPlayerCube(pid, cur);
                 }
