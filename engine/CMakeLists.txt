@@ -26,6 +26,7 @@ add_library(ironcore STATIC
   asset/GltfLoader.cpp
   asset/AnimationPlayer.cpp
   asset/CharacterAnimator.cpp
+  audio/AudioEngine.cpp
   game/Collision.cpp
   render/RendererFactory.cpp
   render/ReflectionPlane.cpp
@@ -41,6 +42,12 @@ target_link_libraries(ironcore PUBLIC
 
 target_link_libraries(ironcore PRIVATE
   Jolt::Jolt)
+
+# M26 — audio: OpenAL Soft (via vcpkg) + dr_wav (vendored header-only).
+# OpenAL headers are PRIVATE to keep the engine's public API free of
+# <AL/al.h>; AudioEngine.h uses opaque pimpl.
+find_package(OpenAL CONFIG REQUIRED)
+target_link_libraries(ironcore PRIVATE OpenAL::OpenAL dr_libs)
 
 # tinygltf is header-only; just expose its include directory privately.
 target_include_directories(ironcore PRIVATE ${TINYGLTF_INCLUDE_DIRS})

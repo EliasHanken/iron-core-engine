@@ -534,3 +534,142 @@ In two separate terminals (host first, then client):
 Each peer renders the other as an animated fox; clips switch on movement
 (Survey when standing, Walk at jog speed, Run at sprint); killing a peer
 falls back to the M21 ragdoll handoff.
+
+## M26 — Audio foundation
+
+M26 opens the audio track: a minimal engine type wrapping OpenAL Soft for
+3D-positional sound, a vendored single-header WAV decoder, and the first
+production use site — rockets in `net-shooter` now produce a positional
+boom at their detonation point on both host and client. No mixer, no
+buses, no streaming, no compressed formats: this milestone establishes
+the loading + playback contract that later audio milestones (music,
+footsteps, doppler) will layer on top of.
+
+### Engine type added
+
+```cpp
+// engine/audio/AudioEngine.h
+using SoundHandle = std::uint32_t;
+constexpr SoundHandle kInvalidSound = 0;
+
+class AudioEngine {
+    bool         init();                          // open device + 32-source pool
+    void         shutdown();                      // idempotent; also called by dtor
+    SoundHandle  loadSound(const std::string& wavPath);
+    void         playSoundAt(SoundHandle h, Vec3 worldPos, float gain = 1.0f);
+    void         setListener(Vec3 cameraPos, Vec3 forward, Vec3 up);
+    bool         initialized() const;
+};
+```
+
+`AudioEngine` is pimpl-wrapped so the OpenAL Soft headers stay private to
+the engine TU — game code includes `AudioEngine.h` and never sees an
+`ALuint`. `SoundHandle` is an opaque `uint32_t` that mirrors the
+`MeshHandle` / `ShaderHandle` pattern from M9/M22.
+
+### Vendoring + dependency surface
+
+| Dependency        | Source                                  | License        | Where                                   |
+| ----------------- | --------------------------------------- | -------------- | --------------------------------------- |
+| OpenAL Soft       | vcpkg manifest                          | LGPL (dynamic) | `vcpkg.json`                            |
+| `dr_wav.h`        | Mackron's dr_libs (single-header)        | Public domain  | `third_party/dr_libs/` (INTERFACE target)|
+| `rocket-explode.wav` | freesound.org #235968 by tommccann    | CC0            | `games/07-net-shooter/assets/sfx/`      |
+
+OpenAL Soft is the only new system-level dep; everything else is a
+single header or a CC0 asset committed in-tree.
+
+### Runtime data flow
+
+```
+rocket-explode.wav  ──dr_wav decode──▶  PCM samples (mono/stereo, 8/16/24-bit, IEEE float)
+                                                │
+                                                ▼
+                                       alBufferData ──▶  ALuint buffer
+                                                │
+                                                ▼
+                                       SoundHandle (engine-side handle map)
+                                                │
+                            per frame:
+                              audio.setListener(camera.pos, camera.fwd, camera.up)
+                              ...
+                              on rocket despawn:
+                                audio.playSoundAt(boom, impactPos)
+                                                │
+                                                ▼
+                                       pick next idle source in the 32-source ring
+                                       (voice-steal round-robin on exhaustion)
+                                                │
+                                                ▼
+                                       OpenAL mixer  ──▶  speakers
+```
+
+One device + context per process; a 32-source pool sized to outlast any
+realistic in-flight SFX count for the current games. When all 32 are
+busy, the oldest non-looping source is reclaimed — a hard cut, no
+fade-out. Listener state is refreshed once per frame from the rendering
+camera before any plays, so positions resolve in the same world space as
+the visible scene.
+
+### Asset pipeline note
+
+WAV is the only supported format in v1. Mono is recommended for any 3D
+SFX — OpenAL's spec mandates that stereo buffers play non-positionally
+(the listener position is ignored), and `loadSound` logs a warn-once
+nudge if it sees a stereo file. Future compressed-format support (M27
+adds `stb_vorbis` for OGG) will land behind the same `loadSound` entry
+point.
+
+`*.wav` is routed through Git LFS via `.gitattributes`. Fresh clones
+need `git lfs pull` before the audio test asset or
+`rocket-explode.wav` materialize on disk; without them the engine fails
+soft (see below).
+
+### Net-shooter integration
+
+- `AudioEngine` constructed + `init()`'d at game startup.
+- `loadSound("assets/sfx/rocket-explode.wav")` once, handle cached.
+- Listener updated each frame from the rendering camera (`setListener`
+  before any plays).
+- `playSoundAt(boom, impactPos)` fires at all three rocket-despawn sites
+  in `ProjectileSystem` — host-authoritative despawn, client mirror, and
+  the local-prediction path — so both peers hear booms at the same
+  world position regardless of which one fired.
+
+Zero new network bandwidth: the explosion sound piggybacks on the
+existing `DespawnProjectileMsg` — each peer plays its own boom locally
+when the despawn is consumed.
+
+### Limitations / non-goals (deferred to M27+)
+
+- **No looping sounds** — M27 wires footsteps to the M25 walk/run state
+  machine and needs `playLooping` + `stop(SoundHandle)`.
+- **No doppler.** Sources have no velocity; OpenAL's doppler effect is
+  unused. M27+.
+- **No audio buses / mixer / volume groups.** A single master gain via
+  the per-play `gain` argument is all that ships.
+- **No compressed formats.** M27 adds `stb_vorbis` for OGG; MP3 / music
+  streaming are unscheduled.
+- **No hot-reload.** Folded into the general asset hot-reload milestone
+  rather than special-cased per-asset-type.
+
+### Headless / CI considerations
+
+`init()` returns `false` on systems with no audio device (CI runners,
+SSH sessions, headless boxes). The engine then operates as a silent
+no-op: `loadSound`, `playSoundAt`, and `setListener` remain safe to call
+and simply do nothing. Unit tests that touch a real device gate on the
+`IRON_CI=1` env-var convention established by the M9 renderer factory.
+
+### Verification
+
+In two separate terminals (host first, then client):
+
+```powershell
+.\build-vk\games\07-net-shooter\Debug\net-shooter.exe --host
+.\build-vk\games\07-net-shooter\Debug\net-shooter.exe --client 127.0.0.1
+```
+
+Fire rockets from either peer. Expected: each detonation produces a
+positional boom at the impact site on both screens. Rotate the camera
+before firing to confirm 3D positioning — the boom should pan according
+to the listener's current orientation.
