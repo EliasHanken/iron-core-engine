@@ -996,6 +996,7 @@ int main(int argc, char** argv) {
         std::uint32_t kills = 0;
         std::uint32_t deaths = 0;
         float yaw = 0.0f;                          // M25 — last-known look yaw (radians)
+        bool  lastGrounded = true;                 // M27 — for true->false jump-edge detection
     };
     std::unordered_map<std::uint32_t, RemotePlayer> remotes;
     constexpr auto kDisplayDelay = std::chrono::milliseconds{
@@ -1190,6 +1191,8 @@ int main(int argc, char** argv) {
             if (!peers.hasIdentity()) {
                 remotes[msg.peerId].positionHistory.push(iron::Vec3{msg.x, msg.y, msg.z});
                 remotes[msg.peerId].yaw = msg.yaw;
+                // M27 — bookkeeping only; no SFX (no peer identity to compare against).
+                remotes[msg.peerId].lastGrounded = msg.grounded != 0;
                 return;
             }
 
@@ -1204,6 +1207,14 @@ int main(int argc, char** argv) {
             } else {
                 remotes[msg.peerId].positionHistory.push(iron::Vec3{msg.x, msg.y, msg.z});
                 remotes[msg.peerId].yaw = msg.yaw;
+                // M27 — remote jump SFX on the grounded:true->false edge.
+                const bool newGrounded = msg.grounded != 0;
+                if (remotes[msg.peerId].lastGrounded && !newGrounded) {
+                    audio.playSoundAt(jumpSfx,
+                                      iron::Vec3{msg.x, msg.y, msg.z},
+                                      0.5f);
+                }
+                remotes[msg.peerId].lastGrounded = newGrounded;
             }
         });
 
