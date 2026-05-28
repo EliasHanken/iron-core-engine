@@ -721,12 +721,13 @@ int main(int argc, char** argv) {
         float x  = 0.0f, y  = 0.0f, z  = 0.0f;     // foot position
         float vx = 0.0f, vy = 0.0f, vz = 0.0f;     // velocity
         bool  grounded = false;
-        float yaw = 0.0f;                          // M25 — look yaw (radians)
+        // M25 — look yaw (radians). Cosmetic only; intentionally NOT in
+        // operator== so prediction reconciles don't fire on camera turns.
+        float yaw = 0.0f;
         bool operator==(const PlayerState& o) const {
             return x == o.x && y == o.y && z == o.z
                 && vx == o.vx && vy == o.vy && vz == o.vz
-                && grounded == o.grounded
-                && yaw == o.yaw;
+                && grounded == o.grounded;
         }
     };
     struct PlayerInput {
