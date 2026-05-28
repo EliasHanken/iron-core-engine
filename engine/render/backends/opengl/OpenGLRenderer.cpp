@@ -547,6 +547,15 @@ ShaderHandle OpenGLRenderer::createSkinnedShader(const std::string&,
     return kInvalidHandle;
 }
 
+bool OpenGLRenderer::reloadShader(ShaderHandle, const std::string&, const std::string&) {
+    static bool warned = false;
+    if (!warned) {
+        Log::warn("OpenGLRenderer::reloadShader: hot-reload is Vulkan-only; ignored");
+        warned = true;
+    }
+    return false;
+}
+
 void OpenGLRenderer::submitSkinnedDraw(const SkinnedDrawCall&) {
     static bool warned = false;
     if (!warned) {

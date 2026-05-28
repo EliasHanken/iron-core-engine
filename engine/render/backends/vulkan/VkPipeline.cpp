@@ -272,4 +272,19 @@ bool VkPipeline::recreateFramebuffers(VkContext& ctx, VkSwapchain& swap) {
     return p;
 }
 
+void VkPipeline::invalidate(VkContext& ctx, const VkShader* sh) {
+    auto dropFrom = [&](std::vector<std::pair<const VkShader*, ::VkPipeline>>& cache) {
+        for (auto it = cache.begin(); it != cache.end(); ) {
+            if (it->first == sh) {
+                if (it->second) vkDestroyPipeline(ctx.device(), it->second, nullptr);
+                it = cache.erase(it);
+            } else {
+                ++it;
+            }
+        }
+    };
+    dropFrom(pipelines_);
+    dropFrom(skinnedPipelines_);
+}
+
 }  // namespace iron

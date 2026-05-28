@@ -175,6 +175,26 @@ ShaderHandle VulkanRenderer::createSkinnedShader(const std::string& vertexSrc,
     return shaders_.createSkinned(context_, vertexSrc, fragmentSrc);
 }
 
+bool VulkanRenderer::reloadShader(ShaderHandle handle,
+                                  const std::string& vertexSrc,
+                                  const std::string& fragmentSrc) {
+    if (!shaders_.has(handle)) {
+        Log::error("VulkanRenderer::reloadShader: unknown handle %u", handle);
+        return false;
+    }
+    // Wait for the GPU to finish using the current modules + pipeline before
+    // we tear them down. Dev-only flow; the stall is acceptable.
+    vkDeviceWaitIdle(context_.device());
+
+    if (!shaders_.reload(context_, handle, vertexSrc, fragmentSrc)) {
+        return false;  // compile error — last-good shader preserved
+    }
+    // The VkShader address is stable across reload; drop its cached pipeline
+    // so the next draw rebuilds with the new modules.
+    pipelines_.invalidate(context_, &shaders_.get(handle));
+    return true;
+}
+
 void VulkanRenderer::submitSkinnedDraw(const SkinnedDrawCall& call) {
     if (skipFrame_) return;
     if (!skinnedMeshes_.has(call.skinnedMesh) || !shaders_.has(call.shader)) return;

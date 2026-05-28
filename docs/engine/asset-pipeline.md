@@ -806,3 +806,149 @@ Expected: all nine SFX events fire at the right times and world
 positions on both peers; movement feels fox-low (camera at ~0.5m
 above ground, capsule clears terrain at fox scale); two peers walking
 together no longer click in unison.
+
+## M28 — Asset hot-reload (shaders + audio)
+
+M28 closes the asset-pipeline track for now: edit a watched shader or
+audio file in the source tree while the game runs and see the change
+live, no rebuild. It adds a small polling `iron::FileWatcher`, a
+`Renderer::reloadShader` that swaps shader modules in place behind a
+live handle, and an `AudioEngine::pollHotReload` that re-decodes any
+loaded WAV whose file changed. The first production use site is
+net-shooter, whose three Vulkan shaders are extracted to on-disk
+`.glsl` files and watched from the source tree. Hot-reload was the one
+piece deliberately deferred out of M26/M27 audio (see those sections'
+non-goals) and folded into a general asset-hot-reload milestone rather
+than special-cased per asset type. This is a dev-only convenience —
+nothing on the hot path changes in a shipping build.
+
+### Engine types added
+
+```cpp
+// engine/util/FileWatcher.h — polling, zero-dependency
+class FileWatcher {
+public:
+    using ChangeCallback = std::function<void(const std::string& path)>;
+
+    void        watch(std::string path, ChangeCallback onChange);
+    void        unwatch(const std::string& path);
+    void        poll();                            // call once per frame
+    std::size_t watchCount() const;
+};
+```
+
+`watch` captures the path's current mtime so an immediate `poll()` does
+not fire; re-watching a path replaces its callback. A path that does not
+exist yet records mtime 0 ("missing") and fires once it appears.
+`poll()` stats every registered path and fires the callback for any
+whose mtime advanced (or that newly appeared), storing the new mtime; a
+path that fails to stat is left unchanged and retried next poll. Polling
+(not OS notifications) keeps it portable and dependency-free — at our
+scale (a few dozen files) the per-frame `stat()` cost is sub-millisecond.
+
+```cpp
+// engine/render/Renderer.h — recompile + swap behind a live handle
+virtual bool reloadShader(ShaderHandle handle,
+                          const std::string& vertexSrc,
+                          const std::string& fragmentSrc) = 0;
+```
+
+Recompiles GLSL→SPIR-V, recreates the `VkShaderModule`s in place (same
+handle, same descriptor + pipeline layout), and invalidates any pipeline
+cached against the shader so the next draw rebuilds it. Returns `true` on
+success. On a compile failure the previous shader stays bound and `false`
+is returned — a typo in a live edit keeps the last-good shader instead of
+crashing. Vulkan-only; OpenGL warns once and returns `false`.
+
+```cpp
+// engine/audio/AudioEngine.h — re-decode changed WAVs, swap buffers in place
+void pollHotReload();   // call once per frame
+```
+
+Re-decodes any loaded sound whose source WAV changed on disk since load
+and swaps the OpenAL buffer at the same `SoundHandle` (the handle stays
+valid). It polls each loaded sound's file mtime internally — no external
+watcher needed, and no per-sound registration: every sound loaded through
+`loadSound` is covered automatically. No-op if the engine failed to init.
+
+### How shader reload works (the mechanism)
+
+```
+edit lit.frag.glsl ──FileWatcher.poll──▶ reloadShader(handle, vert, frag)
+                                                │
+                       recompile GLSL→SPIR-V (both stages)
+                                                │
+                            compile error? ─yes─▶ keep last-good modules,
+                                                  warn, return false
+                                                │ no
+                                       vkDeviceWaitIdle
+                                                │
+                       swap VkShaderModule(s) in place — same VkShader
+                       object, same descriptor-set + pipeline layout
+                                                │
+                       VkPipeline::invalidate(&shader) drops the cached
+                       pipeline keyed on that VkShader*
+                                                │
+                            next draw rebuilds the pipeline lazily
+```
+
+The subtle point: the pipeline cache keys on the **stable `VkShader*`
+address**, and `reload` swaps the modules in place without changing that
+address — so the cache would otherwise hand back a pipeline still
+referencing the old modules. Explicit `VkPipeline::invalidate(&shader)`
+is therefore required after a successful reload to force a lazy rebuild
+on the next draw. The shader **interface** (descriptor bindings, vertex
+input layout) must stay constant across a reload, since the descriptor
+and pipeline layouts are reused unchanged.
+
+### Source-tree watching (net-shooter)
+
+Net-shooter's three Vulkan shaders are extracted to
+`games/07-net-shooter/assets/shaders/`:
+
+- `lit.vert.glsl` — static scene vertex shader
+- `lit.frag.glsl` — fragment shader, **shared** by the static and
+  skinned pipelines
+- `lit-skinned.vert.glsl` — skinned (M23) vertex shader
+
+The game reads and watches these from the **source tree** via a
+`NETSHOOTER_SHADER_SRC_DIR` compile-define
+(`target_compile_definitions(... NETSHOOTER_SHADER_SRC_DIR="…/assets/shaders")`),
+the same pattern the test suite uses for `IRON_REPO_ROOT` — so editing
+the source `.glsl` is live without copying into the build tree or
+rebuilding. Three watches are registered: the vert/skinned-vert files
+each reload their own shader, and `lit.frag.glsl` reloads **both** the
+lit and skinned shaders (since both pipelines share that fragment stage).
+`watcher.poll()` and `audio.pollHotReload()` both run once per frame.
+
+### FileWatcher caveat
+
+Callbacks must **not** call `watch()` / `unwatch()` — doing so mutates
+the internal map mid-iteration (iterator invalidation / UB). Hot-reload
+callbacks only rebuild a resource, so this holds in practice, but the
+constraint is real and load-bearing.
+
+### Limitations / non-goals
+
+- **Shaders + audio only.** Texture and mesh hot-reload are deferred —
+  the watcher + handle-swap machinery generalizes to them, but they are
+  not wired in v1.
+- **Polling, not OS file notifications.** Reload may lag up to ~1s on
+  coarse-mtime filesystems (the watcher fires on the next `poll()` after
+  the mtime advances).
+- **Dev-only.** Shader reload does a `vkDeviceWaitIdle` — a full frame
+  stall — which is acceptable for a manual edit-and-save but is not a
+  hot-path operation.
+- **Shader binding interface must be unchanged across a reload.** Adding
+  or removing a descriptor binding (or changing the vertex input layout)
+  is not supported live; that requires a rebuild.
+
+### Verification
+
+```powershell
+cmake --build build-vk --target net-shooter --config Debug
+.\build-vk\games\07-net-shooter\Debug\net-shooter.exe --host
+# While running: edit games/07-net-shooter/assets/shaders/lit.frag.glsl in the source tree,
+# save, watch the scene update within ~1s — no rebuild. A GLSL syntax error keeps the
+# last-good shader and logs a warning. Replace a .wav to hear the new sound on next play.
+```

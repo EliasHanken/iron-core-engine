@@ -39,6 +39,16 @@ public:
                                 const std::string& fragSrc);
     const VkShader& get(ShaderHandle h) const;
     bool has(ShaderHandle h) const { return shaders_.count(h) != 0; }
+
+    // M28 — recompile the GLSL for an existing handle and swap the shader
+    // modules in place. Keeps the same descriptor-set + pipeline layout
+    // (interface assumed unchanged). Returns false (and leaves the old
+    // modules intact) if either stage fails to compile. The VkShader's
+    // address is stable, so the caller invalidates the cached pipeline
+    // separately via VkPipeline::invalidate(&get(handle)).
+    bool reload(VkContext& ctx, ShaderHandle h,
+                const std::string& vertSrc, const std::string& fragSrc);
+
     void destroyAll(VkContext& ctx);
 
 private:
