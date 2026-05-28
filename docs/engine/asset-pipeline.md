@@ -399,3 +399,138 @@ model still renders identically (no skin → no animation player binding).
   and supplies the output span each frame.
 - **No retargeting / no inverse kinematics** — animations play on the
   exact skeleton they were authored against.
+
+## M25 — Character animation state machine + net-shooter wiring
+
+M25 puts the skeletal-animation track to work: net-shooter now renders
+each player as an animated fox driven by a per-player state machine,
+replacing the M22 cube renderer. The engine gains a thin state-machine
+wrapper around the M24 `AnimationPlayer` plus a name-lookup helper on
+`GltfModel`. The loader's required-attribute contract is also relaxed
+so a wider set of glTFs (including Khronos's Fox.glb) load without
+manual repair.
+
+### Engine types added
+
+```cpp
+// engine/asset/GltfLoader.h — name-lookup helper on the existing model
+struct GltfModel {
+    // ... fields from M22/M22.5/M23/M24 ...
+    const AnimationClip* findClip(std::string_view name) const;
+};
+```
+
+`findClip` is a linear scan over `animations[]` returning the first clip
+whose `name` matches, or `nullptr`. Closes an M24 final-review note —
+callers no longer hand-roll their own animation-name lookup.
+
+```cpp
+// engine/asset/CharacterAnimator.h — state machine over AnimationPlayer
+class CharacterAnimator {
+    void  setSkeleton(const Skeleton* skeleton);
+    void  setClipForState(std::string state, const AnimationClip* clip);
+    void  switchTo(std::string_view state);   // idempotent hard cut
+    void  update(float dt);
+    void  evaluate(std::span<Mat4> out) const;
+    std::string_view currentState() const;
+};
+```
+
+The animator owns no glTF data — the skeleton and clips remain owned by
+the `GltfModel`. Internally it holds a state-name → clip map and a
+single `AnimationPlayer`. `switchTo("walk")` is a no-op if we're already
+in `"walk"` (the active clip keeps advancing); on a real state change
+the inner player's time resets to zero — a hard cut, no crossfade.
+Switching to a state that was never registered logs once and falls back
+to the bind pose. A null clip registered under a state name is legal
+and means "this state has no animation; evaluate writes bind pose".
+
+### Loader contract relaxed
+
+The required-attribute contract from M22 (POSITION + NORMAL + indices)
+narrowed to **POSITION only** in M25. Missing data is now synthesized:
+
+| Missing      | Synthesis                                                |
+| ------------ | -------------------------------------------------------- |
+| `NORMAL`     | Flat-shaded per-face normals computed from positions + indices (or synthesized indices) |
+| `indices`    | `[0, 1, 2, ..., N-1]` — interpret POSITION as triangle-list |
+
+Fox.glb (and many other Khronos samples) ship without an index buffer;
+RiggedSimple.gltf has indices but variable mesh topology. The relaxed
+contract covers both. The `Triangle.gltf` negative test from M22.5 —
+which previously asserted `nullopt` for a NORMAL-less mesh — was
+inverted to a positive test asserting the synthesized normals match
+the expected face normal, locking the new contract.
+
+### Runtime data flow
+
+```
+Fox.glb  ──loadGltfModel──▶  GltfModel{ mesh, skinnedMesh, animations[…] }
+                                                │
+                                                ▼
+                          model.findClip("Survey" | "Walk" | "Run")
+                                                │
+                                                ▼
+                          CharacterAnimator.setSkeleton(&skel)
+                          CharacterAnimator.setClipForState("idle", surveyClip)
+                          CharacterAnimator.setClipForState("walk", walkClip)
+                          CharacterAnimator.setClipForState("run",  runClip)
+                                                │
+                            per frame:
+                              state = pickState(velocity, grounded)
+                              animator.switchTo(state)   // idempotent
+                              animator.update(dt)
+                              animator.evaluate(palette)
+                                                │
+                                                ▼
+                          SkinnedDrawCall.boneMatrices  ──▶  Vulkan UBO
+                                                              binding 7
+```
+
+One `CharacterAnimator` per player; one `SkinnedDrawCall` per player
+per frame. The Vulkan path is unchanged from M23 — bone matrices land
+in the same binding 7 UBO M23 established.
+
+### Net-shooter movement → state mapping
+
+| Condition                  | Clip name | Engine state |
+| -------------------------- | --------- | ------------ |
+| `!grounded`                | `Walk`    | `"walk"`     |
+| `speed < 0.5 m/s`          | `Survey`  | `"idle"`     |
+| `0.5 ≤ speed < 3.5 m/s`    | `Walk`    | `"walk"`     |
+| `speed ≥ 3.5 m/s`          | `Run`     | `"run"`      |
+
+Fox.glb has no jump animation; `Walk`-in-air is the chosen compromise
+(beats a frozen T-pose). `speed` is the horizontal component of the
+synced velocity; `grounded` comes from the physics character controller.
+
+Per-player animators are created lazily on first sight of a peer and
+cleaned up on disconnect. If `Fox.glb` is missing from the assets dir
+the game falls back to the M22 cube renderer rather than bricking.
+
+### Limitations / non-goals
+
+- **Hard cut between clips** — no crossfade, no transition blending.
+  Wiring blend trees / state-machine transitions is M26+.
+- **Zero animation network sync.** Clip choice and phase derive locally
+  on each peer from the synced position + velocity — no animation
+  events, no remote `switchTo` RPCs. Two clients can briefly disagree
+  on phase, but the state derivation is deterministic given identical
+  velocity, so this is bounded by velocity-sync jitter.
+- **Ragdoll handoff intact.** M21's `activeRagdolls` skip guard runs
+  before the animator step, so killing a peer still triggers the
+  ragdoll path unchanged — the animator simply isn't consulted while
+  the corpse is physics-driven.
+
+### Verification
+
+In two separate terminals (host first, then client):
+
+```powershell
+.\build-vk\games\07-net-shooter\Debug\net-shooter.exe --host
+.\build-vk\games\07-net-shooter\Debug\net-shooter.exe --client 127.0.0.1
+```
+
+Each peer renders the other as an animated fox; clips switch on movement
+(Survey when standing, Walk at jog speed, Run at sprint); killing a peer
+falls back to the M21 ragdoll handoff.

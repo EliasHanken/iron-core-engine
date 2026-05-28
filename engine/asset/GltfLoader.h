@@ -6,6 +6,7 @@
 
 #include <optional>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace iron {
@@ -26,6 +27,10 @@ struct GltfModel {
     GltfMaterialPaths              materialPaths;
     std::optional<SkinnedMeshData> skinnedMesh;  // populated if glTF has a skin
     std::vector<AnimationClip>     animations;   // empty if file has no animations
+
+    // Returns a pointer to the first clip whose name matches `name`,
+    // or nullptr if no match. Linear scan; clip counts are tiny in v1.
+    const AnimationClip* findClip(std::string_view name) const;
 };
 
 // Load mesh + material texture paths from a glTF or GLB file.
