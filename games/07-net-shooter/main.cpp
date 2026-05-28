@@ -648,6 +648,21 @@ int main(int argc, char** argv) {
     const iron::SoundHandle boomSfx =
         audio.loadSound("assets/sfx/rocket-explode.wav");
 
+    // M27 — full SFX set. All optional: a missing file produces kInvalidSound,
+    // and playSoundAt is a no-op for invalid handles, so the game runs even if
+    // any individual asset is missing.
+    const iron::SoundHandle gunshotSfx      = audio.loadSound("assets/sfx/gunshot-rifle.wav");
+    const iron::SoundHandle rocketLaunchSfx = audio.loadSound("assets/sfx/rocket-launch.wav");
+    const iron::SoundHandle hitSfx          = audio.loadSound("assets/sfx/hit.wav");
+    const iron::SoundHandle jumpSfx         = audio.loadSound("assets/sfx/jump.wav");
+    const iron::SoundHandle deathSfx        = audio.loadSound("assets/sfx/death.wav");
+    const std::array<iron::SoundHandle, 4> footstepSfx = {
+        audio.loadSound("assets/sfx/footstep-01.wav"),
+        audio.loadSound("assets/sfx/footstep-02.wav"),
+        audio.loadSound("assets/sfx/footstep-03.wav"),
+        audio.loadSound("assets/sfx/footstep-04.wav"),
+    };
+
     // Lighting + atmosphere
     iron::DirectionalLight sun;
     sun.direction = iron::normalize(iron::Vec3{-0.4f, -1.0f, -0.3f});
@@ -1204,6 +1219,13 @@ int main(int argc, char** argv) {
             ghost.spawnTimeSec = msg.spawnTimeSec;
             ghost.alive = true;
             ghostRockets[msg.projectileId] = ghost;
+            // M27 — remote-peer rocket launch SFX (host's own rocket also
+            // arrives here on clients via the broadcast). Owner of the
+            // local-fire site already played their own SFX above, so they
+            // don't reach this handler (peers.isHost() guards the host).
+            audio.playSoundAt(rocketLaunchSfx,
+                              iron::Vec3{msg.x, msg.y, msg.z},
+                              0.9f);
         });
 
     // CLIENT: rocket despawned.
@@ -1234,6 +1256,22 @@ int main(int argc, char** argv) {
             }
             if (msg.victimHpAfter == 0) {
                 pushKillFeed(msg.attackerPeerId, msg.victimPeerId);
+            }
+            // M27 — hit feedback. Locate the victim's position. We use the
+            // predictor for ourselves, or the interpolated remote sample
+            // otherwise (the host path takes a different code route — see
+            // the host-inline damage sites).
+            iron::Vec3 victimPos{0.0f, 0.0f, 0.0f};
+            if (msg.victimPeerId == peers.myPeerId()) {
+                const auto& p = predictor.predictedState();
+                victimPos = iron::Vec3{p.x, p.y, p.z};
+            } else if (auto it = remotes.find(msg.victimPeerId); it != remotes.end()) {
+                auto sample = it->second.positionHistory.sampleAtDelay(kDisplayDelay);
+                if (sample) victimPos = *sample;
+            }
+            audio.playSoundAt(hitSfx, victimPos, 0.8f);
+            if (msg.victimHpAfter == 0) {
+                audio.playSoundAt(deathSfx, victimPos, 1.0f);
             }
         });
 
@@ -1323,6 +1361,19 @@ int main(int argc, char** argv) {
 
             peers.broadcastToAll<iron::netshooter::DamageMsg>(dm, iron::SendReliability::Reliable);
 
+            // M27 — host plays hit/death SFX at victim's authoritative pos
+            // (mirrors client DamageMsg handler).
+            {
+                iron::Vec3 victimPosSfx{0.0f, 0.0f, 0.0f};
+                if (auto ait = authStates.find(dm.victimPeerId); ait != authStates.end()) {
+                    victimPosSfx = iron::Vec3{ait->second.x, ait->second.y, ait->second.z};
+                }
+                audio.playSoundAt(hitSfx, victimPosSfx, 0.8f);
+                if (dm.victimHpAfter == 0) {
+                    audio.playSoundAt(deathSfx, victimPosSfx, 1.0f);
+                }
+            }
+
             if (!iron::isAlive(vit->second.hp)) {
                 // Kill event.
                 pushKillFeed(dm.attackerPeerId, dm.victimPeerId);
@@ -1363,6 +1414,10 @@ int main(int argc, char** argv) {
                     iron::SendReliability::Reliable);
                 spawnLocalRagdoll(dm.victimPeerId, deathPos, impulse);
             }
+            // M27 — host plays the remote shooter's gunshot at the shot origin.
+            audio.playSoundAt(gunshotSfx,
+                              iron::Vec3{msg.ox, msg.oy, msg.oz},
+                              1.0f);
         });
 
     // HOST: rocket fire.
@@ -1402,6 +1457,10 @@ int main(int argc, char** argv) {
                     nowSec(),
                 },
                 iron::SendReliability::Reliable);
+            // M27 — host plays the remote shooter's rocket launch at origin.
+            audio.playSoundAt(rocketLaunchSfx,
+                              iron::Vec3{msg.ox, msg.oy, msg.oz},
+                              0.9f);
         });
 
     // -----------------------------------------------------------------------
@@ -1548,6 +1607,13 @@ int main(int argc, char** argv) {
                 in.jump = jumpPending;
                 jumpPending = false;  // consumed
                 const auto inputId = predictor.applyInput(in);
+                // M27 — local jump SFX at the local foot position.
+                if (in.jump) {
+                    const auto& p = predictor.predictedState();
+                    audio.playSoundAt(jumpSfx,
+                                      iron::Vec3{p.x, p.y, p.z},
+                                      0.5f);
+                }
 
                 if (peers.isHost()) {
                     if (!localDead) {
@@ -1623,6 +1689,8 @@ int main(int argc, char** argv) {
                                        muzzle.y + dir.y * kTracerLengthM,
                                        muzzle.z + dir.z * kTracerLengthM},
                             localNow});
+                        // M27 — host's own gunshot SFX (mirrors client local SFX).
+                        audio.playSoundAt(gunshotSfx, muzzle, 1.0f);
                         // Inline host hitscan resolution
                         std::vector<std::uint32_t> alivePeers;
                         for (const auto& [p, hp] : hostPlayers) {
@@ -1643,6 +1711,17 @@ int main(int argc, char** argv) {
                                     std::max(0, vit->second.hp.current));
                                 peers.broadcastToAll<iron::netshooter::DamageMsg>(
                                     dm, iron::SendReliability::Reliable);
+                                // M27 — host hit/death SFX at victim pos.
+                                {
+                                    iron::Vec3 victimPosSfx{0.0f, 0.0f, 0.0f};
+                                    if (auto ait = authStates.find(dm.victimPeerId); ait != authStates.end()) {
+                                        victimPosSfx = iron::Vec3{ait->second.x, ait->second.y, ait->second.z};
+                                    }
+                                    audio.playSoundAt(hitSfx, victimPosSfx, 0.8f);
+                                    if (dm.victimHpAfter == 0) {
+                                        audio.playSoundAt(deathSfx, victimPosSfx, 1.0f);
+                                    }
+                                }
                                 if (!iron::isAlive(vit->second.hp)) {
                                     pushKillFeed(0u, dm.victimPeerId);
                                     hostPlayers[0].kills++;
@@ -1692,6 +1771,7 @@ int main(int argc, char** argv) {
                                 localNow});
                             peers.send<iron::netshooter::FireHitscanMsg>(
                                 0u, *opt, iron::SendReliability::Reliable);
+                            audio.playSoundAt(gunshotSfx, muzzle, 1.0f);
                         }
                     }
                 } else {
@@ -1722,6 +1802,8 @@ int main(int argc, char** argv) {
                                     localNow,
                                 },
                                 iron::SendReliability::Reliable);
+                            // M27 — host's own rocket-launch SFX.
+                            audio.playSoundAt(rocketLaunchSfx, muzzle, 0.9f);
                         }
                     } else {
                         auto opt = iron::netshooter::tryFireRocketClient(
@@ -1729,6 +1811,7 @@ int main(int argc, char** argv) {
                         if (opt) {
                             peers.send<iron::netshooter::FireRocketMsg>(
                                 0u, *opt, iron::SendReliability::Reliable);
+                            audio.playSoundAt(rocketLaunchSfx, muzzle, 0.9f);
                         }
                     }
                 }
@@ -1816,6 +1899,17 @@ int main(int argc, char** argv) {
                             std::max(0, vit->second.hp.current));
                         peers.broadcastToAll<iron::netshooter::DamageMsg>(
                             dmsg, iron::SendReliability::Reliable);
+                        // M27 — host hit/death SFX for rocket splash.
+                        {
+                            iron::Vec3 victimPosSfx{0.0f, 0.0f, 0.0f};
+                            if (auto ait = authStates.find(pid); ait != authStates.end()) {
+                                victimPosSfx = iron::Vec3{ait->second.x, ait->second.y, ait->second.z};
+                            }
+                            audio.playSoundAt(hitSfx, victimPosSfx, 0.8f);
+                            if (dmsg.victimHpAfter == 0) {
+                                audio.playSoundAt(deathSfx, victimPosSfx, 1.0f);
+                            }
+                        }
 
                         if (!iron::isAlive(vit->second.hp)) {
                             const std::uint32_t attacker = dmsg.attackerPeerId;
