@@ -56,6 +56,7 @@
 #include <memory>
 #include <span>
 #include <string>
+#include <string_view>
 #include <unordered_map>
 #include <vector>
 
@@ -869,6 +870,12 @@ int main(int argc, char** argv) {
     std::unordered_map<std::uint32_t, iron::CharacterAnimator> playerAnimators;
     std::unordered_map<std::uint32_t, iron::Vec3>             playerPrevPos;
 
+    // M27 — per-peer footstep timing + variant RNG. The xorshift seed is
+    // initialized from pid so different peers don't lockstep into the same
+    // footstep rhythm.
+    std::unordered_map<std::uint32_t, double>        playerLastFootstepAtSec;
+    std::unordered_map<std::uint32_t, std::uint32_t> playerFootstepRng;
+
     // M19 — host-only: per-peer PhysicsWorld + CharacterController. Each
     // peer's `simulateFn` captures that peer's world + controller; it has
     // the same pure-function shape PredictionEngine expects, just routed
@@ -1114,6 +1121,9 @@ int main(int argc, char** argv) {
         // M25 — release per-peer skinned-character animation state.
         playerAnimators.erase(pid);
         playerPrevPos.erase(pid);
+        // M27 — release per-peer footstep timing + RNG state.
+        playerLastFootstepAtSec.erase(pid);
+        playerFootstepRng.erase(pid);
         // M21 — clean up active ragdoll if the leaving peer has one.
         // Runs on every peer (host + client).
         auto rdit = activeRagdolls.find(pid);
@@ -2194,7 +2204,7 @@ int main(int argc, char** argv) {
         // the caller-provided `grounded` flag.
         auto submitPlayerFox = [&](std::uint32_t pid, const iron::Vec3& pos,
                                     const iron::Vec3& velocity, bool grounded,
-                                    float yawRadians, float frameDt) {
+                                    float yawRadians, float frameDt) -> std::string_view {
             auto [animIt, inserted] = playerAnimators.try_emplace(pid);
             if (inserted) {
                 animIt->second.setSkeleton(&foxModel->skinnedMesh->skeleton);
@@ -2244,6 +2254,37 @@ int main(int argc, char** argv) {
             call.boneMatrices = std::span<const iron::Mat4>(bones.data(),
                                                             std::min(n, bones.size()));
             renderer.submitSkinnedDraw(call);
+            return std::string_view{state};
+        };
+
+        // M27 — emit a randomized footstep variant if the per-peer cadence
+        // elapsed. `state` is the same movement state submitPlayerFox returned;
+        // idle resets the timer so the next step plays immediately on movement
+        // resume (no half-second delay after starting to walk).
+        auto maybeEmitFootstep = [&](std::uint32_t pid, const iron::Vec3& footPos,
+                                      std::string_view state, double nowSecArg) {
+            if (state != "walk" && state != "run") {
+                playerLastFootstepAtSec[pid] = nowSecArg;
+                return;
+            }
+            const double cadence = (state == "run") ? 0.30 : 0.50;
+            auto it = playerLastFootstepAtSec.find(pid);
+            if (it == playerLastFootstepAtSec.end()) {
+                playerLastFootstepAtSec[pid] = nowSecArg;
+                return;
+            }
+            if (nowSecArg - it->second < cadence) return;
+
+            // xorshift32 — fast non-cryptographic PRNG for variant selection.
+            auto& seed = playerFootstepRng[pid];
+            if (seed == 0) seed = pid * 2654435761u + 1u;  // splittable mix; never 0
+            seed ^= seed << 13;
+            seed ^= seed >> 17;
+            seed ^= seed << 5;
+
+            const std::size_t variant = seed % footstepSfx.size();
+            audio.playSoundAt(footstepSfx[variant], footPos, 0.4f);
+            it->second = nowSecArg;
         };
 
         if (peers.isHost()) {
@@ -2260,12 +2301,16 @@ int main(int argc, char** argv) {
                 // Authoritative grounded flag lives on PlayerState (the
                 // host-side sim writes it each tick).
                 if (foxReady) {
-                    submitPlayerFox(pid,
-                                    iron::Vec3{state.x, state.y, state.z},
-                                    iron::Vec3{state.vx, state.vy, state.vz},
-                                    state.grounded,
-                                    state.yaw,
-                                    dt);
+                    const std::string_view st = submitPlayerFox(
+                        pid,
+                        iron::Vec3{state.x, state.y, state.z},
+                        iron::Vec3{state.vx, state.vy, state.vz},
+                        state.grounded,
+                        state.yaw,
+                        dt);
+                    maybeEmitFootstep(pid,
+                                      iron::Vec3{state.x, state.y, state.z},
+                                      st, nowSec());
                 } else {
                     submitPlayerCube(pid, iron::Vec3{state.x, state.y, state.z});
                 }
@@ -2303,7 +2348,9 @@ int main(int argc, char** argv) {
                 playerPrevPos[pid] = cur;  // keep updated for the next frame's grounded check
 
                 if (foxReady) {
-                    submitPlayerFox(pid, cur, velocity, grounded, remote.yaw, dt);
+                    const std::string_view st = submitPlayerFox(
+                        pid, cur, velocity, grounded, remote.yaw, dt);
+                    maybeEmitFootstep(pid, cur, st, nowSec());
                 } else {
                     submitPlayerCube(pid, cur);
                 }
