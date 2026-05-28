@@ -644,4 +644,11 @@ std::optional<MeshData> loadGltfMesh(const std::string& path) {
     return std::move(model->mesh);
 }
 
+const AnimationClip* GltfModel::findClip(std::string_view name) const {
+    for (const auto& clip : animations) {
+        if (clip.name == name) return &clip;
+    }
+    return nullptr;
+}
+
 }  // namespace iron

@@ -104,6 +104,24 @@ int main() {
         }
     }
 
+    // --- M25: findClip looks up an animation clip by name. RiggedSimple's
+    //     one animation has an empty name in the glTF; exact-match lookup
+    //     must still succeed (forces real string-equality, not a "name
+    //     non-empty" shortcut). A miss returns nullptr.
+    {
+        auto model = loadGltfModel(base + "/RiggedSimple.gltf");
+        CHECK(model.has_value());
+        if (model.has_value()) {
+            CHECK(!model->animations.empty());
+            if (!model->animations.empty()) {
+                const std::string& name = model->animations[0].name;
+                const AnimationClip* found = model->findClip(name);
+                CHECK(found == &model->animations[0]);
+                CHECK(model->findClip("does-not-exist") == nullptr);
+            }
+        }
+    }
+
     // --- Triangle.gltf: the Khronos sample has only POSITION + indices, no
     //     NORMAL. Our loader requires NORMAL, so this must return nullopt.
     //     This exercises the "missing required attribute" error path.
