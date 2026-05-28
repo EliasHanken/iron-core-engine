@@ -1627,9 +1627,12 @@ int main(int argc, char** argv) {
                 in.vz   = moveDir.z * kMoveSpeed;
                 in.jump = jumpPending;
                 jumpPending = false;  // consumed
+                // M27 — capture pre-jump grounded state so the SFX only fires
+                // on a real takeoff. Without this, spamming Space in the air
+                // would play jump every input tick.
+                const bool wasGrounded = predictor.predictedState().grounded;
                 const auto inputId = predictor.applyInput(in);
-                // M27 — local jump SFX at the local foot position.
-                if (in.jump) {
+                if (in.jump && wasGrounded) {
                     const auto& p = predictor.predictedState();
                     audio.playSoundAt(jumpSfx,
                                       iron::Vec3{p.x, p.y, p.z},
