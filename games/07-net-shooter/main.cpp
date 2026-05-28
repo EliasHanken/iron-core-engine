@@ -1282,17 +1282,25 @@ int main(int argc, char** argv) {
             // predictor for ourselves, or the interpolated remote sample
             // otherwise (the host path takes a different code route — see
             // the host-inline damage sites).
-            iron::Vec3 victimPos{0.0f, 0.0f, 0.0f};
-            if (msg.victimPeerId == peers.myPeerId()) {
-                const auto& p = predictor.predictedState();
-                victimPos = iron::Vec3{p.x, p.y, p.z};
-            } else if (auto it = remotes.find(msg.victimPeerId); it != remotes.end()) {
-                auto sample = it->second.positionHistory.sampleAtDelay(kDisplayDelay);
-                if (sample) victimPos = *sample;
-            }
-            audio.playSoundAt(hitSfx, victimPos, 0.8f);
-            if (msg.victimHpAfter == 0) {
-                audio.playSoundAt(deathSfx, victimPos, 1.0f);
+            // M27 fixup — non-positional when the local listener is the victim.
+            // Client path: self is peers.myPeerId().
+            const std::uint32_t myIdDmg = peers.isHost() ? 0u : peers.myPeerId();
+            const bool victimIsSelf = msg.victimPeerId == myIdDmg;
+            if (victimIsSelf) {
+                audio.playSoundLocal(hitSfx, 0.8f);
+                if (msg.victimHpAfter == 0) {
+                    audio.playSoundLocal(deathSfx, 1.0f);
+                }
+            } else {
+                iron::Vec3 victimPos{0.0f, 0.0f, 0.0f};
+                if (auto it = remotes.find(msg.victimPeerId); it != remotes.end()) {
+                    auto sample = it->second.positionHistory.sampleAtDelay(kDisplayDelay);
+                    if (sample) victimPos = *sample;
+                }
+                audio.playSoundAt(hitSfx, victimPos, 0.8f);
+                if (msg.victimHpAfter == 0) {
+                    audio.playSoundAt(deathSfx, victimPos, 1.0f);
+                }
             }
         });
 
@@ -1384,14 +1392,25 @@ int main(int argc, char** argv) {
 
             // M27 — host plays hit/death SFX at victim's authoritative pos
             // (mirrors client DamageMsg handler).
+            // M27 fixup — non-positional when the host itself is the victim
+            // (a remote shooter hit the host); host's self pid is 0.
             {
-                iron::Vec3 victimPosSfx{0.0f, 0.0f, 0.0f};
-                if (auto ait = authStates.find(dm.victimPeerId); ait != authStates.end()) {
-                    victimPosSfx = iron::Vec3{ait->second.x, ait->second.y, ait->second.z};
-                }
-                audio.playSoundAt(hitSfx, victimPosSfx, 0.8f);
-                if (dm.victimHpAfter == 0) {
-                    audio.playSoundAt(deathSfx, victimPosSfx, 1.0f);
+                const std::uint32_t myIdHostHit = peers.isHost() ? 0u : peers.myPeerId();
+                const bool victimIsSelf = dm.victimPeerId == myIdHostHit;
+                if (victimIsSelf) {
+                    audio.playSoundLocal(hitSfx, 0.8f);
+                    if (dm.victimHpAfter == 0) {
+                        audio.playSoundLocal(deathSfx, 1.0f);
+                    }
+                } else {
+                    iron::Vec3 victimPosSfx{0.0f, 0.0f, 0.0f};
+                    if (auto ait = authStates.find(dm.victimPeerId); ait != authStates.end()) {
+                        victimPosSfx = iron::Vec3{ait->second.x, ait->second.y, ait->second.z};
+                    }
+                    audio.playSoundAt(hitSfx, victimPosSfx, 0.8f);
+                    if (dm.victimHpAfter == 0) {
+                        audio.playSoundAt(deathSfx, victimPosSfx, 1.0f);
+                    }
                 }
             }
 
@@ -1633,10 +1652,9 @@ int main(int argc, char** argv) {
                 const bool wasGrounded = predictor.predictedState().grounded;
                 const auto inputId = predictor.applyInput(in);
                 if (in.jump && wasGrounded) {
-                    const auto& p = predictor.predictedState();
-                    audio.playSoundAt(jumpSfx,
-                                      iron::Vec3{p.x, p.y, p.z},
-                                      0.5f);
+                    // M27 fixup — self-sourced ego sound: play non-
+                    // positionally so it stays centered as the listener moves.
+                    audio.playSoundLocal(jumpSfx, 0.5f);
                 }
 
                 if (peers.isHost()) {
@@ -1714,7 +1732,8 @@ int main(int argc, char** argv) {
                                        muzzle.z + dir.z * kTracerLengthM},
                             localNow});
                         // M27 — host's own gunshot SFX (mirrors client local SFX).
-                        audio.playSoundAt(gunshotSfx, muzzle, 1.0f);
+                        // M27 fixup — self-sourced ego sound: non-positional.
+                        audio.playSoundLocal(gunshotSfx, 1.0f);
                         // Inline host hitscan resolution
                         std::vector<std::uint32_t> alivePeers;
                         for (const auto& [p, hp] : hostPlayers) {
@@ -1736,14 +1755,25 @@ int main(int argc, char** argv) {
                                 peers.broadcastToAll<iron::netshooter::DamageMsg>(
                                     dm, iron::SendReliability::Reliable);
                                 // M27 — host hit/death SFX at victim pos.
+                                // M27 fixup — if the victim is the local
+                                // listener (host = pid 0), play non-positionally.
                                 {
-                                    iron::Vec3 victimPosSfx{0.0f, 0.0f, 0.0f};
-                                    if (auto ait = authStates.find(dm.victimPeerId); ait != authStates.end()) {
-                                        victimPosSfx = iron::Vec3{ait->second.x, ait->second.y, ait->second.z};
-                                    }
-                                    audio.playSoundAt(hitSfx, victimPosSfx, 0.8f);
-                                    if (dm.victimHpAfter == 0) {
-                                        audio.playSoundAt(deathSfx, victimPosSfx, 1.0f);
+                                    const std::uint32_t localId = peers.isHost() ? 0u : peers.myPeerId();
+                                    const bool victimIsSelf = dm.victimPeerId == localId;
+                                    if (victimIsSelf) {
+                                        audio.playSoundLocal(hitSfx, 0.8f);
+                                        if (dm.victimHpAfter == 0) {
+                                            audio.playSoundLocal(deathSfx, 1.0f);
+                                        }
+                                    } else {
+                                        iron::Vec3 victimPosSfx{0.0f, 0.0f, 0.0f};
+                                        if (auto ait = authStates.find(dm.victimPeerId); ait != authStates.end()) {
+                                            victimPosSfx = iron::Vec3{ait->second.x, ait->second.y, ait->second.z};
+                                        }
+                                        audio.playSoundAt(hitSfx, victimPosSfx, 0.8f);
+                                        if (dm.victimHpAfter == 0) {
+                                            audio.playSoundAt(deathSfx, victimPosSfx, 1.0f);
+                                        }
                                     }
                                 }
                                 if (!iron::isAlive(vit->second.hp)) {
@@ -1795,7 +1825,8 @@ int main(int argc, char** argv) {
                                 localNow});
                             peers.send<iron::netshooter::FireHitscanMsg>(
                                 0u, *opt, iron::SendReliability::Reliable);
-                            audio.playSoundAt(gunshotSfx, muzzle, 1.0f);
+                            // M27 fixup — self-sourced ego sound: non-positional.
+                            audio.playSoundLocal(gunshotSfx, 1.0f);
                         }
                     }
                 } else {
@@ -1827,7 +1858,8 @@ int main(int argc, char** argv) {
                                 },
                                 iron::SendReliability::Reliable);
                             // M27 — host's own rocket-launch SFX.
-                            audio.playSoundAt(rocketLaunchSfx, muzzle, 0.9f);
+                            // M27 fixup — self-sourced ego sound: non-positional.
+                            audio.playSoundLocal(rocketLaunchSfx, 0.9f);
                         }
                     } else {
                         auto opt = iron::netshooter::tryFireRocketClient(
@@ -1835,7 +1867,8 @@ int main(int argc, char** argv) {
                         if (opt) {
                             peers.send<iron::netshooter::FireRocketMsg>(
                                 0u, *opt, iron::SendReliability::Reliable);
-                            audio.playSoundAt(rocketLaunchSfx, muzzle, 0.9f);
+                            // M27 fixup — self-sourced ego sound: non-positional.
+                            audio.playSoundLocal(rocketLaunchSfx, 0.9f);
                         }
                     }
                 }
@@ -1924,14 +1957,25 @@ int main(int argc, char** argv) {
                         peers.broadcastToAll<iron::netshooter::DamageMsg>(
                             dmsg, iron::SendReliability::Reliable);
                         // M27 — host hit/death SFX for rocket splash.
+                        // M27 fixup — non-positional if the local listener is
+                        // the victim (host's own pid is 0).
                         {
-                            iron::Vec3 victimPosSfx{0.0f, 0.0f, 0.0f};
-                            if (auto ait = authStates.find(pid); ait != authStates.end()) {
-                                victimPosSfx = iron::Vec3{ait->second.x, ait->second.y, ait->second.z};
-                            }
-                            audio.playSoundAt(hitSfx, victimPosSfx, 0.8f);
-                            if (dmsg.victimHpAfter == 0) {
-                                audio.playSoundAt(deathSfx, victimPosSfx, 1.0f);
+                            const std::uint32_t myIdSplash = peers.isHost() ? 0u : peers.myPeerId();
+                            const bool victimIsSelf = pid == myIdSplash;
+                            if (victimIsSelf) {
+                                audio.playSoundLocal(hitSfx, 0.8f);
+                                if (dmsg.victimHpAfter == 0) {
+                                    audio.playSoundLocal(deathSfx, 1.0f);
+                                }
+                            } else {
+                                iron::Vec3 victimPosSfx{0.0f, 0.0f, 0.0f};
+                                if (auto ait = authStates.find(pid); ait != authStates.end()) {
+                                    victimPosSfx = iron::Vec3{ait->second.x, ait->second.y, ait->second.z};
+                                }
+                                audio.playSoundAt(hitSfx, victimPosSfx, 0.8f);
+                                if (dmsg.victimHpAfter == 0) {
+                                    audio.playSoundAt(deathSfx, victimPosSfx, 1.0f);
+                                }
                             }
                         }
 
@@ -2265,7 +2309,8 @@ int main(int argc, char** argv) {
         // idle resets the timer so the next step plays immediately on movement
         // resume (no half-second delay after starting to walk).
         auto maybeEmitFootstep = [&](std::uint32_t pid, const iron::Vec3& footPos,
-                                      std::string_view state, double nowSecArg) {
+                                      std::string_view state, double nowSecArg,
+                                      bool isLocalPlayer) {
             if (state != "walk" && state != "run") {
                 playerLastFootstepAtSec[pid] = nowSecArg;
                 return;
@@ -2286,7 +2331,14 @@ int main(int argc, char** argv) {
             seed ^= seed << 5;
 
             const std::size_t variant = seed % footstepSfx.size();
-            audio.playSoundAt(footstepSfx[variant], footPos, 0.4f);
+            // M27 fixup — local footsteps play non-positionally (ego sound,
+            // would otherwise pan with strafe due to listener-lag). Remote
+            // peers' footsteps stay 3D so you can hear them around you.
+            if (isLocalPlayer) {
+                audio.playSoundLocal(footstepSfx[variant], 0.4f);
+            } else {
+                audio.playSoundAt(footstepSfx[variant], footPos, 0.4f);
+            }
             it->second = nowSecArg;
         };
 
@@ -2318,7 +2370,8 @@ int main(int argc, char** argv) {
                 : speed < 0.3f  ? "idle"
                 : speed < 2.5f  ? "walk"
                 :                 "run";
-            maybeEmitFootstep(selfId, selfPos, std::string_view{selfState}, nowSec());
+            maybeEmitFootstep(selfId, selfPos, std::string_view{selfState}, nowSec(),
+                              /*isLocalPlayer=*/true);
         }
 
         if (peers.isHost()) {
@@ -2344,7 +2397,8 @@ int main(int argc, char** argv) {
                         dt);
                     maybeEmitFootstep(pid,
                                       iron::Vec3{state.x, state.y, state.z},
-                                      st, nowSec());
+                                      st, nowSec(),
+                                      /*isLocalPlayer=*/false);
                 } else {
                     submitPlayerCube(pid, iron::Vec3{state.x, state.y, state.z});
                 }
@@ -2384,7 +2438,8 @@ int main(int argc, char** argv) {
                 if (foxReady) {
                     const std::string_view st = submitPlayerFox(
                         pid, cur, velocity, grounded, remote.yaw, dt);
-                    maybeEmitFootstep(pid, cur, st, nowSec());
+                    maybeEmitFootstep(pid, cur, st, nowSec(),
+                                      /*isLocalPlayer=*/false);
                 } else {
                     submitPlayerCube(pid, cur);
                 }

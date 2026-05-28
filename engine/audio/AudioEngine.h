@@ -50,6 +50,13 @@ public:
     // No-op if `h == kInvalidSound` or the engine failed to init.
     void playSoundAt(SoundHandle h, Vec3 worldPos, float gain = 1.0f);
 
+    // Play `h` non-positionally (always centered at the listener with full
+    // stereo balance, regardless of listener pose). Use for first-person
+    // "ego sounds" — the local player's own gunshot, footsteps, jump, etc.
+    // — where 3D spatialization causes panning artifacts as the camera moves.
+    // No-op if `h == kInvalidSound` or the engine failed to init.
+    void playSoundLocal(SoundHandle h, float gain = 1.0f);
+
     // Update the listener (camera) state. Call once per frame before any
     // playSoundAt calls. `forward` and `up` are unit vectors describing
     // the listener's orientation; match the rendering camera.
