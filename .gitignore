@@ -1,5 +1,6 @@
 # Build output
 build/
+build-*/
 out/
 cmake-build-*/
 
@@ -23,9 +24,10 @@ CMakeUserPresets.json
 *.exp
 *.dll
 
-# Obsidian workspace state (keep the notes, ignore local UI state)
-.obsidian/workspace*
-.obsidian/cache
+# Local editor / harness state (user-specific, not for version control)
+.vscode/
+.obsidian/
+.claude/
 
 # OS
 Thumbs.db
