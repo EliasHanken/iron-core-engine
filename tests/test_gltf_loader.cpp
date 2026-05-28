@@ -80,6 +80,30 @@ int main() {
         }
     }
 
+    // --- M24: RiggedSimple.gltf has exactly one animation; at least one
+    //     rotation channel must resolve to a real bone.
+    {
+        auto model = loadGltfModel(base + "/RiggedSimple.gltf");
+        CHECK(model.has_value());
+        if (model.has_value()) {
+            CHECK(model->animations.size() == 1u);
+            if (!model->animations.empty()) {
+                const auto& clip = model->animations[0];
+                CHECK(clip.duration > 0.0f);
+                CHECK(!clip.channels.empty());
+                CHECK(!clip.samplers.empty());
+                bool foundRot = false;
+                for (const auto& ch : clip.channels) {
+                    if (ch.targetBone >= 0 && ch.path == AnimationPath::Rotation) {
+                        foundRot = true;
+                        break;
+                    }
+                }
+                CHECK(foundRot);
+            }
+        }
+    }
+
     // --- Triangle.gltf: the Khronos sample has only POSITION + indices, no
     //     NORMAL. Our loader requires NORMAL, so this must return nullopt.
     //     This exercises the "missing required attribute" error path.

@@ -2,6 +2,7 @@
 // All tinygltf types live in this translation unit; the public header
 // only exposes engine types (MeshData, std::optional, std::string).
 
+#include "asset/Animation.h"
 #include "asset/GltfLoader.h"
 #include "core/Log.h"
 #include "math/Transform.h"   // for iron::translation
@@ -15,10 +16,13 @@
 #define TINYGLTF_NO_EXTERNAL_IMAGE
 #include <tiny_gltf.h>
 
+#include <algorithm>
 #include <array>
 #include <cstdint>
 #include <cstring>
 #include <filesystem>
+#include <unordered_map>
+#include <utility>
 
 namespace iron {
 
@@ -216,6 +220,45 @@ std::vector<Mat4> readMat4Accessor(const tinygltf::Model& model, int accessorIdx
     return out;
 }
 
+// M24: read a float accessor of any SCALAR/VEC2/VEC3/VEC4 type into a
+// packed std::vector<float>. Used by animation sampler inputs (SCALAR
+// timestamps) and outputs (VEC3 for T/S, VEC4 for R). Component count
+// is implicit in `accessor.type` and the result has `count * comps`
+// floats.
+bool readPackedFloatAccessor(const tinygltf::Model& m, int accessorIndex,
+                             std::vector<float>& out) {
+    if (accessorIndex < 0 ||
+        accessorIndex >= static_cast<int>(m.accessors.size())) {
+        return false;
+    }
+    const auto& a = m.accessors[accessorIndex];
+    if (a.componentType != TINYGLTF_COMPONENT_TYPE_FLOAT) return false;
+    int comps = 0;
+    switch (a.type) {
+        case TINYGLTF_TYPE_SCALAR: comps = 1; break;
+        case TINYGLTF_TYPE_VEC2:   comps = 2; break;
+        case TINYGLTF_TYPE_VEC3:   comps = 3; break;
+        case TINYGLTF_TYPE_VEC4:   comps = 4; break;
+        default: return false;
+    }
+    if (a.bufferView < 0 ||
+        a.bufferView >= static_cast<int>(m.bufferViews.size())) {
+        return false;
+    }
+    const auto& bv  = m.bufferViews[a.bufferView];
+    const auto& buf = m.buffers[bv.buffer];
+    const std::size_t elemBytes = static_cast<std::size_t>(comps) * sizeof(float);
+    const std::size_t stride    = a.ByteStride(bv) ? static_cast<std::size_t>(a.ByteStride(bv))
+                                                   : elemBytes;
+    const std::uint8_t* base =
+        buf.data.data() + bv.byteOffset + a.byteOffset;
+    out.resize(a.count * static_cast<std::size_t>(comps));
+    for (std::size_t i = 0; i < a.count; ++i) {
+        std::memcpy(&out[i * comps], base + i * stride, elemBytes);
+    }
+    return true;
+}
+
 }  // namespace
 
 std::optional<GltfModel> loadGltfModel(const std::string& path) {
@@ -373,7 +416,11 @@ std::optional<GltfModel> loadGltfModel(const std::string& path) {
 
     // M23 - skinned mesh data. Populated only if the primitive has
     // JOINTS_0/WEIGHTS_0 AND the host node references a skin.
+    //
+    // M24 also needs a node-index -> bone-index map to resolve animation
+    // channel targets. It's populated below alongside skeleton construction.
     std::optional<SkinnedMeshData> skinnedMesh;
+    std::unordered_map<int, int>   nodeToBone;
     auto jointsIt  = prim.attributes.find("JOINTS_0");
     auto weightsIt = prim.attributes.find("WEIGHTS_0");
     const bool hasSkinAttrs =
@@ -421,9 +468,14 @@ std::optional<GltfModel> loadGltfModel(const std::string& path) {
                 }
 
                 // Build the Skeleton: one Bone per skin.joints entry.
+                // Also populate nodeToBone so animation channels can resolve
+                // their target node to a bone index.
                 sm.skeleton.bones.reserve(skin.joints.size());
                 for (std::size_t i = 0; i < skin.joints.size(); ++i) {
                     const int jointNodeIdx = skin.joints[i];
+                    if (jointNodeIdx >= 0) {
+                        nodeToBone.emplace(jointNodeIdx, static_cast<int>(i));
+                    }
                     Bone b;
                     b.inverseBindMatrix  = invBinds[i];
                     b.localBindTransform = Mat4::identity();
@@ -476,14 +528,113 @@ std::optional<GltfModel> loadGltfModel(const std::string& path) {
         }
     }
 
+    // --- M24: animations ---------------------------------------------------
+    // Parse every animation clip. Channels whose target node isn't in
+    // nodeToBone get targetBone = -1 (player skips them). CUBICSPLINE
+    // samplers are downgraded to LINEAR with a one-time warning;
+    // 'weights' (morph) channels are skipped with a one-time warning.
+    std::vector<AnimationClip> animations;
+    {
+        bool warnedCubicSpline = false;
+        bool warnedWeightsPath = false;
+        animations.reserve(model.animations.size());
+        for (const auto& gltfAnim : model.animations) {
+            AnimationClip clip;
+            clip.name = gltfAnim.name;
+
+            clip.samplers.reserve(gltfAnim.samplers.size());
+            for (const auto& gs : gltfAnim.samplers) {
+                AnimationSampler samp;
+                if (gs.interpolation == "STEP") {
+                    samp.interpolation = AnimationInterpolation::Step;
+                } else if (gs.interpolation == "CUBICSPLINE") {
+                    samp.interpolation = AnimationInterpolation::Linear;
+                    if (!warnedCubicSpline) {
+                        Log::warn("GltfLoader: CUBICSPLINE interpolation "
+                                  "not supported; downgrading to LINEAR");
+                        warnedCubicSpline = true;
+                    }
+                } else {
+                    samp.interpolation = AnimationInterpolation::Linear;
+                }
+                // On failure we still push an empty sampler so that channel
+                // samplerIndex values (which are absolute indices from the
+                // glTF file) stay aligned with clip.samplers. The player's
+                // sample functions early-return identity/zero for empty
+                // samplers, so this is safe.
+                if (!readPackedFloatAccessor(model, gs.input, samp.inputs)) {
+                    Log::warn("GltfLoader: animation sampler has unreadable "
+                              "input accessor; keeping empty sampler to "
+                              "preserve channel indices");
+                    samp.inputs.clear();
+                    samp.outputs.clear();
+                    clip.samplers.push_back(std::move(samp));
+                    continue;
+                }
+                if (!readPackedFloatAccessor(model, gs.output, samp.outputs)) {
+                    Log::warn("GltfLoader: animation sampler has unreadable "
+                              "output accessor; keeping empty sampler to "
+                              "preserve channel indices");
+                    samp.inputs.clear();
+                    samp.outputs.clear();
+                    clip.samplers.push_back(std::move(samp));
+                    continue;
+                }
+                clip.samplers.push_back(std::move(samp));
+            }
+
+            clip.channels.reserve(gltfAnim.channels.size());
+            for (const auto& gc : gltfAnim.channels) {
+                AnimationChannel ch;
+                ch.samplerIndex = gc.sampler;
+
+                const std::string& p = gc.target_path;
+                if (p == "translation") {
+                    ch.path = AnimationPath::Translation;
+                } else if (p == "rotation") {
+                    ch.path = AnimationPath::Rotation;
+                } else if (p == "scale") {
+                    ch.path = AnimationPath::Scale;
+                } else if (p == "weights") {
+                    if (!warnedWeightsPath) {
+                        Log::warn("GltfLoader: animation 'weights' path "
+                                  "not supported; skipping channel");
+                        warnedWeightsPath = true;
+                    }
+                    continue;
+                } else {
+                    Log::warn("GltfLoader: animation has unknown target "
+                              "path '%s'; skipping channel", p.c_str());
+                    continue;
+                }
+
+                auto it = nodeToBone.find(gc.target_node);
+                ch.targetBone = (it != nodeToBone.end()) ? it->second : -1;
+                clip.channels.push_back(ch);
+            }
+
+            clip.duration = 0.0f;
+            for (const auto& samp : clip.samplers) {
+                if (!samp.inputs.empty()) {
+                    clip.duration = std::max(clip.duration, samp.inputs.back());
+                }
+            }
+
+            animations.push_back(std::move(clip));
+        }
+    }
+
     GltfModel result;
     result.mesh = std::move(out);
     result.materialPaths = std::move(matPaths);
     result.skinnedMesh = std::move(skinnedMesh);
+    result.animations = std::move(animations);
 
-    Log::info("GltfLoader: loaded %s - %zu verts, %zu indices%s",
+    Log::info("GltfLoader: loaded %s - %zu verts, %zu indices%s (%zu anim%s)",
               path.c_str(), result.mesh.vertices.size(), result.mesh.indices.size(),
-              result.skinnedMesh.has_value() ? " (skinned)" : "");
+              result.skinnedMesh.has_value() ? " (skinned)" : "",
+              result.animations.size(),
+              result.animations.size() == 1 ? "" : "s");
     return result;
 }
 

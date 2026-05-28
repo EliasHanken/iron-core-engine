@@ -57,5 +57,43 @@ int main() {
     CHECK_NEAR(mxr.y, 0.0f);
     CHECK_NEAR(mxr.z, 1.0f);
 
+    // slerp at t=0 returns a, at t=1 returns b.
+    {
+        const Quat a = Quat::fromAxisAngle(Vec3{0.0f, 1.0f, 0.0f}, 0.0f);
+        const Quat b = Quat::fromAxisAngle(Vec3{0.0f, 1.0f, 0.0f}, 1.5f);
+        const Quat r0 = Quat::slerp(a, b, 0.0f);
+        const Quat r1 = Quat::slerp(a, b, 1.0f);
+        CHECK_NEAR(r0.x, a.x);
+        CHECK_NEAR(r0.y, a.y);
+        CHECK_NEAR(r0.z, a.z);
+        CHECK_NEAR(r0.w, a.w);
+        CHECK_NEAR(r1.x, b.x);
+        CHECK_NEAR(r1.y, b.y);
+        CHECK_NEAR(r1.z, b.z);
+        CHECK_NEAR(r1.w, b.w);
+    }
+
+    // slerp halfway between two Y-axis rotations equals the half-angle rotation.
+    {
+        const Quat a = Quat::fromAxisAngle(Vec3{0.0f, 1.0f, 0.0f}, 0.0f);
+        const Quat b = Quat::fromAxisAngle(Vec3{0.0f, 1.0f, 0.0f}, 1.0f);
+        const Quat mid = Quat::slerp(a, b, 0.5f);
+        const Quat expected = Quat::fromAxisAngle(Vec3{0.0f, 1.0f, 0.0f}, 0.5f);
+        CHECK_NEAR(mid.x, expected.x);
+        CHECK_NEAR(mid.y, expected.y);
+        CHECK_NEAR(mid.z, expected.z);
+        CHECK_NEAR(mid.w, expected.w);
+    }
+
+    // slerp takes the shortest arc: a and -a are the same rotation, so the
+    // halfway point along the short arc is a itself (up to sign).
+    {
+        const Quat a{0.0f, 0.7071f, 0.0f, 0.7071f};
+        const Quat negA{-a.x, -a.y, -a.z, -a.w};
+        const Quat mid = Quat::slerp(a, negA, 0.5f);
+        CHECK_NEAR(std::fabs(mid.x), std::fabs(a.x));
+        CHECK_NEAR(std::fabs(mid.w), std::fabs(a.w));
+    }
+
     return iron_test_result();
 }

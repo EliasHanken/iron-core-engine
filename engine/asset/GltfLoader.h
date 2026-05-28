@@ -1,10 +1,12 @@
 #pragma once
 
+#include "asset/Animation.h"
 #include "scene/Mesh.h"
 #include "scene/SkinnedMesh.h"
 
 #include <optional>
 #include <string>
+#include <vector>
 
 namespace iron {
 
@@ -23,6 +25,7 @@ struct GltfModel {
     MeshData                       mesh;
     GltfMaterialPaths              materialPaths;
     std::optional<SkinnedMeshData> skinnedMesh;  // populated if glTF has a skin
+    std::vector<AnimationClip>     animations;   // empty if file has no animations
 };
 
 // Load mesh + material texture paths from a glTF or GLB file.

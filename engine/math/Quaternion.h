@@ -44,6 +44,9 @@ struct Quat {
         return v + t * q.w + cross(u, t);
     }
 
+    // Shortest-arc spherical linear interpolation between two rotations.
+    static Quat slerp(const Quat& a, const Quat& b, float t);
+
     // Equivalent rotation as a column-major 4x4 matrix.
     Mat4 toMat4() const {
         const Quat q = normalized();
@@ -72,6 +75,44 @@ constexpr Quat operator*(const Quat& a, const Quat& b) {
         a.w * b.y - a.x * b.z + a.y * b.w + a.z * b.x,
         a.w * b.z + a.x * b.y - a.y * b.x + a.z * b.w,
         a.w * b.w - a.x * b.x - a.y * b.y - a.z * b.z,
+    };
+}
+
+constexpr float dot(const Quat& a, const Quat& b) {
+    return a.x * b.x + a.y * b.y + a.z * b.z + a.w * b.w;
+}
+
+inline Quat Quat::slerp(const Quat& a, const Quat& b, float t) {
+    // Pick the shorter arc by flipping `b` if the dot product is negative —
+    // a and -a represent the same rotation, so this avoids going the long way.
+    float d = dot(a, b);
+    Quat b2 = b;
+    if (d < 0.0f) {
+        b2 = Quat{-b.x, -b.y, -b.z, -b.w};
+        d = -d;
+    }
+    // For nearly-parallel inputs, fall back to nlerp to avoid div-by-zero
+    // when sin(theta0) ~ 0.
+    if (d > 0.9995f) {
+        Quat r{
+            a.x + t * (b2.x - a.x),
+            a.y + t * (b2.y - a.y),
+            a.z + t * (b2.z - a.z),
+            a.w + t * (b2.w - a.w),
+        };
+        return r.normalized();
+    }
+    const float theta0 = std::acos(d);
+    const float theta = theta0 * t;
+    const float sinTheta = std::sin(theta);
+    const float sinTheta0 = std::sin(theta0);
+    const float s0 = std::cos(theta) - d * sinTheta / sinTheta0;
+    const float s1 = sinTheta / sinTheta0;
+    return Quat{
+        s0 * a.x + s1 * b2.x,
+        s0 * a.y + s1 * b2.y,
+        s0 * a.z + s1 * b2.z,
+        s0 * a.w + s1 * b2.w,
     };
 }
 
