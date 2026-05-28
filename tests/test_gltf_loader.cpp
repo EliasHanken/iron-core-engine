@@ -122,12 +122,47 @@ int main() {
         }
     }
 
-    // --- Triangle.gltf: the Khronos sample has only POSITION + indices, no
-    //     NORMAL. Our loader requires NORMAL, so this must return nullopt.
-    //     This exercises the "missing required attribute" error path.
+    // --- M25 Task 3a: Triangle.gltf has POSITION + indices but no NORMAL.
+    //     The loader now synthesizes flat-shaded normals from geometry, so
+    //     the load must succeed and produce a unit-length normal.
     {
         auto data = loadGltfMesh(base + "/Triangle.gltf");
-        CHECK(!data.has_value());
+        CHECK(data.has_value());
+        if (data.has_value()) {
+            CHECK(data->vertices.size() == 3u);
+            CHECK(data->indices.size() == 3u);
+            for (const auto& v : data->vertices) {
+                const float len = std::sqrt(v.normal.x * v.normal.x +
+                                            v.normal.y * v.normal.y +
+                                            v.normal.z * v.normal.z);
+                CHECK(std::fabs(len - 1.0f) < 1e-3f);
+            }
+        }
+    }
+
+    // --- M25 Task 3a: Fox.glb (Khronos CC0 sample) is a non-indexed mesh
+    //     with no NORMAL attribute - it exercises BOTH synthesis paths at
+    //     once (sequential index buffer + computed flat-shaded normals).
+    //     Indices count should match vertex count (identity buffer) and
+    //     normals should be unit-length.
+    {
+        auto model = loadGltfModel(base + "/Fox.glb");
+        CHECK(model.has_value());
+        if (model.has_value()) {
+            CHECK(model->mesh.vertices.size() > 0u);
+            CHECK(model->mesh.indices.size() > 0u);
+            CHECK(model->mesh.indices.size() % 3u == 0u);
+            // Non-indexed source -> synthesized identity index buffer ->
+            // indices.size() == vertices.size().
+            CHECK(model->mesh.indices.size() == model->mesh.vertices.size());
+            const std::size_t check = std::min<std::size_t>(
+                model->mesh.vertices.size(), 10u);
+            for (std::size_t i = 0; i < check; ++i) {
+                const auto& n = model->mesh.vertices[i].normal;
+                const float len = std::sqrt(n.x * n.x + n.y * n.y + n.z * n.z);
+                CHECK(std::fabs(len - 1.0f) < 1e-3f);
+            }
+        }
     }
 
     // --- Invalid path returns nullopt (parse failure path).

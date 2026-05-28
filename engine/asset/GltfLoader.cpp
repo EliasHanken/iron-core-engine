@@ -18,6 +18,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cmath>
 #include <cstdint>
 #include <cstring>
 #include <filesystem>
@@ -220,6 +221,55 @@ std::vector<Mat4> readMat4Accessor(const tinygltf::Model& model, int accessorIdx
     return out;
 }
 
+// M25 Task 3a: synthesize an identity index buffer (0, 1, 2, ..., n-1)
+// for non-indexed primitives. glTF allows omitting `indices`; this lets the
+// rest of the engine assume an indexed pipeline without a separate
+// non-indexed path.
+std::vector<std::uint32_t> synthesizeSequentialIndices(std::size_t vertexCount) {
+    std::vector<std::uint32_t> out(vertexCount);
+    for (std::size_t i = 0; i < vertexCount; ++i) {
+        out[i] = static_cast<std::uint32_t>(i);
+    }
+    return out;
+}
+
+// M25 Task 3a: compute per-vertex normals by summing each incident
+// triangle's face normal and normalizing. For non-indexed meshes (where
+// every vertex belongs to exactly one triangle) this degenerates to flat
+// shading - which is what you want when the source asset deliberately
+// omits NORMAL.
+std::vector<Vec3> computeNormalsFromIndices(const std::vector<Vec3>& positions,
+                                            const std::vector<std::uint32_t>& indices) {
+    std::vector<Vec3> normals(positions.size(), Vec3{0.0f, 0.0f, 0.0f});
+    for (std::size_t i = 0; i + 2 < indices.size(); i += 3) {
+        const std::uint32_t i0 = indices[i + 0];
+        const std::uint32_t i1 = indices[i + 1];
+        const std::uint32_t i2 = indices[i + 2];
+        if (i0 >= positions.size() || i1 >= positions.size() ||
+            i2 >= positions.size()) {
+            continue;
+        }
+        const Vec3 e1 = positions[i1] - positions[i0];
+        const Vec3 e2 = positions[i2] - positions[i0];
+        const Vec3 faceNormal = cross(e1, e2);
+        normals[i0] = normals[i0] + faceNormal;
+        normals[i1] = normals[i1] + faceNormal;
+        normals[i2] = normals[i2] + faceNormal;
+    }
+    for (auto& n : normals) {
+        const float len2 = n.x * n.x + n.y * n.y + n.z * n.z;
+        if (len2 > 1e-12f) {
+            const float inv = 1.0f / std::sqrt(len2);
+            n.x *= inv;
+            n.y *= inv;
+            n.z *= inv;
+        } else {
+            n = Vec3{0.0f, 1.0f, 0.0f};  // degenerate triangle fallback
+        }
+    }
+    return normals;
+}
+
 // M24: read a float accessor of any SCALAR/VEC2/VEC3/VEC4 type into a
 // packed std::vector<float>. Used by animation sampler inputs (SCALAR
 // timestamps) and outputs (VEC3 for T/S, VEC4 for R). Component count
@@ -334,20 +384,15 @@ std::optional<GltfModel> loadGltfModel(const std::string& path) {
     const auto& prim = mesh.primitives[0];
 
     auto posIt = prim.attributes.find("POSITION");
-    auto nrmIt = prim.attributes.find("NORMAL");
-    if (posIt == prim.attributes.end() || nrmIt == prim.attributes.end() ||
-        prim.indices < 0) {
-        Log::error("GltfLoader: primitive missing POSITION/NORMAL/indices");
+    if (posIt == prim.attributes.end()) {
+        Log::error("GltfLoader: primitive missing POSITION");
         return std::nullopt;
     }
-
     const auto positions = readVec3Accessor(model, posIt->second);
-    const auto normals   = readVec3Accessor(model, nrmIt->second);
-    if (positions.empty() || normals.empty() || positions.size() != normals.size()) {
-        Log::error("GltfLoader: position/normal accessor read failed or mismatch");
+    if (positions.empty()) {
+        Log::error("GltfLoader: position accessor read failed or empty");
         return std::nullopt;
     }
-
     const std::size_t n = positions.size();
 
     std::vector<Vec2> uvs;
@@ -364,10 +409,46 @@ std::optional<GltfModel> loadGltfModel(const std::string& path) {
         if (tangents.size() != n) tangents.clear();
     }
 
-    auto indices = readIndicesAccessor(model, prim.indices);
-    if (indices.empty()) {
-        Log::error("GltfLoader: index accessor read failed");
-        return std::nullopt;
+    // M25 Task 3a: indices may be absent (non-indexed primitives are legal
+    // per the glTF spec, e.g. Fox.glb). Read if present, synthesize
+    // 0..n-1 otherwise. We need indices BEFORE normals because the
+    // flat-shading fallback walks triangles via the index buffer.
+    std::vector<std::uint32_t> indices;
+    if (prim.indices >= 0) {
+        indices = readIndicesAccessor(model, prim.indices);
+        if (indices.empty()) {
+            Log::error("GltfLoader: index accessor present but unreadable");
+            return std::nullopt;
+        }
+    } else {
+        indices = synthesizeSequentialIndices(n);
+        Log::info(
+            "GltfLoader: synthesized sequential index buffer for non-indexed "
+            "primitive (%zu verts)",
+            n);
+    }
+
+    // M25 Task 3a: NORMAL may be absent (exporters frequently skip it).
+    // Read if present, compute flat-shaded normals from positions + indices
+    // otherwise. If the accessor's count mismatches POSITION we also
+    // recompute - the source is broken either way and a recomputed buffer
+    // beats a malformed one.
+    auto nrmIt = prim.attributes.find("NORMAL");
+    std::vector<Vec3> normals;
+    if (nrmIt != prim.attributes.end()) {
+        normals = readVec3Accessor(model, nrmIt->second);
+        if (normals.size() != n) {
+            Log::warn(
+                "GltfLoader: NORMAL accessor count %zu mismatches POSITION "
+                "count %zu; recomputing",
+                normals.size(), n);
+            normals = computeNormalsFromIndices(positions, indices);
+        }
+    } else {
+        Log::info(
+            "GltfLoader: NORMAL absent; computing flat-shaded normals from "
+            "geometry");
+        normals = computeNormalsFromIndices(positions, indices);
     }
 
     MeshData out;
