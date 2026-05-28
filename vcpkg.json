@@ -4,6 +4,7 @@
   "dependencies": [
     "gamenetworkingsockets",
     "joltphysics",
+    "openal-soft",
     "tinygltf",
     "vulkan-headers",
     "vulkan-loader",
