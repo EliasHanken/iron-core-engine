@@ -820,6 +820,13 @@ int main(int argc, char** argv) {
     constexpr float kPitchLimit = 1.45f;
     constexpr float kEyeHeight  = 0.5f;   // M27 — fox eye height above feet
 
+    // M27 fixup — death-cam state. When the player dies, the camera detaches
+    // from the predictor and enters a flying freecam (WASD + Space/Ctrl move
+    // position, mouse rotates). On respawn, freecam state is discarded.
+    bool       prevLocalDead = false;
+    iron::Vec3 deathCamPos{0.0f, 0.0f, 0.0f};
+    constexpr float kDeathCamSpeed = 6.0f;  // m/s
+
     // First-person camera: eyes at player position + eyeHeight.
     auto eyePos = [&]() {
         const iron::Vec3 p = myPos();
@@ -1612,23 +1619,61 @@ int main(int argc, char** argv) {
         const float xzLen = std::sqrt(moveDir.x * moveDir.x + moveDir.z * moveDir.z);
         if (xzLen > 1.0f) { moveDir.x /= xzLen; moveDir.z /= xzLen; }
 
+        // --- Local-death flag (visible to render scope too) ---------------
+        // Determine if local player is alive on host, and if so whether we
+        // should allow firing. On host we just check hostPlayers; on client
+        // we fire optimistically and let the host discard if dead.
+        // M27 fixup — hoisted out of the haveIdentity block so the render
+        // lambda can read it to drive the death-cam swap.
+        const bool localDead = peers.isHost()
+            ? (hostPlayers.count(0) && hostPlayers[0].respawnAtSec >= 0.0)
+            : false;
+
         // --- Input tick (~30 Hz) ----------------------------------------
         if (haveIdentity) {
-            // Determine if local player is alive on host, and if so whether we
-            // should allow firing. On host we just check hostPlayers; on client
-            // we fire optimistically and let the host discard if dead.
-            const bool localDead = peers.isHost()
-                ? (hostPlayers.count(0) && hostPlayers[0].respawnAtSec >= 0.0)
-                : false;
+
+            // M27 fixup — death-cam: on the alive->dead transition, snapshot
+            // the current eye as the freecam starting point. While dead,
+            // advance the freecam each frame from raw key input (no physics,
+            // no network). On respawn, freecam state is simply abandoned —
+            // next frame's eye comes from the predictor again.
+            if (localDead && !prevLocalDead) {
+                deathCamPos = eyePos();   // capture last-alive eye
+            }
+            if (localDead) {
+                // Reuse the existing moveDir (WASD projected onto yaw XZ plane).
+                iron::Vec3 freecamMove = moveDir;
+                if (glfwGetKey(window.handle(), GLFW_KEY_SPACE) == GLFW_PRESS) {
+                    freecamMove.y += 1.0f;
+                }
+                if (glfwGetKey(window.handle(), GLFW_KEY_LEFT_CONTROL) == GLFW_PRESS ||
+                    glfwGetKey(window.handle(), GLFW_KEY_LEFT_SHIFT)   == GLFW_PRESS) {
+                    freecamMove.y -= 1.0f;
+                }
+                const float fLen = std::sqrt(freecamMove.x * freecamMove.x
+                                           + freecamMove.y * freecamMove.y
+                                           + freecamMove.z * freecamMove.z);
+                if (fLen > 1.0f) {
+                    freecamMove.x /= fLen;
+                    freecamMove.y /= fLen;
+                    freecamMove.z /= fLen;
+                }
+                deathCamPos.x += freecamMove.x * kDeathCamSpeed * dt;
+                deathCamPos.y += freecamMove.y * kDeathCamSpeed * dt;
+                deathCamPos.z += freecamMove.z * kDeathCamSpeed * dt;
+            }
+            prevLocalDead = localDead;
 
             // M19 — edge-detected jump with sticky latch (M21 fixup).
             // The render loop usually runs faster than the 60 Hz input
             // ticker, so a single-frame jumpEdge can be missed if no
             // ticker callback fires that frame. Latch the press into
             // jumpPending and consume it inside the ticker callback.
+            // M27 fixup — gate on !localDead so Space-as-freecam-up doesn't
+            // silently queue a jump that fires on respawn.
             static bool prevSpace   = false;
             static bool jumpPending = false;
-            const bool nowSpace = cursorCaptured &&
+            const bool nowSpace = cursorCaptured && !localDead &&
                                   glfwGetKey(window.handle(), GLFW_KEY_SPACE) == GLFW_PRESS;
             if (nowSpace && !prevSpace) {
                 jumpPending = true;
@@ -2177,7 +2222,9 @@ int main(int argc, char** argv) {
             0.1f, 200.0f);
 
         // First-person view: camera at eye height, looking along aimDir.
-        const iron::Vec3 eye = eyePos();
+        // M27 fixup — when dead, the eye comes from the death-cam freecam
+        // instead of the predictor, so the player can look around the arena.
+        const iron::Vec3 eye = localDead ? deathCamPos : eyePos();
         const iron::Vec3 target{
             eye.x + aimDir().x,
             eye.y + aimDir().y,
