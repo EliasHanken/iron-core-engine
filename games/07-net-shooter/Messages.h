@@ -10,7 +10,10 @@ namespace iron::netshooter {
 // M19 bump (NSTS = 0x4E535453) — wire format break (velocity + jump in
 // PlayerInputMsg; velocity + grounded in AuthorityPositionMsg).
 // M21 bump (NSTT = 0x4E535454) — adds DeathMsg (tag 11) for ragdolls.
-constexpr std::uint32_t kGameId = 0x4E535454u;   // M21 bump — NSTT, wire-format change
+// M25 bump (NSTU = 0x4E535455) — adds `yaw` to PlayerInputMsg and
+// AuthorityPositionMsg so remote skinned-character facing tracks the
+// player's look direction (not just velocity).
+constexpr std::uint32_t kGameId = 0x4E535455u;   // M25 bump — NSTU, wire-format change
 
 // Player AABB half-extents (0.8 m wide, 2 m tall). Defined here so host
 // and client agree; used by LagCompensator + splash damage.
@@ -25,12 +28,15 @@ constexpr double kInterpDelaySec = 0.10;
 // (engine-owned). Game tags must live in [2, 253].
 
 // Client -> Host: input tick. M19 — world-space velocity (m/s), NOT delta.
+// M25 — adds `yaw` so the host can broadcast each peer's look direction
+// for skinned-character facing.
 struct PlayerInputMsg {
     static constexpr std::uint8_t kTag = 2;
     std::uint32_t inputId;
     float vx;             // world-space x velocity (m/s)
     float vy;             // reserved (unused in M19; always 0 on the wire)
     float vz;             // world-space z velocity (m/s)
+    float yaw;            // M25 — look yaw (radians) for remote facing
     std::uint8_t jump;    // 0 = none, 1 = pressed this tick
 };
 
@@ -57,6 +63,7 @@ struct AuthorityPositionMsg {
     float x, y, z;
     float vx, vy, vz;        // M19 — velocity for reconciliation
     std::uint8_t grounded;   // M19 — ground state
+    float yaw;               // M25 — look yaw (radians) for remote facing
     std::uint32_t lastInputId;
 };
 
