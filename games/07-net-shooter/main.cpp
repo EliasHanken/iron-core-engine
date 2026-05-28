@@ -2287,6 +2287,37 @@ int main(int argc, char** argv) {
             it->second = nowSecArg;
         };
 
+        // M27 — emit footsteps for the LOCAL player too. Self isn't drawn
+        // (first-person), so the per-other-player loop below skips it. Without
+        // this block the local player would never hear their own footsteps.
+        // State derivation matches submitPlayerFox's mapping exactly.
+        {
+            iron::Vec3 selfPos{}, selfVel{};
+            bool selfGrounded = true;
+            std::uint32_t selfId = 0;
+            if (peers.isHost()) {
+                selfId = 0;
+                if (auto it = authStates.find(selfId); it != authStates.end()) {
+                    selfPos = iron::Vec3{it->second.x, it->second.y, it->second.z};
+                    selfVel = iron::Vec3{it->second.vx, it->second.vy, it->second.vz};
+                    selfGrounded = it->second.grounded;
+                }
+            } else if (peers.hasIdentity()) {
+                selfId = peers.myPeerId();
+                const auto p = predictor.predictedState();
+                selfPos = iron::Vec3{p.x, p.y, p.z};
+                selfVel = iron::Vec3{p.vx, p.vy, p.vz};
+                selfGrounded = p.grounded;
+            }
+            const float speed = std::sqrt(selfVel.x * selfVel.x + selfVel.z * selfVel.z);
+            const char* selfState =
+                  !selfGrounded ? "idle"
+                : speed < 0.3f  ? "idle"
+                : speed < 2.5f  ? "walk"
+                :                 "run";
+            maybeEmitFootstep(selfId, selfPos, std::string_view{selfState}, nowSec());
+        }
+
         if (peers.isHost()) {
             // HOST: render other players directly from authoritative state
             // (no interpolation needed; host runs the sim itself).
