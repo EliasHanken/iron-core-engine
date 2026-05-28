@@ -28,6 +28,10 @@ public:
     // Poll all registered paths. For any whose mtime advanced (or that
     // newly appeared), fire its callback and store the new mtime. A path
     // that fails to stat is left unchanged and retried next poll.
+    //
+    // Callbacks must NOT call watch()/unwatch() — doing so mutates the
+    // internal map mid-iteration (iterator invalidation / UB). Hot-reload
+    // callbacks only rebuild a resource, so this holds in practice.
     void poll();
 
     std::size_t watchCount() const { return entries_.size(); }
