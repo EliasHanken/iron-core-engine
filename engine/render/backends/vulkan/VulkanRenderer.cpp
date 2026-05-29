@@ -239,6 +239,10 @@ void VulkanRenderer::drawLineOverlayThick(Vec3 a, Vec3 b, Vec3 color) {
     debugLines_.queueOverlayThick(a, b, color);
 }
 
+void VulkanRenderer::drawTriOverlay(Vec3 a, Vec3 b, Vec3 c, Vec3 color) {
+    debugLines_.queueTri(a, b, c, color);
+}
+
 void VulkanRenderer::flushDebugLines(const Mat4& view, const Mat4& projection) {
     if (skipFrame_) return;
     pendingDebugView_  = view;

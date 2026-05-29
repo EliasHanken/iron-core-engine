@@ -38,6 +38,17 @@ void main() {
 }
 )";
 
+// Fragment shader for the translucent filled-triangle overlay (gizmo plane /
+// center handles). Low constant alpha so the flats read as a tint, not a wall.
+const char* kFragTri = R"(#version 450
+layout(location = 0) in vec3 vColor;
+layout(location = 0) out vec4 outColor;
+
+void main() {
+    outColor = vec4(vColor, 0.30);
+}
+)";
+
 }  // namespace
 
 bool VkDebugLines::init(VkContext& ctx, VkRenderPass scenePass) {
@@ -178,14 +189,53 @@ bool VkDebugLines::init(VkContext& ctx, VkRenderPass scenePass) {
     ds.depthTestEnable = VK_FALSE;
     VK_CHECK(vkCreateGraphicsPipelines(ctx.device(), VK_NULL_HANDLE, 1, &pInfo, nullptr, &overlayPipeline_));
 
+    // Triangle overlay pipeline: filled, alpha-blended, depth-off (ds already
+    // off) — for the translucent gizmo plane / center handles. Reuses the vertex
+    // shader + layout; swaps to TRIANGLE_LIST + the low-alpha fragment shader.
+    auto tspv = compileGlsl(VK_SHADER_STAGE_FRAGMENT_BIT, kFragTri);
+    if (tspv.empty()) { Log::error("VkDebugLines: tri shader compile failed"); return false; }
+    VkShaderModule tfsm = VK_NULL_HANDLE;
+    smInfo.codeSize = tspv.size() * sizeof(std::uint32_t);
+    smInfo.pCode = tspv.data();
+    VK_CHECK(vkCreateShaderModule(ctx.device(), &smInfo, nullptr, &tfsm));
+
+    VkPipelineShaderStageCreateInfo triStages[2] = { stages[0], stages[1] };
+    triStages[1].module = tfsm;
+
+    VkPipelineInputAssemblyStateCreateInfo triIa{};
+    triIa.sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO;
+    triIa.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+
+    VkPipelineColorBlendAttachmentState triAtt{};
+    triAtt.colorWriteMask = 0xF;
+    triAtt.blendEnable = VK_TRUE;
+    triAtt.srcColorBlendFactor = VK_BLEND_FACTOR_SRC_ALPHA;
+    triAtt.dstColorBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
+    triAtt.colorBlendOp = VK_BLEND_OP_ADD;
+    triAtt.srcAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
+    triAtt.dstAlphaBlendFactor = VK_BLEND_FACTOR_ZERO;
+    triAtt.alphaBlendOp = VK_BLEND_OP_ADD;
+    VkPipelineColorBlendStateCreateInfo triCb{};
+    triCb.sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO;
+    triCb.attachmentCount = 1;
+    triCb.pAttachments = &triAtt;
+
+    VkGraphicsPipelineCreateInfo triInfo = pInfo;  // copy: shares vi/vp/rs/ms/ds/dyn/layout/pass
+    triInfo.pStages = triStages;
+    triInfo.pInputAssemblyState = &triIa;
+    triInfo.pColorBlendState = &triCb;
+    VK_CHECK(vkCreateGraphicsPipelines(ctx.device(), VK_NULL_HANDLE, 1, &triInfo, nullptr, &triPipeline_));
+
     vkDestroyShaderModule(ctx.device(), vsm, nullptr);
     vkDestroyShaderModule(ctx.device(), fsm, nullptr);
+    vkDestroyShaderModule(ctx.device(), tfsm, nullptr);
     ok_ = true;
     return true;
 }
 
 void VkDebugLines::destroy(VkContext& ctx) {
     if (pipeline_)        { vkDestroyPipeline(ctx.device(), pipeline_, nullptr); pipeline_ = VK_NULL_HANDLE; }
+    if (triPipeline_)     { vkDestroyPipeline(ctx.device(), triPipeline_, nullptr); triPipeline_ = VK_NULL_HANDLE; }
     if (overlayPipeline_) { vkDestroyPipeline(ctx.device(), overlayPipeline_, nullptr); overlayPipeline_ = VK_NULL_HANDLE; }
     if (pipelineLayout_)  { vkDestroyPipelineLayout(ctx.device(), pipelineLayout_, nullptr); pipelineLayout_ = VK_NULL_HANDLE; }
     if (setLayout_)      { vkDestroyDescriptorSetLayout(ctx.device(), setLayout_, nullptr); setLayout_ = VK_NULL_HANDLE; }
@@ -207,13 +257,21 @@ void VkDebugLines::queueOverlayThick(Vec3 a, Vec3 b, Vec3 color) {
     queuedOverlayThick_.push_back({b, color});
 }
 
+void VkDebugLines::queueTri(Vec3 a, Vec3 b, Vec3 c, Vec3 color) {
+    queuedTris_.push_back({a, color});
+    queuedTris_.push_back({b, color});
+    queuedTris_.push_back({c, color});
+}
+
 void VkDebugLines::record(VkCommandBuffer cb, VkDevice device, VkFrameRing& frames,
                           const Mat4& view, const Mat4& projection) {
     if (!ok_ || cb == VK_NULL_HANDLE ||
-        (queued_.empty() && queuedOverlay_.empty() && queuedOverlayThick_.empty())) {
+        (queued_.empty() && queuedOverlay_.empty() && queuedOverlayThick_.empty() &&
+         queuedTris_.empty())) {
         queued_.clear();
         queuedOverlay_.clear();
         queuedOverlayThick_.clear();
+        queuedTris_.clear();
         return;
     }
 
@@ -265,6 +323,7 @@ void VkDebugLines::record(VkCommandBuffer cb, VkDevice device, VkFrameRing& fram
         vkCmdDraw(cb, static_cast<std::uint32_t>(q.size()), 1, 0, 0);
     };
 
+    drawQueue(queuedTris_, triPipeline_, 1.0f);                // translucent fills (under the lines)
     drawQueue(queued_, pipeline_, 1.0f);                       // depth-tested, thin
     drawQueue(queuedOverlay_, overlayPipeline_, 1.0f);         // always-on-top, thin (outlines)
     drawQueue(queuedOverlayThick_, overlayPipeline_, thickWidth_);  // always-on-top, thick (gizmo)
@@ -272,6 +331,7 @@ void VkDebugLines::record(VkCommandBuffer cb, VkDevice device, VkFrameRing& fram
     queued_.clear();
     queuedOverlay_.clear();
     queuedOverlayThick_.clear();
+    queuedTris_.clear();
 }
 
 }  // namespace iron

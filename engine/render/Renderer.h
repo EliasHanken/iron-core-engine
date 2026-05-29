@@ -178,6 +178,11 @@ public:
     // while thin overlay lines (e.g. selection outlines) stay 1px. Default
     // forwards to drawLineOverlay.
     virtual void drawLineOverlayThick(Vec3 a, Vec3 b, Vec3 color) { drawLineOverlay(a, b, color); }
+    // Queue a filled, alpha-blended, always-on-top triangle — for translucent
+    // gizmo plane / center handles. Default no-op (only Vulkan implements it).
+    virtual void drawTriOverlay(Vec3 a, Vec3 b, Vec3 c, Vec3 color) {
+        (void)a; (void)b; (void)c; (void)color;
+    }
 
     // --- HUD ---
     // Draw a screen-space HUD batch on top of the scene, sized to the given

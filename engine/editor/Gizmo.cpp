@@ -326,23 +326,21 @@ void Gizmo::draw(Renderer& renderer, Vec3 origin, Vec3 camPos) const {
 
     if (mode_ != GizmoMode::Translate) return;
 
-    // Planar corner squares.
-    const float lo = kPlaneInset * size, hi = kPlaneReach * size;
+    // Planar move handles: translucent filled quads at the inner corner, anchored
+    // at the intersection (origin) — Unity-style.
+    const float reach = kPlaneReach * size;
     for (int n = 0; n < 3; ++n) {
         Vec3 u, v;
         planeAxes(n, u, v);
-        const Vec3 c00 = origin + u * lo + v * lo;
-        const Vec3 c10 = origin + u * hi + v * lo;
-        const Vec3 c11 = origin + u * hi + v * hi;
-        const Vec3 c01 = origin + u * lo + v * hi;
+        const Vec3 c10 = origin + u * reach;
+        const Vec3 c11 = origin + u * reach + v * reach;
+        const Vec3 c01 = origin + v * reach;
         const Vec3 col = colorFor(3 + n);
-        renderer.drawLineOverlayThick(c00, c10, col);
-        renderer.drawLineOverlayThick(c10, c11, col);
-        renderer.drawLineOverlayThick(c11, c01, col);
-        renderer.drawLineOverlayThick(c01, c00, col);
+        renderer.drawTriOverlay(origin, c10, c11, col);
+        renderer.drawTriOverlay(origin, c11, c01, col);
     }
 
-    // Center free-move handle: a small camera-facing square at the origin.
+    // Center free-move handle: a translucent camera-facing quad at the origin.
     Vec3 right, up;
     cameraBasis(origin, camPos, right, up);
     const float h = size * kCenterHalf;
@@ -351,10 +349,8 @@ void Gizmo::draw(Renderer& renderer, Vec3 origin, Vec3 camPos) const {
     const Vec3 q11 = origin + right * h + up * h;
     const Vec3 q01 = origin - right * h + up * h;
     const Vec3 cc = colorFor(kCenterHandle);
-    renderer.drawLineOverlayThick(q00, q10, cc);
-    renderer.drawLineOverlayThick(q10, q11, cc);
-    renderer.drawLineOverlayThick(q11, q01, cc);
-    renderer.drawLineOverlayThick(q01, q00, cc);
+    renderer.drawTriOverlay(q00, q10, q11, cc);
+    renderer.drawTriOverlay(q00, q11, q01, cc);
 }
 
 }  // namespace iron

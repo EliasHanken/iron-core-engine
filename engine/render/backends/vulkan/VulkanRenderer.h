@@ -84,6 +84,7 @@ public:
     void drawLine(Vec3 a, Vec3 b, Vec3 color) override;
     void drawLineOverlay(Vec3 a, Vec3 b, Vec3 color) override;
     void drawLineOverlayThick(Vec3 a, Vec3 b, Vec3 color) override;
+    void drawTriOverlay(Vec3 a, Vec3 b, Vec3 c, Vec3 color) override;
     void flushDebugLines(const Mat4& view, const Mat4& projection) override;
 
     // --- HUD ---
