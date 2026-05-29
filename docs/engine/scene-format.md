@@ -68,7 +68,7 @@ entirely.
 
 | Field     | Type        | Default       |
 | --------- | ----------- | ------------- |
-| `color`   | `[r, g, b]` | `[0, 0, 0]`   |
+| `color`   | `[r, g, b]` | `[0.7, 0.6, 0.5]` |
 | `density` | float       | `0.0`         |
 
 ```json
