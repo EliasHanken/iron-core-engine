@@ -329,8 +329,8 @@ int main() {
             re.mesh = primitiveMesh(e.mesh.primitive.value());
             if (e.mesh.primitive.value() == iron::PrimitiveKind::Cube)
                 re.localBounds = iron::Aabb{iron::Vec3{-0.5f, -0.5f, -0.5f}, iron::Vec3{0.5f, 0.5f, 0.5f}};
-            else  // Plane: unit quad in XZ at y=0 (thin slab in Y)
-                re.localBounds = iron::Aabb{iron::Vec3{-0.5f, 0.0f, -0.5f}, iron::Vec3{0.5f, 0.0f, 0.5f}};
+            else  // Plane: unit quad in XZ; tiny Y thickness so it stays ray-pickable
+                re.localBounds = iron::Aabb{iron::Vec3{-0.5f, -0.01f, -0.5f}, iron::Vec3{0.5f, 0.01f, 0.5f}};
 
         } else if (!e.mesh.gltfPath.empty()) {
             // Resolve glTF path relative to the exe directory.
