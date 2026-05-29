@@ -77,6 +77,12 @@ endif()
 add_subdirectory(third_party)
 
 add_subdirectory(engine)
+
+# Editor module (Unreal-style): only built under Vulkan; only editor hosts link it.
+if (IRON_RENDER_BACKEND STREQUAL "vulkan")
+    add_subdirectory(engine/editor)
+endif()
+
 add_subdirectory(games/01-spinning-cube)
 add_subdirectory(games/02-strandbound)
 add_subdirectory(games/03-showcase)

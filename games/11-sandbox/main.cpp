@@ -1,10 +1,11 @@
-// games/11-sandbox/main.cpp — M29 Task 3: scene-file driven sandbox.
-// Loads assets/scenes/demo.json and renders every entity with a free-fly
-// camera. Static glTF models, procedural primitives (cube / plane), and
-// per-entity materials are all driven by the scene file — no hardcoded
-// content here.
+// games/11-sandbox/main.cpp — M30: scene-file driven sandbox + editor host.
+// Loads assets/scenes/demo.json, renders every entity, and hosts the
+// ironcore_editor panels (Outliner / Inspector / Environment) to edit the
+// scene live and save it back. Static glTF models, procedural primitives
+// (cube / plane), and per-entity materials are all driven by the scene file.
 //
-// Free-fly camera: WASD + mouse, Space/Ctrl for up/down, ESC to quit.
+// Camera: hold RIGHT-mouse to look + fly (WASD, Space/Ctrl for up/down);
+// release to interact with the editor UI. ESC to quit.
 
 #include "asset/GltfLoader.h"
 #include "core/Application.h"
@@ -24,8 +25,10 @@
 #include "scene/Mesh.h"
 #include "scene/SceneFormat.h"
 #include "scene/SceneIO.h"
-#include "ui/BuiltinFont.h"
-#include "ui/Hud.h"
+#include "editor/EnvironmentPanel.h"
+#include "editor/ImGuiLayer.h"
+#include "editor/SceneInspector.h"
+#include "editor/SceneOutliner.h"
 
 #include <GLFW/glfw3.h>
 
@@ -249,7 +252,7 @@ int main() {
         iron::Log::error("sandbox: failed to load %s", scenePath.c_str());
         return 1;
     }
-    const iron::SceneFile& scene = *sceneOpt;
+    iron::SceneFile scene = *sceneOpt;  // mutable: the editor edits this in place
 
     iron::ShaderHandle litShader = renderer.createShader(kVertexShader, kFragmentShader);
     if (litShader == iron::kInvalidHandle) {
@@ -258,6 +261,7 @@ int main() {
     }
 
     struct ResolvedEntity {
+        int              entityIndex = -1;  // index into scene.entities
         iron::MeshHandle mesh     = iron::kInvalidHandle;
         iron::Material   material;
         iron::Mat4       model    = iron::Mat4::identity();
@@ -292,8 +296,10 @@ int main() {
         return (t == iron::kInvalidHandle) ? fallback : t;
     };
 
-    for (const auto& e : scene.entities) {
+    for (int ei = 0; ei < static_cast<int>(scene.entities.size()); ++ei) {
+        const iron::SceneEntity& e = scene.entities[ei];
         ResolvedEntity re;
+        re.entityIndex = ei;
 
         if (e.mesh.primitive.has_value()) {
             // Procedural primitive — no glTF material paths.
@@ -371,24 +377,19 @@ int main() {
         cam.fovDeg * (std::numbers::pi_v<float> / 180.0f),
         aspect, 0.1f, 200.0f);
 
-    app.window().setCursorCaptured(true);
+    app.window().setCursorCaptured(false);  // free by default; RMB captures look
 
-    // --- HUD ---
-    const iron::BuiltinFontAtlas fontAtlas = iron::builtinFontAtlas();
-    const iron::TextureHandle fontTexture =
-        renderer.createTexture(fontAtlas.width, fontAtlas.height,
-                               fontAtlas.rgba.data());
-    const iron::BitmapFont font = iron::builtinFont(fontTexture);
-
-    iron::Hud hud;
-    char hudBuf[160];
-    std::snprintf(hudBuf, sizeof(hudBuf),
-                  "Entities: %zu  |  demo.json", resolved.size());
-    hud.addText(hudBuf, iron::Vec2{10, 10}, 2.0f,
-                iron::Vec4{1.0f, 1.0f, 1.0f, 1.0f});
-    hud.addText("WASD: move  mouse: look  Space/Ctrl: up/down  ESC: quit",
-                iron::Vec2{10, static_cast<float>(kScreenH - 28)}, 1.5f,
-                iron::Vec4{1.0f, 1.0f, 0.0f, 1.0f});
+    // --- Editor ---
+    iron::ImGuiLayer imgui;
+    if (!imgui.init(app.window(), renderer)) {
+        iron::Log::error("sandbox: ImGui init failed");
+        return 1;
+    }
+    iron::SceneOutliner    outliner;
+    iron::SceneInspector   inspector;
+    iron::EnvironmentPanel environment;
+    int  selectedIndex = scene.entities.empty() ? -1 : 0;
+    bool prevLook = false;  // was the camera capturing last frame?
 
     // --- Main loop ---
     app.setUpdate([&](const iron::FrameTime& t) {
@@ -396,25 +397,69 @@ int main() {
         if (input.keyPressed(GLFW_KEY_ESCAPE))
             glfwSetWindowShouldClose(app.window().handle(), GLFW_TRUE);
 
+        // Look + fly only while RIGHT mouse is held and ImGui isn't using it.
+        const bool look = input.mouseButtonDown(GLFW_MOUSE_BUTTON_RIGHT)
+                          && !imgui.wantsMouse();
+        app.window().setCursorCaptured(look);
+
         const float mdx = static_cast<float>(input.mouseDeltaX());
         const float mdy = static_cast<float>(input.mouseDeltaY());
-        cam.update(t.deltaSeconds, mdx, mdy,
-                   input.keyDown(GLFW_KEY_W), input.keyDown(GLFW_KEY_S),
-                   input.keyDown(GLFW_KEY_A), input.keyDown(GLFW_KEY_D),
-                   input.keyDown(GLFW_KEY_LEFT_CONTROL),
-                   input.keyDown(GLFW_KEY_SPACE),
-                   3.0f);
+
+        if (look && prevLook) {
+            cam.update(t.deltaSeconds, mdx, mdy,
+                       input.keyDown(GLFW_KEY_W), input.keyDown(GLFW_KEY_S),
+                       input.keyDown(GLFW_KEY_A), input.keyDown(GLFW_KEY_D),
+                       input.keyDown(GLFW_KEY_LEFT_CONTROL),
+                       input.keyDown(GLFW_KEY_SPACE),
+                       3.0f);
+        } else if (look && !prevLook) {
+            // First capture frame: move but ignore the (stale) mouse delta so
+            // the camera doesn't snap when the cursor recenters.
+            cam.update(t.deltaSeconds, 0.0f, 0.0f,
+                       input.keyDown(GLFW_KEY_W), input.keyDown(GLFW_KEY_S),
+                       input.keyDown(GLFW_KEY_A), input.keyDown(GLFW_KEY_D),
+                       input.keyDown(GLFW_KEY_LEFT_CONTROL),
+                       input.keyDown(GLFW_KEY_SPACE),
+                       3.0f);
+        }
+        prevLook = look;
     });
 
     app.setRender([&]() {
-        const iron::Mat4 view = cam.viewMatrix();
+        // --- editor UI ---
+        imgui.beginFrame();
+        const bool saveClicked = outliner.draw(scene, selectedIndex);
+        if (selectedIndex >= 0 && selectedIndex < static_cast<int>(scene.entities.size()))
+            inspector.draw(scene.entities[selectedIndex]);
+        environment.draw(scene);
+        if (saveClicked) {
+            if (iron::saveSceneFile(scene, scenePath))
+                iron::Log::info("sandbox: saved %s", scenePath.c_str());
+            else
+                iron::Log::error("sandbox: save FAILED for %s", scenePath.c_str());
+        }
 
+        // --- re-derive render data from the (possibly edited) scene ---
+        // Mesh + texture handles are fixed (path editing is out of scope), so
+        // only the model matrix + material scalars need refreshing. Lighting is
+        // read live by beginFrame below.
+        for (auto& re : resolved) {
+            const iron::SceneEntity& e = scene.entities[re.entityIndex];
+            re.model = iron::translation(e.position)
+                     * e.rotation.toMat4()
+                     * iron::scaling(e.scale);
+            re.material.emissive     = e.material.emissive;
+            re.material.uvScale      = e.material.uvScale;
+            re.material.reflectivity = e.material.reflectivity;
+        }
+
+        // --- scene render ---
+        const iron::Mat4 view = cam.viewMatrix();
         renderer.beginFrame(scene.clearColor, scene.sun,
                             std::span<const iron::PointLight>(
                                 scene.pointLights.data(),
                                 scene.pointLights.size()),
                             scene.fog, view, proj);
-
         for (const auto& re : resolved) {
             iron::DrawCall call;
             call.mesh     = re.mesh;
@@ -423,14 +468,13 @@ int main() {
             call.material = re.material;
             renderer.submit(call);
         }
-
-        renderer.drawHud(hud.build(font, renderer.whiteTexture()),
-                         kScreenW, kScreenH);
+        imgui.render();   // enqueues the UI overlay into the scene pass tail
         renderer.endFrame();
         app.window().swapBuffers();
     });
 
     app.run();
+    imgui.shutdown();   // before renderer/context teardown
     return 0;
 #endif
 }

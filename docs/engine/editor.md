@@ -1,0 +1,169 @@
+# Editor module
+
+The editor module (`ironcore_editor`) is the engine's first UI layer — an
+Unreal-style editor module that sits on top of the runtime. Only editor
+*hosts* link it; shipping games never pull in ImGui. The sandbox game
+(`games/11-sandbox`) is the current host.
+
+The module lives under `engine/editor/` and is a separate static library
+built only when the Vulkan backend is active. It does not touch the renderer
+internals: all integration is through the renderer's existing public accessors
+(`context()`, `scenePass()`, `enqueueDeferredScenePass()`), so adding the
+editor requires no renderer changes.
+
+The dependency is [Dear ImGui](https://github.com/ocornut/imgui) pulled from
+vcpkg as `imgui[glfw-binding,vulkan-binding]` (version 1.92.8).
+
+## Module layout
+
+```
+engine/editor/
+  ImGuiLayer.h / .cpp        — ImGui ↔ Vulkan ↔ GLFW integration
+  SceneOutliner.h / .cpp     — entity list + Save Scene button
+  SceneInspector.h / .cpp    — per-entity transform + material editor
+  EnvironmentPanel.h / .cpp  — sun / fog / clearColor / point-light editor
+```
+
+### `ImGuiLayer`
+
+Owns the ImGui context and ties it to the renderer and the GLFW window.
+
+```cpp
+// engine/editor/ImGuiLayer.h
+void init(Window& window, Renderer& renderer);
+void beginFrame();
+void render();
+void shutdown();
+bool wantsMouse()    const;
+bool wantsKeyboard() const;
+```
+
+`init` uploads the font atlas, creates the Vulkan descriptor pool, and
+installs the GLFW callbacks. `beginFrame` ticks the ImGui frame; call it
+before any panel draws. `render` records ImGui draw commands into the scene
+render pass via `enqueueDeferredScenePass` — ImGui draws into the scene pass
+tail, so no extra render pass or resolve is needed. `shutdown` tears down the
+descriptor pool and the ImGui context; call it once after the main loop exits.
+
+### `SceneOutliner`
+
+```cpp
+// engine/editor/SceneOutliner.h
+bool draw(const SceneFile& scene, int& selectedIndex);
+```
+
+Displays the entity list from `scene.entities`. Clicking a row sets
+`selectedIndex`. Returns `true` when the **Save Scene** button is pressed.
+
+### `SceneInspector`
+
+```cpp
+// engine/editor/SceneInspector.h
+bool draw(SceneEntity& entity);
+```
+
+Edits the selected entity in place. Returns `true` if any field changed.
+
+Editable fields:
+
+| Field      | Representation                                                  |
+| ---------- | --------------------------------------------------------------- |
+| Position   | XYZ drag floats                                                 |
+| Rotation   | Euler degrees (XYZ intrinsic) — converted via `quatToEuler` / `eulerToQuat`; stored as quaternion |
+| Scale      | XYZ drag floats                                                 |
+| Emissive   | RGB color                                                       |
+| UV scale   | float                                                           |
+| Reflectivity | float                                                         |
+
+`mesh` (primitive / glTF path) is shown read-only; mesh and texture-path
+editing are deferred to M31.
+
+`quatToEuler` / `eulerToQuat` live in `engine/math/Quaternion.h`; a
+round-trip unit test (`tests/test_quat_euler.cpp`) covers identity, known
+single-axis, and general rotations.
+
+### `EnvironmentPanel`
+
+```cpp
+// engine/editor/EnvironmentPanel.h
+bool draw(SceneFile& scene);
+```
+
+Edits the scene-level environment in place. Returns `true` if any field
+changed.
+
+Editable fields: `clearColor`, sun direction / color / ambient, fog color /
+density, and the full `pointLights` list (position, color, intensity, range
+per light).
+
+## The host contract
+
+A game becomes an editor host by:
+
+1. Keeping a mutable `iron::SceneFile` loaded at startup.
+2. Calling `imgui.init(window, renderer)` after the renderer is set up.
+3. Each frame:
+   ```cpp
+   imgui.beginFrame();
+
+   // draw panels — they edit scene in place
+   if (outliner.draw(scene, selectedIdx))
+       iron::saveSceneFile(scene, scenePath);
+   if (selectedIdx >= 0)
+       inspector.draw(scene.entities[selectedIdx]);
+   envPanel.draw(scene);
+
+   // re-derive render data from the (possibly edited) scene
+   // ...build RenderScene from scene...
+
+   renderer.beginFrame(...);
+   // submit draw calls
+   imgui.render();
+   renderer.endFrame();
+   ```
+4. Calling `imgui.shutdown()` once after the main loop exits.
+
+Lighting is read live by `beginFrame`, so edits to sun / fog / point lights
+take effect immediately with no extra wiring. Mesh and texture handles are
+fixed at load time; only model matrix and material scalars are re-derived each
+frame.
+
+## Interaction model
+
+Cursor is free by default so the ImGui panels are clickable. Hold the **right
+mouse button** to capture the cursor and enter free-fly look mode; release to
+return the cursor.
+
+`wantsMouse()` and `wantsKeyboard()` gate game input and camera input
+respectively — when ImGui wants the mouse (e.g. a drag slider is active),
+game-side mouse handling is suppressed:
+
+```cpp
+if (!imgui.wantsMouse())
+    camera.processMouse(dx, dy);
+if (!imgui.wantsKeyboard())
+    camera.processKeys(window);
+```
+
+## Running the editor
+
+Build and run `games/11-sandbox`:
+
+```powershell
+cmake -S . -B build-vk
+cmake --build build-vk --target sandbox --config Debug
+.\build-vk\games\11-sandbox\Debug\sandbox.exe
+```
+
+The sandbox loads `demo.json` from the executable directory, shows the three
+panels, and writes back to `demo.json` when **Save Scene** is pressed.
+
+## Known v1 limitations
+
+- **Inspect and tune only.** No add/delete entity; mesh and texture-path fields
+  are read-only (→ M31).
+- **No in-viewport gizmos.** Transform editing is numeric only (→ M31).
+- **Single selection.** The outliner allows selecting one entity at a time.
+- **Save overwrites in place.** There is no backup, rename, or save-as.
+- **No undo/redo.**
+- **Vulkan-only.** The editor module does not build against the OpenGL backend.
