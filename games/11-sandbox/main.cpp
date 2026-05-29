@@ -27,12 +27,16 @@
 #include "scene/SceneFormat.h"
 #include "scene/SceneIO.h"
 #include "editor/EnvironmentPanel.h"
+#include "editor/Gizmo.h"
 #include "editor/ImGuiLayer.h"
 #include "editor/SceneInspector.h"
 #include "editor/SceneOutliner.h"
+#include "math/Aabb.h"
+#include "scene/Picking.h"
 
 #include <GLFW/glfw3.h>
 
+#include <algorithm>
 #include <array>
 #include <cstdio>
 #include <numbers>
@@ -44,6 +48,23 @@ namespace {
 
 constexpr int kScreenW = 1280;
 constexpr int kScreenH = 720;
+
+// Transform a model-space AABB by `model` and return its world-space AABB
+// (min/max of the 8 transformed corners). Loose for rotated boxes — fine for
+// click-selection.
+iron::Aabb worldAabb(const iron::Aabb& b, const iron::Mat4& model) {
+    iron::Vec3 lo{1e30f, 1e30f, 1e30f};
+    iron::Vec3 hi{-1e30f, -1e30f, -1e30f};
+    for (int i = 0; i < 8; ++i) {
+        const iron::Vec3 c{(i & 1) ? b.max.x : b.min.x,
+                           (i & 2) ? b.max.y : b.min.y,
+                           (i & 4) ? b.max.z : b.min.z};
+        const iron::Vec4 w = model * iron::Vec4{c.x, c.y, c.z, 1.0f};
+        lo.x = std::min(lo.x, w.x); lo.y = std::min(lo.y, w.y); lo.z = std::min(lo.z, w.z);
+        hi.x = std::max(hi.x, w.x); hi.y = std::max(hi.y, w.y); hi.z = std::max(hi.z, w.z);
+    }
+    return iron::Aabb{lo, hi};
+}
 
 #ifdef IRON_RENDER_BACKEND_VULKAN
 
@@ -266,6 +287,7 @@ int main() {
         iron::MeshHandle mesh     = iron::kInvalidHandle;
         iron::Material   material;
         iron::Mat4       model    = iron::Mat4::identity();
+        iron::Aabb       localBounds{};     // model-space mesh bounds for picking
     };
     std::vector<ResolvedEntity> resolved;
 
@@ -305,6 +327,10 @@ int main() {
         if (e.mesh.primitive.has_value()) {
             // Procedural primitive — no glTF material paths.
             re.mesh = primitiveMesh(e.mesh.primitive.value());
+            if (e.mesh.primitive.value() == iron::PrimitiveKind::Cube)
+                re.localBounds = iron::Aabb{iron::Vec3{-0.5f, -0.5f, -0.5f}, iron::Vec3{0.5f, 0.5f, 0.5f}};
+            else  // Plane: unit quad in XZ; tiny Y thickness so it stays ray-pickable
+                re.localBounds = iron::Aabb{iron::Vec3{-0.5f, -0.01f, -0.5f}, iron::Vec3{0.5f, 0.01f, 0.5f}};
 
         } else if (!e.mesh.gltfPath.empty()) {
             // Resolve glTF path relative to the exe directory.
@@ -316,6 +342,7 @@ int main() {
                 continue;
             }
             re.mesh = renderer.createMesh(gltfModel->mesh);
+            re.localBounds = iron::meshBounds(gltfModel->mesh);
 
             // Resolve glTF material textures (same pattern as gltf-viewer).
             re.material.texture   = gltfModel->materialPaths.albedo.empty()
@@ -391,6 +418,7 @@ int main() {
     iron::EnvironmentPanel environment;
     int  selectedIndex = scene.entities.empty() ? -1 : 0;
     bool prevLook = false;  // was the camera capturing last frame?
+    iron::Gizmo gizmo;
 
     // --- Main loop ---
     app.setUpdate([&](const iron::FrameTime& t) {
@@ -424,6 +452,47 @@ int main() {
                        3.0f);
         }
         prevLook = look;
+
+        // --- editor viewport interaction (only when not flying) ---
+        if (!look) {
+            if (input.keyPressed(GLFW_KEY_W)) gizmo.setMode(iron::GizmoMode::Translate);
+            if (input.keyPressed(GLFW_KEY_E)) gizmo.setMode(iron::GizmoMode::Rotate);
+            if (input.keyPressed(GLFW_KEY_R)) gizmo.setMode(iron::GizmoMode::Scale);
+
+            const bool uiBusy = imgui.wantsMouse();
+            if (!uiBusy || gizmo.dragging()) {
+                const iron::Mat4 view = cam.viewMatrix();
+                const iron::Ray ray = iron::screenPointToRay(
+                    view, proj,
+                    iron::Vec2{static_cast<float>(input.mouseX()),
+                               static_cast<float>(input.mouseY())},
+                    iron::Vec2{static_cast<float>(kScreenW),
+                               static_cast<float>(kScreenH)},
+                    cam.position);
+
+                const bool lmbPressed = input.mouseButtonPressed(GLFW_MOUSE_BUTTON_LEFT);
+                const bool lmbDown    = input.mouseButtonDown(GLFW_MOUSE_BUTTON_LEFT);
+
+                bool consumed = false;
+                if (selectedIndex >= 0 && selectedIndex < static_cast<int>(scene.entities.size()))
+                    consumed = gizmo.update(scene.entities[selectedIndex], ray,
+                                            lmbPressed, lmbDown, cam.position);
+
+                // A fresh click that didn't grab a handle re-selects (or clears).
+                if (lmbPressed && !consumed && !uiBusy) {
+                    std::vector<iron::Aabb> worldAabbs(resolved.size());
+                    for (std::size_t i = 0; i < resolved.size(); ++i) {
+                        const iron::SceneEntity& e = scene.entities[resolved[i].entityIndex];
+                        const iron::Mat4 model = iron::translation(e.position)
+                                               * e.rotation.toMat4()
+                                               * iron::scaling(e.scale);
+                        worldAabbs[i] = worldAabb(resolved[i].localBounds, model);
+                    }
+                    const int ri = iron::pickEntity(ray, worldAabbs);
+                    selectedIndex = (ri < 0) ? -1 : resolved[ri].entityIndex;
+                }
+            }
+        }
     });
 
     app.setRender([&]() {
@@ -469,6 +538,9 @@ int main() {
             call.material = re.material;
             renderer.submit(call);
         }
+        if (selectedIndex >= 0 && selectedIndex < static_cast<int>(scene.entities.size()))
+            gizmo.draw(renderer, scene.entities[selectedIndex], cam.position);
+        renderer.flushDebugLines(view, proj);
         imgui.render();   // enqueues the UI overlay into the scene pass tail
         renderer.endFrame();
         app.window().swapBuffers();

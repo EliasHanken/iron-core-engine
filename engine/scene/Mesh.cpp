@@ -1,5 +1,8 @@
 #include "scene/Mesh.h"
 
+#include "math/Aabb.h"
+
+#include <algorithm>
 #include <cmath>
 #include <cstdint>
 
@@ -200,6 +203,21 @@ void appendQuad(MeshData& out, Vec3 center, Vec2 size, Vec3 normal) {
     out.indices.push_back(base + 0);
     out.indices.push_back(base + 2);
     out.indices.push_back(base + 3);
+}
+
+Aabb meshBounds(const MeshData& mesh) {
+    if (mesh.vertices.empty()) return Aabb{Vec3{0.0f, 0.0f, 0.0f}, Vec3{0.0f, 0.0f, 0.0f}};
+    Vec3 lo = mesh.vertices[0].position;
+    Vec3 hi = lo;
+    for (const Vertex& v : mesh.vertices) {
+        lo.x = std::min(lo.x, v.position.x);
+        lo.y = std::min(lo.y, v.position.y);
+        lo.z = std::min(lo.z, v.position.z);
+        hi.x = std::max(hi.x, v.position.x);
+        hi.y = std::max(hi.y, v.position.y);
+        hi.z = std::max(hi.z, v.position.z);
+    }
+    return Aabb{lo, hi};
 }
 
 } // namespace iron

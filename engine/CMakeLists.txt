@@ -17,6 +17,7 @@ add_library(ironcore STATIC
   scene/FirstPersonController.cpp
   scene/FreeFlyCamera.cpp
   scene/SceneIO.cpp
+  scene/Picking.cpp
   ui/BitmapFont.cpp
   ui/BuiltinFont.cpp
   ui/Hud.cpp

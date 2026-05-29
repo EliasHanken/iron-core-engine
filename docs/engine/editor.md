@@ -161,9 +161,70 @@ panels, and writes back to `demo.json` when **Save Scene** is pressed.
 ## Known v1 limitations
 
 - **Inspect and tune only.** No add/delete entity; mesh and texture-path fields
-  are read-only (→ M31).
-- **No in-viewport gizmos.** Transform editing is numeric only (→ M31).
+  are read-only.
 - **Single selection.** The outliner allows selecting one entity at a time.
 - **Save overwrites in place.** There is no backup, rename, or save-as.
 - **No undo/redo.**
 - **Vulkan-only.** The editor module does not build against the OpenGL backend.
+
+## Viewport gizmos + click-select
+
+*Added in M31.*
+
+### Selection
+
+Click any entity in the sandbox viewport to select it. The host casts a ray
+from the cursor through the camera frustum using `iron::screenPointToRay`
+(`scene/Picking.h`) and tests it against per-entity AABBs computed at load
+time with `iron::meshBounds` (`scene/Mesh.h`). The nearest hit wins;
+`iron::pickEntity` returns its index. Clicking empty space (no hit) sets
+`selectedIndex` to `-1`.
+
+`selectedIndex` is the same shared integer used by the Outliner and Inspector,
+so all three stay in sync both ways: selecting an entity in the viewport
+highlights it in the Outliner and populates the Inspector, and selecting from
+the Outliner highlights the entity in the viewport.
+
+### Gizmo controls
+
+| Key | Action |
+| --- | ------ |
+| **W** | Translate mode |
+| **E** | Rotate mode |
+| **R** | Scale mode |
+| Hold **RMB** | Free-fly look (gizmo keys suppressed while flying) |
+
+When an entity is selected the `iron::Gizmo` controller
+(`editor/Gizmo.h`, in `ironcore_editor`) draws world-axis handles for the
+active mode via the existing debug-line renderer — no new pipeline. The gizmo
+is distance-scaled to maintain a constant apparent screen size regardless of
+how far the camera is from the entity.
+
+Dragging a handle transforms the entity live by updating its position,
+rotation, or scale in the in-memory `SceneFile`. The same mutations are
+immediately reflected in the Inspector. Press **Save Scene** to persist them.
+
+### Engine helpers
+
+| Symbol | Header | Purpose |
+| ------ | ------ | ------- |
+| `Mat4 inverse(const Mat4&)` | `math/Mat4.h` | General 4×4 inverse, used to unproject the cursor |
+| `Aabb meshBounds(const MeshData&)` | `scene/Mesh.h` | Computes the local AABB of a mesh at load time |
+| `Ray screenPointToRay(...)` | `scene/Picking.h` | Converts a mouse pixel to a world-space ray |
+| `int pickEntity(const Ray&, ...)` | `scene/Picking.h` | Returns the index of the nearest AABB hit, or -1 |
+
+Unit tests: `tests/test_mesh_bounds.cpp` (bounds correctness),
+`tests/test_picking.cpp` (Mat4 inverse round-trip, screen-to-ray,
+ray-vs-AABB nearest). Full suite 46/46 green.
+
+### Known v1 gizmo limitations
+
+- **Loose world-AABB picking.** Rotated objects are tested against their
+  world-aligned bounding box, so the selectable region is larger than the
+  visual mesh. The thin floor plane is given a small Y thickness so it remains
+  pickable.
+- **World-axis gizmos only.** There are no planar two-axis handles, snapping,
+  multi-select, or undo.
+- **Gizmo depth follows the debug-line pass.** Handles may be occluded by
+  nearby geometry or drawn over ImGui panels where they overlap;
+  always-on-top rendering is a follow-up.
