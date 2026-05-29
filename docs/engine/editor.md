@@ -206,12 +206,19 @@ overlay line path (`Renderer::drawLineOverlay`, backed by a second
 Clicking a highlighted handle grabs it immediately, so clicking a handle
 never accidentally deselects the object (an M31 bug that is now fixed).
 
-The gizmo is drawn at the selected entity's **world-AABB center**, so it sits
-on the visible mesh and stays put as the camera pitches. Dragging is
-**smooth**: on degenerate or near-parallel axis solves the gizmo holds the
-last axis param instead of jumping (fixes the M31 twitch).
+The gizmo is drawn at the selected entity's **transform pivot** (its origin).
+The pivot is the rotation center, so it stays rock-stable as you orbit or
+rotate the object — a bounds-center origin drifts for off-pivot meshes and
+those with asymmetric features (e.g. a helmet with dangling cables pulls the
+AABB center off the body). Dragging is **smooth**: on degenerate or
+near-parallel solves the gizmo holds the last value instead of jumping.
 
-Dragging a handle transforms the entity live by updating its position,
+In **Translate** mode the gizmo also has three **planar handles** — small
+yellow quads in the corners between each axis pair (XY, YZ, XZ). Dragging a
+quad moves the entity freely within that world plane (two axes at once), via a
+ray-vs-plane intersection; the single-axis arrows still constrain to one axis.
+
+Dragging any handle transforms the entity live by updating its position,
 rotation, or scale in the in-memory `SceneFile`. The same mutations are
 immediately reflected in the Inspector. Press **Save Scene** to persist them.
 
@@ -234,8 +241,10 @@ ray-vs-AABB nearest). Full suite 46/46 green.
   world-aligned bounding box, so the selectable region is larger than the
   visual mesh. The thin floor plane is given a small Y thickness so it remains
   pickable.
-- **World-axis gizmos only.** There are no planar two-axis handles, snapping,
-  multi-select, or undo.
-- **Rotate/scale operate about the entity pivot** even though the gizmo is
-  drawn at the bounds center; visually fine when the pivot is near the center.
+- **World-axis only.** Handles align to world X/Y/Z (no local-space gizmos);
+  the planar handles cover the world planes only. No screen-space center
+  free-move, snapping, multi-select, or undo.
+- **The gizmo sits at the entity pivot**, which for off-center assets (e.g. the
+  helmet's origin near its top) isn't the visual center. That's the asset's
+  authored pivot; per-asset re-pivoting is a future feature.
 
