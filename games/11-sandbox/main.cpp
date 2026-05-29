@@ -319,78 +319,68 @@ int main() {
         return (t == iron::kInvalidHandle) ? fallback : t;
     };
 
-    for (int ei = 0; ei < static_cast<int>(scene.entities.size()); ++ei) {
-        const iron::SceneEntity& e = scene.entities[ei];
-        ResolvedEntity re;
-        re.entityIndex = ei;
+    // Resolve one SceneEntity into a ResolvedEntity (mesh handle + material +
+    // bounds + model). Returns false if the entity can't be drawn (a glTF that
+    // fails to load, or no mesh). Reused for the initial scene + runtime adds.
+    auto resolveEntity = [&](const iron::SceneEntity& e, int entityIndex,
+                              ResolvedEntity& out) -> bool {
+        out = ResolvedEntity{};
+        out.entityIndex = entityIndex;
 
         if (e.mesh.primitive.has_value()) {
-            // Procedural primitive — no glTF material paths.
-            re.mesh = primitiveMesh(e.mesh.primitive.value());
+            out.mesh = primitiveMesh(e.mesh.primitive.value());
             if (e.mesh.primitive.value() == iron::PrimitiveKind::Cube)
-                re.localBounds = iron::Aabb{iron::Vec3{-0.5f, -0.5f, -0.5f}, iron::Vec3{0.5f, 0.5f, 0.5f}};
+                out.localBounds = iron::Aabb{iron::Vec3{-0.5f, -0.5f, -0.5f}, iron::Vec3{0.5f, 0.5f, 0.5f}};
             else  // Plane: unit quad in XZ; tiny Y thickness so it stays ray-pickable
-                re.localBounds = iron::Aabb{iron::Vec3{-0.5f, -0.01f, -0.5f}, iron::Vec3{0.5f, 0.01f, 0.5f}};
+                out.localBounds = iron::Aabb{iron::Vec3{-0.5f, -0.01f, -0.5f}, iron::Vec3{0.5f, 0.01f, 0.5f}};
 
         } else if (!e.mesh.gltfPath.empty()) {
-            // Resolve glTF path relative to the exe directory.
             const std::string fullPath = exeDir + "/" + e.mesh.gltfPath;
             const auto gltfModel = iron::loadGltfModel(fullPath);
             if (!gltfModel) {
-                iron::Log::warn("sandbox: entity '%s' gltf '%s' failed to load; skipping",
+                iron::Log::warn("sandbox: entity '%s' gltf '%s' failed to load",
                                 e.name.c_str(), fullPath.c_str());
-                continue;
+                return false;
             }
-            re.mesh = renderer.createMesh(gltfModel->mesh);
-            re.localBounds = iron::meshBounds(gltfModel->mesh);
-
-            // Resolve glTF material textures (same pattern as gltf-viewer).
-            re.material.texture   = gltfModel->materialPaths.albedo.empty()
+            out.mesh = renderer.createMesh(gltfModel->mesh);
+            out.localBounds = iron::meshBounds(gltfModel->mesh);
+            out.material.texture   = gltfModel->materialPaths.albedo.empty()
                 ? renderer.whiteTexture()
                 : renderer.loadTexture(gltfModel->materialPaths.albedo);
-            re.material.normalMap = gltfModel->materialPaths.normal.empty()
+            out.material.normalMap = gltfModel->materialPaths.normal.empty()
                 ? renderer.flatNormalTexture()
                 : renderer.loadTexture(gltfModel->materialPaths.normal);
-
-            // metalRoughness → invert-to-spec conversion (same as viewer).
-            re.material.specularMap = renderer.noSpecularTexture();
+            out.material.specularMap = renderer.noSpecularTexture();
             if (!gltfModel->materialPaths.metalRoughness.empty()) {
                 int w = 0, h = 0;
                 auto specBytes = iron::loadRoughnessAsSpec(
                     gltfModel->materialPaths.metalRoughness, w, h);
                 if (!specBytes.empty())
-                    re.material.specularMap = renderer.createTexture(w, h, specBytes.data());
+                    out.material.specularMap = renderer.createTexture(w, h, specBytes.data());
             }
 
         } else {
-            iron::Log::warn("sandbox: entity '%s' has no mesh; skipping", e.name.c_str());
-            continue;
+            iron::Log::warn("sandbox: entity '%s' has no mesh", e.name.c_str());
+            return false;
         }
 
-        // Apply per-entity scene material overrides on top of any glTF textures.
-        // For primitives these are the only sources; for glTF the scene file's
-        // albedo/normal/specular paths override the glTF defaults when non-empty.
-        if (re.material.texture == iron::kInvalidHandle)
-            re.material.texture     = resolveTexture(e.material.albedoPath,
-                                                     renderer.whiteTexture());
-        if (re.material.normalMap == iron::kInvalidHandle)
-            re.material.normalMap   = resolveTexture(e.material.normalPath,
-                                                     renderer.flatNormalTexture());
-        if (re.material.specularMap == iron::kInvalidHandle)
-            re.material.specularMap = resolveTexture(e.material.specularPath,
-                                                     renderer.noSpecularTexture());
+        // Scene-file material overrides (textures fill still-invalid slots).
+        if (out.material.texture == iron::kInvalidHandle)
+            out.material.texture = resolveTexture(e.material.albedoPath, renderer.whiteTexture());
+        if (out.material.normalMap == iron::kInvalidHandle)
+            out.material.normalMap = resolveTexture(e.material.normalPath, renderer.flatNormalTexture());
+        if (out.material.specularMap == iron::kInvalidHandle)
+            out.material.specularMap = resolveTexture(e.material.specularPath, renderer.noSpecularTexture());
+        out.material.emissive     = e.material.emissive;
+        out.material.uvScale      = e.material.uvScale;
+        out.material.reflectivity = e.material.reflectivity;
+        out.model = iron::translation(e.position) * e.rotation.toMat4() * iron::scaling(e.scale);
+        return true;
+    };
 
-        // Emissive / uvScale / reflectivity always come from the scene file.
-        re.material.emissive     = e.material.emissive;
-        re.material.uvScale      = e.material.uvScale;
-        re.material.reflectivity = e.material.reflectivity;
-
-        // Build the model matrix: T * R * S.
-        re.model = iron::translation(e.position)
-                 * e.rotation.toMat4()
-                 * iron::scaling(e.scale);
-
-        resolved.push_back(re);
+    for (int ei = 0; ei < static_cast<int>(scene.entities.size()); ++ei) {
+        ResolvedEntity re;
+        if (resolveEntity(scene.entities[ei], ei, re)) resolved.push_back(re);
     }
 
     iron::Log::info("sandbox: resolved %zu / %zu entities from scene",
@@ -428,6 +418,39 @@ int main() {
     // when rotating about an off-center pivot — so we use the pivot.
     auto gizmoOriginFor = [&](int sel) -> iron::Vec3 {
         return scene.entities[sel].position;
+    };
+
+    // Generate a scene-unique entity name from a base ("cube" -> "cube", "cube 2"...).
+    auto uniqueName = [&](const std::string& base) -> std::string {
+        auto taken = [&](const std::string& n) {
+            for (const auto& e : scene.entities) if (e.name == n) return true;
+            return false;
+        };
+        if (!taken(base)) return base;
+        for (int i = 2; ; ++i) {
+            const std::string n = base + " " + std::to_string(i);
+            if (!taken(n)) return n;
+        }
+    };
+
+    // Where a freshly added entity appears: a few units in front of the camera.
+    auto spawnPos = [&]() -> iron::Vec3 {
+        return cam.position + cam.forward() * 5.0f;
+    };
+
+    // Append a fully-built entity, resolve it, and select it. Rolls back if the
+    // resolve fails (e.g. a bad glTF path).
+    auto appendAndSelect = [&](iron::SceneEntity ne) {
+        const int idx = static_cast<int>(scene.entities.size());
+        scene.entities.push_back(ne);
+        ResolvedEntity re;
+        if (resolveEntity(scene.entities[idx], idx, re)) {
+            resolved.push_back(re);
+            selectedIndex = idx;
+        } else {
+            scene.entities.pop_back();
+            iron::Log::warn("sandbox: add failed; entity not added");
+        }
     };
 
     // --- Main loop ---
@@ -509,15 +532,66 @@ int main() {
     app.setRender([&]() {
         // --- editor UI ---
         imgui.beginFrame();
-        const bool saveClicked = outliner.draw(scene, selectedIndex);
+        const iron::SceneOutliner::Result outRes = outliner.draw(scene, selectedIndex);
         if (selectedIndex >= 0 && selectedIndex < static_cast<int>(scene.entities.size()))
             inspector.draw(scene.entities[selectedIndex]);
         environment.draw(scene);
-        if (saveClicked) {
+        if (outRes.saveClicked) {
             if (iron::saveSceneFile(scene, scenePath))
                 iron::Log::info("sandbox: saved %s", scenePath.c_str());
             else
                 iron::Log::error("sandbox: save FAILED for %s", scenePath.c_str());
+        }
+
+        // --- add / delete / duplicate (Outliner buttons OR keyboard shortcuts) ---
+        using Action = iron::SceneOutliner::Result::Action;
+        Action action = outRes.action;
+        if (action == Action::None && !imgui.wantsKeyboard()) {
+            iron::Input& kin = app.input();
+            if (kin.keyPressed(GLFW_KEY_DELETE)) action = Action::Delete;
+            else if (kin.keyDown(GLFW_KEY_LEFT_CONTROL) && kin.keyPressed(GLFW_KEY_D))
+                action = Action::Duplicate;
+        }
+        const bool selValid = selectedIndex >= 0 &&
+                              selectedIndex < static_cast<int>(scene.entities.size());
+        if (action == Action::AddCube) {
+            iron::SceneEntity ne;
+            ne.name = uniqueName("cube");
+            ne.position = spawnPos();
+            ne.mesh.primitive = iron::PrimitiveKind::Cube;
+            appendAndSelect(ne);
+        } else if (action == Action::AddPlane) {
+            iron::SceneEntity ne;
+            ne.name = uniqueName("plane");
+            ne.position = spawnPos();
+            ne.mesh.primitive = iron::PrimitiveKind::Plane;
+            appendAndSelect(ne);
+        } else if (action == Action::AddGltf) {
+            std::string stem = outRes.gltfPath;
+            const auto slash = stem.find_last_of("/\\");
+            if (slash != std::string::npos) stem = stem.substr(slash + 1);
+            const auto dot = stem.find_last_of('.');
+            if (dot != std::string::npos) stem = stem.substr(0, dot);
+            iron::SceneEntity ne;
+            ne.name = uniqueName(stem.empty() ? "gltf" : stem);
+            ne.position = spawnPos();
+            ne.mesh.gltfPath = outRes.gltfPath;
+            appendAndSelect(ne);
+        } else if (action == Action::Duplicate && selValid) {
+            iron::SceneEntity ne = scene.entities[selectedIndex];  // copy mesh+material+transform
+            ne.name = uniqueName(ne.name);
+            ne.position.x += 0.5f;  // slight offset so the copy is visible
+            appendAndSelect(ne);
+        } else if (action == Action::Delete && selValid) {
+            const int d = selectedIndex;
+            scene.entities.erase(scene.entities.begin() + d);
+            // Drop the deleted entity's resolved entry; shift higher indices down.
+            for (std::size_t i = 0; i < resolved.size();) {
+                if (resolved[i].entityIndex == d) { resolved.erase(resolved.begin() + i); continue; }
+                if (resolved[i].entityIndex > d) --resolved[i].entityIndex;
+                ++i;
+            }
+            selectedIndex = -1;
         }
 
         // --- re-derive render data from the (possibly edited) scene ---

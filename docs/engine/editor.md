@@ -248,3 +248,65 @@ ray-vs-AABB nearest). Full suite 46/46 green.
   helmet's origin near its top) isn't the visual center. That's the asset's
   authored pivot; per-asset re-pivoting is a future feature.
 
+## Placing objects
+
+*Added in M34.*
+
+### The Outliner add bar
+
+The `SceneOutliner` now has an add bar below the entity list:
+
+| Control | Effect |
+| ------- | ------ |
+| **+ Cube** | Spawns a unit cube primitive |
+| **+ Plane** | Spawns a unit plane primitive |
+| Path field + **+ glTF** | Adds a glTF model by path (relative to the executable directory, same convention as the scene file itself); warns and rolls back if the path is invalid |
+| **Duplicate** | Copies the selected entity (+0.5 X offset); disabled when nothing is selected |
+| **Delete** | Removes the selected entity; disabled when nothing is selected |
+
+### Placement behaviour
+
+New and duplicated entities **spawn ~5 units in front of the camera** so they
+are immediately visible in the viewport. Each gets an **auto-unique name**
+(e.g. `Cube_1`, `Cube_2`) and is **selected** with the gizmo active, so you
+can move it into place right away. Press **Save Scene** to persist the change.
+
+### Keyboard shortcuts
+
+| Key | Action |
+| --- | ------ |
+| **Delete** | Delete the selected entity |
+| **Ctrl+D** | Duplicate the selected entity |
+
+Both shortcuts are suppressed while ImGui has keyboard focus (e.g. while
+typing in the glTF path field), so they do not fire mid-edit.
+
+### Architecture: intent vs. mutation
+
+`SceneOutliner::draw` now returns a `SceneOutliner::Result` struct that
+describes the user's intent (`Action::AddCube`, `Action::AddPlane`,
+`Action::AddGltf`, `Action::Duplicate`, `Action::Delete`, or `Action::None`
+plus `saveClicked`). The Outliner never touches the renderer or the resolved
+GPU data — it only reports intent.
+
+The sandbox host acts on the result: a `resolveEntity` helper (shared between
+the initial scene-load loop and runtime adds) builds the GPU mesh, material,
+and AABB for a single entity. `appendAndSelect` calls `resolveEntity` and
+rolls back on failure (e.g. a bad glTF path). Delete erases the entity from
+`SceneFile::entities` and reindexes the host's parallel `resolved[]` array.
+
+This keeps the editor module decoupled from renderer internals — the same
+boundary already in place for the Inspector and EnvironmentPanel.
+
+### Known v1 limitations
+
+- **No undo/redo.** Any destructive action is immediate; only **Save Scene**
+  is reversible (by not saving).
+- **Single selection only.** Add / duplicate / delete act on the current
+  single selection; multi-select is a future feature.
+- **glTF by path, no asset browser.** The path field resolves relative to the
+  executable directory; there is no file-picker yet.
+- **GPU mesh leak on delete.** Deleting a glTF entity frees its `SceneEntity`
+  but the underlying GPU mesh allocation is not reclaimed (no `destroyMesh`
+  API yet). Primitives (cube, plane) are shared and are unaffected.
+
