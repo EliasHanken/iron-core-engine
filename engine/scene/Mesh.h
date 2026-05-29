@@ -1,5 +1,6 @@
 #pragma once
 
+#include "math/Aabb.h"
 #include "math/Vec.h"
 
 #include <cstdint>
@@ -26,6 +27,10 @@ struct MeshData {
 // A unit cube centered at the origin (side length 1), with per-face normals and
 // UVs so every face can be textured. 24 vertices (4 per face), 36 indices.
 MeshData makeCube();
+
+// Axis-aligned bounds (min/max corner) over a mesh's vertex positions. Returns
+// a zero box for an empty mesh. Used to build per-entity pick bounds.
+Aabb meshBounds(const MeshData& mesh);
 
 // Appends a box (a cuboid) to `out`: 24 vertices (per-face normals + UVs) and
 // 36 indices, centered at `center` with full extents `size`. Indices are
