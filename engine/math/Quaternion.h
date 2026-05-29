@@ -116,4 +116,43 @@ inline Quat Quat::slerp(const Quat& a, const Quat& b, float t) {
     };
 }
 
+// --- Euler (degrees, intrinsic XYZ) <-> quaternion, for editor rotation UI ---
+// Not for animation/runtime math (use quaternions directly); these exist so a
+// Details-panel can show/edit rotation as human-readable degrees.
+
+inline Quat eulerToQuat(Vec3 degrees) {
+    const float kDeg2Rad = 3.14159265358979323846f / 180.0f;
+    const float hx = degrees.x * kDeg2Rad * 0.5f;
+    const float hy = degrees.y * kDeg2Rad * 0.5f;
+    const float hz = degrees.z * kDeg2Rad * 0.5f;
+    const float cx = std::cos(hx), sx = std::sin(hx);
+    const float cy = std::cos(hy), sy = std::sin(hy);
+    const float cz = std::cos(hz), sz = std::sin(hz);
+    // q = qz * qy * qx  (apply X first, then Y, then Z)
+    Quat q;
+    q.w = cx * cy * cz + sx * sy * sz;
+    q.x = sx * cy * cz - cx * sy * sz;
+    q.y = cx * sy * cz + sx * cy * sz;
+    q.z = cx * cy * sz - sx * sy * cz;
+    return q.normalized();
+}
+
+inline Vec3 quatToEuler(Quat q) {
+    q = q.normalized();
+    const float kRad2Deg = 180.0f / 3.14159265358979323846f;
+    // X (roll about model X)
+    const float sinrCosp = 2.0f * (q.w * q.x + q.y * q.z);
+    const float cosrCosp = 1.0f - 2.0f * (q.x * q.x + q.y * q.y);
+    const float x = std::atan2(sinrCosp, cosrCosp);
+    // Y (pitch) — clamp for gimbal-lock safety
+    float sinp = 2.0f * (q.w * q.y - q.z * q.x);
+    sinp = sinp > 1.0f ? 1.0f : (sinp < -1.0f ? -1.0f : sinp);
+    const float y = std::asin(sinp);
+    // Z (yaw)
+    const float sinyCosp = 2.0f * (q.w * q.z + q.x * q.y);
+    const float cosyCosp = 1.0f - 2.0f * (q.y * q.y + q.z * q.z);
+    const float z = std::atan2(sinyCosp, cosyCosp);
+    return Vec3{x * kRad2Deg, y * kRad2Deg, z * kRad2Deg};
+}
+
 } // namespace iron
