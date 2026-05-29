@@ -1,10 +1,11 @@
-// games/11-sandbox/main.cpp — M29 Task 3: scene-file driven sandbox.
-// Loads assets/scenes/demo.json and renders every entity with a free-fly
-// camera. Static glTF models, procedural primitives (cube / plane), and
-// per-entity materials are all driven by the scene file — no hardcoded
-// content here.
+// games/11-sandbox/main.cpp — M30: scene-file driven sandbox + editor host.
+// Loads assets/scenes/demo.json, renders every entity, and hosts the
+// ironcore_editor panels (Outliner / Inspector / Environment) to edit the
+// scene live and save it back. Static glTF models, procedural primitives
+// (cube / plane), and per-entity materials are all driven by the scene file.
 //
-// Free-fly camera: WASD + mouse, Space/Ctrl for up/down, ESC to quit.
+// Camera: hold RIGHT-mouse to look + fly (WASD, Space/Ctrl for up/down);
+// release to interact with the editor UI. ESC to quit.
 
 #include "asset/GltfLoader.h"
 #include "core/Application.h"
