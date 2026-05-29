@@ -16,6 +16,7 @@ add_library(ironcore STATIC
   scene/Camera.cpp
   scene/FirstPersonController.cpp
   scene/FreeFlyCamera.cpp
+  scene/SceneIO.cpp
   ui/BitmapFont.cpp
   ui/BuiltinFont.cpp
   ui/Hud.cpp
@@ -43,6 +44,9 @@ target_link_libraries(ironcore PUBLIC
 
 target_link_libraries(ironcore PRIVATE
   Jolt::Jolt)
+
+# M29 — scene serialization uses nlohmann/json (header-only, vendored).
+target_link_libraries(ironcore PRIVATE nlohmann_json)
 
 # M26 — audio: OpenAL Soft (via vcpkg) + dr_wav (vendored header-only).
 # OpenAL headers are PRIVATE to keep the engine's public API free of

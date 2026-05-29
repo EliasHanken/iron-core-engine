@@ -1,0 +1,59 @@
+#pragma once
+
+#include "math/Quaternion.h"
+#include "math/Vec.h"
+#include "render/Fog.h"
+#include "render/Light.h"
+
+#include <optional>
+#include <string>
+#include <vector>
+
+namespace iron {
+
+// A builtin procedural mesh. v1 supports the two the engine already has
+// builders for (makeCube / appendQuad). Sphere etc. are future additions.
+enum class PrimitiveKind { Cube, Plane };
+
+// How an entity gets its geometry: a builtin primitive OR a static
+// (non-skinned) glTF path. If `primitive` is set it wins; otherwise
+// `gltfPath` is loaded. If neither resolves, the loader logs and skips
+// the entity (the rest of the scene still renders).
+struct MeshRef {
+    std::optional<PrimitiveKind> primitive;
+    std::string                  gltfPath;
+};
+
+// Surface appearance. Texture paths resolve to engine textures at load;
+// "" means "use the engine's builtin default" (white / flat-normal / no-spec).
+struct MaterialDef {
+    std::string albedoPath;
+    std::string normalPath;
+    std::string specularPath;
+    Vec3        emissive     = {0.0f, 0.0f, 0.0f};
+    float       uvScale      = 1.0f;
+    float       reflectivity = 0.0f;
+};
+
+// One placed object: a transform + what to draw.
+struct SceneEntity {
+    std::string name;
+    Vec3        position = {0.0f, 0.0f, 0.0f};
+    Quat        rotation = Quat::identity();   // serialized as [x, y, z, w]
+    Vec3        scale    = {1.0f, 1.0f, 1.0f};
+    MeshRef     mesh;
+    MaterialDef material;
+};
+
+// A complete authored scene: placed entities + global lighting/environment.
+// Ambient lives on `sun.ambient` (DirectionalLight carries it) — there is
+// no separate scene-level ambient.
+struct SceneFile {
+    std::vector<SceneEntity> entities;
+    DirectionalLight         sun;
+    std::vector<PointLight>  pointLights;
+    Fog                      fog;
+    Vec3                     clearColor = {0.5f, 0.6f, 0.7f};
+};
+
+}  // namespace iron
