@@ -300,8 +300,8 @@ void Gizmo::draw(Renderer& renderer, Vec3 origin, Vec3 camPos) const {
 
     auto colorFor = [&](int id) -> Vec3 {
         Vec3 c;
-        if (id == kCenterHandle) c = Vec3{0.9f, 0.9f, 0.9f};   // center: white
-        else if (id >= 3)        c = Vec3{0.9f, 0.85f, 0.3f};  // planar: yellow
+        if (id == kCenterHandle) c = Vec3{0.85f, 0.85f, 0.85f};  // center: gray
+        else if (id >= 3)        c = axisColor(id - 3);          // planar: its normal-axis color
         else                     c = axisColor(id);
         if (id == highlight) {  // brighten the hovered/active handle
             return Vec3{c.x + 0.4f > 1.0f ? 1.0f : c.x + 0.4f,
@@ -338,9 +338,14 @@ void Gizmo::draw(Renderer& renderer, Vec3 origin, Vec3 camPos) const {
         const Vec3 col = colorFor(3 + n);
         renderer.drawTriOverlay(origin, c10, c11, col);
         renderer.drawTriOverlay(origin, c11, c01, col);
+        // Outline only the two OUTER edges (the L away from the origin) so the
+        // flat reads clearly without doubling the axis lines.
+        renderer.drawLineOverlayThick(c10, c11, col);
+        renderer.drawLineOverlayThick(c01, c11, col);
     }
 
-    // Center free-move handle: a translucent camera-facing quad at the origin.
+    // Center free-move handle: a translucent camera-facing quad at the origin,
+    // with a gray outline so it reads against the scene.
     Vec3 right, up;
     cameraBasis(origin, camPos, right, up);
     const float h = size * kCenterHalf;
@@ -351,6 +356,10 @@ void Gizmo::draw(Renderer& renderer, Vec3 origin, Vec3 camPos) const {
     const Vec3 cc = colorFor(kCenterHandle);
     renderer.drawTriOverlay(q00, q10, q11, cc);
     renderer.drawTriOverlay(q00, q11, q01, cc);
+    renderer.drawLineOverlayThick(q00, q10, cc);
+    renderer.drawLineOverlayThick(q10, q11, cc);
+    renderer.drawLineOverlayThick(q11, q01, cc);
+    renderer.drawLineOverlayThick(q01, q00, cc);
 }
 
 }  // namespace iron
