@@ -124,7 +124,9 @@ bool VkDebugLines::init(VkContext& ctx, VkRenderPass scenePass) {
     rs.polygonMode = VK_POLYGON_MODE_FILL;
     rs.cullMode = VK_CULL_MODE_NONE;
     rs.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE;
-    rs.lineWidth = 1.0f;
+    // Thicker lines for editor gizmos (Unreal/Unity feel) when the device
+    // supports wideLines; otherwise 1px (the only legal width without it).
+    rs.lineWidth = ctx.wideLines() ? 2.5f : 1.0f;
 
     VkPipelineMultisampleStateCreateInfo ms{};
     ms.sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO;

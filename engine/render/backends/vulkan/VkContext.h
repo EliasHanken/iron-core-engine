@@ -32,6 +32,9 @@ public:
     VkQueue          presentQueue()    const { return presentQ_;  }
     std::uint32_t    graphicsFamily()  const { return graphicsFamily_; }
     VmaAllocator     allocator()       const { return allocator_; }
+    // True if the wideLines device feature was enabled (lets line pipelines use
+    // lineWidth > 1). False on devices that don't support it (lines stay 1px).
+    bool             wideLines()       const { return wideLines_; }
 
 private:
     bool createInstance();
@@ -50,6 +53,7 @@ private:
     VkQueue           presentQ_       = VK_NULL_HANDLE;
     std::uint32_t     graphicsFamily_ = ~0u;
     VmaAllocator      allocator_      = VK_NULL_HANDLE;
+    bool              wideLines_      = false;
 };
 
 }  // namespace iron

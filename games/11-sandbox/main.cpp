@@ -551,6 +551,30 @@ int main() {
         }
         if (selectedIndex >= 0 && selectedIndex < static_cast<int>(scene.entities.size()))
             gizmo.draw(renderer, gizmoOriginFor(selectedIndex), cam.position);
+
+        // --- selection outline: the selected entity's world-AABB drawn as an
+        // always-on-top box, so the active object reads clearly. ---
+        if (selectedIndex >= 0 && selectedIndex < static_cast<int>(scene.entities.size())) {
+            for (const auto& re : resolved) {
+                if (re.entityIndex != selectedIndex) continue;
+                const iron::SceneEntity& se = scene.entities[selectedIndex];
+                const iron::Mat4 m = iron::translation(se.position)
+                                   * se.rotation.toMat4()
+                                   * iron::scaling(se.scale);
+                const iron::Aabb wa = worldAabb(re.localBounds, m);
+                iron::Vec3 c[8];
+                for (int i = 0; i < 8; ++i)
+                    c[i] = iron::Vec3{(i & 1) ? wa.max.x : wa.min.x,
+                                      (i & 2) ? wa.max.y : wa.min.y,
+                                      (i & 4) ? wa.max.z : wa.min.z};
+                const int edges[12][2] = {{0,1},{2,3},{4,5},{6,7},{0,2},{1,3},
+                                          {4,6},{5,7},{0,4},{1,5},{2,6},{3,7}};
+                const iron::Vec3 outline{1.0f, 0.6f, 0.1f};  // selection orange
+                for (auto& ed : edges)
+                    renderer.drawLineOverlay(c[ed[0]], c[ed[1]], outline);
+                break;
+            }
+        }
         renderer.flushDebugLines(view, proj);
         imgui.render();   // enqueues the UI overlay into the scene pass tail
         renderer.endFrame();
