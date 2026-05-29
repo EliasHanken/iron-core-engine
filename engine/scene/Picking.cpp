@@ -15,10 +15,23 @@ Ray screenPointToRay(const Mat4& view, const Mat4& proj, Vec2 mousePx,
     return r;
 }
 
+namespace {
+// True if `p` lies within the (inclusive) box.
+bool pointInAabb(Vec3 p, const Aabb& b) {
+    return p.x >= b.min.x && p.x <= b.max.x &&
+           p.y >= b.min.y && p.y <= b.max.y &&
+           p.z >= b.min.z && p.z <= b.max.z;
+}
+}  // namespace
+
 int pickEntity(const Ray& ray, const std::vector<Aabb>& worldAabbs) {
     int best = -1;
     float bestT = 1e30f;
     for (int i = 0; i < static_cast<int>(worldAabbs.size()); ++i) {
+        // Skip a box the ray origin is inside: a ray-vs-AABB test reports t=0 for
+        // it, so it would always "win" the pick. When the camera is inside an
+        // object you want to select what you're aiming at, not what you're in.
+        if (pointInAabb(ray.origin, worldAabbs[i])) continue;
         float t = 0.0f;
         if (intersectRayAabb(ray, worldAabbs[i], t) && t < bestT) {
             bestT = t;

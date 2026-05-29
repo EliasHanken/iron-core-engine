@@ -168,6 +168,21 @@ public:
     virtual void drawLine(Vec3 a, Vec3 b, Vec3 color) = 0;
     // Draw all queued debug lines (depth-tested) and clear the queue.
     virtual void flushDebugLines(const Mat4& view, const Mat4& projection) = 0;
+    // Like drawLine, but drawn on top of geometry (depth test disabled) — for
+    // editor gizmos / manipulators that must stay visible. Default forwards to
+    // drawLine (depth-tested); the Vulkan backend overrides it with an overlay
+    // pass. Flushed by flushDebugLines alongside the regular lines.
+    virtual void drawLineOverlay(Vec3 a, Vec3 b, Vec3 color) { drawLine(a, b, color); }
+    // Like drawLineOverlay, but rendered thicker (when the device supports
+    // wideLines) — for gizmo handles that should read as chunky manipulators
+    // while thin overlay lines (e.g. selection outlines) stay 1px. Default
+    // forwards to drawLineOverlay.
+    virtual void drawLineOverlayThick(Vec3 a, Vec3 b, Vec3 color) { drawLineOverlay(a, b, color); }
+    // Queue a filled, alpha-blended, always-on-top triangle — for translucent
+    // gizmo plane / center handles. Default no-op (only Vulkan implements it).
+    virtual void drawTriOverlay(Vec3 a, Vec3 b, Vec3 c, Vec3 color) {
+        (void)a; (void)b; (void)c; (void)color;
+    }
 
     // --- HUD ---
     // Draw a screen-space HUD batch on top of the scene, sized to the given

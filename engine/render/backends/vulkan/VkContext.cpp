@@ -204,8 +204,16 @@ bool VkContext::createLogicalDevice() {
     // M17 — enable shaderClipDistance so gl_ClipDistance[0] in the
     // reflection-pass vertex shader hardware-clips geometry on the
     // wrong side of the mirror plane. Core Vulkan 1.0 feature.
+    VkPhysicalDeviceFeatures supported{};
+    vkGetPhysicalDeviceFeatures(phys_, &supported);
+
     VkPhysicalDeviceFeatures features{};
     features.shaderClipDistance = VK_TRUE;
+
+    // M32 — enable wideLines (when supported) so editor gizmo / debug lines can
+    // use lineWidth > 1. Falls back to 1px lines on devices without it.
+    wideLines_ = (supported.wideLines == VK_TRUE);
+    features.wideLines = wideLines_ ? VK_TRUE : VK_FALSE;
 
     VkDeviceCreateInfo info{};
     info.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO;

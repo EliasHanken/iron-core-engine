@@ -48,5 +48,16 @@ int main() {
         const Ray up{Vec3{0.0f, 0.0f, 5.0f}, Vec3{0.0f, 1.0f, 0.0f}};
         CHECK(pickEntity(up, boxes) == -1);   // misses both
     }
+
+    // pickEntity skips the box the ray origin is inside: a camera inside the near
+    // box, looking at the far box, selects the far box (not the one it's in).
+    {
+        std::vector<Aabb> boxes = {
+            Aabb{Vec3{-0.5f, -0.5f, -11.0f}, Vec3{0.5f, 0.5f, -9.0f}},  // far
+            Aabb{Vec3{-1.0f, -1.0f, -1.0f},  Vec3{1.0f, 1.0f, 1.0f}},   // contains the origin
+        };
+        const Ray inside{Vec3{0.0f, 0.0f, 0.0f}, Vec3{0.0f, 0.0f, -1.0f}};
+        CHECK(pickEntity(inside, boxes) == 0);  // the far box, not the enclosing one
+    }
     return iron_test_result();
 }

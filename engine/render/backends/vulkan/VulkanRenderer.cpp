@@ -231,6 +231,18 @@ void VulkanRenderer::drawLine(Vec3 a, Vec3 b, Vec3 color) {
     debugLines_.queue(a, b, color);
 }
 
+void VulkanRenderer::drawLineOverlay(Vec3 a, Vec3 b, Vec3 color) {
+    debugLines_.queueOverlay(a, b, color);
+}
+
+void VulkanRenderer::drawLineOverlayThick(Vec3 a, Vec3 b, Vec3 color) {
+    debugLines_.queueOverlayThick(a, b, color);
+}
+
+void VulkanRenderer::drawTriOverlay(Vec3 a, Vec3 b, Vec3 c, Vec3 color) {
+    debugLines_.queueTri(a, b, c, color);
+}
+
 void VulkanRenderer::flushDebugLines(const Mat4& view, const Mat4& projection) {
     if (skipFrame_) return;
     pendingDebugView_  = view;
@@ -900,6 +912,13 @@ void VulkanRenderer::endFrame() {
             fn(cb);
         }
         deferredScenePass_.clear();
+
+        // A deferred pass may change the viewport/scissor — notably ImGui's
+        // Vulkan backend sets a full-screen POSITIVE-height viewport + per-draw
+        // scissor. Restore the scene's negative-height (clip-Y-flipped) viewport
+        // and full scissor so debug-lines and the HUD render with the same
+        // convention as the scene geometry (otherwise they appear Y-mirrored).
+        setSceneViewport(cb, swapchain_.extent());
 
         if (pendingDebugFlush_) {
             debugLines_.record(cb, context_.device(), frames_,
