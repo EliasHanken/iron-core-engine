@@ -4,6 +4,7 @@
 find_package(imgui CONFIG REQUIRED)
 
 add_library(ironcore_editor STATIC
+  Gizmo.cpp
   ImGuiLayer.cpp
   SceneOutliner.cpp
   SceneInspector.cpp
