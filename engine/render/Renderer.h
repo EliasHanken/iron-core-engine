@@ -173,6 +173,11 @@ public:
     // drawLine (depth-tested); the Vulkan backend overrides it with an overlay
     // pass. Flushed by flushDebugLines alongside the regular lines.
     virtual void drawLineOverlay(Vec3 a, Vec3 b, Vec3 color) { drawLine(a, b, color); }
+    // Like drawLineOverlay, but rendered thicker (when the device supports
+    // wideLines) — for gizmo handles that should read as chunky manipulators
+    // while thin overlay lines (e.g. selection outlines) stay 1px. Default
+    // forwards to drawLineOverlay.
+    virtual void drawLineOverlayThick(Vec3 a, Vec3 b, Vec3 color) { drawLineOverlay(a, b, color); }
 
     // --- HUD ---
     // Draw a screen-space HUD batch on top of the scene, sized to the given

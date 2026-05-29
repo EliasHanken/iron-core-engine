@@ -29,6 +29,8 @@ public:
     void queue(Vec3 a, Vec3 b, Vec3 color);
     // Like queue(), but recorded with depth-test disabled (drawn on top).
     void queueOverlay(Vec3 a, Vec3 b, Vec3 color);
+    // Like queueOverlay(), but drawn thick (wider lineWidth) — for gizmo handles.
+    void queueOverlayThick(Vec3 a, Vec3 b, Vec3 color);
     // device is the Vulkan device handle (for vkAllocateDescriptorSets +
     // vkUpdateDescriptorSets). Pass VulkanRenderer::context_.device().
     void record(VkCommandBuffer cb, VkDevice device, VkFrameRing& frames,
@@ -43,8 +45,10 @@ private:
     VkPipelineLayout pipelineLayout_ = VK_NULL_HANDLE;
     ::VkPipeline pipeline_ = VK_NULL_HANDLE;
     ::VkPipeline overlayPipeline_ = VK_NULL_HANDLE;  // same as pipeline_ but depthTest off
+    float thickWidth_ = 1.0f;                        // lineWidth for thick overlay lines
     std::vector<Vertex> queued_;
     std::vector<Vertex> queuedOverlay_;
+    std::vector<Vertex> queuedOverlayThick_;
 };
 
 }  // namespace iron

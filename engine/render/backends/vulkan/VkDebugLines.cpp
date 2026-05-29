@@ -124,9 +124,11 @@ bool VkDebugLines::init(VkContext& ctx, VkRenderPass scenePass) {
     rs.polygonMode = VK_POLYGON_MODE_FILL;
     rs.cullMode = VK_CULL_MODE_NONE;
     rs.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE;
-    // Thicker lines for editor gizmos (Unreal/Unity feel) when the device
-    // supports wideLines; otherwise 1px (the only legal width without it).
-    rs.lineWidth = ctx.wideLines() ? 2.5f : 1.0f;
+    rs.lineWidth = 1.0f;  // ignored — lineWidth is dynamic (set per draw group)
+
+    // Thick gizmo lines use this width when the device supports wideLines;
+    // otherwise everything stays 1px (the only legal width without the feature).
+    thickWidth_ = ctx.wideLines() ? 3.0f : 1.0f;
 
     VkPipelineMultisampleStateCreateInfo ms{};
     ms.sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO;
@@ -147,10 +149,11 @@ bool VkDebugLines::init(VkContext& ctx, VkRenderPass scenePass) {
     cb.attachmentCount = 1;
     cb.pAttachments = &att;
 
-    VkDynamicState dynStates[] = { VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR };
+    VkDynamicState dynStates[] = { VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR,
+                                   VK_DYNAMIC_STATE_LINE_WIDTH };
     VkPipelineDynamicStateCreateInfo dyn{};
     dyn.sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO;
-    dyn.dynamicStateCount = 2;
+    dyn.dynamicStateCount = 3;
     dyn.pDynamicStates = dynStates;
 
     VkGraphicsPipelineCreateInfo pInfo{};
@@ -199,11 +202,18 @@ void VkDebugLines::queueOverlay(Vec3 a, Vec3 b, Vec3 color) {
     queuedOverlay_.push_back({b, color});
 }
 
+void VkDebugLines::queueOverlayThick(Vec3 a, Vec3 b, Vec3 color) {
+    queuedOverlayThick_.push_back({a, color});
+    queuedOverlayThick_.push_back({b, color});
+}
+
 void VkDebugLines::record(VkCommandBuffer cb, VkDevice device, VkFrameRing& frames,
                           const Mat4& view, const Mat4& projection) {
-    if (!ok_ || cb == VK_NULL_HANDLE || (queued_.empty() && queuedOverlay_.empty())) {
+    if (!ok_ || cb == VK_NULL_HANDLE ||
+        (queued_.empty() && queuedOverlay_.empty() && queuedOverlayThick_.empty())) {
         queued_.clear();
         queuedOverlay_.clear();
+        queuedOverlayThick_.clear();
         return;
     }
 
@@ -238,8 +248,10 @@ void VkDebugLines::record(VkCommandBuffer cb, VkDevice device, VkFrameRing& fram
     vkCmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_GRAPHICS,
                             pipelineLayout_, 0, 1, &set, 0, nullptr);
 
-    // Draw one queue with the given pipeline. Allocates its own vertex range.
-    auto drawQueue = [&](std::vector<Vertex>& q, ::VkPipeline pipe) {
+    // Draw one queue with the given pipeline + line width. Allocates its own
+    // vertex range. lineWidth is dynamic state (the pipeline ignores its baked
+    // value), so each group can pick its own thickness.
+    auto drawQueue = [&](std::vector<Vertex>& q, ::VkPipeline pipe, float lineWidth) {
         if (q.empty()) return;
         VkDeviceSize voff = 0;
         VkBuffer vb = frames.allocateVertices(q.data(), q.size() * sizeof(Vertex), voff);
@@ -247,16 +259,19 @@ void VkDebugLines::record(VkCommandBuffer cb, VkDevice device, VkFrameRing& fram
             Log::warn("VkDebugLines: vertex sub-allocator overflow, skipping a queue");
             return;
         }
+        vkCmdSetLineWidth(cb, lineWidth);
         vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, pipe);
         vkCmdBindVertexBuffers(cb, 0, 1, &vb, &voff);
         vkCmdDraw(cb, static_cast<std::uint32_t>(q.size()), 1, 0, 0);
     };
 
-    drawQueue(queued_, pipeline_);               // depth-tested
-    drawQueue(queuedOverlay_, overlayPipeline_);  // always-on-top
+    drawQueue(queued_, pipeline_, 1.0f);                       // depth-tested, thin
+    drawQueue(queuedOverlay_, overlayPipeline_, 1.0f);         // always-on-top, thin (outlines)
+    drawQueue(queuedOverlayThick_, overlayPipeline_, thickWidth_);  // always-on-top, thick (gizmo)
 
     queued_.clear();
     queuedOverlay_.clear();
+    queuedOverlayThick_.clear();
 }
 
 }  // namespace iron

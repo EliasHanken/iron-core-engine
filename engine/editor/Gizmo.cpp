@@ -10,10 +10,16 @@ namespace iron {
 namespace {
 
 constexpr float kGizmoScreenScale = 0.15f;  // gizmo world size ~= this * camera distance
-constexpr float kHandlePickFrac   = 0.25f;  // forgiving pick threshold (fraction of gizmo size)
-constexpr float kPlaneInset       = 0.30f;  // planar-handle quad inner corner (fraction of size)
-constexpr float kPlaneReach       = 0.62f;  // planar-handle quad outer corner (fraction of size)
+constexpr float kHandlePickFrac   = 0.25f;  // forgiving axis pick threshold (fraction of size)
+constexpr float kPlaneInset       = 0.08f;  // planar-handle square inner corner (fraction of size)
+constexpr float kPlaneReach       = 0.30f;  // planar-handle square outer corner (fraction of size)
+constexpr float kCenterPickFrac   = 0.12f;  // center free-move handle pick radius (fraction of size)
+constexpr float kCenterHalf       = 0.09f;  // center handle half-size (fraction of size)
 constexpr float kTwoPi            = 6.28318530718f;
+
+// Handle ids: 0/1/2 = single axes, 3/4/5 = planar (3 + plane-normal-axis,
+// Translate only), 6 = center free-move (Translate only).
+constexpr int kCenterHandle = 6;
 
 Vec3 axisDir(int a)   { return a == 0 ? Vec3{1, 0, 0} : a == 1 ? Vec3{0, 1, 0} : Vec3{0, 0, 1}; }
 Vec3 axisColor(int a) { return a == 0 ? Vec3{1.0f, 0.25f, 0.25f}
@@ -69,6 +75,13 @@ float raySegmentDistance(const Ray& ray, Vec3 a, Vec3 b) {
     return segSegDistance(ray.origin, ray.origin + ray.direction * 1.0e4f, a, b);
 }
 
+// Distance from the ray (as an infinite line) to a world point.
+float rayPointDistance(const Ray& ray, Vec3 p) {
+    const Vec3 w = p - ray.origin;
+    const Vec3 closest = ray.origin + ray.direction * dot(w, ray.direction);  // dir unit
+    return length(closest - p);
+}
+
 // Param along the infinite line (origin + dir*p, dir unit) of the point closest
 // to the ray. Returns false (leaves `out` untouched) when the ray is
 // near-parallel to the axis (ill-conditioned).
@@ -113,8 +126,8 @@ void planeAxes(int n, Vec3& u, Vec3& v) {
     else             { u = axisDir(0); v = axisDir(1); }  // XY
 }
 
-// True if the planar handle for plane-normal axis `n` is under the ray. The quad
-// sits in the [inset, reach] corner of the two in-plane axes near `origin`.
+// True if the planar handle for plane-normal axis `n` is under the ray. The
+// square sits in the [inset, reach] corner of the two in-plane axes near origin.
 bool planeHandleHit(const Ray& ray, Vec3 origin, int n, float size) {
     Vec3 hit;
     if (!rayPlane(ray, origin, axisDir(n), hit)) return false;
@@ -125,11 +138,12 @@ bool planeHandleHit(const Ray& ray, Vec3 origin, int n, float size) {
     return du >= lo && du <= hi && dv >= lo && dv <= hi;
 }
 
-// Which handle is under the ray for the given mode, or -1. Ids: 0/1/2 = axes,
-// 3/4/5 = planar handles (Translate only), encoded as 3 + plane-normal-axis.
+// Which handle is under the ray for the given mode, or -1.
 int pickHandle(GizmoMode mode, const Ray& ray, Vec3 origin, float size) {
-    // Translate: planar handles (ids 3..5) take the corner quads near the origin.
     if (mode == GizmoMode::Translate) {
+        // Center free-move handle (innermost) wins right at the origin.
+        if (rayPointDistance(ray, origin) < size * kCenterPickFrac) return kCenterHandle;
+        // Then the planar corner squares.
         for (int n = 0; n < 3; ++n)
             if (planeHandleHit(ray, origin, n, size)) return 3 + n;
     }
@@ -155,6 +169,14 @@ int pickHandle(GizmoMode mode, const Ray& ray, Vec3 origin, float size) {
     return picked;
 }
 
+// Camera-facing right/up basis at `origin` (for the center handle's billboard).
+void cameraBasis(Vec3 origin, Vec3 camPos, Vec3& right, Vec3& up) {
+    const Vec3 n = normalize(camPos - origin);
+    Vec3 r = cross(Vec3{0, 1, 0}, n);
+    right = (length(r) < 1e-4f) ? Vec3{1, 0, 0} : normalize(r);
+    up = cross(n, right);
+}
+
 void drawRing(Renderer& r, Vec3 c, Vec3 axis, float radius, Vec3 color) {
     Vec3 seed = std::fabs(axis.x) > 0.5f ? Vec3{0, 1, 0} : Vec3{1, 0, 0};
     Vec3 u = normalize(seed - axis * dot(seed, axis));
@@ -164,7 +186,7 @@ void drawRing(Renderer& r, Vec3 c, Vec3 axis, float radius, Vec3 color) {
     for (int i = 1; i <= N; ++i) {
         const float t = static_cast<float>(i) / N * kTwoPi;
         const Vec3 p = c + (u * std::cos(t) + v * std::sin(t)) * radius;
-        r.drawLineOverlay(prev, p, color);
+        r.drawLineOverlayThick(prev, p, color);
         prev = p;
     }
 }
@@ -177,7 +199,22 @@ void drawBox(Renderer& r, Vec3 c, float h, Vec3 color) {
         {c.x + h, c.y + h, c.z + h}, {c.x - h, c.y + h, c.z + h},
     };
     const int e[12][2] = {{0,1},{1,2},{2,3},{3,0},{4,5},{5,6},{6,7},{7,4},{0,4},{1,5},{2,6},{3,7}};
-    for (auto& pr : e) r.drawLineOverlay(k[pr[0]], k[pr[1]], color);
+    for (auto& pr : e) r.drawLineOverlayThick(k[pr[0]], k[pr[1]], color);
+}
+
+// A little pyramid arrowhead at the tip of a translate axis.
+void drawArrowhead(Renderer& r, Vec3 tip, Vec3 dir, float size, Vec3 color) {
+    Vec3 seed = std::fabs(dir.x) > 0.5f ? Vec3{0, 1, 0} : Vec3{1, 0, 0};
+    Vec3 u = normalize(seed - dir * dot(seed, dir));
+    Vec3 v = cross(dir, u);
+    const float len = size * 0.18f;
+    const float rad = size * 0.06f;
+    const Vec3 base = tip - dir * len;
+    const Vec3 b[4] = {base + u * rad, base + v * rad, base - u * rad, base - v * rad};
+    for (int i = 0; i < 4; ++i) {
+        r.drawLineOverlayThick(tip, b[i], color);          // sides to the point
+        r.drawLineOverlayThick(b[i], b[(i + 1) % 4], color);  // base ring
+    }
 }
 
 }  // namespace
@@ -204,7 +241,11 @@ bool Gizmo::update(SceneEntity& e, Vec3 origin, const Ray& ray,
         startScale_  = e.scale;
         startRot_    = e.rotation;
         startOrigin_ = origin;
-        if (picked >= 3) {  // planar handle (Translate): remember the plane hit point
+        if (picked == kCenterHandle) {        // center free-move: camera-facing plane
+            startNormal_ = normalize(camPos - startOrigin_);
+            Vec3 hit;
+            startHit_ = rayPlane(ray, startOrigin_, startNormal_, hit) ? hit : startOrigin_;
+        } else if (picked >= 3) {             // planar: the handle's world plane
             Vec3 hit;
             startHit_ = rayPlane(ray, startOrigin_, axisDir(picked - 3), hit) ? hit : startOrigin_;
         } else {
@@ -217,14 +258,19 @@ bool Gizmo::update(SceneEntity& e, Vec3 origin, const Ray& ray,
         return true;
     }
 
-    // Continue a drag. On a degenerate/near-parallel solve, hold the last param
+    // Continue a drag. On a degenerate/near-parallel solve, hold the last value
     // (no movement this frame) instead of jumping.
     if (axis_ >= 0) {
-        if (axis_ >= 3) {  // planar drag (Translate): move in the handle's world plane
+        if (axis_ == kCenterHandle) {  // free-move in the camera-facing plane
+            Vec3 hit;
+            if (rayPlane(ray, startOrigin_, startNormal_, hit))
+                e.position = startPos_ + (hit - startHit_);
+            return true;
+        }
+        if (axis_ >= 3) {  // planar drag: move in the handle's world plane
             Vec3 hit;
             if (rayPlane(ray, startOrigin_, axisDir(axis_ - 3), hit))
                 e.position = startPos_ + (hit - startHit_);
-            // else: ray parallel to the plane -> hold (no move this frame)
             return true;
         }
         const Vec3 dir = axisDir(axis_);
@@ -253,8 +299,10 @@ void Gizmo::draw(Renderer& renderer, Vec3 origin, Vec3 camPos) const {
     const int highlight = (axis_ >= 0) ? axis_ : hoveredAxis_;
 
     auto colorFor = [&](int id) -> Vec3 {
-        const Vec3 c = (id >= 3) ? Vec3{0.9f, 0.85f, 0.3f}  // planar handles: light yellow
-                                 : axisColor(id);
+        Vec3 c;
+        if (id == kCenterHandle) c = Vec3{0.9f, 0.9f, 0.9f};   // center: white
+        else if (id >= 3)        c = Vec3{0.9f, 0.85f, 0.3f};  // planar: yellow
+        else                     c = axisColor(id);
         if (id == highlight) {  // brighten the hovered/active handle
             return Vec3{c.x + 0.4f > 1.0f ? 1.0f : c.x + 0.4f,
                         c.y + 0.4f > 1.0f ? 1.0f : c.y + 0.4f,
@@ -267,27 +315,46 @@ void Gizmo::draw(Renderer& renderer, Vec3 origin, Vec3 camPos) const {
         for (int a = 0; a < 3; ++a) drawRing(renderer, origin, axisDir(a), size, colorFor(a));
         return;
     }
+
+    // Axis handles (translate arrows / scale boxes).
     for (int a = 0; a < 3; ++a) {
         const Vec3 tip = origin + axisDir(a) * size;
-        renderer.drawLineOverlay(origin, tip, colorFor(a));
-        if (mode_ == GizmoMode::Scale) drawBox(renderer, tip, size * 0.08f, colorFor(a));
+        renderer.drawLineOverlayThick(origin, tip, colorFor(a));
+        if (mode_ == GizmoMode::Scale)          drawBox(renderer, tip, size * 0.08f, colorFor(a));
+        else if (mode_ == GizmoMode::Translate) drawArrowhead(renderer, tip, axisDir(a), size, colorFor(a));
     }
-    if (mode_ == GizmoMode::Translate) {  // planar move handles (quad outlines near the corners)
-        const float lo = kPlaneInset * size, hi = kPlaneReach * size;
-        for (int n = 0; n < 3; ++n) {
-            Vec3 u, v;
-            planeAxes(n, u, v);
-            const Vec3 c00 = origin + u * lo + v * lo;
-            const Vec3 c10 = origin + u * hi + v * lo;
-            const Vec3 c11 = origin + u * hi + v * hi;
-            const Vec3 c01 = origin + u * lo + v * hi;
-            const Vec3 col = colorFor(3 + n);
-            renderer.drawLineOverlay(c00, c10, col);
-            renderer.drawLineOverlay(c10, c11, col);
-            renderer.drawLineOverlay(c11, c01, col);
-            renderer.drawLineOverlay(c01, c00, col);
-        }
+
+    if (mode_ != GizmoMode::Translate) return;
+
+    // Planar corner squares.
+    const float lo = kPlaneInset * size, hi = kPlaneReach * size;
+    for (int n = 0; n < 3; ++n) {
+        Vec3 u, v;
+        planeAxes(n, u, v);
+        const Vec3 c00 = origin + u * lo + v * lo;
+        const Vec3 c10 = origin + u * hi + v * lo;
+        const Vec3 c11 = origin + u * hi + v * hi;
+        const Vec3 c01 = origin + u * lo + v * hi;
+        const Vec3 col = colorFor(3 + n);
+        renderer.drawLineOverlayThick(c00, c10, col);
+        renderer.drawLineOverlayThick(c10, c11, col);
+        renderer.drawLineOverlayThick(c11, c01, col);
+        renderer.drawLineOverlayThick(c01, c00, col);
     }
+
+    // Center free-move handle: a small camera-facing square at the origin.
+    Vec3 right, up;
+    cameraBasis(origin, camPos, right, up);
+    const float h = size * kCenterHalf;
+    const Vec3 q00 = origin - right * h - up * h;
+    const Vec3 q10 = origin + right * h - up * h;
+    const Vec3 q11 = origin + right * h + up * h;
+    const Vec3 q01 = origin - right * h + up * h;
+    const Vec3 cc = colorFor(kCenterHandle);
+    renderer.drawLineOverlayThick(q00, q10, cc);
+    renderer.drawLineOverlayThick(q10, q11, cc);
+    renderer.drawLineOverlayThick(q11, q01, cc);
+    renderer.drawLineOverlayThick(q01, q00, cc);
 }
 
 }  // namespace iron
