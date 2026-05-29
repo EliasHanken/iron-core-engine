@@ -27,6 +27,8 @@ public:
     void destroy(VkContext& ctx);
 
     void queue(Vec3 a, Vec3 b, Vec3 color);
+    // Like queue(), but recorded with depth-test disabled (drawn on top).
+    void queueOverlay(Vec3 a, Vec3 b, Vec3 color);
     // device is the Vulkan device handle (for vkAllocateDescriptorSets +
     // vkUpdateDescriptorSets). Pass VulkanRenderer::context_.device().
     void record(VkCommandBuffer cb, VkDevice device, VkFrameRing& frames,
@@ -40,7 +42,9 @@ private:
     VkDescriptorSetLayout setLayout_ = VK_NULL_HANDLE;
     VkPipelineLayout pipelineLayout_ = VK_NULL_HANDLE;
     ::VkPipeline pipeline_ = VK_NULL_HANDLE;
+    ::VkPipeline overlayPipeline_ = VK_NULL_HANDLE;  // same as pipeline_ but depthTest off
     std::vector<Vertex> queued_;
+    std::vector<Vertex> queuedOverlay_;
 };
 
 }  // namespace iron

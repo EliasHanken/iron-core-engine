@@ -168,6 +168,11 @@ public:
     virtual void drawLine(Vec3 a, Vec3 b, Vec3 color) = 0;
     // Draw all queued debug lines (depth-tested) and clear the queue.
     virtual void flushDebugLines(const Mat4& view, const Mat4& projection) = 0;
+    // Like drawLine, but drawn on top of geometry (depth test disabled) — for
+    // editor gizmos / manipulators that must stay visible. Default forwards to
+    // drawLine (depth-tested); the Vulkan backend overrides it with an overlay
+    // pass. Flushed by flushDebugLines alongside the regular lines.
+    virtual void drawLineOverlay(Vec3 a, Vec3 b, Vec3 color) { drawLine(a, b, color); }
 
     // --- HUD ---
     // Draw a screen-space HUD batch on top of the scene, sized to the given

@@ -168,6 +168,11 @@ bool VkDebugLines::init(VkContext& ctx, VkRenderPass scenePass) {
     pInfo.subpass = 0;
     VK_CHECK(vkCreateGraphicsPipelines(ctx.device(), VK_NULL_HANDLE, 1, &pInfo, nullptr, &pipeline_));
 
+    // Overlay pipeline: identical state but depth-test disabled, so gizmo lines
+    // draw on top of geometry. `ds` and `pInfo` are reused with one field flipped.
+    ds.depthTestEnable = VK_FALSE;
+    VK_CHECK(vkCreateGraphicsPipelines(ctx.device(), VK_NULL_HANDLE, 1, &pInfo, nullptr, &overlayPipeline_));
+
     vkDestroyShaderModule(ctx.device(), vsm, nullptr);
     vkDestroyShaderModule(ctx.device(), fsm, nullptr);
     ok_ = true;
@@ -175,8 +180,9 @@ bool VkDebugLines::init(VkContext& ctx, VkRenderPass scenePass) {
 }
 
 void VkDebugLines::destroy(VkContext& ctx) {
-    if (pipeline_)       { vkDestroyPipeline(ctx.device(), pipeline_, nullptr); pipeline_ = VK_NULL_HANDLE; }
-    if (pipelineLayout_) { vkDestroyPipelineLayout(ctx.device(), pipelineLayout_, nullptr); pipelineLayout_ = VK_NULL_HANDLE; }
+    if (pipeline_)        { vkDestroyPipeline(ctx.device(), pipeline_, nullptr); pipeline_ = VK_NULL_HANDLE; }
+    if (overlayPipeline_) { vkDestroyPipeline(ctx.device(), overlayPipeline_, nullptr); overlayPipeline_ = VK_NULL_HANDLE; }
+    if (pipelineLayout_)  { vkDestroyPipelineLayout(ctx.device(), pipelineLayout_, nullptr); pipelineLayout_ = VK_NULL_HANDLE; }
     if (setLayout_)      { vkDestroyDescriptorSetLayout(ctx.device(), setLayout_, nullptr); setLayout_ = VK_NULL_HANDLE; }
     ok_ = false;
 }
@@ -186,24 +192,20 @@ void VkDebugLines::queue(Vec3 a, Vec3 b, Vec3 color) {
     queued_.push_back({b, color});
 }
 
+void VkDebugLines::queueOverlay(Vec3 a, Vec3 b, Vec3 color) {
+    queuedOverlay_.push_back({a, color});
+    queuedOverlay_.push_back({b, color});
+}
+
 void VkDebugLines::record(VkCommandBuffer cb, VkDevice device, VkFrameRing& frames,
                           const Mat4& view, const Mat4& projection) {
-    if (!ok_ || cb == VK_NULL_HANDLE || queued_.empty()) {
+    if (!ok_ || cb == VK_NULL_HANDLE || (queued_.empty() && queuedOverlay_.empty())) {
         queued_.clear();
+        queuedOverlay_.clear();
         return;
     }
 
-    VkDeviceSize voff = 0;
-    VkBuffer vb = frames.allocateVertices(
-        queued_.data(),
-        queued_.size() * sizeof(Vertex),
-        voff);
-    if (vb == VK_NULL_HANDLE) {
-        Log::warn("VkDebugLines: vertex sub-allocator overflow, skipping frame");
-        queued_.clear();
-        return;
-    }
-
+    // One UBO + descriptor set shared by both passes (same view-projection).
     CameraUbo ubo;
     const Mat4 vp = projection * view;
     std::memcpy(ubo.viewProjection, vp.m, sizeof(float) * 16);
@@ -231,13 +233,28 @@ void VkDebugLines::record(VkCommandBuffer cb, VkDevice device, VkFrameRing& fram
     write.pBufferInfo = &uboInfo;
     vkUpdateDescriptorSets(device, 1, &write, 0, nullptr);
 
-    vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_);
     vkCmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_GRAPHICS,
                             pipelineLayout_, 0, 1, &set, 0, nullptr);
-    vkCmdBindVertexBuffers(cb, 0, 1, &vb, &voff);
-    vkCmdDraw(cb, static_cast<std::uint32_t>(queued_.size()), 1, 0, 0);
+
+    // Draw one queue with the given pipeline. Allocates its own vertex range.
+    auto drawQueue = [&](std::vector<Vertex>& q, ::VkPipeline pipe) {
+        if (q.empty()) return;
+        VkDeviceSize voff = 0;
+        VkBuffer vb = frames.allocateVertices(q.data(), q.size() * sizeof(Vertex), voff);
+        if (vb == VK_NULL_HANDLE) {
+            Log::warn("VkDebugLines: vertex sub-allocator overflow, skipping a queue");
+            return;
+        }
+        vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, pipe);
+        vkCmdBindVertexBuffers(cb, 0, 1, &vb, &voff);
+        vkCmdDraw(cb, static_cast<std::uint32_t>(q.size()), 1, 0, 0);
+    };
+
+    drawQueue(queued_, pipeline_);               // depth-tested
+    drawQueue(queuedOverlay_, overlayPipeline_);  // always-on-top
 
     queued_.clear();
+    queuedOverlay_.clear();
 }
 
 }  // namespace iron

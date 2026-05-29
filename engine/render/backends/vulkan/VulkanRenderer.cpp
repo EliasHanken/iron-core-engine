@@ -231,6 +231,10 @@ void VulkanRenderer::drawLine(Vec3 a, Vec3 b, Vec3 color) {
     debugLines_.queue(a, b, color);
 }
 
+void VulkanRenderer::drawLineOverlay(Vec3 a, Vec3 b, Vec3 color) {
+    debugLines_.queueOverlay(a, b, color);
+}
+
 void VulkanRenderer::flushDebugLines(const Mat4& view, const Mat4& projection) {
     if (skipFrame_) return;
     pendingDebugView_  = view;
