@@ -11,6 +11,8 @@ namespace {
 
 constexpr float kGizmoScreenScale = 0.15f;  // gizmo world size ~= this * camera distance
 constexpr float kHandlePickFrac   = 0.25f;  // forgiving pick threshold (fraction of gizmo size)
+constexpr float kPlaneInset       = 0.30f;  // planar-handle quad inner corner (fraction of size)
+constexpr float kPlaneReach       = 0.62f;  // planar-handle quad outer corner (fraction of size)
 constexpr float kTwoPi            = 6.28318530718f;
 
 Vec3 axisDir(int a)   { return a == 0 ? Vec3{1, 0, 0} : a == 1 ? Vec3{0, 1, 0} : Vec3{0, 0, 1}; }
@@ -104,23 +106,50 @@ bool ringAngle(const Ray& ray, Vec3 origin, int axis, float& out) {
     return true;
 }
 
-// Which handle (axis 0/1/2) is under the ray for the given mode, or -1.
+// The two in-plane unit axes of the world plane whose normal is axis `n`.
+void planeAxes(int n, Vec3& u, Vec3& v) {
+    if (n == 0)      { u = axisDir(1); v = axisDir(2); }  // YZ
+    else if (n == 1) { u = axisDir(0); v = axisDir(2); }  // XZ (horizontal)
+    else             { u = axisDir(0); v = axisDir(1); }  // XY
+}
+
+// True if the planar handle for plane-normal axis `n` is under the ray. The quad
+// sits in the [inset, reach] corner of the two in-plane axes near `origin`.
+bool planeHandleHit(const Ray& ray, Vec3 origin, int n, float size) {
+    Vec3 hit;
+    if (!rayPlane(ray, origin, axisDir(n), hit)) return false;
+    Vec3 u, v; planeAxes(n, u, v);
+    const Vec3 d = hit - origin;
+    const float du = dot(d, u), dv = dot(d, v);
+    const float lo = kPlaneInset * size, hi = kPlaneReach * size;
+    return du >= lo && du <= hi && dv >= lo && dv <= hi;
+}
+
+// Which handle is under the ray for the given mode, or -1. Ids: 0/1/2 = axes,
+// 3/4/5 = planar handles (Translate only), encoded as 3 + plane-normal-axis.
 int pickHandle(GizmoMode mode, const Ray& ray, Vec3 origin, float size) {
-    int picked = -1;
+    // Translate: planar handles (ids 3..5) take the corner quads near the origin.
+    if (mode == GizmoMode::Translate) {
+        for (int n = 0; n < 3; ++n)
+            if (planeHandleHit(ray, origin, n, size)) return 3 + n;
+    }
     if (mode == GizmoMode::Translate || mode == GizmoMode::Scale) {
+        int picked = -1;
         float best = size * kHandlePickFrac;
         for (int a = 0; a < 3; ++a) {
             const float d = raySegmentDistance(ray, origin, origin + axisDir(a) * size);
             if (d < best) { best = d; picked = a; }
         }
-    } else {  // Rotate
-        float best = size * kHandlePickFrac;
-        for (int a = 0; a < 3; ++a) {
-            Vec3 hit;
-            if (rayPlane(ray, origin, axisDir(a), hit)) {
-                const float err = std::fabs(length(hit - origin) - size);
-                if (err < best) { best = err; picked = a; }
-            }
+        return picked;
+    }
+    // Rotate: rings.
+    int picked = -1;
+    float best = size * kHandlePickFrac;
+    for (int a = 0; a < 3; ++a) {
+        Vec3 hit;
+        if (rayPlane(ray, origin, axisDir(a), hit)) {
+            const float err = std::fabs(length(hit - origin) - size);
+            if (err < best) { best = err; picked = a; }
         }
     }
     return picked;
@@ -175,17 +204,29 @@ bool Gizmo::update(SceneEntity& e, Vec3 origin, const Ray& ray,
         startScale_  = e.scale;
         startRot_    = e.rotation;
         startOrigin_ = origin;
-        float p = 0.0f;
-        if (mode_ == GizmoMode::Rotate) ringAngle(ray, startOrigin_, picked, p);
-        else                            rayAxisParam(ray, startOrigin_, axisDir(picked), p);
-        startParam_ = p;
-        lastParam_  = p;
+        if (picked >= 3) {  // planar handle (Translate): remember the plane hit point
+            Vec3 hit;
+            startHit_ = rayPlane(ray, startOrigin_, axisDir(picked - 3), hit) ? hit : startOrigin_;
+        } else {
+            float p = 0.0f;
+            if (mode_ == GizmoMode::Rotate) ringAngle(ray, startOrigin_, picked, p);
+            else                            rayAxisParam(ray, startOrigin_, axisDir(picked), p);
+            startParam_ = p;
+            lastParam_  = p;
+        }
         return true;
     }
 
     // Continue a drag. On a degenerate/near-parallel solve, hold the last param
     // (no movement this frame) instead of jumping.
     if (axis_ >= 0) {
+        if (axis_ >= 3) {  // planar drag (Translate): move in the handle's world plane
+            Vec3 hit;
+            if (rayPlane(ray, startOrigin_, axisDir(axis_ - 3), hit))
+                e.position = startPos_ + (hit - startHit_);
+            // else: ray parallel to the plane -> hold (no move this frame)
+            return true;
+        }
         const Vec3 dir = axisDir(axis_);
         if (mode_ == GizmoMode::Translate) {
             float p;
@@ -211,9 +252,10 @@ void Gizmo::draw(Renderer& renderer, Vec3 origin, Vec3 camPos) const {
     const float size = gizmoSize(camPos, origin);
     const int highlight = (axis_ >= 0) ? axis_ : hoveredAxis_;
 
-    auto colorFor = [&](int a) -> Vec3 {
-        const Vec3 c = axisColor(a);
-        if (a == highlight) {  // brighten the hovered/active handle
+    auto colorFor = [&](int id) -> Vec3 {
+        const Vec3 c = (id >= 3) ? Vec3{0.9f, 0.85f, 0.3f}  // planar handles: light yellow
+                                 : axisColor(id);
+        if (id == highlight) {  // brighten the hovered/active handle
             return Vec3{c.x + 0.4f > 1.0f ? 1.0f : c.x + 0.4f,
                         c.y + 0.4f > 1.0f ? 1.0f : c.y + 0.4f,
                         c.z + 0.4f > 1.0f ? 1.0f : c.z + 0.4f};
@@ -229,6 +271,22 @@ void Gizmo::draw(Renderer& renderer, Vec3 origin, Vec3 camPos) const {
         const Vec3 tip = origin + axisDir(a) * size;
         renderer.drawLineOverlay(origin, tip, colorFor(a));
         if (mode_ == GizmoMode::Scale) drawBox(renderer, tip, size * 0.08f, colorFor(a));
+    }
+    if (mode_ == GizmoMode::Translate) {  // planar move handles (quad outlines near the corners)
+        const float lo = kPlaneInset * size, hi = kPlaneReach * size;
+        for (int n = 0; n < 3; ++n) {
+            Vec3 u, v;
+            planeAxes(n, u, v);
+            const Vec3 c00 = origin + u * lo + v * lo;
+            const Vec3 c10 = origin + u * hi + v * lo;
+            const Vec3 c11 = origin + u * hi + v * hi;
+            const Vec3 c01 = origin + u * lo + v * hi;
+            const Vec3 col = colorFor(3 + n);
+            renderer.drawLineOverlay(c00, c10, col);
+            renderer.drawLineOverlay(c10, c11, col);
+            renderer.drawLineOverlay(c11, c01, col);
+            renderer.drawLineOverlay(c01, c00, col);
+        }
     }
 }
 

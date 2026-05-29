@@ -43,6 +43,7 @@ private:
     Vec3  startPos_{};
     Vec3  startScale_{};
     Vec3  startOrigin_{};        // gizmo origin captured at drag start (stable axis line)
+    Vec3  startHit_{};           // plane hit point at drag start (planar handles, ids 3-5)
     Quat  startRot_{};
 };
 
