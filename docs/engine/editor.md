@@ -150,8 +150,8 @@ if (!imgui.wantsKeyboard())
 Build and run `games/11-sandbox`:
 
 ```powershell
-cmake --preset vk-debug
-cmake --build build-vk --target sandbox
+cmake -S . -B build-vk
+cmake --build build-vk --target sandbox --config Debug
 .\build-vk\games\11-sandbox\Debug\sandbox.exe
 ```
 
