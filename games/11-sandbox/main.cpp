@@ -420,22 +420,14 @@ int main() {
     bool prevLook = false;  // was the camera capturing last frame?
     iron::Gizmo gizmo;
 
-    // World-AABB center of an entity (where the gizmo is drawn / hit-tested), or
-    // its pivot if the entity has no resolved mesh.
+    // Gizmo origin = the entity's transform pivot. It's rotation-stable (the
+    // pivot IS the rotation center, so the gizmo stays put while the object spins
+    // around it) and is the standard editor convention. A bounds-center origin
+    // drifts for off-pivot meshes and those with asymmetric features (e.g. the
+    // helmet's dangling cables pull the AABB center off the body), and swings
+    // when rotating about an off-center pivot — so we use the pivot.
     auto gizmoOriginFor = [&](int sel) -> iron::Vec3 {
-        const iron::SceneEntity& e = scene.entities[sel];
-        const iron::Mat4 model = iron::translation(e.position)
-                               * e.rotation.toMat4()
-                               * iron::scaling(e.scale);
-        for (const auto& re : resolved) {
-            if (re.entityIndex == sel) {
-                const iron::Aabb wa = worldAabb(re.localBounds, model);
-                return iron::Vec3{(wa.min.x + wa.max.x) * 0.5f,
-                                  (wa.min.y + wa.max.y) * 0.5f,
-                                  (wa.min.z + wa.max.z) * 0.5f};
-            }
-        }
-        return e.position;
+        return scene.entities[sel].position;
     };
 
     // --- Main loop ---
