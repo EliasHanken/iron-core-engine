@@ -905,6 +905,13 @@ void VulkanRenderer::endFrame() {
         }
         deferredScenePass_.clear();
 
+        // A deferred pass may change the viewport/scissor — notably ImGui's
+        // Vulkan backend sets a full-screen POSITIVE-height viewport + per-draw
+        // scissor. Restore the scene's negative-height (clip-Y-flipped) viewport
+        // and full scissor so debug-lines and the HUD render with the same
+        // convention as the scene geometry (otherwise they appear Y-mirrored).
+        setSceneViewport(cb, swapchain_.extent());
+
         if (pendingDebugFlush_) {
             debugLines_.record(cb, context_.device(), frames_,
                                pendingDebugView_, pendingDebugProj_);
