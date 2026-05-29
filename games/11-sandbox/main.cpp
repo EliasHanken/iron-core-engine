@@ -18,6 +18,7 @@
 #include "render/Fog.h"
 #include "render/Light.h"
 #include "render/Material.h"
+#include "render/ProceduralSky.h"
 #include "render/Renderer.h"
 #include "render/RendererFactory.h"
 #include "render/TextureLoader.h"
@@ -231,12 +232,12 @@ int main() {
     iron::Renderer& renderer = *renderer_ptr;
     renderer.setViewport(kScreenW, kScreenH);
 
-    // Skybox: 1x1 black cubemap so binding 5 has a valid sampler.
+    // Skybox: procedural sunset cubemap (also what the helmet's reflection
+    // samples). Falls back to clear color if creation fails.
     {
-        const unsigned char black[4] = {0, 0, 0, 255};
-        std::array<const unsigned char*, 6> faces = {
-            black, black, black, black, black, black};
-        iron::CubemapHandle sky = renderer.createCubemap(1, 1, faces);
+        const iron::CubemapHandle sky = iron::createSunsetSkybox(renderer);
+        if (sky == iron::kInvalidHandle)
+            iron::Log::warn("sandbox: sunset skybox failed; sky shows clear color");
         renderer.setSkybox(sky);
     }
 
