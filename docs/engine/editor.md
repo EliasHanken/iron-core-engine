@@ -196,9 +196,20 @@ the Outliner highlights the entity in the viewport.
 
 When an entity is selected the `iron::Gizmo` controller
 (`editor/Gizmo.h`, in `ironcore_editor`) draws world-axis handles for the
-active mode via the existing debug-line renderer — no new pipeline. The gizmo
-is distance-scaled to maintain a constant apparent screen size regardless of
-how far the camera is from the entity.
+active mode. The gizmo is distance-scaled to maintain a constant apparent
+screen size regardless of how far the camera is from the entity.
+
+The gizmo renders **always-on-top** of scene geometry via a depth-disabled
+overlay line path (`Renderer::drawLineOverlay`, backed by a second
+`VkDebugLines` pipeline with depth-test off). Handles **highlight on hover**
+— the hovered or active handle is brightened and the others are dimmed.
+Clicking a highlighted handle grabs it immediately, so clicking a handle
+never accidentally deselects the object (an M31 bug that is now fixed).
+
+The gizmo is drawn at the selected entity's **world-AABB center**, so it sits
+on the visible mesh and stays put as the camera pitches. Dragging is
+**smooth**: on degenerate or near-parallel axis solves the gizmo holds the
+last axis param instead of jumping (fixes the M31 twitch).
 
 Dragging a handle transforms the entity live by updating its position,
 rotation, or scale in the in-memory `SceneFile`. The same mutations are
@@ -225,6 +236,6 @@ ray-vs-AABB nearest). Full suite 46/46 green.
   pickable.
 - **World-axis gizmos only.** There are no planar two-axis handles, snapping,
   multi-select, or undo.
-- **Gizmo depth follows the debug-line pass.** Handles may be occluded by
-  nearby geometry or drawn over ImGui panels where they overlap;
-  always-on-top rendering is a follow-up.
+- **Rotate/scale operate about the entity pivot** even though the gizmo is
+  drawn at the bounds center; visually fine when the pivot is near the center.
+
