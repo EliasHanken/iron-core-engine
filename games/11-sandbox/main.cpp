@@ -420,6 +420,24 @@ int main() {
     bool prevLook = false;  // was the camera capturing last frame?
     iron::Gizmo gizmo;
 
+    // World-AABB center of an entity (where the gizmo is drawn / hit-tested), or
+    // its pivot if the entity has no resolved mesh.
+    auto gizmoOriginFor = [&](int sel) -> iron::Vec3 {
+        const iron::SceneEntity& e = scene.entities[sel];
+        const iron::Mat4 model = iron::translation(e.position)
+                               * e.rotation.toMat4()
+                               * iron::scaling(e.scale);
+        for (const auto& re : resolved) {
+            if (re.entityIndex == sel) {
+                const iron::Aabb wa = worldAabb(re.localBounds, model);
+                return iron::Vec3{(wa.min.x + wa.max.x) * 0.5f,
+                                  (wa.min.y + wa.max.y) * 0.5f,
+                                  (wa.min.z + wa.max.z) * 0.5f};
+            }
+        }
+        return e.position;
+    };
+
     // --- Main loop ---
     app.setUpdate([&](const iron::FrameTime& t) {
         iron::Input& input = app.input();
@@ -475,7 +493,8 @@ int main() {
 
                 bool consumed = false;
                 if (selectedIndex >= 0 && selectedIndex < static_cast<int>(scene.entities.size()))
-                    consumed = gizmo.update(scene.entities[selectedIndex], ray,
+                    consumed = gizmo.update(scene.entities[selectedIndex],
+                                            gizmoOriginFor(selectedIndex), ray,
                                             lmbPressed, lmbDown, cam.position);
 
                 // A fresh click that didn't grab a handle re-selects (or clears).
@@ -539,7 +558,7 @@ int main() {
             renderer.submit(call);
         }
         if (selectedIndex >= 0 && selectedIndex < static_cast<int>(scene.entities.size()))
-            gizmo.draw(renderer, scene.entities[selectedIndex], cam.position);
+            gizmo.draw(renderer, gizmoOriginFor(selectedIndex), cam.position);
         renderer.flushDebugLines(view, proj);
         imgui.render();   // enqueues the UI overlay into the scene pass tail
         renderer.endFrame();
