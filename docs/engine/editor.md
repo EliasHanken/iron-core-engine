@@ -119,8 +119,10 @@ A game becomes an editor host by:
        iron::saveSceneFile(scene, scenePath);
    if (selectedIdx >= 0) {
        iron::GizmoSpace sp = gizmo.space();   // gizmo is the source of truth
-       inspector.draw(scene.entities[selectedIdx], sp);
+       iron::EffectKind ek = selectionEffect; // current selection-highlight effect
+       inspector.draw(scene.entities[selectedIdx], sp, ek);
        gizmo.setSpace(sp);                    // Inspector may flip it; no-op mid-drag
+       selectionEffect = ek;                  // Inspector may have changed it; see [[post-process]]
    }
    envPanel.draw(scene);
 
