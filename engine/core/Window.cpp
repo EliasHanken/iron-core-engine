@@ -13,15 +13,21 @@ namespace {
 // GLFW is initialized at most once per process; glfwTerminate() is intentionally
 // omitted because the engine owns GLFW for the process lifetime.
 bool g_glfwInitialized = false;
+} // namespace
 
-void framebufferSizeCallback(GLFWwindow*, int w, int h) {
+// File-scope (in `iron` namespace) so the `friend` declaration in Window.h can
+// reach it. Updates Window state on framebuffer resize for both backends; the
+// OpenGL viewport call stays inside its existing guard.
+void framebufferSizeCallback(GLFWwindow* w, int width, int height) {
+    auto* self = static_cast<Window*>(glfwGetWindowUserPointer(w));
+    if (!self) return;
+    self->width_   = width;
+    self->height_  = height;
+    self->resized_ = true;
 #ifdef IRON_RENDER_BACKEND_OPENGL
-    glViewport(0, 0, w, h);
-#else
-    (void)w; (void)h;  // Vulkan: swapchain recreate is driven by Renderer::setViewport
+    glViewport(0, 0, width, height);
 #endif
 }
-} // namespace
 
 Window::Window(int width, int height, const std::string& title)
     : width_(width), height_(height) {
@@ -51,6 +57,7 @@ Window::Window(int width, int height, const std::string& title)
         Log::error("Window: glfwCreateWindow failed");
         return;
     }
+    glfwSetWindowUserPointer(handle_, this);
 
 #ifdef IRON_RENDER_BACKEND_OPENGL
     glfwMakeContextCurrent(handle_);
@@ -106,6 +113,12 @@ void Window::setCursorCaptured(bool captured) {
     }
     glfwSetInputMode(handle_, GLFW_CURSOR,
                      captured ? GLFW_CURSOR_DISABLED : GLFW_CURSOR_NORMAL);
+}
+
+bool Window::consumeResized() {
+    if (!resized_) return false;
+    resized_ = false;
+    return true;
 }
 
 } // namespace iron

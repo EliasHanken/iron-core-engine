@@ -49,8 +49,8 @@
 
 namespace {
 
-constexpr int kScreenW = 1280;
-constexpr int kScreenH = 720;
+constexpr int kInitialW = 1280;
+constexpr int kInitialH = 720;
 
 // Transform a model-space AABB by `model` and return its world-space AABB
 // (min/max of the 8 transformed corners). Loose for rotated boxes — fine for
@@ -240,8 +240,8 @@ int main() {
 #else
     iron::Application::Config cfg;
     cfg.title  = "Iron Core - Sandbox";
-    cfg.width  = kScreenW;
-    cfg.height = kScreenH;
+    cfg.width  = kInitialW;
+    cfg.height = kInitialH;
     iron::Application app(cfg);
     if (!app.valid()) {
         iron::Log::error("sandbox: Application init failed");
@@ -254,7 +254,7 @@ int main() {
         return 1;
     }
     iron::Renderer& renderer = *renderer_ptr;
-    renderer.setViewport(kScreenW, kScreenH);
+    renderer.setViewport(app.window().width(), app.window().height());
 
     // Skybox: procedural sunset cubemap (also what the helmet's reflection
     // samples). Falls back to clear color if creation fails.
@@ -434,10 +434,15 @@ int main() {
     iron::FreeFlyCamera cam;
     cam.position = {0.0f, 2.0f, 6.0f};
 
-    const float aspect = static_cast<float>(kScreenW) / static_cast<float>(kScreenH);
-    const iron::Mat4 proj = iron::perspective(
-        cam.fovDeg * (std::numbers::pi_v<float> / 180.0f),
-        aspect, 0.1f, 200.0f);
+    // M37.5: projection rebuilds on resize; lambda captures FOV/near/far closures.
+    auto computeProj = [&]() {
+        const float aspect = static_cast<float>(app.window().width())
+                           / static_cast<float>(app.window().height());
+        return iron::perspective(
+            cam.fovDeg * (std::numbers::pi_v<float> / 180.0f),
+            aspect, 0.1f, 200.0f);
+    };
+    iron::Mat4 proj = computeProj();   // not const — Task B2 will reassign this
 
     app.window().setCursorCaptured(false);  // free by default; RMB captures look
 
@@ -521,6 +526,24 @@ int main() {
 
     // --- Main loop ---
     app.setUpdate([&](const iron::FrameTime& t) {
+        // --- M37.5: window resize + minimize guard ---
+        // framebufferSizeCallback updates Window's live width/height + sets
+        // resized_; consumeResized() returns true exactly once per resize
+        // event and clears the flag. Forward to the renderer (which queues
+        // swapchain recreate) and rebuild the projection's aspect.
+        if (app.window().consumeResized()) {
+            const int w = app.window().width();
+            const int h = app.window().height();
+            renderer.setViewport(w, h);
+            if (w > 0 && h > 0) proj = computeProj();
+        }
+        // Skip the frame entirely when minimized. Returning from the
+        // setUpdate callback is the per-frame skip — the loop ticks again
+        // when the OS sends the next event.
+        if (app.window().width() == 0 || app.window().height() == 0) {
+            return;
+        }
+
         iron::Input& input = app.input();
         if (input.keyPressed(GLFW_KEY_ESCAPE))
             selectedIndex = -1;
@@ -576,8 +599,8 @@ int main() {
                     view, proj,
                     iron::Vec2{static_cast<float>(input.mouseX()),
                                static_cast<float>(input.mouseY())},
-                    iron::Vec2{static_cast<float>(kScreenW),
-                               static_cast<float>(kScreenH)},
+                    iron::Vec2{static_cast<float>(app.window().width()),
+                               static_cast<float>(app.window().height())},
                     cam.position);
 
                 const bool lmbPressed = input.mouseButtonPressed(GLFW_MOUSE_BUTTON_LEFT);
@@ -607,6 +630,13 @@ int main() {
     });
 
     app.setRender([&]() {
+        // --- M37.5: skip rendering on a minimized window (mirrors the
+        // minimize guard at the top of setUpdate so we don't burn a
+        // beginFrame/endFrame pair the renderer would just skipFrame_).
+        if (app.window().width() == 0 || app.window().height() == 0) {
+            return;
+        }
+
         // --- editor UI ---
         imgui.beginFrame();
         const iron::SceneOutliner::Result outRes = outliner.draw(scene, selectedIndex);
