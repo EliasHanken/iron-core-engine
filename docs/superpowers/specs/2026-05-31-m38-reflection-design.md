@@ -233,8 +233,10 @@ public:
 
     template <class T>
     TypeBuilder<T> registerType(std::string_view name) {
-        static_assert(std::is_standard_layout_v<T>,
-            "Reflection requires standard-layout types (offset computation depends on it).");
+        // Standard-layout is NOT required — the probe trick works for any
+        // addressable non-static data member of a default-constructible T,
+        // including types containing std::string / std::optional (which are
+        // not standard-layout on MSVC).
         static_assert(std::is_default_constructible_v<T>,
             "Reflection requires default-constructible types (the offset probe is T{}).");
         const uint32_t id = componentTypeId<T>();
@@ -453,7 +455,7 @@ needed for any test.
 
 | Risk | Mitigation |
 |---|---|
-| Offset computation via the null-pointer trick is technically UB for non-standard-layout types | All M37 components are standard layout. Add a `static_assert(std::is_standard_layout_v<T>)` in `registerType` to catch any future type that drifts. |
+| Offset computation via the null-pointer trick is technically UB for non-standard-layout types | Relaxation chosen: the probe uses a *live* default-constructed `T{}` plus pointer arithmetic, which is well-defined for any addressable non-static data member on MSVC/GCC/Clang — including `std::string`/`std::optional`-bearing types that aren't standard-layout on MSVC. `registerType` keeps only `static_assert(std::is_default_constructible_v<T>)`; the SL assert was deliberately dropped. |
 | `std::string_view` field names that point into temporaries become dangling | Field names are passed as string literals from sidecar `.cpp` files — static storage duration; lifetime is the whole process. Document the contract: "names must outlive the registry". |
 | Sidecar `.cpp` files linked from `ironcore` static lib may be stripped by the linker if no symbol is referenced | The sandbox host explicitly calls each `register<TypeName>(reflection)` function — that forces the linker to keep the TUs. This is exactly why host-owned beats static-init singleton at this stage. |
 | `componentTypeId<T>()` reuse means reflected non-component types share the same 256 cap as component types | At M38 scale (4 component types + a few helper structs if needed) the cap is generous. If we ever hit it, lift `kMaxComponentTypes` and `Reflection::kMaxTypes` together. |

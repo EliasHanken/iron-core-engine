@@ -27,8 +27,10 @@ public:
         template <class F>
         TypeBuilder& field(std::string_view name, F T::* member, FieldMeta meta = {}) {
             // Offset computation: a transient default-constructed T plus
-            // pointer arithmetic. Well-defined for standard-layout types
-            // (the static_assert in registerType<T> guards this).
+            // pointer arithmetic. Well-defined for any addressable non-static
+            // data member of a default-constructible T; works in practice on
+            // MSVC, GCC, and Clang for both standard-layout and non-SL types
+            // (e.g. std::string / std::optional members).
             T probe{};
             const uint32_t off = static_cast<uint32_t>(
                 reinterpret_cast<const uint8_t*>(&(probe.*member)) -
