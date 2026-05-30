@@ -526,6 +526,24 @@ int main() {
 
     // --- Main loop ---
     app.setUpdate([&](const iron::FrameTime& t) {
+        // --- M37.5: window resize + minimize guard ---
+        // framebufferSizeCallback updates Window's live width/height + sets
+        // resized_; consumeResized() returns true exactly once per resize
+        // event and clears the flag. Forward to the renderer (which queues
+        // swapchain recreate) and rebuild the projection's aspect.
+        if (app.window().consumeResized()) {
+            const int w = app.window().width();
+            const int h = app.window().height();
+            renderer.setViewport(w, h);
+            if (w > 0 && h > 0) proj = computeProj();
+        }
+        // Skip the frame entirely when minimized. Returning from the
+        // setUpdate callback is the per-frame skip — the loop ticks again
+        // when the OS sends the next event.
+        if (app.window().width() == 0 || app.window().height() == 0) {
+            return;
+        }
+
         iron::Input& input = app.input();
         if (input.keyPressed(GLFW_KEY_ESCAPE))
             selectedIndex = -1;
