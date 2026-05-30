@@ -33,6 +33,20 @@ public:
         if (auto* a = tryArrayFor<T>()) a->remove(e);
     }
 
+    template <class T>
+    ComponentArray<T>& view() {
+        return arrayFor<T>();
+    }
+
+    template <class T>
+    const ComponentArray<T>& view() const {
+        const auto* a = const_cast<World*>(this)->tryArrayFor<T>();
+        if (a) return *a;
+        // Lazy-create empty array so const view() always returns a valid ref.
+        const_cast<World*>(this)->arrayFor<T>();
+        return *const_cast<World*>(this)->tryArrayFor<T>();
+    }
+
 private:
     struct IComponentArray {
         virtual ~IComponentArray() = default;

@@ -191,6 +191,33 @@ static void test_world_destroy_tears_off_all_components() {
     CHECK(w.get<float>(e) == nullptr);
 }
 
+static void test_world_view_size_matches_components_present() {
+    iron::World w;
+    iron::EntityId a = w.create();
+    iron::EntityId b = w.create();
+    w.add<int>(a, 10);
+    w.add<int>(b, 20);
+    auto& v = w.view<int>();
+    CHECK(v.size() == 2);
+}
+
+static void test_world_view_iteration_and_entity_at() {
+    iron::World w;
+    iron::EntityId a = w.create();
+    iron::EntityId b = w.create();
+    w.add<int>(a, 10);
+    w.add<int>(b, 20);
+    auto& v = w.view<int>();
+    CHECK(v[0] == 10 || v[0] == 20);   // order is insertion-modulo-swaps
+    CHECK(v.entityAt(0) == a || v.entityAt(0) == b);
+}
+
+static void test_world_view_empty_when_no_component_of_type() {
+    iron::World w;
+    auto& v = w.view<int>();
+    CHECK(v.size() == 0);
+}
+
 int main() {
     test_entityid_default_is_invalid();
     test_entityid_with_generation_is_valid();
@@ -211,6 +238,9 @@ int main() {
     test_world_typed_remove();
     test_world_multi_type_on_same_entity();
     test_world_destroy_tears_off_all_components();
+    test_world_view_size_matches_components_present();
+    test_world_view_iteration_and_entity_at();
+    test_world_view_empty_when_no_component_of_type();
     if (g_failures == 0) std::printf("All world tests passed.\n");
     return g_failures == 0 ? 0 : 1;
 }
