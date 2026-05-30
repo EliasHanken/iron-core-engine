@@ -35,4 +35,9 @@ The renderer hands back `MeshHandle` / `TextureHandle` / `ShaderHandle` —
 integers indexing internal tables (`index + 1`, so 0 is invalid). Game code
 never touches an OpenGL id. See [[rhi-abstraction]].
 
-Related: [[rhi-abstraction]], [[transforms-and-projection]], [[game-loop]]
+Since M36 the scene no longer renders straight to the swapchain — it renders
+into an offscreen color+depth target, then a post-process chain composites it
+into the swapchain image. See [[post-process]] for the chain shape, the
+tagging API, and the v1 selection-highlight effects.
+
+Related: [[rhi-abstraction]], [[transforms-and-projection]], [[game-loop]], [[post-process]]

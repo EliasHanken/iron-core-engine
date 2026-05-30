@@ -8,7 +8,7 @@ Unreal-style editor module that sits on top of the runtime. Only editor
 The module lives under `engine/editor/` and is a separate static library
 built only when the Vulkan backend is active. It does not touch the renderer
 internals: all integration is through the renderer's existing public accessors
-(`context()`, `scenePass()`, `enqueueDeferredScenePass()`), so adding the
+(`context()`, `swapchainPass()`, `enqueueDeferredUiPass()`), so adding the
 editor requires no renderer changes.
 
 The dependency is [Dear ImGui](https://github.com/ocornut/imgui) pulled from
@@ -40,10 +40,11 @@ bool wantsKeyboard() const;
 
 `init` uploads the font atlas, creates the Vulkan descriptor pool, and
 installs the GLFW callbacks. `beginFrame` ticks the ImGui frame; call it
-before any panel draws. `render` records ImGui draw commands into the scene
-render pass via `enqueueDeferredScenePass` — ImGui draws into the scene pass
-tail, so no extra render pass or resolve is needed. `shutdown` tears down the
-descriptor pool and the ImGui context; call it once after the main loop exits.
+before any panel draws. `render` records ImGui draw commands into the
+**swapchain** render pass tail via `enqueueDeferredUiPass` — ImGui draws on
+top of the composited post-process result, so editor chrome is never affected
+by scene effects (see [[post-process]]). `shutdown` tears down the descriptor
+pool and the ImGui context; call it once after the main loop exits.
 
 ### `SceneOutliner`
 
@@ -59,12 +60,16 @@ Displays the entity list from `scene.entities`. Clicking a row sets
 
 ```cpp
 // engine/editor/SceneInspector.h
-bool draw(SceneEntity& entity, GizmoSpace& space);
+bool draw(SceneEntity& entity, GizmoSpace& space, EffectKind& effectKind);
 ```
 
 Edits the selected entity in place. Returns `true` if any field changed. Also
 hosts the gizmo **World/Local** space toggle at the top of the panel (mirrors the
-**X** key), reading from and writing to `space`.
+**X** key), reading from and writing to `space`. The third argument is bound to a
+new **Selection Effect** combo (None / Outline / Glowing Outline / X-Ray) — see
+[[post-process]]. As with the gizmo space toggle, a change to the effect combo
+is NOT folded into the returned `changed` bool (it is editor tool state, not a
+scene-dirty field).
 
 Editable fields:
 
@@ -76,6 +81,7 @@ Editable fields:
 | Emissive   | RGB color                                                       |
 | UV scale   | float                                                           |
 | Reflectivity | float                                                         |
+| Selection Effect | `EffectKind` combo (None / Outline / Glowing Outline / X-Ray); tool state, not scene-dirty |
 
 `mesh` (primitive / glTF path) is shown read-only; mesh and texture-path
 editing are deferred to M31.
@@ -113,8 +119,10 @@ A game becomes an editor host by:
        iron::saveSceneFile(scene, scenePath);
    if (selectedIdx >= 0) {
        iron::GizmoSpace sp = gizmo.space();   // gizmo is the source of truth
-       inspector.draw(scene.entities[selectedIdx], sp);
+       iron::EffectKind ek = selectionEffect; // current selection-highlight effect
+       inspector.draw(scene.entities[selectedIdx], sp, ek);
        gizmo.setSpace(sp);                    // Inspector may flip it; no-op mid-drag
+       selectionEffect = ek;                  // Inspector may have changed it; see [[post-process]]
    }
    envPanel.draw(scene);
 

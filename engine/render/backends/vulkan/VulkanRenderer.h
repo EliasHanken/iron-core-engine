@@ -15,6 +15,7 @@
 #include "render/backends/vulkan/VkCubemap.h"
 #include "render/backends/vulkan/VkSkybox.h"
 #include "render/backends/vulkan/VkReflectionTarget.h"
+#include "render/backends/vulkan/VkPostProcess.h"
 #include "render/ReflectionPlane.h"
 
 #include <array>
@@ -93,6 +94,9 @@ public:
 
     void setViewport(int width, int height) override;
 
+    // M36 — stores an effect style; looked up each frame via runChain.
+    void setEffectStyle(uint8_t effectId, const EffectStyle& style) override;
+
     // --- engine-internal accessors (not part of iron::Renderer) ---
 
     // Returns the current frame's primary command buffer. Only meaningful
@@ -110,10 +114,14 @@ public:
     // can allocate their own VMA buffers + Vulkan objects.
     VkContext& context();
 
-    // Engine-internal: the render pass for the scene's main color+depth pass.
-    // External subsystems creating their own graphics pipelines reuse it so
-    // their draws go into the same framebuffer.
+    // Engine-internal: the offscreen scene render pass (color+depth). Used by
+    // subsystems whose draws are recorded in the offscreen scene pass (skybox,
+    // scene geometry, particles).
     VkRenderPass scenePass() const;
+
+    // Engine-internal: the swapchain (final) render pass — where composite,
+    // debug lines, HUD, and UI/overlays record.
+    VkRenderPass swapchainPass() const;
 
     // Engine-internal: external Vulkan subsystems register a deferred
     // render callback. Fires inside the scene render pass during endFrame,
@@ -126,12 +134,20 @@ public:
     // of the SAME frame.
     void enqueueDeferredScenePass(std::function<void(VkCommandBuffer)> fn);
 
+    // Engine-internal: UI/overlay callbacks (e.g. ImGui). Fires inside the
+    // swapchain pass AFTER the post-process composite, so overlays are never
+    // affected by post-process effects. Cleared each beginFrame.
+    void enqueueDeferredUiPass(std::function<void(VkCommandBuffer)> fn);
+
 private:
     void warnOnce(const char* feature);
     bool recreateSwapchainAndFramebuffers(int width, int height);
     void recordSceneDraw(VkCommandBuffer cb, const DrawCall& call);
     void recordSkinnedDraw(VkCommandBuffer cb, const SkinnedDrawCall& call,
                            const std::vector<Mat4>& bones);
+    // M36 Phase C: records one static mesh draw into the mask pass. Pushes
+    // MaskPushConstants {mvp, effectId} and issues vkCmdDrawIndexed.
+    void recordMaskDraw(VkCommandBuffer cb, const DrawCall& call);
     bool buildReflectionPipeline();
 
     bool initOk_ = false;
@@ -178,6 +194,10 @@ private:
     VkSkybox       skybox_;
     CubemapHandle  pendingSkybox_ = kInvalidHandle;
 
+    // M36 — offscreen scene-color target + post-process composite pipeline.
+    VkPostProcess         postProcess_;
+    EffectTable           effects_;   // M36 C3 — per-id effect styles; updated via setEffectStyle
+
     // M17 — planar reflection RTT + shared pipeline + currently-set plane.
     VkReflectionTarget    reflection_;
     VkDescriptorSetLayout reflectionSetLayout_ = VK_NULL_HANDLE;
@@ -195,6 +215,9 @@ private:
     // M14 — frame-flow state for defer-and-replay rendering.
     std::vector<DrawCall> sceneDraws_;
     std::vector<std::function<void(VkCommandBuffer)>> deferredScenePass_;
+
+    // M36 -- UI/overlay callbacks recorded in the swapchain pass after composite.
+    std::vector<std::function<void(VkCommandBuffer)>> deferredUiPass_;
 
     // M23 — buffered skinned draws + a deep-copy of each call's bone
     // matrices. SkinnedDrawCall holds a std::span, which is non-owning;

@@ -8,7 +8,7 @@
 
 namespace iron {
 
-bool SceneInspector::draw(SceneEntity& e, GizmoSpace& space) {
+bool SceneInspector::draw(SceneEntity& e, GizmoSpace& space, EffectKind& effectKind) {
     bool changed = false;
     ImGui::Begin("Inspector");
 
@@ -24,6 +24,13 @@ bool SceneInspector::draw(SceneEntity& e, GizmoSpace& space) {
     spaceChanged |= ImGui::RadioButton("Local", &spaceInt, 1);
     if (spaceChanged)
         space = (spaceInt == 1) ? GizmoSpace::Local : GizmoSpace::World;
+
+    // Selection effect picker (editor tool state — not a scene-dirty field).
+    ImGui::SeparatorText("Selection Effect");
+    const char* kinds[] = {"None", "Outline", "Glowing Outline", "X-Ray"};
+    int ki = static_cast<int>(effectKind);
+    if (ImGui::Combo("Effect", &ki, kinds, 4))
+        effectKind = static_cast<EffectKind>(ki);
 
     ImGui::SeparatorText("Transform");
     changed |= ImGui::DragFloat3("Position", &e.position.x, 0.05f);

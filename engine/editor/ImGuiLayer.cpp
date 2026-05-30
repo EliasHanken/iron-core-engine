@@ -62,7 +62,7 @@ bool ImGuiLayer::init(Window& window, Renderer& renderer) {
     info.DescriptorPool = pool;
     info.MinImageCount  = 2;
     info.ImageCount     = 2;   // matches the engine's 2 frames in flight
-    info.PipelineInfoMain.RenderPass   = vk.scenePass();
+    info.PipelineInfoMain.RenderPass   = vk.swapchainPass();
     info.PipelineInfoMain.MSAASamples  = VK_SAMPLE_COUNT_1_BIT;
     ImGui_ImplVulkan_Init(&info);   // 1-arg form; font textures auto-managed in >= 1.92
 
@@ -82,10 +82,12 @@ void ImGuiLayer::render() {
     if (!initialized_) return;
     ImGui::Render();
     ImDrawData* drawData = ImGui::GetDrawData();
-    // The deferred callback fires inside the scene pass during endFrame() of
+    // M36: ImGui records into the swapchain pass AFTER the post-process
+    // composite so editor chrome is never affected by scene effects. The
+    // deferred callback fires inside the swapchain pass during endFrame() of
     // THIS frame, before the next NewFrame(), so drawData stays valid.
     auto& vk = static_cast<VulkanRenderer&>(*renderer_);
-    vk.enqueueDeferredScenePass([drawData](VkCommandBuffer cb) {
+    vk.enqueueDeferredUiPass([drawData](VkCommandBuffer cb) {
         ImGui_ImplVulkan_RenderDrawData(drawData, cb);
     });
 }
