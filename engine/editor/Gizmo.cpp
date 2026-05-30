@@ -15,6 +15,7 @@ constexpr float kPlaneInset       = 0.08f;  // planar-handle square inner corner
 constexpr float kPlaneReach       = 0.30f;  // planar-handle square outer corner (fraction of size)
 constexpr float kCenterPickFrac   = 0.12f;  // center free-move handle pick radius (fraction of size)
 constexpr float kCenterHalf       = 0.09f;  // center handle half-size (fraction of size)
+constexpr float kRingPickFrac     = 0.20f;  // rotate-ring pick band, screen-space (fraction of size)
 constexpr float kTwoPi            = 6.28318530718f;
 
 // Handle ids: 0/1/2 = single axes, 3/4/5 = planar (3 + plane-normal-axis,
@@ -112,18 +113,29 @@ bool rayPlane(const Ray& ray, Vec3 origin, Vec3 n, Vec3& hit) {
     return true;
 }
 
-// Angle of the ray's hit point on the rotation plane of `axis` about `origin`,
-// measured in the oriented basis `ax`. Returns false when the ray is parallel
-// to the plane.
-bool ringAngle(const Ray& ray, Vec3 origin, const Vec3 ax[3], int axis, float& out) {
-    Vec3 hit;
-    if (!rayPlane(ray, origin, ax[axis], hit)) return false;
-    Vec3 u, v;
-    if (axis == 0)      { u = ax[1]; v = ax[2]; }   // about X: (Y,Z)
-    else if (axis == 1) { u = ax[2]; v = ax[0]; }   // about Y: (Z,X)
-    else                { u = ax[0]; v = ax[1]; }   // about Z: (X,Y)
-    const Vec3 d = hit - origin;
-    out = std::atan2(dot(d, v), dot(d, u));
+// Camera-facing right/up basis at `origin`. right/up span the screen plane; the
+// plane normal (camPos - origin) points toward the camera, so atan2(.,.) in this
+// basis increases counter-clockwise as seen by the viewer. Used by the center
+// handle billboard and the rotate ring's screen-space picking + angle.
+void cameraBasis(Vec3 origin, Vec3 camPos, Vec3& right, Vec3& up) {
+    const Vec3 n = normalize(camPos - origin);
+    Vec3 r = cross(Vec3{0, 1, 0}, n);
+    right = (length(r) < 1e-4f) ? Vec3{1, 0, 0} : normalize(r);
+    up = cross(n, right);
+}
+
+// The cursor's angle (CCW) around the gizmo center in the camera's screen plane.
+// Independent of the cursor's distance from center, so a rotate drag has a
+// constant angular speed — unlike intersecting the cursor ray with a ring's own
+// plane, which speeds up near the center and blows up when the ring is edge-on.
+// Returns false only when the cursor sits exactly on the view axis (center).
+bool screenAngle(const Ray& ray, Vec3 origin, Vec3 camPos, float& out) {
+    Vec3 right, up;
+    cameraBasis(origin, camPos, right, up);
+    const float x = dot(ray.direction, right);
+    const float y = dot(ray.direction, up);
+    if (x * x + y * y < 1e-12f) return false;
+    out = std::atan2(y, x);
     return true;
 }
 
@@ -147,7 +159,8 @@ bool planeHandleHit(const Ray& ray, Vec3 origin, const Vec3 ax[3], int n, float 
 }
 
 // Which handle is under the ray for the given mode, or -1.
-int pickHandle(GizmoMode mode, const Ray& ray, Vec3 origin, const Vec3 ax[3], float size) {
+int pickHandle(GizmoMode mode, const Ray& ray, Vec3 origin, const Vec3 ax[3],
+               Vec3 camPos, float size) {
     if (mode == GizmoMode::Translate) {
         // Center free-move handle (innermost) wins right at the origin.
         if (rayPointDistance(ray, origin) < size * kCenterPickFrac) return kCenterHandle;
@@ -164,25 +177,35 @@ int pickHandle(GizmoMode mode, const Ray& ray, Vec3 origin, const Vec3 ax[3], fl
         }
         return picked;
     }
-    // Rotate: rings.
+    // Rotate: measure the cursor's distance to each ring in the camera's screen
+    // plane, so oblique and edge-on rings stay easy to grab (a ray-vs-plane band
+    // misses them). Project the cursor to the gizmo's depth, then sample each ring
+    // and keep the nearest within tolerance.
+    Vec3 right, up;
+    cameraBasis(origin, camPos, right, up);
+    const Vec3 n = normalize(camPos - origin);
+    const float vd = dot(ray.direction, n);
+    if (std::fabs(vd) < 1e-5f) return -1;                 // ray skims the screen plane
+    const Vec3 M = camPos + ray.direction * (-length(camPos - origin) / vd);
+    const float mx = dot(M - origin, right), my = dot(M - origin, up);
+
     int picked = -1;
-    float best = size * kHandlePickFrac;
+    float best = size * kRingPickFrac;
+    constexpr int S = 64;
     for (int a = 0; a < 3; ++a) {
-        Vec3 hit;
-        if (rayPlane(ray, origin, ax[a], hit)) {
-            const float err = std::fabs(length(hit - origin) - size);
-            if (err < best) { best = err; picked = a; }
+        const Vec3 axisN = ax[a];
+        const Vec3 seed = std::fabs(axisN.x) > 0.5f ? Vec3{0, 1, 0} : Vec3{1, 0, 0};
+        const Vec3 U = normalize(seed - axisN * dot(seed, axisN));
+        const Vec3 V = cross(axisN, U);
+        for (int i = 0; i < S; ++i) {
+            const float t = static_cast<float>(i) / S * kTwoPi;
+            const Vec3 p = (U * std::cos(t) + V * std::sin(t)) * size;  // ring pt rel origin
+            const float sx = dot(p, right) - mx, sy = dot(p, up) - my;
+            const float d = std::sqrt(sx * sx + sy * sy);
+            if (d < best) { best = d; picked = a; }
         }
     }
     return picked;
-}
-
-// Camera-facing right/up basis at `origin` (for the center handle's billboard).
-void cameraBasis(Vec3 origin, Vec3 camPos, Vec3& right, Vec3& up) {
-    const Vec3 n = normalize(camPos - origin);
-    Vec3 r = cross(Vec3{0, 1, 0}, n);
-    right = (length(r) < 1e-4f) ? Vec3{1, 0, 0} : normalize(r);
-    up = cross(n, right);
 }
 
 void drawRing(Renderer& r, Vec3 c, Vec3 axis, float radius, Vec3 color) {
@@ -247,13 +270,13 @@ bool Gizmo::update(SceneEntity& e, Vec3 origin, const Ray& ray,
 
     if (!mouseDown) {
         axis_ = -1;
-        hoveredAxis_ = pickHandle(mode_, ray, origin, ax, size);  // hover feedback
+        hoveredAxis_ = pickHandle(mode_, ray, origin, ax, camPos, size);  // hover feedback
         return false;
     }
 
     // Begin a drag on press over a handle.
     if (mousePressed && axis_ < 0) {
-        const int picked = pickHandle(mode_, ray, origin, ax, size);
+        const int picked = pickHandle(mode_, ray, origin, ax, camPos, size);
         hoveredAxis_ = picked;
         if (picked < 0) return false;   // empty press -> host re-selects
         axis_        = picked;
@@ -270,7 +293,7 @@ bool Gizmo::update(SceneEntity& e, Vec3 origin, const Ray& ray,
             startHit_ = rayPlane(ray, startOrigin_, ax[picked - 3], hit) ? hit : startOrigin_;
         } else {
             float p = 0.0f;
-            if (mode_ == GizmoMode::Rotate) ringAngle(ray, startOrigin_, ax, picked, p);
+            if (mode_ == GizmoMode::Rotate) screenAngle(ray, startOrigin_, camPos, p);
             else                            rayAxisParam(ray, startOrigin_, ax[picked], p);
             startParam_ = p;
             lastParam_  = p;
@@ -308,11 +331,15 @@ bool Gizmo::update(SceneEntity& e, Vec3 origin, const Ray& ray,
             if (axis_ == 0) e.scale.x = s; else if (axis_ == 1) e.scale.y = s; else e.scale.z = s;
         } else {  // Rotate
             float ang;
-            if (ringAngle(ray, startOrigin_, ax, axis_, ang)) lastParam_ = ang; else ang = lastParam_;
-            // ax derived from startRot_, so this is exactly a local-frame rotation
-            // about the object's own axis; in World mode ax is the world axis and
-            // it reduces to today's behavior.
-            e.rotation = Quat::fromAxisAngle(dir, ang - startParam_) * startRot_;
+            if (screenAngle(ray, startOrigin_, camPos, ang)) lastParam_ = ang; else ang = lastParam_;
+            // The drag angle is measured CCW in the camera's screen plane (constant
+            // speed, grabbable even edge-on). Flip the sign when the rotation axis
+            // points away from the camera so the object follows the cursor's
+            // on-screen direction. `dir` (= ax[axis_]) is frozen to startRot_, so
+            // World mode still reduces to a world-axis rotation about that axis.
+            const float facing = dot(dir, normalize(camPos - startOrigin_));
+            const float s = (facing < 0.0f) ? -1.0f : 1.0f;
+            e.rotation = Quat::fromAxisAngle(dir, s * (ang - startParam_)) * startRot_;
         }
         return true;
     }
