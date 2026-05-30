@@ -40,11 +40,7 @@ public:
 
     template <class T>
     const ComponentArray<T>& view() const {
-        const auto* a = const_cast<World*>(this)->tryArrayFor<T>();
-        if (a) return *a;
-        // Lazy-create empty array so const view() always returns a valid ref.
-        const_cast<World*>(this)->arrayFor<T>();
-        return *const_cast<World*>(this)->tryArrayFor<T>();
+        return const_cast<World*>(this)->view<T>();
     }
 
 private:
