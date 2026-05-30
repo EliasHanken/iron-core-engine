@@ -68,7 +68,9 @@ bool VulkanRenderer::init(Window& window) {
         return false;
     }
     // M36 — offscreen scene-color target + copy pipeline. Must be init before
-    // debugLines_, hud_, skybox_ because scenePass() now returns its render pass.
+    // skybox_ because scenePass() now returns its render pass. debugLines_ and
+    // hud_ use swapchainPass() (pipelines_.renderPass()), so order vs. them is
+    // already guaranteed by pipelines_.init() above.
     if (!postProcess_.init(context_, swapchain_.colorFormat(), swapchain_.depthFormat(),
                            swapchain_.extent(), textures_.sampler(),
                            pipelines_.renderPass())) {
@@ -79,11 +81,11 @@ bool VulkanRenderer::init(Window& window) {
         Log::error("VulkanRenderer: VkShadowMap init failed");
         return false;
     }
-    if (!debugLines_.init(context_, scenePass())) {
+    if (!debugLines_.init(context_, swapchainPass())) {
         Log::error("VulkanRenderer: VkDebugLines init failed");
         return false;
     }
-    if (!hud_.init(context_, scenePass())) {
+    if (!hud_.init(context_, swapchainPass())) {
         Log::error("VulkanRenderer: VkHud init failed");
         return false;
     }
@@ -1040,10 +1042,16 @@ VkFrameRing& VulkanRenderer::frameRing() {
 VkContext& VulkanRenderer::context() { return context_; }
 
 VkRenderPass VulkanRenderer::scenePass() const {
-    // M36: scene geometry, particles, debug lines, HUD, and skybox pipelines
-    // are built against the offscreen scene pass. The composite pipeline is
-    // built against pipelines_.renderPass() (swapchain pass) separately.
+    // M36: scene geometry, skybox, and particle pipelines are built against
+    // the offscreen scene pass. The composite pipeline is built against
+    // pipelines_.renderPass() (swapchain pass) separately.
     return postProcess_.scenePass();
+}
+
+VkRenderPass VulkanRenderer::swapchainPass() const {
+    // The swapchain (final) render pass — where composite + UI/overlays record.
+    // Debug lines, HUD, and ImGui pipelines must be built against this pass.
+    return pipelines_.renderPass();
 }
 
 void VulkanRenderer::enqueueDeferredScenePass(

@@ -62,7 +62,7 @@ bool ImGuiLayer::init(Window& window, Renderer& renderer) {
     info.DescriptorPool = pool;
     info.MinImageCount  = 2;
     info.ImageCount     = 2;   // matches the engine's 2 frames in flight
-    info.PipelineInfoMain.RenderPass   = vk.scenePass();
+    info.PipelineInfoMain.RenderPass   = vk.swapchainPass();
     info.PipelineInfoMain.MSAASamples  = VK_SAMPLE_COUNT_1_BIT;
     ImGui_ImplVulkan_Init(&info);   // 1-arg form; font textures auto-managed in >= 1.92
 

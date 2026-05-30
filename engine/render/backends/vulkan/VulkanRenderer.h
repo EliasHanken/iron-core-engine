@@ -111,10 +111,14 @@ public:
     // can allocate their own VMA buffers + Vulkan objects.
     VkContext& context();
 
-    // Engine-internal: the render pass for the scene's main color+depth pass.
-    // External subsystems creating their own graphics pipelines reuse it so
-    // their draws go into the same framebuffer.
+    // Engine-internal: the offscreen scene render pass (color+depth). Used by
+    // subsystems whose draws are recorded in the offscreen scene pass (skybox,
+    // scene geometry, particles).
     VkRenderPass scenePass() const;
+
+    // Engine-internal: the swapchain (final) render pass — where composite,
+    // debug lines, HUD, and UI/overlays record.
+    VkRenderPass swapchainPass() const;
 
     // Engine-internal: external Vulkan subsystems register a deferred
     // render callback. Fires inside the scene render pass during endFrame,

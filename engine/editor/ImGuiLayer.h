@@ -8,8 +8,8 @@ class Renderer;
 // Integrates Dear ImGui with the engine's Vulkan renderer and GLFW window.
 // The editor module is Vulkan-only; init() expects the renderer to be the
 // VulkanRenderer (always true in a Vulkan build). ImGui records into the
-// scene render pass via the renderer's deferred-overlay hook, so no separate
-// render pass or renderer change is needed.
+// swapchain (final) render pass via the renderer's deferred-UI hook, AFTER the
+// post-process composite, so editor chrome is never affected by scene effects.
 //
 // Usage per frame:
 //   layer.beginFrame();       // before building any ImGui windows
