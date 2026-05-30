@@ -13,7 +13,7 @@
 **Build & test commands (used by every task):**
 ```bash
 cmake --build build-vk --config Debug --target ironcore
-cmake --build build-vk --config Debug --target test_reflection   # after Task A1 lands
+cmake --build build-vk --config Debug --target test_type_reflection   # after Task A1 lands
 cmake --build build-vk --config Debug --target sandbox            # for Phase C/D
 ctest --test-dir build-vk -C Debug --output-on-failure
 ```
@@ -35,11 +35,11 @@ ctest --test-dir build-vk -C Debug --output-on-failure
 - `engine/scene/MeshRef.reflect.cpp` — `void registerMeshRef(Reflection&)`
 - `engine/scene/MaterialDef.reflect.cpp` — `void registerMaterialDef(Reflection&)`
 - `engine/render/RenderHandles.reflect.cpp` — `void registerRenderHandles(Reflection&)`
-- `tests/test_reflection.cpp` — hand-rolled CHECK macro + ~15–20 named subtests
+- `tests/test_type_reflection.cpp` — hand-rolled CHECK macro + ~15–20 named subtests
 
 **Modified:**
 - `engine/CMakeLists.txt` — add the four `.reflect.cpp` files to the `ironcore` source list
-- `tests/CMakeLists.txt` — `iron_add_test(test_reflection test_reflection.cpp)`
+- `tests/CMakeLists.txt` — `iron_add_test(test_type_reflection test_type_reflection.cpp)`
 - `games/11-sandbox/main.cpp` — include the headers, construct `iron::Reflection reflection;`, call the four `register*(reflection)` functions at startup
 
 **Untouched on purpose:** Renderer (Vulkan), World/ComponentArray, Picking, Gizmo, editor panels, SceneIO, all other games. No new `.cpp` for `Reflection` itself — everything is header-only (templated) in v1.
@@ -59,12 +59,12 @@ ctest --test-dir build-vk -C Debug --output-on-failure
 **Files:**
 - Create: `engine/reflection/TypeId.h`
 - Create: `engine/reflection/FieldDesc.h`
-- Create: `tests/test_reflection.cpp`
+- Create: `tests/test_type_reflection.cpp`
 - Modify: `tests/CMakeLists.txt`
 
 - [ ] **Step 1: Write the failing tests**
 
-Create `tests/test_reflection.cpp`:
+Create `tests/test_type_reflection.cpp`:
 
 ```cpp
 #include "reflection/TypeId.h"
@@ -115,13 +115,13 @@ int main() {
 
 Add the test registration to `tests/CMakeLists.txt` (append after the last `iron_add_test` line):
 ```cmake
-iron_add_test(test_reflection test_reflection.cpp)
+iron_add_test(test_type_reflection test_type_reflection.cpp)
 ```
 
 - [ ] **Step 2: Run the failing test**
 
 ```bash
-cmake --build build-vk --config Debug --target test_reflection
+cmake --build build-vk --config Debug --target test_type_reflection
 ```
 Expected: compile error — `reflection/TypeId.h` does not exist.
 
@@ -200,8 +200,8 @@ struct FieldDesc {
 - [ ] **Step 5: Build + run tests**
 
 ```bash
-cmake --build build-vk --config Debug --target test_reflection
-cd build-vk && ctest -C Debug -R test_reflection --output-on-failure -V
+cmake --build build-vk --config Debug --target test_type_reflection
+cd build-vk && ctest -C Debug -R test_type_reflection --output-on-failure -V
 ```
 Expected: `All reflection tests passed.` + `Passed`.
 
@@ -209,7 +209,7 @@ Expected: `All reflection tests passed.` + `Passed`.
 
 From repo root:
 ```bash
-git add engine/reflection/TypeId.h engine/reflection/FieldDesc.h tests/test_reflection.cpp tests/CMakeLists.txt
+git add engine/reflection/TypeId.h engine/reflection/FieldDesc.h tests/test_type_reflection.cpp tests/CMakeLists.txt
 git commit -m "M38: TypeId + FieldDesc + test scaffold"
 ```
 
@@ -221,11 +221,11 @@ Run `git log --oneline -3` and include the SHA in your report.
 
 **Files:**
 - Create: `engine/reflection/TypeIdOf.h`
-- Modify: `tests/test_reflection.cpp`
+- Modify: `tests/test_type_reflection.cpp`
 
 - [ ] **Step 1: Write the failing tests**
 
-Append to `tests/test_reflection.cpp` BEFORE `int main()`:
+Append to `tests/test_type_reflection.cpp` BEFORE `int main()`:
 
 ```cpp
 #include "reflection/TypeIdOf.h"
@@ -275,7 +275,7 @@ Register the new tests in `main()` after the existing A1 calls, before the succe
 - [ ] **Step 2: Run the failing test**
 
 ```bash
-cmake --build build-vk --config Debug --target test_reflection
+cmake --build build-vk --config Debug --target test_type_reflection
 ```
 Expected: compile error — `reflection/TypeIdOf.h` does not exist.
 
@@ -324,15 +324,15 @@ struct TypeIdOf<std::optional<E>> { static constexpr TypeId v = TypeId::Optional
 - [ ] **Step 4: Build + run tests**
 
 ```bash
-cmake --build build-vk --config Debug --target test_reflection
-cd build-vk && ctest -C Debug -R test_reflection --output-on-failure -V
+cmake --build build-vk --config Debug --target test_type_reflection
+cd build-vk && ctest -C Debug -R test_type_reflection --output-on-failure -V
 ```
 Expected: all reflection tests pass.
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add engine/reflection/TypeIdOf.h tests/test_reflection.cpp
+git add engine/reflection/TypeIdOf.h tests/test_type_reflection.cpp
 git commit -m "M38: TypeIdOf<F>::v deduction + tests"
 ```
 
@@ -342,28 +342,28 @@ git commit -m "M38: TypeIdOf<F>::v deduction + tests"
 
 **Files:**
 - Create: `engine/reflection/Reflection.h`
-- Modify: `tests/test_reflection.cpp`
+- Modify: `tests/test_type_reflection.cpp`
 
 - [ ] **Step 1: Write the failing tests**
 
-Append to `tests/test_reflection.cpp` BEFORE `int main()`:
+Append to `tests/test_type_reflection.cpp` BEFORE `int main()`:
 
 ```cpp
 #include "reflection/Reflection.h"
 #include "world/Transform.h"
 
-static void test_reflection_register_type_stores_name() {
+static void test_type_reflection_register_type_stores_name() {
     iron::Reflection r;
     r.registerType<iron::Transform>("Transform");
     CHECK(r.typeName<iron::Transform>() == "Transform");
 }
 
-static void test_reflection_unregistered_type_has_empty_name() {
+static void test_type_reflection_unregistered_type_has_empty_name() {
     iron::Reflection r;
     CHECK(r.typeName<iron::Transform>().empty());
 }
 
-static void test_reflection_field_offsets_match_offsetof() {
+static void test_type_reflection_field_offsets_match_offsetof() {
     iron::Reflection r;
     r.registerType<iron::Transform>("Transform")
         .field("position", &iron::Transform::position)
@@ -382,7 +382,7 @@ static void test_reflection_field_offsets_match_offsetof() {
     CHECK(fields[2].type == iron::TypeId::Vec3);
 }
 
-static void test_reflection_field_meta_roundtrip() {
+static void test_type_reflection_field_meta_roundtrip() {
     iron::Reflection r;
     r.registerType<iron::Transform>("Transform")
         .field("scale", &iron::Transform::scale, {.min = 0.001f, .max = 1000.0f});
@@ -395,16 +395,16 @@ static void test_reflection_field_meta_roundtrip() {
 
 Register in `main()`:
 ```cpp
-    test_reflection_register_type_stores_name();
-    test_reflection_unregistered_type_has_empty_name();
-    test_reflection_field_offsets_match_offsetof();
-    test_reflection_field_meta_roundtrip();
+    test_type_reflection_register_type_stores_name();
+    test_type_reflection_unregistered_type_has_empty_name();
+    test_type_reflection_field_offsets_match_offsetof();
+    test_type_reflection_field_meta_roundtrip();
 ```
 
 - [ ] **Step 2: Run the failing test**
 
 ```bash
-cmake --build build-vk --config Debug --target test_reflection
+cmake --build build-vk --config Debug --target test_type_reflection
 ```
 Expected: compile error — `reflection/Reflection.h` does not exist.
 
@@ -504,15 +504,15 @@ private:
 - [ ] **Step 4: Build + run tests**
 
 ```bash
-cmake --build build-vk --config Debug --target test_reflection
-cd build-vk && ctest -C Debug -R test_reflection --output-on-failure -V
+cmake --build build-vk --config Debug --target test_type_reflection
+cd build-vk && ctest -C Debug -R test_type_reflection --output-on-failure -V
 ```
 Expected: all tests pass.
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add engine/reflection/Reflection.h tests/test_reflection.cpp
+git add engine/reflection/Reflection.h tests/test_type_reflection.cpp
 git commit -m "M38: Reflection::registerType + TypeBuilder<T>::field"
 ```
 
@@ -522,14 +522,14 @@ git commit -m "M38: Reflection::registerType + TypeBuilder<T>::field"
 
 **Files:**
 - Modify: `engine/reflection/Reflection.h`
-- Modify: `tests/test_reflection.cpp`
+- Modify: `tests/test_type_reflection.cpp`
 
 - [ ] **Step 1: Write the failing tests**
 
-Append to `tests/test_reflection.cpp` BEFORE `int main()`:
+Append to `tests/test_type_reflection.cpp` BEFORE `int main()`:
 
 ```cpp
-static void test_reflection_field_by_name_hit() {
+static void test_type_reflection_field_by_name_hit() {
     iron::Reflection r;
     r.registerType<iron::Transform>("Transform")
         .field("position", &iron::Transform::position)
@@ -541,14 +541,14 @@ static void test_reflection_field_by_name_hit() {
     CHECK(f->type == iron::TypeId::Vec3);
 }
 
-static void test_reflection_field_by_name_miss() {
+static void test_type_reflection_field_by_name_miss() {
     iron::Reflection r;
     r.registerType<iron::Transform>("Transform")
         .field("position", &iron::Transform::position);
     CHECK(r.fieldByName<iron::Transform>("nonexistent") == nullptr);
 }
 
-static void test_reflection_ptr_through_field_mutates_object() {
+static void test_type_reflection_ptr_through_field_mutates_object() {
     iron::Reflection r;
     r.registerType<iron::Transform>("Transform")
         .field("position", &iron::Transform::position);
@@ -564,7 +564,7 @@ static void test_reflection_ptr_through_field_mutates_object() {
     CHECK(t.position.z == 3.0f);
 }
 
-static void test_reflection_const_ptr_through_field() {
+static void test_type_reflection_const_ptr_through_field() {
     iron::Reflection r;
     r.registerType<iron::Transform>("Transform")
         .field("position", &iron::Transform::position);
@@ -581,16 +581,16 @@ static void test_reflection_const_ptr_through_field() {
 
 Register in `main()`:
 ```cpp
-    test_reflection_field_by_name_hit();
-    test_reflection_field_by_name_miss();
-    test_reflection_ptr_through_field_mutates_object();
-    test_reflection_const_ptr_through_field();
+    test_type_reflection_field_by_name_hit();
+    test_type_reflection_field_by_name_miss();
+    test_type_reflection_ptr_through_field_mutates_object();
+    test_type_reflection_const_ptr_through_field();
 ```
 
 - [ ] **Step 2: Run the failing test**
 
 ```bash
-cmake --build build-vk --config Debug --target test_reflection
+cmake --build build-vk --config Debug --target test_type_reflection
 ```
 Expected: compile error — `r.fieldByName<...>` not declared.
 
@@ -610,15 +610,15 @@ Add to `engine/reflection/Reflection.h` inside `class Reflection`'s public secti
 - [ ] **Step 4: Build + run tests**
 
 ```bash
-cmake --build build-vk --config Debug --target test_reflection
-cd build-vk && ctest -C Debug -R test_reflection --output-on-failure -V
+cmake --build build-vk --config Debug --target test_type_reflection
+cd build-vk && ctest -C Debug -R test_type_reflection --output-on-failure -V
 ```
 Expected: all reflection tests pass.
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add engine/reflection/Reflection.h tests/test_reflection.cpp
+git add engine/reflection/Reflection.h tests/test_type_reflection.cpp
 git commit -m "M38: Reflection::fieldByName + ptr-through-field tests"
 ```
 
@@ -635,11 +635,11 @@ git commit -m "M38: Reflection::fieldByName + ptr-through-field tests"
 - Create: `engine/render/RenderHandles.reflect.cpp`
 - Create: `engine/reflection/RegisterCoreTypes.h`
 - Modify: `engine/CMakeLists.txt`
-- Modify: `tests/test_reflection.cpp`
+- Modify: `tests/test_type_reflection.cpp`
 
 - [ ] **Step 1: Write the failing tests**
 
-Append to `tests/test_reflection.cpp` BEFORE `int main()`:
+Append to `tests/test_type_reflection.cpp` BEFORE `int main()`:
 
 ```cpp
 #include "reflection/RegisterCoreTypes.h"
@@ -721,7 +721,7 @@ Register in `main()`:
 - [ ] **Step 2: Run the failing test**
 
 ```bash
-cmake --build build-vk --config Debug --target test_reflection
+cmake --build build-vk --config Debug --target test_type_reflection
 ```
 Expected: compile error — `reflection/RegisterCoreTypes.h` does not exist.
 
@@ -836,15 +836,15 @@ Open `engine/CMakeLists.txt`. Find the `add_library(ironcore STATIC ...)` source
 
 ```bash
 cmake --build build-vk --config Debug --target ironcore
-cmake --build build-vk --config Debug --target test_reflection
+cmake --build build-vk --config Debug --target test_type_reflection
 cd build-vk && ctest -C Debug --output-on-failure
 ```
-Expected: clean build; 49/49 tests green (48 prior + new `test_reflection`).
+Expected: clean build; 49/49 tests green (48 prior + new `test_type_reflection`).
 
 - [ ] **Step 7: Commit**
 
 ```bash
-git add engine/reflection/RegisterCoreTypes.h engine/world/Transform.reflect.cpp engine/scene/MeshRef.reflect.cpp engine/scene/MaterialDef.reflect.cpp engine/render/RenderHandles.reflect.cpp engine/CMakeLists.txt tests/test_reflection.cpp
+git add engine/reflection/RegisterCoreTypes.h engine/world/Transform.reflect.cpp engine/scene/MeshRef.reflect.cpp engine/scene/MaterialDef.reflect.cpp engine/render/RenderHandles.reflect.cpp engine/CMakeLists.txt tests/test_type_reflection.cpp
 git commit -m "M38: sidecar registrations for the 4 M37 component types + integration tests"
 ```
 
@@ -918,7 +918,7 @@ git commit -m "M38: sandbox — construct Reflection registry + register the 4 c
 cmake --build build-vk --config Debug
 ctest --test-dir build-vk -C Debug --output-on-failure
 ```
-Expected: 49/49 green (48 prior + `test_reflection`).
+Expected: 49/49 green (48 prior + `test_type_reflection`).
 
 - [ ] **Step 2: User visual gate**
 
@@ -968,7 +968,7 @@ the registry to drive the Inspector and JSON serialization.
   free function in a ``.reflect.cpp`` next to the type. The host
   (``games/11-sandbox/main.cpp``) constructs ``iron::Reflection
   reflection;`` at startup and calls each ``register*`` function.
-- **Tests**: new ``tests/test_reflection.cpp`` (single CTest case,
+- **Tests**: new ``tests/test_type_reflection.cpp`` (single CTest case,
   ~17 named subtests). Covers ``TypeIdOf`` deduction, registry
   registration, field iteration in insertion order, ``fieldByName``
   hits + misses, ``FieldDesc::ptr<T>`` mutation roundtrip, per-field
@@ -1030,7 +1030,7 @@ After merge:
 
 1. `iron::Reflection` exists; registers types via the fluent `TypeBuilder<T>::field` API; supports `fieldsOf<T>` / `fieldByName<T>` / `typeName<T>` lookup; `FieldDesc::ptr<T>(void*)` returns the correct address via stored offset.
 2. All four M37 component types are registered via sidecar `register<TypeName>(Reflection&)` functions; the sandbox host calls each at startup.
-3. `test_reflection.cpp` passes ~17 subtests covering `TypeIdOf` deduction, registry operations, field iteration, by-name lookup, `FieldDesc::ptr` access, metadata roundtrip, and end-to-end registration of all four component types.
+3. `test_type_reflection.cpp` passes ~17 subtests covering `TypeIdOf` deduction, registry operations, field iteration, by-name lookup, `FieldDesc::ptr` access, metadata roundtrip, and end-to-end registration of all four component types.
 4. Suite 48 → 49 tests green; sandbox visually indistinguishable from M37.5 (M38 is runtime-invisible).
 5. Zero new external dependencies. Renderer, editor panels, picking, gizmo, SceneIO, World — all untouched.
 6. PR merged; memory updated.
