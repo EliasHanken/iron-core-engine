@@ -500,6 +500,18 @@ int main() {
         ResolvedEntity re;
         if (resolveEntity(scene.entities[idx], idx, re)) {
             resolved.push_back(re);
+            // M37: mirror into the World.
+            const iron::SceneEntity& se = scene.entities[idx];
+            iron::EntityId entity = world.create();
+            iron::Transform t{};
+            t.position = se.position;
+            t.rotation = se.rotation;
+            t.scale    = se.scale;
+            world.add<iron::Transform>(entity, t);
+            world.add<iron::MeshRef>(entity, se.mesh);
+            world.add<iron::MaterialDef>(entity, se.material);
+            world.add<iron::RenderHandles>(entity, toRenderHandles(re));
+            sceneIndexToEntity.push_back(entity);
             selectedIndex = idx;
         } else {
             scene.entities.pop_back();
@@ -665,6 +677,13 @@ int main() {
         } else if (action == Action::Delete && selValid) {
             const int d = selectedIndex;
             scene.entities.erase(scene.entities.begin() + d);
+            // M37: mirror destroy into the World. sceneIndexToEntity is parallel
+            // to scene.entities (no reindex needed — erase shifts later entries down).
+            if (d >= 0 && d < static_cast<int>(sceneIndexToEntity.size())) {
+                iron::EntityId e = sceneIndexToEntity[d];
+                world.destroy(e);
+                sceneIndexToEntity.erase(sceneIndexToEntity.begin() + d);
+            }
             // Drop the deleted entity's resolved entry; shift higher indices down.
             for (std::size_t i = 0; i < resolved.size();) {
                 if (resolved[i].entityIndex == d) { resolved.erase(resolved.begin() + i); continue; }
