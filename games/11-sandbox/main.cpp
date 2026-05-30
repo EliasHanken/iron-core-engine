@@ -19,6 +19,7 @@
 #include "render/Light.h"
 #include "render/Material.h"
 #include "render/ProceduralSky.h"
+#include "render/RenderHandles.h"
 #include "render/Renderer.h"
 #include "render/RendererFactory.h"
 #include "render/TextureLoader.h"
@@ -26,6 +27,8 @@
 #include "scene/Mesh.h"
 #include "scene/SceneFormat.h"
 #include "scene/SceneIO.h"
+#include "world/Transform.h"
+#include "world/World.h"
 #include "editor/EnvironmentPanel.h"
 #include "editor/Gizmo.h"
 #include "editor/ImGuiLayer.h"
@@ -302,6 +305,9 @@ int main() {
     };
     std::vector<ResolvedEntity> resolved;
 
+    iron::World world;
+    std::vector<iron::EntityId> sceneIndexToEntity;   // parallel to scene.entities
+
     // Cache primitive meshes so N cubes/planes share one MeshHandle.
     iron::MeshHandle cubeMesh  = iron::kInvalidHandle;
     iron::MeshHandle planeMesh = iron::kInvalidHandle;
@@ -389,9 +395,36 @@ int main() {
         return true;
     };
 
+    // Pack a resolved entity's GPU handles into the new RenderHandles
+    // component shape (M37). Field names differ between the legacy
+    // iron::Material (texture/normalMap/specularMap) and the new
+    // RenderHandles (albedo/normal/specular).
+    auto toRenderHandles = [](const ResolvedEntity& re) -> iron::RenderHandles {
+        iron::RenderHandles rh{};
+        rh.mesh     = re.mesh;
+        rh.albedo   = re.material.texture;
+        rh.normal   = re.material.normalMap;
+        rh.specular = re.material.specularMap;
+        return rh;
+    };
+
     for (int ei = 0; ei < static_cast<int>(scene.entities.size()); ++ei) {
         ResolvedEntity re;
-        if (resolveEntity(scene.entities[ei], ei, re)) resolved.push_back(re);
+        if (!resolveEntity(scene.entities[ei], ei, re)) continue;
+        resolved.push_back(re);
+
+        // M37: mirror into the World.
+        const iron::SceneEntity& se = scene.entities[ei];
+        iron::EntityId entity = world.create();
+        iron::Transform t{};
+        t.position = se.position;
+        t.rotation = se.rotation;
+        t.scale    = se.scale;
+        world.add<iron::Transform>(entity, t);
+        world.add<iron::MeshRef>(entity, se.mesh);
+        world.add<iron::MaterialDef>(entity, se.material);
+        world.add<iron::RenderHandles>(entity, toRenderHandles(re));
+        sceneIndexToEntity.push_back(entity);
     }
 
     iron::Log::info("sandbox: resolved %zu / %zu entities from scene",
@@ -467,6 +500,18 @@ int main() {
         ResolvedEntity re;
         if (resolveEntity(scene.entities[idx], idx, re)) {
             resolved.push_back(re);
+            // M37: mirror into the World.
+            const iron::SceneEntity& se = scene.entities[idx];
+            iron::EntityId entity = world.create();
+            iron::Transform t{};
+            t.position = se.position;
+            t.rotation = se.rotation;
+            t.scale    = se.scale;
+            world.add<iron::Transform>(entity, t);
+            world.add<iron::MeshRef>(entity, se.mesh);
+            world.add<iron::MaterialDef>(entity, se.material);
+            world.add<iron::RenderHandles>(entity, toRenderHandles(re));
+            sceneIndexToEntity.push_back(entity);
             selectedIndex = idx;
         } else {
             scene.entities.pop_back();
@@ -632,6 +677,13 @@ int main() {
         } else if (action == Action::Delete && selValid) {
             const int d = selectedIndex;
             scene.entities.erase(scene.entities.begin() + d);
+            // M37: mirror destroy into the World. sceneIndexToEntity is parallel
+            // to scene.entities (no reindex needed — erase shifts later entries down).
+            if (d >= 0 && d < static_cast<int>(sceneIndexToEntity.size())) {
+                iron::EntityId e = sceneIndexToEntity[d];
+                world.destroy(e);
+                sceneIndexToEntity.erase(sceneIndexToEntity.begin() + d);
+            }
             // Drop the deleted entity's resolved entry; shift higher indices down.
             for (std::size_t i = 0; i < resolved.size();) {
                 if (resolved[i].entityIndex == d) { resolved.erase(resolved.begin() + i); continue; }
@@ -655,6 +707,25 @@ int main() {
             re.material.reflectivity = e.material.reflectivity;
         }
 
+        // --- M37 D4: Inspector + Gizmo edit scene.entities[]; mirror them into the
+        // World so the render path (and any future system that reads the World) sees
+        // the live values. M39 migrates the editor itself onto the World, removing
+        // this sync.
+        for (size_t i = 0; i < scene.entities.size(); ++i) {
+            if (i >= sceneIndexToEntity.size()) break;
+            const iron::SceneEntity& se = scene.entities[i];
+            iron::EntityId e = sceneIndexToEntity[i];
+            if (auto* t = world.get<iron::Transform>(e)) {
+                t->position = se.position;
+                t->rotation = se.rotation;
+                t->scale    = se.scale;
+            }
+            if (auto* m = world.get<iron::MaterialDef>(e)) {
+                *m = se.material;
+            }
+            // MeshRef does not change at runtime in v1; skip.
+        }
+
         // --- scene render ---
         const iron::Mat4 view = cam.viewMatrix();
         renderer.beginFrame(scene.clearColor, scene.sun,
@@ -662,13 +733,34 @@ int main() {
                                 scene.pointLights.data(),
                                 scene.pointLights.size()),
                             scene.fog, view, proj);
-        for (const auto& re : resolved) {
+        // M37: submit iterates the World; D4 keeps it in sync with scene.entities.
+        auto& transforms = world.view<iron::Transform>();
+        for (std::size_t row = 0; row < transforms.size(); ++row) {
+            const iron::EntityId       e   = transforms.entityAt(row);
+            const iron::Transform&     t   = transforms[row];
+            const iron::MaterialDef*   mat = world.get<iron::MaterialDef>(e);
+            const iron::RenderHandles* rh  = world.get<iron::RenderHandles>(e);
+            if (!mat || !rh) continue;
+
+            // sceneIdx only needed for the effectId selection check.
+            int sceneIdx = -1;
+            for (std::size_t i = 0; i < sceneIndexToEntity.size(); ++i) {
+                if (sceneIndexToEntity[i] == e) { sceneIdx = static_cast<int>(i); break; }
+            }
+
             iron::DrawCall call;
-            call.mesh     = re.mesh;
-            call.shader   = litShader;
-            call.model    = re.model;
-            call.material = re.material;
-            call.effectId = (re.entityIndex == selectedIndex) ? 1 : 0;
+            call.mesh                  = rh->mesh;
+            call.shader                = litShader;
+            call.model                 = iron::translation(t.position)
+                                       * t.rotation.toMat4()
+                                       * iron::scaling(t.scale);
+            call.material.texture      = rh->albedo;
+            call.material.normalMap    = rh->normal;
+            call.material.specularMap  = rh->specular;
+            call.material.emissive     = mat->emissive;
+            call.material.uvScale      = mat->uvScale;
+            call.material.reflectivity = mat->reflectivity;
+            call.effectId              = (sceneIdx == selectedIndex) ? 1 : 0;
             renderer.submit(call);
         }
         if (selectedIndex >= 0 && selectedIndex < static_cast<int>(scene.entities.size()))
