@@ -156,6 +156,41 @@ static void test_world_recycle_bumps_generation() {
     CHECK(w.alive(b));
 }
 
+static void test_world_typed_add_and_get() {
+    iron::World w;
+    iron::EntityId e = w.create();
+    int* p = w.add<int>(e, 42);
+    CHECK(p != nullptr);
+    CHECK(*w.get<int>(e) == 42);
+}
+
+static void test_world_typed_remove() {
+    iron::World w;
+    iron::EntityId e = w.create();
+    w.add<int>(e, 42);
+    w.remove<int>(e);
+    CHECK(w.get<int>(e) == nullptr);
+}
+
+static void test_world_multi_type_on_same_entity() {
+    iron::World w;
+    iron::EntityId e = w.create();
+    w.add<int>(e, 7);
+    w.add<float>(e, 3.5f);
+    CHECK(*w.get<int>(e) == 7);
+    CHECK(*w.get<float>(e) == 3.5f);
+}
+
+static void test_world_destroy_tears_off_all_components() {
+    iron::World w;
+    iron::EntityId e = w.create();
+    w.add<int>(e, 7);
+    w.add<float>(e, 3.5f);
+    w.destroy(e);
+    CHECK(w.get<int>(e) == nullptr);
+    CHECK(w.get<float>(e) == nullptr);
+}
+
 int main() {
     test_entityid_default_is_invalid();
     test_entityid_with_generation_is_valid();
@@ -172,6 +207,10 @@ int main() {
     test_world_create_returns_valid_entity();
     test_world_destroy_kills_entity();
     test_world_recycle_bumps_generation();
+    test_world_typed_add_and_get();
+    test_world_typed_remove();
+    test_world_multi_type_on_same_entity();
+    test_world_destroy_tears_off_all_components();
     if (g_failures == 0) std::printf("All world tests passed.\n");
     return g_failures == 0 ? 0 : 1;
 }

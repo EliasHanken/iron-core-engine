@@ -17,8 +17,11 @@ EntityId World::create() {
 
 void World::destroy(EntityId e) {
     if (!alive(e)) return;
-    // Bump generation; any stale handle that captured the old generation
-    // will fail alive() and get<T>() from now on.
+    // Tear off every component first so swap-and-pop fixups happen against
+    // the still-valid handle.
+    for (auto& a : arrays_) {
+        if (a) a->remove(e);
+    }
     ++generations_[e.index];
     if (generations_[e.index] == 0) generations_[e.index] = 1;  // wrap guard
     freeList_.push_back(e.index);
