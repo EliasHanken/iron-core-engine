@@ -491,6 +491,7 @@ int main() {
             if (input.keyPressed(GLFW_KEY_W)) gizmo.setMode(iron::GizmoMode::Translate);
             if (input.keyPressed(GLFW_KEY_E)) gizmo.setMode(iron::GizmoMode::Rotate);
             if (input.keyPressed(GLFW_KEY_R)) gizmo.setMode(iron::GizmoMode::Scale);
+            if (input.keyPressed(GLFW_KEY_X)) gizmo.toggleSpace();
 
             const bool uiBusy = imgui.wantsMouse();
             if (!uiBusy || gizmo.dragging()) {
@@ -533,8 +534,11 @@ int main() {
         // --- editor UI ---
         imgui.beginFrame();
         const iron::SceneOutliner::Result outRes = outliner.draw(scene, selectedIndex);
-        if (selectedIndex >= 0 && selectedIndex < static_cast<int>(scene.entities.size()))
-            inspector.draw(scene.entities[selectedIndex]);
+        if (selectedIndex >= 0 && selectedIndex < static_cast<int>(scene.entities.size())) {
+            iron::GizmoSpace sp = gizmo.space();
+            inspector.draw(scene.entities[selectedIndex], sp);
+            gizmo.setSpace(sp);  // Inspector may flip it; setSpace is a no-op mid-drag
+        }
         environment.draw(scene);
         if (outRes.saveClicked) {
             if (iron::saveSceneFile(scene, scenePath))
@@ -624,7 +628,8 @@ int main() {
             renderer.submit(call);
         }
         if (selectedIndex >= 0 && selectedIndex < static_cast<int>(scene.entities.size()))
-            gizmo.draw(renderer, gizmoOriginFor(selectedIndex), cam.position);
+            gizmo.draw(renderer, gizmoOriginFor(selectedIndex),
+                       scene.entities[selectedIndex].rotation, cam.position);
 
         // --- selection outline: the selected entity's oriented bounding box
         // drawn as an always-on-top box, so the active object reads clearly. ---
