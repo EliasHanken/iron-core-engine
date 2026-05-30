@@ -630,6 +630,13 @@ int main() {
     });
 
     app.setRender([&]() {
+        // --- M37.5: skip rendering on a minimized window (mirrors the
+        // minimize guard at the top of setUpdate so we don't burn a
+        // beginFrame/endFrame pair the renderer would just skipFrame_).
+        if (app.window().width() == 0 || app.window().height() == 0) {
+            return;
+        }
+
         // --- editor UI ---
         imgui.beginFrame();
         const iron::SceneOutliner::Result outRes = outliner.draw(scene, selectedIndex);
