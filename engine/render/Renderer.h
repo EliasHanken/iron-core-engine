@@ -7,6 +7,7 @@
 #include "render/HudBatch.h"
 #include "render/Light.h"
 #include "render/Material.h"
+#include "render/PostEffect.h"
 #include "render/ReflectionPlane.h"
 #include "scene/Mesh.h"
 #include "asset/Skeleton.h"
@@ -33,6 +34,7 @@ struct DrawCall {
     ShaderHandle shader = kInvalidHandle;
     Mat4 model = Mat4::identity();
     Material material{};
+    uint8_t effectId = 0;   // 0 = no post-process effect; else an EffectTable id (M36)
 };
 
 // M23 — maximum bone matrices uploaded per skinned draw call. The
@@ -162,6 +164,13 @@ public:
     // Disables the planar reflection pass. Reflective DrawCalls with
     // material.useReflectionPlane=true will then sample the cubemap as a fallback.
     virtual void disableReflectionPlane() = 0;
+
+    // Configure the post-process effect style for an id referenced by
+    // DrawCall::effectId. Vulkan-only; the base implementation ignores it
+    // (the OpenGL backend has no post-process chain). (M36)
+    virtual void setEffectStyle(uint8_t effectId, const EffectStyle& style) {
+        (void)effectId; (void)style;
+    }
 
     // --- debug drawing ---
     // Queue a coloured 3D line segment for the current frame.
