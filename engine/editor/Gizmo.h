@@ -46,13 +46,14 @@ private:
     GizmoSpace space_ = GizmoSpace::World;
     int   axis_ = -1;            // dragging axis 0/1/2; -1 = idle
     int   hoveredAxis_ = -1;     // handle under the cursor (for highlight), -1 = none
-    float startParam_ = 0.0f;    // axis param (translate/scale) or angle (rotate) at drag start
+    float startParam_ = 0.0f;    // axis param (translate/scale), or tangent displacement (rotate), at drag start
     float lastParam_ = 0.0f;     // last valid param this drag (held on degenerate solves)
     Vec3  startPos_{};
     Vec3  startScale_{};
     Vec3  startOrigin_{};        // gizmo origin captured at drag start (stable axis line)
     Vec3  startHit_{};           // plane hit point at drag start (planar / center handles)
     Vec3  startNormal_{};        // camera-facing plane normal at drag start (center handle)
+    Vec3  startTangent_{};       // frozen screen-space ring tangent at drag start (rotate tangent-drag)
     Quat  startRot_{};
 };
 

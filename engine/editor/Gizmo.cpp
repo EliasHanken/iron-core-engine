@@ -124,27 +124,6 @@ void cameraBasis(Vec3 origin, Vec3 camPos, Vec3& right, Vec3& up) {
     up = cross(n, right);
 }
 
-// The cursor's angle (CCW) around the gizmo center, measured on a camera-facing
-// plane through `origin`. Intersecting the cursor ray with THIS plane (always
-// fully facing the camera, never edge-on) and taking the angle of (hit - origin)
-// pivots the rotation about the gizmo's actual on-screen position — at any screen
-// location, any zoom. (Taking atan2 of the ray DIRECTION instead pivots about the
-// camera's view axis / screen center, which skews sensitivity and makes straight
-// drags saturate when the gizmo is off-center — the M35 bug this fixes.)
-// Returns false only when the cursor is exactly on the view axis through origin.
-bool screenAngle(const Ray& ray, Vec3 origin, Vec3 camPos, float& out) {
-    const Vec3 n = normalize(camPos - origin);   // camera-facing plane normal
-    Vec3 hit;
-    if (!rayPlane(ray, origin, n, hit)) return false;
-    Vec3 right, up;
-    cameraBasis(origin, camPos, right, up);
-    const Vec3 d = hit - origin;
-    const float x = dot(d, right), y = dot(d, up);
-    if (x * x + y * y < 1e-12f) return false;
-    out = std::atan2(y, x);
-    return true;
-}
-
 // The two in-plane axes of the plane whose normal is basis-axis `n`.
 void planeAxes(const Vec3 ax[3], int n, Vec3& u, Vec3& v) {
     if (n == 0)      { u = ax[1]; v = ax[2]; }  // YZ
@@ -297,10 +276,34 @@ bool Gizmo::update(SceneEntity& e, Vec3 origin, const Ray& ray,
         } else if (picked >= 3) {             // planar: the handle's oriented plane
             Vec3 hit;
             startHit_ = rayPlane(ray, startOrigin_, ax[picked - 3], hit) ? hit : startOrigin_;
+        } else if (mode_ == GizmoMode::Rotate) {
+            // Tangent drag: freeze a screen-space tangent at the grab point. The
+            // rotation angle is the cursor's displacement along that tangent /
+            // radius (arc-length rolling), so the grabbed point follows the
+            // cursor 1:1. Stable on every ring orientation and free of the
+            // center singularity an angle-around-center measurement has.
+            const Vec3 n = ax[picked];                        // frozen ring normal
+            const Vec3 c = normalize(camPos - startOrigin_);  // camera-facing plane normal
+            Vec3 right, up; cameraBasis(startOrigin_, camPos, right, up);
+            Vec3 tangent = right;                             // fallback if degenerate
+            Vec3 hit;
+            if (rayPlane(ray, startOrigin_, c, hit)) {
+                const Vec3 d = hit - startOrigin_;
+                const Vec3 r = d - n * dot(d, n);            // grab dir within the ring plane
+                if (length(r) > 1e-5f) {
+                    const Vec3 t = cross(n, normalize(r));   // world tangent along the ring
+                    const Vec3 proj = t - c * dot(t, c);     // projected onto the camera plane
+                    if (length(proj) > 1e-5f) tangent = normalize(proj);
+                }
+                startParam_ = dot(hit - startOrigin_, tangent);
+            } else {
+                startParam_ = 0.0f;
+            }
+            startTangent_ = tangent;
+            lastParam_    = startParam_;
         } else {
             float p = 0.0f;
-            if (mode_ == GizmoMode::Rotate) screenAngle(ray, startOrigin_, camPos, p);
-            else                            rayAxisParam(ray, startOrigin_, ax[picked], p);
+            rayAxisParam(ray, startOrigin_, ax[picked], p);
             startParam_ = p;
             lastParam_  = p;
         }
@@ -335,17 +338,23 @@ bool Gizmo::update(SceneEntity& e, Vec3 origin, const Ray& ray,
             float s = (axis_ == 0 ? startScale_.x : axis_ == 1 ? startScale_.y : startScale_.z) + (p - startParam_);
             if (s < 0.01f) s = 0.01f;
             if (axis_ == 0) e.scale.x = s; else if (axis_ == 1) e.scale.y = s; else e.scale.z = s;
-        } else {  // Rotate
-            float ang;
-            if (screenAngle(ray, startOrigin_, camPos, ang)) lastParam_ = ang; else ang = lastParam_;
-            // The drag angle is measured CCW in the camera's screen plane (constant
-            // speed, grabbable even edge-on). Flip the sign when the rotation axis
-            // points away from the camera so the object follows the cursor's
-            // on-screen direction. `dir` (= ax[axis_]) is frozen to startRot_, so
-            // World mode still reduces to a world-axis rotation about that axis.
-            const float facing = dot(dir, normalize(camPos - startOrigin_));
-            const float s = (facing < 0.0f) ? -1.0f : 1.0f;
-            e.rotation = Quat::fromAxisAngle(dir, s * (ang - startParam_)) * startRot_;
+        } else {  // Rotate — tangent drag (see the begin-drag setup above)
+            const Vec3 c = normalize(camPos - startOrigin_);  // camera-facing plane normal
+            Vec3 hit;
+            float s;
+            if (rayPlane(ray, startOrigin_, c, hit)) {
+                s = dot(hit - startOrigin_, startTangent_);   // displacement along frozen tangent
+                lastParam_ = s;
+            } else {
+                s = lastParam_;                               // degenerate: hold
+            }
+            // Arc-length / radius = radians: projecting the world tangent onto the
+            // camera plane already encodes the on-screen handedness, so the grabbed
+            // point follows the cursor for any ring orientation (no facing flip).
+            // `dir` (= ax[axis_]) is frozen to startRot_, so World mode reduces to a
+            // world-axis rotation about that axis.
+            const float angle = (s - startParam_) / size;
+            e.rotation = Quat::fromAxisAngle(dir, angle) * startRot_;
         }
         return true;
     }
