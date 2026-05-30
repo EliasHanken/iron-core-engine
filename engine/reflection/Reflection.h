@@ -47,8 +47,11 @@ public:
 
     template <class T>
     TypeBuilder<T> registerType(std::string_view name) {
-        static_assert(std::is_standard_layout_v<T>,
-            "Reflection requires standard-layout types (offset computation depends on it).");
+        // Note: standard-layout is NOT required — the offset probe uses
+        // pointer arithmetic on a live default-constructed T, which is
+        // well-defined for any addressable non-static data member.
+        // (MSVC's std::string / std::optional are not standard-layout, yet
+        // are reflectable here.)
         static_assert(std::is_default_constructible_v<T>,
             "Reflection requires default-constructible types (the offset probe is T{}).");
         const uint32_t id = componentTypeId<T>();

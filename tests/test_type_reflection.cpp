@@ -161,6 +161,72 @@ static void test_reflection_const_ptr_through_field() {
     CHECK(p->z == 6.0f);
 }
 
+#include "reflection/RegisterCoreTypes.h"
+#include "render/RenderHandles.h"
+
+static void test_register_transform_end_to_end() {
+    iron::Reflection r;
+    iron::registerTransform(r);
+    CHECK(r.typeName<iron::Transform>() == "Transform");
+    auto f = r.fieldsOf<iron::Transform>();
+    CHECK(f.size() == 3);
+    CHECK(f[0].name == "position");
+    CHECK(f[1].name == "rotation");
+    CHECK(f[2].name == "scale");
+    CHECK(f[2].meta.min == 0.001f);   // scale lower bound
+}
+
+static void test_register_mesh_ref_end_to_end() {
+    iron::Reflection r;
+    iron::registerMeshRef(r);
+    CHECK(r.typeName<iron::MeshRef>() == "MeshRef");
+    auto f = r.fieldsOf<iron::MeshRef>();
+    CHECK(f.size() == 2);
+    CHECK(f[0].name == "primitive");
+    CHECK(f[0].type == iron::TypeId::OptionalEnum);
+    CHECK(f[1].name == "gltfPath");
+    CHECK(f[1].type == iron::TypeId::String);
+}
+
+static void test_register_material_def_end_to_end() {
+    iron::Reflection r;
+    iron::registerMaterialDef(r);
+    CHECK(r.typeName<iron::MaterialDef>() == "MaterialDef");
+    auto f = r.fieldsOf<iron::MaterialDef>();
+    CHECK(f.size() == 6);
+    CHECK(f[0].name == "albedoPath");
+    CHECK(f[3].name == "emissive");
+    CHECK(f[3].type == iron::TypeId::Vec3);
+    const iron::FieldDesc* refl = r.fieldByName<iron::MaterialDef>("reflectivity");
+    CHECK(refl != nullptr);
+    CHECK(refl->meta.min == 0.0f);
+    CHECK(refl->meta.max == 1.0f);
+}
+
+static void test_register_render_handles_end_to_end() {
+    iron::Reflection r;
+    iron::registerRenderHandles(r);
+    CHECK(r.typeName<iron::RenderHandles>() == "RenderHandles");
+    auto f = r.fieldsOf<iron::RenderHandles>();
+    CHECK(f.size() == 4);
+    CHECK(f[0].name == "mesh");
+    CHECK(f[0].type == iron::TypeId::UInt32);   // MeshHandle is uint32_t
+    CHECK(f[1].name == "albedo");
+    CHECK(f[1].type == iron::TypeId::UInt32);
+}
+
+static void test_register_all_four_in_one_registry() {
+    iron::Reflection r;
+    iron::registerTransform(r);
+    iron::registerMeshRef(r);
+    iron::registerMaterialDef(r);
+    iron::registerRenderHandles(r);
+    CHECK(!r.typeName<iron::Transform>().empty());
+    CHECK(!r.typeName<iron::MeshRef>().empty());
+    CHECK(!r.typeName<iron::MaterialDef>().empty());
+    CHECK(!r.typeName<iron::RenderHandles>().empty());
+}
+
 int main() {
     test_typeid_unknown_is_zero();
     test_fieldmeta_defaults_are_zero();
@@ -178,6 +244,11 @@ int main() {
     test_reflection_field_by_name_miss();
     test_reflection_ptr_through_field_mutates_object();
     test_reflection_const_ptr_through_field();
+    test_register_transform_end_to_end();
+    test_register_mesh_ref_end_to_end();
+    test_register_material_def_end_to_end();
+    test_register_render_handles_end_to_end();
+    test_register_all_four_in_one_registry();
     if (g_failures == 0) std::printf("All type-reflection tests passed.\n");
     return g_failures == 0 ? 0 : 1;
 }
