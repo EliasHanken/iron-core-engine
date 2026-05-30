@@ -124,16 +124,22 @@ void cameraBasis(Vec3 origin, Vec3 camPos, Vec3& right, Vec3& up) {
     up = cross(n, right);
 }
 
-// The cursor's angle (CCW) around the gizmo center in the camera's screen plane.
-// Independent of the cursor's distance from center, so a rotate drag has a
-// constant angular speed — unlike intersecting the cursor ray with a ring's own
-// plane, which speeds up near the center and blows up when the ring is edge-on.
-// Returns false only when the cursor sits exactly on the view axis (center).
+// The cursor's angle (CCW) around the gizmo center, measured on a camera-facing
+// plane through `origin`. Intersecting the cursor ray with THIS plane (always
+// fully facing the camera, never edge-on) and taking the angle of (hit - origin)
+// pivots the rotation about the gizmo's actual on-screen position — at any screen
+// location, any zoom. (Taking atan2 of the ray DIRECTION instead pivots about the
+// camera's view axis / screen center, which skews sensitivity and makes straight
+// drags saturate when the gizmo is off-center — the M35 bug this fixes.)
+// Returns false only when the cursor is exactly on the view axis through origin.
 bool screenAngle(const Ray& ray, Vec3 origin, Vec3 camPos, float& out) {
+    const Vec3 n = normalize(camPos - origin);   // camera-facing plane normal
+    Vec3 hit;
+    if (!rayPlane(ray, origin, n, hit)) return false;
     Vec3 right, up;
     cameraBasis(origin, camPos, right, up);
-    const float x = dot(ray.direction, right);
-    const float y = dot(ray.direction, up);
+    const Vec3 d = hit - origin;
+    const float x = dot(d, right), y = dot(d, up);
     if (x * x + y * y < 1e-12f) return false;
     out = std::atan2(y, x);
     return true;
