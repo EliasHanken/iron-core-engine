@@ -707,6 +707,25 @@ int main() {
             re.material.reflectivity = e.material.reflectivity;
         }
 
+        // --- M37 D4: Inspector + Gizmo edit scene.entities[]; mirror them into the
+        // World so the render path (and any future system that reads the World) sees
+        // the live values. M39 migrates the editor itself onto the World, removing
+        // this sync.
+        for (size_t i = 0; i < scene.entities.size(); ++i) {
+            if (i >= sceneIndexToEntity.size()) break;
+            const iron::SceneEntity& se = scene.entities[i];
+            iron::EntityId e = sceneIndexToEntity[i];
+            if (auto* t = world.get<iron::Transform>(e)) {
+                t->position = se.position;
+                t->rotation = se.rotation;
+                t->scale    = se.scale;
+            }
+            if (auto* m = world.get<iron::MaterialDef>(e)) {
+                *m = se.material;
+            }
+            // MeshRef does not change at runtime in v1; skip.
+        }
+
         // --- scene render ---
         const iron::Mat4 view = cam.viewMatrix();
         renderer.beginFrame(scene.clearColor, scene.sun,
