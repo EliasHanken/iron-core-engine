@@ -4,6 +4,7 @@
 #include "world/Entity.h"
 
 #include <array>
+#include <cassert>
 #include <cstdint>
 #include <memory>
 #include <vector>
@@ -57,6 +58,7 @@ private:
     template <class T>
     TypedComponentArray<T>& arrayFor() {
         const uint32_t id = componentTypeId<T>();
+        assert(id < kMaxComponentTypes && "Too many component types registered (raise kMaxComponentTypes)");
         if (!arrays_[id]) arrays_[id] = std::make_unique<TypedComponentArray<T>>();
         return static_cast<TypedComponentArray<T>&>(*arrays_[id]);
     }
@@ -64,6 +66,7 @@ private:
     template <class T>
     TypedComponentArray<T>* tryArrayFor() {
         const uint32_t id = componentTypeId<T>();
+        assert(id < kMaxComponentTypes && "Too many component types registered (raise kMaxComponentTypes)");
         return arrays_[id] ? static_cast<TypedComponentArray<T>*>(arrays_[id].get())
                            : nullptr;
     }
