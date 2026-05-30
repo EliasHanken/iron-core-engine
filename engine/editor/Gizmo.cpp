@@ -323,10 +323,13 @@ void Gizmo::draw(Renderer& renderer, Vec3 origin, Quat rotation, Vec3 camPos) co
     const float size = gizmoSize(camPos, origin);
     const int highlight = (axis_ >= 0) ? axis_ : hoveredAxis_;
     const bool effectiveLocal = (mode_ == GizmoMode::Scale) || (space_ == GizmoSpace::Local);
-    // While dragging, draw in the frozen drag frame (startRot_) so handles match
-    // the applied transform; otherwise follow the live entity rotation.
+    // Draw in the LIVE entity frame so the handles track the object during a
+    // drag (a Local rotate spins the rings with the mesh for feedback). The
+    // dragged rotate-ring's normal is invariant under its own rotation, so it
+    // stays put while the other two follow. The rotation MATH in update() still
+    // uses the frozen startRot_ basis for a stable axis + angle reference.
     Vec3 ax[3];
-    buildBasis(effectiveLocal, (axis_ >= 0) ? startRot_ : rotation, ax);
+    buildBasis(effectiveLocal, rotation, ax);
 
     auto colorFor = [&](int id) -> Vec3 {
         Vec3 c;
