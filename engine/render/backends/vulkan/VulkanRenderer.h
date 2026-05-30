@@ -15,6 +15,7 @@
 #include "render/backends/vulkan/VkCubemap.h"
 #include "render/backends/vulkan/VkSkybox.h"
 #include "render/backends/vulkan/VkReflectionTarget.h"
+#include "render/backends/vulkan/VkPostProcess.h"
 #include "render/ReflectionPlane.h"
 
 #include <array>
@@ -126,6 +127,11 @@ public:
     // of the SAME frame.
     void enqueueDeferredScenePass(std::function<void(VkCommandBuffer)> fn);
 
+    // Engine-internal: UI/overlay callbacks (e.g. ImGui). Fires inside the
+    // swapchain pass AFTER the post-process composite, so overlays are never
+    // affected by post-process effects. Cleared each beginFrame.
+    void enqueueDeferredUiPass(std::function<void(VkCommandBuffer)> fn);
+
 private:
     void warnOnce(const char* feature);
     bool recreateSwapchainAndFramebuffers(int width, int height);
@@ -178,6 +184,9 @@ private:
     VkSkybox       skybox_;
     CubemapHandle  pendingSkybox_ = kInvalidHandle;
 
+    // M36 — offscreen scene-color target + post-process composite pipeline.
+    VkPostProcess         postProcess_;
+
     // M17 — planar reflection RTT + shared pipeline + currently-set plane.
     VkReflectionTarget    reflection_;
     VkDescriptorSetLayout reflectionSetLayout_ = VK_NULL_HANDLE;
@@ -195,6 +204,9 @@ private:
     // M14 — frame-flow state for defer-and-replay rendering.
     std::vector<DrawCall> sceneDraws_;
     std::vector<std::function<void(VkCommandBuffer)>> deferredScenePass_;
+
+    // M36 -- UI/overlay callbacks recorded in the swapchain pass after composite.
+    std::vector<std::function<void(VkCommandBuffer)>> deferredUiPass_;
 
     // M23 — buffered skinned draws + a deep-copy of each call's bone
     // matrices. SkinnedDrawCall holds a std::span, which is non-owning;

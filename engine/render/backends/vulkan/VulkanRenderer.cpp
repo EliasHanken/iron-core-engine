@@ -33,6 +33,7 @@ VulkanRenderer::~VulkanRenderer() {
         if (reflectionSetLayout_)      vkDestroyDescriptorSetLayout(context_.device(), reflectionSetLayout_, nullptr);
         if (reflectionVertModule_)     vkDestroyShaderModule(context_.device(), reflectionVertModule_, nullptr);
         if (reflectionFragModule_)     vkDestroyShaderModule(context_.device(), reflectionFragModule_, nullptr);
+        postProcess_.destroy(context_);
         reflection_.destroy(context_);
         pipelines_.destroy(context_);
         frames_.destroy(context_);
@@ -64,6 +65,14 @@ bool VulkanRenderer::init(Window& window) {
     }
     if (!cubemaps_.init(context_)) {
         Log::error("VulkanRenderer: VkCubemapStore init failed");
+        return false;
+    }
+    // M36 — offscreen scene-color target + copy pipeline. Must be init before
+    // debugLines_, hud_, skybox_ because scenePass() now returns its render pass.
+    if (!postProcess_.init(context_, swapchain_.colorFormat(), swapchain_.depthFormat(),
+                           swapchain_.extent(), textures_.sampler(),
+                           pipelines_.renderPass())) {
+        Log::error("VulkanRenderer: post-process init failed");
         return false;
     }
     if (!shadowMap_.init(context_)) {
@@ -422,6 +431,11 @@ void VulkanRenderer::beginFrame(Vec3 clearColor, const DirectionalLight& light,
         vkDeviceWaitIdle(context_.device());
         swapchain_.recreate(context_, pendingResizeWidth_, pendingResizeHeight_);
         pipelines_.recreateFramebuffers(context_, swapchain_);
+        // M36: recreate the offscreen target to match the new swapchain size.
+        // Guard against 0x0 extent (window minimized) — the zero-size guard in
+        // swapchain_.recreate already handles that, but be explicit.
+        if (swapchain_.extent().width > 0 && swapchain_.extent().height > 0)
+            postProcess_.resize(context_, swapchain_.extent());
         pendingResize_ = false;
     }
 
@@ -458,6 +472,7 @@ void VulkanRenderer::beginFrame(Vec3 clearColor, const DirectionalLight& light,
     skinnedDraws_.clear();
     skinnedBoneMatricesStash_.clear();
     deferredScenePass_.clear();
+    deferredUiPass_.clear();
     pendingDebugFlush_ = false;
     pendingHudValid_   = false;
 }
@@ -868,27 +883,16 @@ void VulkanRenderer::endFrame() {
         reflection_.endPass(cb);
     }
 
-    // --- Scene pass ---
+    // --- M36 Pass 3: offscreen scene pass — geometry renders into post-process target ---
     {
-        VkClearValue clears[2]{};
-        clears[0].color.float32[0] = pendingClear_.x;
-        clears[0].color.float32[1] = pendingClear_.y;
-        clears[0].color.float32[2] = pendingClear_.z;
-        clears[0].color.float32[3] = 1.0f;
-        clears[1].depthStencil = {1.0f, 0};
+        const float clear[4] = {pendingClear_.x, pendingClear_.y, pendingClear_.z, 1.0f};
+        postProcess_.beginScenePass(cb, clear);
+        // beginScenePass sets a positive-height viewport; override with the
+        // negative-height (clip-Y-flipped) convention so GL-style projection
+        // matrices render right-side-up (matches the old single-pass behaviour).
+        setSceneViewport(cb, postProcess_.extent());
 
-        VkRenderPassBeginInfo rpBegin{};
-        rpBegin.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
-        rpBegin.renderPass = pipelines_.renderPass();
-        rpBegin.framebuffer = pipelines_.framebuffer(currentImageIndex_);
-        rpBegin.renderArea.offset = {0, 0};
-        rpBegin.renderArea.extent = swapchain_.extent();
-        rpBegin.clearValueCount = 2;
-        rpBegin.pClearValues = clears;
-        vkCmdBeginRenderPass(cb, &rpBegin, VK_SUBPASS_CONTENTS_INLINE);
-        setSceneViewport(cb, swapchain_.extent());
-
-        // M16 — draw skybox first inside the scene pass.
+        // M16 — draw skybox first inside the scene pass (translation-stripped view).
         if (cubemaps_.has(pendingSkybox_)) {
             Mat4 v = pendingView_;
             v.at(0, 3) = 0.0f;
@@ -908,16 +912,61 @@ void VulkanRenderer::endFrame() {
             recordSkinnedDraw(cb, skinnedDraws_[i], skinnedBoneMatricesStash_[i]);
         }
 
+        // Deferred scene callbacks (e.g. particles) fire here in the offscreen pass.
         for (auto& fn : deferredScenePass_) {
             fn(cb);
         }
         deferredScenePass_.clear();
 
-        // A deferred pass may change the viewport/scissor — notably ImGui's
-        // Vulkan backend sets a full-screen POSITIVE-height viewport + per-draw
-        // scissor. Restore the scene's negative-height (clip-Y-flipped) viewport
-        // and full scissor so debug-lines and the HUD render with the same
-        // convention as the scene geometry (otherwise they appear Y-mirrored).
+        postProcess_.endScenePass(cb);
+    }
+
+    // --- M36 Pass 4: swapchain pass — composite scene, then UI/overlays on top ---
+    {
+        VkClearValue clears[2]{};
+        clears[0].color.float32[0] = 0.0f;
+        clears[0].color.float32[1] = 0.0f;
+        clears[0].color.float32[2] = 0.0f;
+        clears[0].color.float32[3] = 1.0f;
+        clears[1].depthStencil = {1.0f, 0};
+
+        VkRenderPassBeginInfo rpBegin{};
+        rpBegin.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
+        rpBegin.renderPass = pipelines_.renderPass();
+        rpBegin.framebuffer = pipelines_.framebuffer(currentImageIndex_);
+        rpBegin.renderArea.offset = {0, 0};
+        rpBegin.renderArea.extent = swapchain_.extent();
+        rpBegin.clearValueCount = 2;
+        rpBegin.pClearValues = clears;
+        vkCmdBeginRenderPass(cb, &rpBegin, VK_SUBPASS_CONTENTS_INLINE);
+
+        // Full-screen triangle composite: samples scene-color by UV, so the
+        // blit is UV-space and does NOT need the Y-flip viewport. Use a plain
+        // positive-height viewport covering the full swapchain.
+        {
+            VkViewport vp{};
+            vp.x        = 0.0f;
+            vp.y        = 0.0f;
+            vp.width    = static_cast<float>(swapchain_.extent().width);
+            vp.height   = static_cast<float>(swapchain_.extent().height);
+            vp.minDepth = 0.0f;
+            vp.maxDepth = 1.0f;
+            vkCmdSetViewport(cb, 0, 1, &vp);
+            VkRect2D scissor{{0, 0}, swapchain_.extent()};
+            vkCmdSetScissor(cb, 0, 1, &scissor);
+        }
+        postProcess_.recordComposite(cb);
+
+        // UI/overlays (ImGui) draw AFTER composite so they are never affected
+        // by post-process effects.
+        for (auto& fn : deferredUiPass_) {
+            fn(cb);
+        }
+        deferredUiPass_.clear();
+
+        // The UI pass (ImGui) sets a positive-height viewport. Restore the
+        // negative-height scene viewport so debug-lines and HUD render with
+        // the same Y-flip convention as the scene geometry.
         setSceneViewport(cb, swapchain_.extent());
 
         if (pendingDebugFlush_) {
@@ -991,13 +1040,22 @@ VkFrameRing& VulkanRenderer::frameRing() {
 VkContext& VulkanRenderer::context() { return context_; }
 
 VkRenderPass VulkanRenderer::scenePass() const {
-    return pipelines_.renderPass();
+    // M36: scene geometry, particles, debug lines, HUD, and skybox pipelines
+    // are built against the offscreen scene pass. The composite pipeline is
+    // built against pipelines_.renderPass() (swapchain pass) separately.
+    return postProcess_.scenePass();
 }
 
 void VulkanRenderer::enqueueDeferredScenePass(
         std::function<void(VkCommandBuffer)> fn) {
     if (skipFrame_) return;
     deferredScenePass_.push_back(std::move(fn));
+}
+
+void VulkanRenderer::enqueueDeferredUiPass(
+        std::function<void(VkCommandBuffer)> fn) {
+    if (skipFrame_) return;
+    deferredUiPass_.push_back(std::move(fn));
 }
 
 bool VulkanRenderer::buildReflectionPipeline() {
