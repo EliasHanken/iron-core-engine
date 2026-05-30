@@ -236,6 +236,7 @@ static void test_transform_component_roundtrip() {
 }
 
 #include "render/RenderHandles.h"
+#include "scene/SceneFormat.h"   // MeshRef, MaterialDef
 
 static void test_render_handles_component_roundtrip() {
     iron::World w;
@@ -252,6 +253,49 @@ static void test_render_handles_component_roundtrip() {
     CHECK(got->albedo == 11u);
     CHECK(got->normal == 13u);
     CHECK(got->specular == 17u);
+}
+
+static void test_world_render_submit_pseudocode() {
+    iron::World w;
+    struct SubmitEntry {
+        iron::Vec3       pos;
+        iron::MeshHandle mesh;
+    };
+    std::vector<SubmitEntry> submitted;
+
+    // Build three renderable entities.
+    auto makeEntity = [&](iron::Vec3 pos, iron::MeshHandle m,
+                          iron::TextureHandle a, float emissiveR) {
+        iron::EntityId e = w.create();
+        iron::Transform t{};      t.position = pos;
+        w.add<iron::Transform>(e, t);
+        iron::MeshRef ref{};      // empty primitive/path — fine for the test
+        w.add<iron::MeshRef>(e, ref);
+        iron::MaterialDef mat{};  mat.emissive = iron::Vec3{emissiveR, 0, 0};
+        w.add<iron::MaterialDef>(e, mat);
+        iron::RenderHandles rh{}; rh.mesh = m; rh.albedo = a;
+        w.add<iron::RenderHandles>(e, rh);
+    };
+    makeEntity(iron::Vec3{1, 0, 0}, 100, 200, 0.1f);
+    makeEntity(iron::Vec3{2, 0, 0}, 101, 201, 0.2f);
+    makeEntity(iron::Vec3{3, 0, 0}, 102, 202, 0.3f);
+
+    // Walk Section 3 submit pseudocode: iterate Transform view, look up siblings.
+    auto& transforms = w.view<iron::Transform>();
+    for (size_t row = 0; row < transforms.size(); ++row) {
+        iron::EntityId e = transforms.entityAt(row);
+        const iron::Transform&     t   = transforms[row];
+        const iron::MeshRef*       mr  = w.get<iron::MeshRef>(e);
+        const iron::MaterialDef*   mat = w.get<iron::MaterialDef>(e);
+        const iron::RenderHandles* rh  = w.get<iron::RenderHandles>(e);
+        if (!mr || !mat || !rh) continue;
+        submitted.push_back({t.position, rh->mesh});
+    }
+
+    CHECK(submitted.size() == 3);
+    CHECK(submitted[0].pos.x  == 1.0f);
+    CHECK(submitted[0].mesh   == 100u);
+    CHECK(submitted[2].mesh   == 102u);
 }
 
 int main() {
@@ -279,6 +323,7 @@ int main() {
     test_world_view_empty_when_no_component_of_type();
     test_transform_component_roundtrip();
     test_render_handles_component_roundtrip();
+    test_world_render_submit_pseudocode();
     if (g_failures == 0) std::printf("All world tests passed.\n");
     return g_failures == 0 ? 0 : 1;
 }
