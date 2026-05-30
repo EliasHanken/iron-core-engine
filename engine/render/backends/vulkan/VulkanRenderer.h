@@ -142,6 +142,9 @@ private:
     void recordSceneDraw(VkCommandBuffer cb, const DrawCall& call);
     void recordSkinnedDraw(VkCommandBuffer cb, const SkinnedDrawCall& call,
                            const std::vector<Mat4>& bones);
+    // M36 Phase C: records one static mesh draw into the mask pass. Pushes
+    // MaskPushConstants {mvp, effectId} and issues vkCmdDrawIndexed.
+    void recordMaskDraw(VkCommandBuffer cb, const DrawCall& call);
     bool buildReflectionPipeline();
 
     bool initOk_ = false;

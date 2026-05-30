@@ -4,6 +4,7 @@
 #include "render/backends/vulkan/VkContext.h"
 #include "render/backends/vulkan/VkShader.h"
 #include "render/backends/vulkan/VkUtils.h"
+#include "scene/Mesh.h"
 #include "core/Log.h"
 
 namespace iron {
@@ -25,6 +26,23 @@ layout(set = 0, binding = 0) uniform sampler2D uScene;
 void main() { outColor = texture(uScene, vUV); }
 )";
 
+// --- Mask pass shaders ---
+// Position-only; MVP from push constant. The vertex buffer is the full Vertex
+// struct (stride = sizeof(Vertex)) with position at location 0, mirroring
+// VkShadowMap's vertex input setup so normal mesh vertex buffers bind directly.
+const char* kMaskVert = R"(#version 450
+layout(location = 0) in vec3 aPos;
+layout(push_constant) uniform Push { mat4 mvp; uint id; } pc;
+void main() { gl_Position = pc.mvp * vec4(aPos, 1.0); }
+)";
+
+// Writes the effect id into the R8_UINT color attachment.
+const char* kMaskFrag = R"(#version 450
+layout(push_constant) uniform Push { mat4 mvp; uint id; } pc;
+layout(location = 0) out uint outId;
+void main() { outId = pc.id; }
+)";
+
 }  // namespace
 
 // ---------------------------------------------------------------------------
@@ -42,11 +60,16 @@ bool VkPostProcess::init(VkContext& ctx, VkFormat colorFormat, VkFormat depthFor
 
     if (!createTargets(ctx)) return false;
     if (!createCopyPipeline(ctx, swapchainPass)) return false;
+    if (!createMaskPipeline(ctx)) return false;
     return true;
 }
 
 void VkPostProcess::destroy(VkContext& ctx) {
-    // Pipeline objects.
+    // Mask pipeline objects (no descriptor set layout — push-constant only).
+    if (maskPipeline_)   { vkDestroyPipeline(ctx.device(), maskPipeline_, nullptr); maskPipeline_ = VK_NULL_HANDLE; }
+    if (maskPipeLayout_) { vkDestroyPipelineLayout(ctx.device(), maskPipeLayout_, nullptr); maskPipeLayout_ = VK_NULL_HANDLE; }
+
+    // Copy (composite) pipeline objects.
     if (copyPipeline_)   { vkDestroyPipeline(ctx.device(), copyPipeline_, nullptr); copyPipeline_ = VK_NULL_HANDLE; }
     if (copyPipeLayout_) { vkDestroyPipelineLayout(ctx.device(), copyPipeLayout_, nullptr); copyPipeLayout_ = VK_NULL_HANDLE; }
     if (copySetLayout_)  { vkDestroyDescriptorSetLayout(ctx.device(), copySetLayout_, nullptr); copySetLayout_ = VK_NULL_HANDLE; }
@@ -119,6 +142,47 @@ void VkPostProcess::recordComposite(VkCommandBuffer cb) const {
     vkCmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_GRAPHICS,
                             copyPipeLayout_, 0, 1, &copyDescSet_, 0, nullptr);
     vkCmdDraw(cb, 3, 1, 0, 0);
+}
+
+void VkPostProcess::beginMaskPass(VkCommandBuffer cb) const {
+    // Clear color to 0 (no effect id), depth to 1.0 (far plane).
+    VkClearValue clears[2]{};
+    clears[0].color.uint32[0] = 0;
+    clears[0].color.uint32[1] = 0;
+    clears[0].color.uint32[2] = 0;
+    clears[0].color.uint32[3] = 0;
+    clears[1].depthStencil = {1.0f, 0};
+
+    VkRenderPassBeginInfo rpBegin{};
+    rpBegin.sType             = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
+    rpBegin.renderPass        = maskPass_;
+    rpBegin.framebuffer       = maskFb_;
+    rpBegin.renderArea.offset = {0, 0};
+    rpBegin.renderArea.extent = extent_;
+    rpBegin.clearValueCount   = 2;
+    rpBegin.pClearValues      = clears;
+    vkCmdBeginRenderPass(cb, &rpBegin, VK_SUBPASS_CONTENTS_INLINE);
+
+    // Negative-height viewport so GL-style projection matrices render
+    // right-side-up, consistent with the scene pass (VulkanRenderer::setSceneViewport).
+    VkViewport vp{};
+    vp.x        = 0;
+    vp.y        = static_cast<float>(extent_.height);
+    vp.width    = static_cast<float>(extent_.width);
+    vp.height   = -static_cast<float>(extent_.height);
+    vp.minDepth = 0.0f;
+    vp.maxDepth = 1.0f;
+    vkCmdSetViewport(cb, 0, 1, &vp);
+    VkRect2D scissor{{0, 0}, extent_};
+    vkCmdSetScissor(cb, 0, 1, &scissor);
+}
+
+void VkPostProcess::endMaskPass(VkCommandBuffer cb) const {
+    vkCmdEndRenderPass(cb);
+}
+
+void VkPostProcess::bindMaskPipeline(VkCommandBuffer cb) const {
+    vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, maskPipeline_);
 }
 
 // ---------------------------------------------------------------------------
@@ -249,7 +313,7 @@ bool VkPostProcess::createTargets(VkContext& ctx) {
     rpInfo.pDependencies   = deps;
     VK_CHECK(vkCreateRenderPass(ctx.device(), &rpInfo, nullptr, &scenePass_));
 
-    // --- Framebuffer ---
+    // --- Scene framebuffer ---
     VkImageView views[2] = {sceneColorView_, sceneDepthView_};
     VkFramebufferCreateInfo fbInfo{};
     fbInfo.sType           = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO;
@@ -261,10 +325,169 @@ bool VkPostProcess::createTargets(VkContext& ctx) {
     fbInfo.layers          = 1;
     VK_CHECK(vkCreateFramebuffer(ctx.device(), &fbInfo, nullptr, &sceneFb_));
 
+    // -----------------------------------------------------------------------
+    // Mask target: R8_UINT color + D32_SFLOAT depth.
+    // Both have SAMPLED usage so later passes (outline, x-ray) can sample them.
+    // -----------------------------------------------------------------------
+
+    // --- Mask color image (R8_UINT, COLOR_ATTACHMENT | SAMPLED) ---
+    {
+        VkImageCreateInfo iInfo{};
+        iInfo.sType         = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
+        iInfo.imageType     = VK_IMAGE_TYPE_2D;
+        iInfo.format        = VK_FORMAT_R8_UINT;
+        iInfo.extent        = {extent_.width, extent_.height, 1};
+        iInfo.mipLevels     = 1;
+        iInfo.arrayLayers   = 1;
+        iInfo.samples       = VK_SAMPLE_COUNT_1_BIT;
+        iInfo.tiling        = VK_IMAGE_TILING_OPTIMAL;
+        iInfo.usage         = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT |
+                              VK_IMAGE_USAGE_SAMPLED_BIT;
+        iInfo.sharingMode   = VK_SHARING_MODE_EXCLUSIVE;
+        iInfo.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+
+        VmaAllocationCreateInfo aInfo{};
+        aInfo.usage = VMA_MEMORY_USAGE_AUTO;
+        VK_CHECK(vmaCreateImage(ctx.allocator(), &iInfo, &aInfo,
+                                &maskColor_, &maskColorAlloc_, nullptr));
+
+        VkImageViewCreateInfo vInfo{};
+        vInfo.sType                           = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+        vInfo.image                           = maskColor_;
+        vInfo.viewType                        = VK_IMAGE_VIEW_TYPE_2D;
+        vInfo.format                          = VK_FORMAT_R8_UINT;
+        vInfo.subresourceRange.aspectMask     = VK_IMAGE_ASPECT_COLOR_BIT;
+        vInfo.subresourceRange.levelCount     = 1;
+        vInfo.subresourceRange.layerCount     = 1;
+        VK_CHECK(vkCreateImageView(ctx.device(), &vInfo, nullptr, &maskColorView_));
+    }
+
+    // --- Mask depth image (D32_SFLOAT, DEPTH_STENCIL_ATTACHMENT | SAMPLED) ---
+    {
+        VkImageCreateInfo iInfo{};
+        iInfo.sType         = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
+        iInfo.imageType     = VK_IMAGE_TYPE_2D;
+        iInfo.format        = VK_FORMAT_D32_SFLOAT;
+        iInfo.extent        = {extent_.width, extent_.height, 1};
+        iInfo.mipLevels     = 1;
+        iInfo.arrayLayers   = 1;
+        iInfo.samples       = VK_SAMPLE_COUNT_1_BIT;
+        iInfo.tiling        = VK_IMAGE_TILING_OPTIMAL;
+        iInfo.usage         = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT |
+                              VK_IMAGE_USAGE_SAMPLED_BIT;
+        iInfo.sharingMode   = VK_SHARING_MODE_EXCLUSIVE;
+        iInfo.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+
+        VmaAllocationCreateInfo aInfo{};
+        aInfo.usage = VMA_MEMORY_USAGE_AUTO;
+        VK_CHECK(vmaCreateImage(ctx.allocator(), &iInfo, &aInfo,
+                                &maskDepth_, &maskDepthAlloc_, nullptr));
+
+        VkImageViewCreateInfo vInfo{};
+        vInfo.sType                           = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+        vInfo.image                           = maskDepth_;
+        vInfo.viewType                        = VK_IMAGE_VIEW_TYPE_2D;
+        vInfo.format                          = VK_FORMAT_D32_SFLOAT;
+        vInfo.subresourceRange.aspectMask     = VK_IMAGE_ASPECT_DEPTH_BIT;
+        vInfo.subresourceRange.levelCount     = 1;
+        vInfo.subresourceRange.layerCount     = 1;
+        VK_CHECK(vkCreateImageView(ctx.device(), &vInfo, nullptr, &maskDepthView_));
+    }
+
+    // --- Mask render pass: R8_UINT color + D32 depth ---
+    // Color finalLayout = SHADER_READ_ONLY_OPTIMAL so outline/glow can sample.
+    // Depth finalLayout = DEPTH_STENCIL_READ_ONLY_OPTIMAL so x-ray can sample.
+    // Subpass dependencies mirror VkReflectionTarget / scenePass_.
+    {
+        VkAttachmentDescription maskAttachments[2]{};
+        // Color attachment (R8_UINT effectId).
+        maskAttachments[0].format         = VK_FORMAT_R8_UINT;
+        maskAttachments[0].samples        = VK_SAMPLE_COUNT_1_BIT;
+        maskAttachments[0].loadOp         = VK_ATTACHMENT_LOAD_OP_CLEAR;
+        maskAttachments[0].storeOp        = VK_ATTACHMENT_STORE_OP_STORE;
+        maskAttachments[0].stencilLoadOp  = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+        maskAttachments[0].stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+        maskAttachments[0].initialLayout  = VK_IMAGE_LAYOUT_UNDEFINED;
+        maskAttachments[0].finalLayout    = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        // Depth attachment (D32_SFLOAT, own depth buffer for tagged objects).
+        maskAttachments[1].format         = VK_FORMAT_D32_SFLOAT;
+        maskAttachments[1].samples        = VK_SAMPLE_COUNT_1_BIT;
+        maskAttachments[1].loadOp         = VK_ATTACHMENT_LOAD_OP_CLEAR;
+        maskAttachments[1].storeOp        = VK_ATTACHMENT_STORE_OP_STORE;
+        maskAttachments[1].stencilLoadOp  = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+        maskAttachments[1].stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+        maskAttachments[1].initialLayout  = VK_IMAGE_LAYOUT_UNDEFINED;
+        maskAttachments[1].finalLayout    = VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL;
+
+        VkAttachmentReference maskColorRef{0, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL};
+        VkAttachmentReference maskDepthRef{1, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL};
+
+        VkSubpassDescription maskSubpass{};
+        maskSubpass.pipelineBindPoint       = VK_PIPELINE_BIND_POINT_GRAPHICS;
+        maskSubpass.colorAttachmentCount    = 1;
+        maskSubpass.pColorAttachments       = &maskColorRef;
+        maskSubpass.pDepthStencilAttachment = &maskDepthRef;
+
+        // Entry: wait for prior frame's fragment shader reads to finish
+        // before this pass overwrites the color attachment.
+        // Exit: let subsequent passes sample the color + depth results.
+        VkSubpassDependency maskDeps[2]{};
+        maskDeps[0].srcSubpass    = VK_SUBPASS_EXTERNAL;
+        maskDeps[0].dstSubpass    = 0;
+        maskDeps[0].srcStageMask  = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
+        maskDeps[0].dstStageMask  = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT |
+                                    VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT;
+        maskDeps[0].srcAccessMask = VK_ACCESS_SHADER_READ_BIT;
+        maskDeps[0].dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT |
+                                    VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+
+        maskDeps[1].srcSubpass    = 0;
+        maskDeps[1].dstSubpass    = VK_SUBPASS_EXTERNAL;
+        maskDeps[1].srcStageMask  = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT |
+                                    VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT;
+        maskDeps[1].dstStageMask  = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
+        maskDeps[1].srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT |
+                                    VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+        maskDeps[1].dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+        maskDeps[1].dependencyFlags = VK_DEPENDENCY_BY_REGION_BIT;
+
+        VkRenderPassCreateInfo maskRpInfo{};
+        maskRpInfo.sType           = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO;
+        maskRpInfo.attachmentCount = 2;
+        maskRpInfo.pAttachments    = maskAttachments;
+        maskRpInfo.subpassCount    = 1;
+        maskRpInfo.pSubpasses      = &maskSubpass;
+        maskRpInfo.dependencyCount = 2;
+        maskRpInfo.pDependencies   = maskDeps;
+        VK_CHECK(vkCreateRenderPass(ctx.device(), &maskRpInfo, nullptr, &maskPass_));
+
+        // --- Mask framebuffer ---
+        VkImageView maskViews[2] = {maskColorView_, maskDepthView_};
+        VkFramebufferCreateInfo maskFbInfo{};
+        maskFbInfo.sType           = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO;
+        maskFbInfo.renderPass      = maskPass_;
+        maskFbInfo.attachmentCount = 2;
+        maskFbInfo.pAttachments    = maskViews;
+        maskFbInfo.width           = extent_.width;
+        maskFbInfo.height          = extent_.height;
+        maskFbInfo.layers          = 1;
+        VK_CHECK(vkCreateFramebuffer(ctx.device(), &maskFbInfo, nullptr, &maskFb_));
+    }
+
     return true;
 }
 
 void VkPostProcess::destroyTargets(VkContext& ctx) {
+    // Mask target (destroy before scene target — order doesn't matter to Vulkan,
+    // but mirrors creation order in reverse for clarity).
+    if (maskFb_)          { vkDestroyFramebuffer(ctx.device(), maskFb_, nullptr); maskFb_ = VK_NULL_HANDLE; }
+    if (maskPass_)        { vkDestroyRenderPass(ctx.device(), maskPass_, nullptr); maskPass_ = VK_NULL_HANDLE; }
+    if (maskColorView_)   { vkDestroyImageView(ctx.device(), maskColorView_, nullptr); maskColorView_ = VK_NULL_HANDLE; }
+    if (maskDepthView_)   { vkDestroyImageView(ctx.device(), maskDepthView_, nullptr); maskDepthView_ = VK_NULL_HANDLE; }
+    if (maskColor_)       { vmaDestroyImage(ctx.allocator(), maskColor_, maskColorAlloc_); maskColor_ = VK_NULL_HANDLE; maskColorAlloc_ = VK_NULL_HANDLE; }
+    if (maskDepth_)       { vmaDestroyImage(ctx.allocator(), maskDepth_, maskDepthAlloc_); maskDepth_ = VK_NULL_HANDLE; maskDepthAlloc_ = VK_NULL_HANDLE; }
+
+    // Scene offscreen target.
     if (sceneFb_)         { vkDestroyFramebuffer(ctx.device(), sceneFb_, nullptr); sceneFb_ = VK_NULL_HANDLE; }
     if (scenePass_)       { vkDestroyRenderPass(ctx.device(), scenePass_, nullptr); scenePass_ = VK_NULL_HANDLE; }
     if (sceneColorView_)  { vkDestroyImageView(ctx.device(), sceneColorView_, nullptr); sceneColorView_ = VK_NULL_HANDLE; }
@@ -425,6 +648,142 @@ bool VkPostProcess::createCopyPipeline(VkContext& ctx, VkRenderPass swapchainPas
     write.descriptorCount = 1;
     write.pImageInfo      = &imgInfo;
     vkUpdateDescriptorSets(ctx.device(), 1, &write, 0, nullptr);
+
+    return true;
+}
+
+bool VkPostProcess::createMaskPipeline(VkContext& ctx) {
+    // Push-constant range: one range covering both stages (vertex uses mvp,
+    // fragment uses id). Size = sizeof(MaskPushConstants) = 64 + 4 = 68 bytes.
+    VkPushConstantRange pcRange{};
+    pcRange.stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
+    pcRange.offset     = 0;
+    pcRange.size       = static_cast<uint32_t>(sizeof(MaskPushConstants));
+
+    // No descriptor sets — push-constant only.
+    VkPipelineLayoutCreateInfo plInfo{};
+    plInfo.sType                  = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+    plInfo.setLayoutCount         = 0;
+    plInfo.pSetLayouts            = nullptr;
+    plInfo.pushConstantRangeCount = 1;
+    plInfo.pPushConstantRanges    = &pcRange;
+    VK_CHECK(vkCreatePipelineLayout(ctx.device(), &plInfo, nullptr, &maskPipeLayout_));
+
+    // Compile shaders.
+    auto vspv = compileGlsl(VK_SHADER_STAGE_VERTEX_BIT,   kMaskVert);
+    auto fspv = compileGlsl(VK_SHADER_STAGE_FRAGMENT_BIT, kMaskFrag);
+    if (vspv.empty() || fspv.empty()) {
+        Log::error("VkPostProcess: mask shader compile failed");
+        return false;
+    }
+
+    VkShaderModule vsm = VK_NULL_HANDLE, fsm = VK_NULL_HANDLE;
+    VkShaderModuleCreateInfo smInfo{};
+    smInfo.sType    = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
+    smInfo.codeSize = vspv.size() * sizeof(std::uint32_t);
+    smInfo.pCode    = vspv.data();
+    VK_CHECK(vkCreateShaderModule(ctx.device(), &smInfo, nullptr, &vsm));
+    smInfo.codeSize = fspv.size() * sizeof(std::uint32_t);
+    smInfo.pCode    = fspv.data();
+    if (vkCreateShaderModule(ctx.device(), &smInfo, nullptr, &fsm) != VK_SUCCESS) {
+        vkDestroyShaderModule(ctx.device(), vsm, nullptr);
+        Log::error("VkPostProcess: mask fragment shader module creation failed");
+        return false;
+    }
+
+    VkPipelineShaderStageCreateInfo stages[2]{};
+    stages[0].sType  = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+    stages[0].stage  = VK_SHADER_STAGE_VERTEX_BIT;
+    stages[0].module = vsm;
+    stages[0].pName  = "main";
+    stages[1].sType  = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+    stages[1].stage  = VK_SHADER_STAGE_FRAGMENT_BIT;
+    stages[1].module = fsm;
+    stages[1].pName  = "main";
+
+    // Vertex input: full Vertex struct stride (44 bytes: Vec3+Vec3+Vec2+Vec3),
+    // only position (location 0) declared — mirrors VkShadowMap exactly so
+    // binding the normal mesh vertex buffer works without re-uploading.
+    VkVertexInputBindingDescription binding{};
+    binding.binding   = 0;
+    binding.stride    = sizeof(Vertex);
+    binding.inputRate = VK_VERTEX_INPUT_RATE_VERTEX;
+
+    VkVertexInputAttributeDescription attrs[4]{};
+    attrs[0].location = 0; attrs[0].binding = 0; attrs[0].format = VK_FORMAT_R32G32B32_SFLOAT; attrs[0].offset = offsetof(Vertex, position);
+    attrs[1].location = 1; attrs[1].binding = 0; attrs[1].format = VK_FORMAT_R32G32B32_SFLOAT; attrs[1].offset = offsetof(Vertex, normal);
+    attrs[2].location = 2; attrs[2].binding = 0; attrs[2].format = VK_FORMAT_R32G32_SFLOAT;    attrs[2].offset = offsetof(Vertex, uv);
+    attrs[3].location = 3; attrs[3].binding = 0; attrs[3].format = VK_FORMAT_R32G32B32_SFLOAT; attrs[3].offset = offsetof(Vertex, tangent);
+
+    VkPipelineVertexInputStateCreateInfo vi{};
+    vi.sType                           = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
+    vi.vertexBindingDescriptionCount   = 1;
+    vi.pVertexBindingDescriptions      = &binding;
+    vi.vertexAttributeDescriptionCount = 4;
+    vi.pVertexAttributeDescriptions    = attrs;
+
+    VkPipelineInputAssemblyStateCreateInfo ia{};
+    ia.sType    = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO;
+    ia.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+
+    VkPipelineViewportStateCreateInfo vp{};
+    vp.sType         = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO;
+    vp.viewportCount = 1;
+    vp.scissorCount  = 1;
+
+    VkPipelineRasterizationStateCreateInfo rs{};
+    rs.sType       = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO;
+    rs.polygonMode = VK_POLYGON_MODE_FILL;
+    rs.cullMode    = VK_CULL_MODE_BACK_BIT;
+    rs.frontFace   = VK_FRONT_FACE_COUNTER_CLOCKWISE;
+    rs.lineWidth   = 1.0f;
+
+    VkPipelineMultisampleStateCreateInfo ms{};
+    ms.sType                = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO;
+    ms.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
+
+    VkPipelineDepthStencilStateCreateInfo ds{};
+    ds.sType            = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO;
+    ds.depthTestEnable  = VK_TRUE;
+    ds.depthWriteEnable = VK_TRUE;
+    ds.depthCompareOp   = VK_COMPARE_OP_LESS;
+
+    // Single R8_UINT color attachment — no blending (integers don't blend).
+    VkPipelineColorBlendAttachmentState att{};
+    att.colorWriteMask = VK_COLOR_COMPONENT_R_BIT;
+    att.blendEnable    = VK_FALSE;
+
+    VkPipelineColorBlendStateCreateInfo cb{};
+    cb.sType           = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO;
+    cb.attachmentCount = 1;
+    cb.pAttachments    = &att;
+
+    VkDynamicState dynStates[] = {VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR};
+    VkPipelineDynamicStateCreateInfo dyn{};
+    dyn.sType             = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO;
+    dyn.dynamicStateCount = 2;
+    dyn.pDynamicStates    = dynStates;
+
+    VkGraphicsPipelineCreateInfo pInfo{};
+    pInfo.sType               = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
+    pInfo.stageCount          = 2;
+    pInfo.pStages             = stages;
+    pInfo.pVertexInputState   = &vi;
+    pInfo.pInputAssemblyState = &ia;
+    pInfo.pViewportState      = &vp;
+    pInfo.pRasterizationState = &rs;
+    pInfo.pMultisampleState   = &ms;
+    pInfo.pDepthStencilState  = &ds;
+    pInfo.pColorBlendState    = &cb;
+    pInfo.pDynamicState       = &dyn;
+    pInfo.layout              = maskPipeLayout_;
+    pInfo.renderPass          = maskPass_;
+    pInfo.subpass             = 0;
+    VK_CHECK(vkCreateGraphicsPipelines(ctx.device(), VK_NULL_HANDLE, 1, &pInfo,
+                                       nullptr, &maskPipeline_));
+
+    vkDestroyShaderModule(ctx.device(), vsm, nullptr);
+    vkDestroyShaderModule(ctx.device(), fsm, nullptr);
 
     return true;
 }

@@ -797,6 +797,22 @@ void VulkanRenderer::recordSkinnedDraw(VkCommandBuffer cb,
     vkCmdDrawIndexed(cb, mesh.indexCount, 1, 0, 0, 0);
 }
 
+void VulkanRenderer::recordMaskDraw(VkCommandBuffer cb, const DrawCall& call) {
+    if (!meshes_.has(call.mesh)) return;
+    const Mat4 mvp = pendingProjection_ * pendingView_ * call.model;
+    VkPostProcess::MaskPushConstants pc{};
+    pc.mvp = mvp;
+    pc.id  = call.effectId;
+    vkCmdPushConstants(cb, postProcess_.maskPipelineLayout(),
+                       VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
+                       0, sizeof(pc), &pc);
+    const auto& mesh = meshes_.get(call.mesh);
+    VkDeviceSize offsets[1] = {0};
+    vkCmdBindVertexBuffers(cb, 0, 1, &mesh.vertexBuffer, offsets);
+    vkCmdBindIndexBuffer(cb, mesh.indexBuffer, 0, VK_INDEX_TYPE_UINT32);
+    vkCmdDrawIndexed(cb, mesh.indexCount, 1, 0, 0, 0);
+}
+
 void VulkanRenderer::endFrame() {
     if (skipFrame_) {
         frames_.advance();
@@ -921,6 +937,22 @@ void VulkanRenderer::endFrame() {
         deferredScenePass_.clear();
 
         postProcess_.endScenePass(cb);
+    }
+
+    // --- M36 Pass 3b: mask pass — tagged draws write effectId + depth ---
+    // Only runs when at least one static draw has effectId != 0. Skinned draws
+    // are not yet supported in the mask pass (out of scope for this task).
+    {
+        bool anyTagged = false;
+        for (const DrawCall& call : sceneDraws_)
+            if (call.effectId != 0) { anyTagged = true; break; }
+        if (anyTagged) {
+            postProcess_.beginMaskPass(cb);
+            postProcess_.bindMaskPipeline(cb);
+            for (const DrawCall& call : sceneDraws_)
+                if (call.effectId != 0) recordMaskDraw(cb, call);
+            postProcess_.endMaskPass(cb);
+        }
     }
 
     // --- M36 Pass 4: swapchain pass — composite scene, then UI/overlays on top ---
