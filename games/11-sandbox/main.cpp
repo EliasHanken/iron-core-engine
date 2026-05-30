@@ -626,8 +626,8 @@ int main() {
         if (selectedIndex >= 0 && selectedIndex < static_cast<int>(scene.entities.size()))
             gizmo.draw(renderer, gizmoOriginFor(selectedIndex), cam.position);
 
-        // --- selection outline: the selected entity's world-AABB drawn as an
-        // always-on-top box, so the active object reads clearly. ---
+        // --- selection outline: the selected entity's oriented bounding box
+        // drawn as an always-on-top box, so the active object reads clearly. ---
         if (selectedIndex >= 0 && selectedIndex < static_cast<int>(scene.entities.size())) {
             for (const auto& re : resolved) {
                 if (re.entityIndex != selectedIndex) continue;
@@ -635,12 +635,18 @@ int main() {
                 const iron::Mat4 m = iron::translation(se.position)
                                    * se.rotation.toMat4()
                                    * iron::scaling(se.scale);
-                const iron::Aabb wa = worldAabb(re.localBounds, m);
+                // Oriented bounding box: transform each LOCAL-bounds corner by the
+                // model matrix so the outline rotates + scales with the object,
+                // instead of a world-axis AABB that just grows/shrinks on spin.
+                const iron::Aabb& lb = re.localBounds;
                 iron::Vec3 c[8];
-                for (int i = 0; i < 8; ++i)
-                    c[i] = iron::Vec3{(i & 1) ? wa.max.x : wa.min.x,
-                                      (i & 2) ? wa.max.y : wa.min.y,
-                                      (i & 4) ? wa.max.z : wa.min.z};
+                for (int i = 0; i < 8; ++i) {
+                    const iron::Vec3 lc{(i & 1) ? lb.max.x : lb.min.x,
+                                        (i & 2) ? lb.max.y : lb.min.y,
+                                        (i & 4) ? lb.max.z : lb.min.z};
+                    const iron::Vec4 w = m * iron::Vec4{lc.x, lc.y, lc.z, 1.0f};
+                    c[i] = iron::Vec3{w.x, w.y, w.z};  // model has no perspective; w == 1
+                }
                 const int edges[12][2] = {{0,1},{2,3},{4,5},{6,7},{0,2},{1,3},
                                           {4,6},{5,7},{0,4},{1,5},{2,6},{3,7}};
                 const iron::Vec3 outline{1.0f, 0.6f, 0.1f};  // selection orange
