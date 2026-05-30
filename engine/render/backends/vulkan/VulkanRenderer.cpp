@@ -956,6 +956,14 @@ void VulkanRenderer::endFrame() {
         }
     }
 
+    // --- M36 Phase D: offscreen pre-passes (GlowBlurH, GlowBlurV) ---
+    // These must run OUTSIDE the swapchain render pass because they begin their
+    // own render pass (glowPass_). For Copy/Outline/XRay this is a no-op.
+    {
+        const std::vector<PostPass> passes = planPostChain(effects_.activeKinds());
+        postProcess_.runChainOffscreenPasses(cb, passes, effects_, swapchain_.extent());
+    }
+
     // --- M36 Pass 4: swapchain pass — composite scene, then UI/overlays on top ---
     {
         VkClearValue clears[2]{};
@@ -990,8 +998,8 @@ void VulkanRenderer::endFrame() {
             VkRect2D scissor{{0, 0}, swapchain_.extent()};
             vkCmdSetScissor(cb, 0, 1, &scissor);
         }
-        // Run the post-process chain. With no effects active, planPostChain returns
-        // {Copy} and runChain calls recordComposite — identical to prior behaviour.
+        // Run the in-swapchain-pass chain (Copy, Outline, GlowComposite, XRay).
+        // With no effects active, planPostChain returns {Copy} — identical to prior behaviour.
         {
             const std::vector<PostPass> passes = planPostChain(effects_.activeKinds());
             postProcess_.runChain(cb, passes, effects_, swapchain_.extent());

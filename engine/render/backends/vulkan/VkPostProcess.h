@@ -82,6 +82,30 @@ public:
         float _pad;
     };
 
+    // Push constants for the glow blur pipelines (H and V — direction is
+    // implicit per-pipeline, not encoded in the push constant).
+    struct GlowBlurPush {
+        float texel[2];   // 1/width, 1/height
+        float radius;     // blur radius in pixels (maps to style.width)
+        float _pad;
+    };
+
+    // Push constants for the glow composite pipeline.
+    struct GlowCompositePush {
+        float color[4];      // rgb halo color + padding
+        float intensity;     // halo strength (style.intensity)
+        float _pad[3];
+    };
+
+    // Run the offscreen pre-passes (GlowBlurH, GlowBlurV) that must execute
+    // OUTSIDE the swapchain render pass. Called by VulkanRenderer::endFrame
+    // BEFORE vkCmdBeginRenderPass(swapchain). For Copy/Outline/XRay this is
+    // a no-op; for GlowOutline it runs the two blur passes into glowFb_[0/1].
+    void runChainOffscreenPasses(VkCommandBuffer cb,
+                                 const std::vector<PostPass>& passes,
+                                 const EffectTable& effects,
+                                 VkExtent2D swapExtent);
+
 private:
     VkContext* ctx_ = nullptr;
     VkSampler  sampler_     = VK_NULL_HANDLE;  // linear-repeat (from VkTextureStore)
@@ -127,11 +151,38 @@ private:
     VkPipelineLayout maskPipeLayout_ = VK_NULL_HANDLE;
     ::VkPipeline     maskPipeline_   = VK_NULL_HANDLE;
 
+    // --- Glow scratch ping-pong targets (R16_SFLOAT coverage, 2 images) ---
+    // H pass reads mask -> writes scratch[0]; V pass reads scratch[0] -> writes scratch[1].
+    // This is the ping-pong realized for a single H/V blur pair (indices 0 and 1 fixed).
+    VkImage       glowScratch_[2]      = {VK_NULL_HANDLE, VK_NULL_HANDLE};
+    VmaAllocation glowScratchAlloc_[2] = {VK_NULL_HANDLE, VK_NULL_HANDLE};
+    VkImageView   glowScratchView_[2]  = {VK_NULL_HANDLE, VK_NULL_HANDLE};
+    // Single render pass for both scratch framebuffers (both use R16_SFLOAT).
+    VkRenderPass  glowPass_            = VK_NULL_HANDLE;
+    VkFramebuffer glowFb_[2]           = {VK_NULL_HANDLE, VK_NULL_HANDLE};
+
+    // --- Glow pipelines ---
+    VkDescriptorSetLayout glowBlurHSetLayout_     = VK_NULL_HANDLE;
+    VkPipelineLayout      glowBlurHPipeLayout_    = VK_NULL_HANDLE;
+    ::VkPipeline          glowBlurHPipeline_      = VK_NULL_HANDLE;
+    VkDescriptorSet       glowBlurHDescSet_        = VK_NULL_HANDLE;
+
+    VkDescriptorSetLayout glowBlurVSetLayout_     = VK_NULL_HANDLE;
+    VkPipelineLayout      glowBlurVPipeLayout_    = VK_NULL_HANDLE;
+    ::VkPipeline          glowBlurVPipeline_      = VK_NULL_HANDLE;
+    VkDescriptorSet       glowBlurVDescSet_        = VK_NULL_HANDLE;
+
+    VkDescriptorSetLayout glowCompositeSetLayout_  = VK_NULL_HANDLE;
+    VkPipelineLayout      glowCompositePipeLayout_ = VK_NULL_HANDLE;
+    ::VkPipeline          glowCompositePipeline_   = VK_NULL_HANDLE;
+    VkDescriptorSet       glowCompositeDescSet_    = VK_NULL_HANDLE;
+
     bool createTargets(VkContext& ctx);
     void destroyTargets(VkContext& ctx);
     bool createCopyPipeline(VkContext& ctx, VkRenderPass swapchainPass);
     bool createOutlinePipeline(VkContext& ctx, VkRenderPass swapchainPass);
     bool createMaskPipeline(VkContext& ctx);
+    bool createGlowPipelines(VkContext& ctx, VkRenderPass swapchainPass);
 };
 
 }  // namespace iron

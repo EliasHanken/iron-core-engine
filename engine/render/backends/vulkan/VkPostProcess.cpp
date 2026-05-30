@@ -73,6 +73,65 @@ void main() {
 }
 )";
 
+// --- Glow blur + composite shaders ---
+
+// kGlowBlurHFrag — reads the R8_UINT mask, converts to coverage (0 or 1),
+// then horizontally blurs it using a 13-tap Gaussian-ish kernel. Sampling
+// the mask directly in the blur pass folds the coverage→float step in,
+// preserving the 3-pass plan (GlowBlurH, GlowBlurV, GlowComposite).
+const char* kGlowBlurHFrag = R"(#version 450
+layout(location = 0) in vec2 vUV;
+layout(location = 0) out float outCov;
+layout(set = 0, binding = 0) uniform usampler2D uMask;
+layout(push_constant) uniform Push { vec2 texel; float radius; float _pad; } pc;
+void main() {
+    float sum = 0.0, wsum = 0.0;
+    for (int i = -6; i <= 6; ++i) {
+        float w = exp(-float(i * i) / 18.0);
+        vec2 o = vec2(float(i) * pc.radius / 6.0, 0.0) * pc.texel;
+        float cov = texture(uMask, vUV + o).r > 0u ? 1.0 : 0.0;
+        sum += cov * w; wsum += w;
+    }
+    outCov = sum / wsum;
+}
+)";
+
+// kGlowBlurVFrag — reads blurred coverage from scratch[0] (sampler2D) and
+// blurs it vertically into scratch[1].
+const char* kGlowBlurVFrag = R"(#version 450
+layout(location = 0) in vec2 vUV;
+layout(location = 0) out float outCov;
+layout(set = 0, binding = 0) uniform sampler2D uCov;
+layout(push_constant) uniform Push { vec2 texel; float radius; float _pad; } pc;
+void main() {
+    float sum = 0.0, wsum = 0.0;
+    for (int i = -6; i <= 6; ++i) {
+        float w = exp(-float(i * i) / 18.0);
+        vec2 o = vec2(0.0, float(i) * pc.radius / 6.0) * pc.texel;
+        sum += texture(uCov, vUV + o).r * w; wsum += w;
+    }
+    outCov = sum / wsum;
+}
+)";
+
+// kGlowCompositeFrag — adds a colored halo (blurred coverage minus solid
+// interior) over the scene. Runs inside the swapchain pass.
+const char* kGlowCompositeFrag = R"(#version 450
+layout(location = 0) in vec2 vUV;
+layout(location = 0) out vec4 outColor;
+layout(set = 0, binding = 0) uniform sampler2D uScene;
+layout(set = 0, binding = 1) uniform sampler2D uBlur;
+layout(set = 0, binding = 2) uniform usampler2D uMask;
+layout(push_constant) uniform Push { vec4 color; float intensity; } pc;
+void main() {
+    vec3 scene = texture(uScene, vUV).rgb;
+    float blur  = texture(uBlur, vUV).r;
+    float solid = texture(uMask, vUV).r > 0u ? 1.0 : 0.0;
+    float halo  = max(blur - solid, 0.0) * pc.intensity;
+    outColor = vec4(scene + pc.color.rgb * halo, 1.0);
+}
+)";
+
 }  // namespace
 
 // ---------------------------------------------------------------------------
@@ -108,6 +167,7 @@ bool VkPostProcess::init(VkContext& ctx, VkFormat colorFormat, VkFormat depthFor
     if (!createCopyPipeline(ctx, swapchainPass)) return false;
     if (!createOutlinePipeline(ctx, swapchainPass)) return false;
     if (!createMaskPipeline(ctx)) return false;
+    if (!createGlowPipelines(ctx, swapchainPass)) return false;
     return true;
 }
 
@@ -120,20 +180,35 @@ void VkPostProcess::destroy(VkContext& ctx) {
     if (outlinePipeline_)   { vkDestroyPipeline(ctx.device(), outlinePipeline_, nullptr); outlinePipeline_ = VK_NULL_HANDLE; }
     if (outlinePipeLayout_) { vkDestroyPipelineLayout(ctx.device(), outlinePipeLayout_, nullptr); outlinePipeLayout_ = VK_NULL_HANDLE; }
     if (outlineSetLayout_)  { vkDestroyDescriptorSetLayout(ctx.device(), outlineSetLayout_, nullptr); outlineSetLayout_ = VK_NULL_HANDLE; }
-    // outlineDescSet_ is freed when descPool_ is destroyed below.
-    outlineDescSet_ = VK_NULL_HANDLE;
+    outlineDescSet_ = VK_NULL_HANDLE;  // freed with descPool_ below
+
+    // Glow pipeline objects.
+    if (glowCompositePipeline_)   { vkDestroyPipeline(ctx.device(), glowCompositePipeline_, nullptr);   glowCompositePipeline_ = VK_NULL_HANDLE; }
+    if (glowCompositePipeLayout_) { vkDestroyPipelineLayout(ctx.device(), glowCompositePipeLayout_, nullptr); glowCompositePipeLayout_ = VK_NULL_HANDLE; }
+    if (glowCompositeSetLayout_)  { vkDestroyDescriptorSetLayout(ctx.device(), glowCompositeSetLayout_, nullptr); glowCompositeSetLayout_ = VK_NULL_HANDLE; }
+    glowCompositeDescSet_ = VK_NULL_HANDLE;
+
+    if (glowBlurVPipeline_)   { vkDestroyPipeline(ctx.device(), glowBlurVPipeline_, nullptr);   glowBlurVPipeline_ = VK_NULL_HANDLE; }
+    if (glowBlurVPipeLayout_) { vkDestroyPipelineLayout(ctx.device(), glowBlurVPipeLayout_, nullptr); glowBlurVPipeLayout_ = VK_NULL_HANDLE; }
+    if (glowBlurVSetLayout_)  { vkDestroyDescriptorSetLayout(ctx.device(), glowBlurVSetLayout_, nullptr); glowBlurVSetLayout_ = VK_NULL_HANDLE; }
+    glowBlurVDescSet_ = VK_NULL_HANDLE;
+
+    if (glowBlurHPipeline_)   { vkDestroyPipeline(ctx.device(), glowBlurHPipeline_, nullptr);   glowBlurHPipeline_ = VK_NULL_HANDLE; }
+    if (glowBlurHPipeLayout_) { vkDestroyPipelineLayout(ctx.device(), glowBlurHPipeLayout_, nullptr); glowBlurHPipeLayout_ = VK_NULL_HANDLE; }
+    if (glowBlurHSetLayout_)  { vkDestroyDescriptorSetLayout(ctx.device(), glowBlurHSetLayout_, nullptr); glowBlurHSetLayout_ = VK_NULL_HANDLE; }
+    glowBlurHDescSet_ = VK_NULL_HANDLE;
 
     // Copy (composite) pipeline objects.
     if (copyPipeline_)   { vkDestroyPipeline(ctx.device(), copyPipeline_, nullptr); copyPipeline_ = VK_NULL_HANDLE; }
     if (copyPipeLayout_) { vkDestroyPipelineLayout(ctx.device(), copyPipeLayout_, nullptr); copyPipeLayout_ = VK_NULL_HANDLE; }
     if (copySetLayout_)  { vkDestroyDescriptorSetLayout(ctx.device(), copySetLayout_, nullptr); copySetLayout_ = VK_NULL_HANDLE; }
-    // descPool_ owns copyDescSet_ and outlineDescSet_; destroying the pool frees both.
+    // descPool_ owns all descriptor sets; destroying the pool frees them all.
     if (descPool_)       { vkDestroyDescriptorPool(ctx.device(), descPool_, nullptr); descPool_ = VK_NULL_HANDLE; copyDescSet_ = VK_NULL_HANDLE; }
 
     // NEAREST sampler for integer mask texture.
     if (maskSampler_)    { vkDestroySampler(ctx.device(), maskSampler_, nullptr); maskSampler_ = VK_NULL_HANDLE; }
 
-    // Render target objects.
+    // Render target objects (including glow scratch targets + glowPass_/glowFb_).
     destroyTargets(ctx);
 }
 
@@ -183,6 +258,64 @@ bool VkPostProcess::resize(VkContext& ctx, VkExtent2D extent) {
         writes[1].descriptorCount = 1;
         writes[1].pImageInfo      = &imgInfos[1];
         vkUpdateDescriptorSets(ctx.device(), 2, writes, 0, nullptr);
+    }
+
+    // Re-write glow descriptor sets to point at the new size-varying views.
+    // GlowBlurH: binding 0 = maskColorView_ (NEAREST sampler).
+    {
+        VkDescriptorImageInfo imgInfo{};
+        imgInfo.sampler     = maskSampler_;
+        imgInfo.imageView   = maskColorView_;
+        imgInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+
+        VkWriteDescriptorSet write{};
+        write.sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        write.dstSet          = glowBlurHDescSet_;
+        write.dstBinding      = 0;
+        write.descriptorType  = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        write.descriptorCount = 1;
+        write.pImageInfo      = &imgInfo;
+        vkUpdateDescriptorSets(ctx.device(), 1, &write, 0, nullptr);
+    }
+    // GlowBlurV: binding 0 = glowScratchView_[0] (linear sampler).
+    {
+        VkDescriptorImageInfo imgInfo{};
+        imgInfo.sampler     = sampler_;
+        imgInfo.imageView   = glowScratchView_[0];
+        imgInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+
+        VkWriteDescriptorSet write{};
+        write.sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        write.dstSet          = glowBlurVDescSet_;
+        write.dstBinding      = 0;
+        write.descriptorType  = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        write.descriptorCount = 1;
+        write.pImageInfo      = &imgInfo;
+        vkUpdateDescriptorSets(ctx.device(), 1, &write, 0, nullptr);
+    }
+    // GlowComposite: binding 0 = sceneColorView_, binding 1 = glowScratchView_[1], binding 2 = maskColorView_.
+    {
+        VkDescriptorImageInfo imgInfos[3]{};
+        imgInfos[0].sampler     = sampler_;
+        imgInfos[0].imageView   = sceneColorView_;
+        imgInfos[0].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        imgInfos[1].sampler     = sampler_;
+        imgInfos[1].imageView   = glowScratchView_[1];
+        imgInfos[1].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        imgInfos[2].sampler     = maskSampler_;
+        imgInfos[2].imageView   = maskColorView_;
+        imgInfos[2].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+
+        VkWriteDescriptorSet writes[3]{};
+        for (int i = 0; i < 3; ++i) {
+            writes[i].sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+            writes[i].dstSet          = glowCompositeDescSet_;
+            writes[i].dstBinding      = static_cast<uint32_t>(i);
+            writes[i].descriptorType  = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+            writes[i].descriptorCount = 1;
+            writes[i].pImageInfo      = &imgInfos[i];
+        }
+        vkUpdateDescriptorSets(ctx.device(), 3, writes, 0, nullptr);
     }
 
     return true;
@@ -559,10 +692,121 @@ bool VkPostProcess::createTargets(VkContext& ctx) {
         VK_CHECK(vkCreateFramebuffer(ctx.device(), &maskFbInfo, nullptr, &maskFb_));
     }
 
+    // -----------------------------------------------------------------------
+    // Glow ping-pong scratch targets: two R16_SFLOAT images for separable blur.
+    // H pass writes scratch[0]; V pass reads scratch[0] and writes scratch[1].
+    // R16_SFLOAT is widely supported as a color attachment + sampled format and
+    // is the natural choice for single-channel float coverage in [0,1].
+    // -----------------------------------------------------------------------
+    for (int i = 0; i < 2; ++i) {
+        VkImageCreateInfo iInfo{};
+        iInfo.sType         = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
+        iInfo.imageType     = VK_IMAGE_TYPE_2D;
+        iInfo.format        = VK_FORMAT_R16_SFLOAT;
+        iInfo.extent        = {extent_.width, extent_.height, 1};
+        iInfo.mipLevels     = 1;
+        iInfo.arrayLayers   = 1;
+        iInfo.samples       = VK_SAMPLE_COUNT_1_BIT;
+        iInfo.tiling        = VK_IMAGE_TILING_OPTIMAL;
+        iInfo.usage         = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT |
+                              VK_IMAGE_USAGE_SAMPLED_BIT;
+        iInfo.sharingMode   = VK_SHARING_MODE_EXCLUSIVE;
+        iInfo.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+
+        VmaAllocationCreateInfo aInfo{};
+        aInfo.usage = VMA_MEMORY_USAGE_AUTO;
+        VK_CHECK(vmaCreateImage(ctx.allocator(), &iInfo, &aInfo,
+                                &glowScratch_[i], &glowScratchAlloc_[i], nullptr));
+
+        VkImageViewCreateInfo vInfo{};
+        vInfo.sType                           = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+        vInfo.image                           = glowScratch_[i];
+        vInfo.viewType                        = VK_IMAGE_VIEW_TYPE_2D;
+        vInfo.format                          = VK_FORMAT_R16_SFLOAT;
+        vInfo.subresourceRange.aspectMask     = VK_IMAGE_ASPECT_COLOR_BIT;
+        vInfo.subresourceRange.levelCount     = 1;
+        vInfo.subresourceRange.layerCount     = 1;
+        VK_CHECK(vkCreateImageView(ctx.device(), &vInfo, nullptr, &glowScratchView_[i]));
+    }
+
+    // --- Glow render pass: single R16_SFLOAT color attachment ---
+    // loadOp = DONT_CARE (every pixel is overwritten by the full-screen triangle).
+    // finalLayout = SHADER_READ_ONLY_OPTIMAL so the next pass can sample it.
+    // Subpass dependencies mirror maskPass_: entry waits for prior sampling
+    // to finish before writing; exit lets the next pass sample safely.
+    {
+        VkAttachmentDescription glowAttachment{};
+        glowAttachment.format         = VK_FORMAT_R16_SFLOAT;
+        glowAttachment.samples        = VK_SAMPLE_COUNT_1_BIT;
+        glowAttachment.loadOp         = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+        glowAttachment.storeOp        = VK_ATTACHMENT_STORE_OP_STORE;
+        glowAttachment.stencilLoadOp  = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+        glowAttachment.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+        glowAttachment.initialLayout  = VK_IMAGE_LAYOUT_UNDEFINED;
+        glowAttachment.finalLayout    = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+
+        VkAttachmentReference glowColorRef{0, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL};
+
+        VkSubpassDescription glowSubpass{};
+        glowSubpass.pipelineBindPoint    = VK_PIPELINE_BIND_POINT_GRAPHICS;
+        glowSubpass.colorAttachmentCount = 1;
+        glowSubpass.pColorAttachments    = &glowColorRef;
+
+        VkSubpassDependency glowDeps[2]{};
+        // Entry: wait for prior frame's sampling before writing color.
+        glowDeps[0].srcSubpass    = VK_SUBPASS_EXTERNAL;
+        glowDeps[0].dstSubpass    = 0;
+        glowDeps[0].srcStageMask  = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
+        glowDeps[0].dstStageMask  = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+        glowDeps[0].srcAccessMask = VK_ACCESS_SHADER_READ_BIT;
+        glowDeps[0].dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+        // Exit: next pass can sample after color writes complete.
+        glowDeps[1].srcSubpass      = 0;
+        glowDeps[1].dstSubpass      = VK_SUBPASS_EXTERNAL;
+        glowDeps[1].srcStageMask    = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+        glowDeps[1].dstStageMask    = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
+        glowDeps[1].srcAccessMask   = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+        glowDeps[1].dstAccessMask   = VK_ACCESS_SHADER_READ_BIT;
+        glowDeps[1].dependencyFlags = VK_DEPENDENCY_BY_REGION_BIT;
+
+        VkRenderPassCreateInfo glowRpInfo{};
+        glowRpInfo.sType           = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO;
+        glowRpInfo.attachmentCount = 1;
+        glowRpInfo.pAttachments    = &glowAttachment;
+        glowRpInfo.subpassCount    = 1;
+        glowRpInfo.pSubpasses      = &glowSubpass;
+        glowRpInfo.dependencyCount = 2;
+        glowRpInfo.pDependencies   = glowDeps;
+        VK_CHECK(vkCreateRenderPass(ctx.device(), &glowRpInfo, nullptr, &glowPass_));
+
+        // Two framebuffers — one per scratch image — both use the same glowPass_.
+        for (int i = 0; i < 2; ++i) {
+            VkFramebufferCreateInfo fbInfo{};
+            fbInfo.sType           = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO;
+            fbInfo.renderPass      = glowPass_;
+            fbInfo.attachmentCount = 1;
+            fbInfo.pAttachments    = &glowScratchView_[i];
+            fbInfo.width           = extent_.width;
+            fbInfo.height          = extent_.height;
+            fbInfo.layers          = 1;
+            VK_CHECK(vkCreateFramebuffer(ctx.device(), &fbInfo, nullptr, &glowFb_[i]));
+        }
+    }
+
     return true;
 }
 
 void VkPostProcess::destroyTargets(VkContext& ctx) {
+    // Glow scratch targets (destroy in reverse creation order).
+    for (int i = 1; i >= 0; --i) {
+        if (glowFb_[i])          { vkDestroyFramebuffer(ctx.device(), glowFb_[i], nullptr); glowFb_[i] = VK_NULL_HANDLE; }
+    }
+    if (glowPass_)               { vkDestroyRenderPass(ctx.device(), glowPass_, nullptr); glowPass_ = VK_NULL_HANDLE; }
+    for (int i = 1; i >= 0; --i) {
+        if (glowScratchView_[i]) { vkDestroyImageView(ctx.device(), glowScratchView_[i], nullptr); glowScratchView_[i] = VK_NULL_HANDLE; }
+        if (glowScratch_[i])     { vmaDestroyImage(ctx.allocator(), glowScratch_[i], glowScratchAlloc_[i]); glowScratch_[i] = VK_NULL_HANDLE; glowScratchAlloc_[i] = VK_NULL_HANDLE; }
+    }
+
     // Mask target (destroy before scene target — order doesn't matter to Vulkan,
     // but mirrors creation order in reverse for clarity).
     if (maskFb_)          { vkDestroyFramebuffer(ctx.device(), maskFb_, nullptr); maskFb_ = VK_NULL_HANDLE; }
@@ -700,15 +944,20 @@ bool VkPostProcess::createCopyPipeline(VkContext& ctx, VkRenderPass swapchainPas
     vkDestroyShaderModule(ctx.device(), fsm, nullptr);
     VK_CHECK(copyPipeResult);
 
-    // Descriptor pool: two sets total (copy + outline), three combined-image-sampler
-    // descriptors (1 for copy, 2 for outline — scene-color + mask-id).
+    // Descriptor pool: 5 sets total, 8 combined-image-sampler descriptors.
+    //   set 0: copy         — 1 sampler  (scene color)
+    //   set 1: outline      — 2 samplers (scene color + mask)
+    //   set 2: glowBlurH    — 1 sampler  (mask)
+    //   set 3: glowBlurV    — 1 sampler  (scratch[0])
+    //   set 4: glowComposite — 3 samplers (scene color + scratch[1] + mask)
+    // Total: 5 sets, 8 combined-image-samplers.
     VkDescriptorPoolSize poolSize{};
     poolSize.type            = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-    poolSize.descriptorCount = 3;
+    poolSize.descriptorCount = 8;
 
     VkDescriptorPoolCreateInfo dpInfo{};
     dpInfo.sType         = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
-    dpInfo.maxSets       = 2;
+    dpInfo.maxSets       = 5;
     dpInfo.poolSizeCount = 1;
     dpInfo.pPoolSizes    = &poolSize;
     VK_CHECK(vkCreateDescriptorPool(ctx.device(), &dpInfo, nullptr, &descPool_));
@@ -1045,6 +1294,359 @@ bool VkPostProcess::createOutlinePipeline(VkContext& ctx, VkRenderPass swapchain
     return true;
 }
 
+bool VkPostProcess::createGlowPipelines(VkContext& ctx, VkRenderPass swapchainPass) {
+    // Compile the vertex shader (shared kFullscreenVert) once; reuse for all three passes.
+    auto vspv = compileGlsl(VK_SHADER_STAGE_VERTEX_BIT, kFullscreenVert);
+    if (vspv.empty()) {
+        Log::error("VkPostProcess: glow vertex shader compile failed");
+        return false;
+    }
+
+    // Helper lambda: create a VkShaderModule from a SPIR-V vector.
+    auto makeModule = [&](const std::vector<std::uint32_t>& spv) -> VkShaderModule {
+        VkShaderModuleCreateInfo smInfo{};
+        smInfo.sType    = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
+        smInfo.codeSize = spv.size() * sizeof(std::uint32_t);
+        smInfo.pCode    = spv.data();
+        VkShaderModule m = VK_NULL_HANDLE;
+        if (vkCreateShaderModule(ctx.device(), &smInfo, nullptr, &m) != VK_SUCCESS)
+            m = VK_NULL_HANDLE;
+        return m;
+    };
+
+    // Common full-screen pipeline state (reused for all three passes).
+    // We fill pInfo per-pipeline; only renderPass and layout differ.
+    VkPipelineInputAssemblyStateCreateInfo ia{};
+    ia.sType    = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO;
+    ia.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+
+    VkPipelineViewportStateCreateInfo vpState{};
+    vpState.sType         = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO;
+    vpState.viewportCount = 1;
+    vpState.scissorCount  = 1;
+
+    VkPipelineRasterizationStateCreateInfo rs{};
+    rs.sType       = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO;
+    rs.polygonMode = VK_POLYGON_MODE_FILL;
+    rs.cullMode    = VK_CULL_MODE_NONE;
+    rs.frontFace   = VK_FRONT_FACE_COUNTER_CLOCKWISE;
+    rs.lineWidth   = 1.0f;
+
+    VkPipelineMultisampleStateCreateInfo ms{};
+    ms.sType                = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO;
+    ms.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
+
+    VkPipelineDepthStencilStateCreateInfo ds{};
+    ds.sType            = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO;
+    ds.depthTestEnable  = VK_FALSE;
+    ds.depthWriteEnable = VK_FALSE;
+
+    VkPipelineColorBlendAttachmentState blendAtt{};
+    blendAtt.colorWriteMask = 0xF;
+    blendAtt.blendEnable    = VK_FALSE;
+
+    VkPipelineColorBlendStateCreateInfo blend{};
+    blend.sType           = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO;
+    blend.attachmentCount = 1;
+    blend.pAttachments    = &blendAtt;
+
+    VkDynamicState dynStates[] = {VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR};
+    VkPipelineDynamicStateCreateInfo dyn{};
+    dyn.sType             = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO;
+    dyn.dynamicStateCount = 2;
+    dyn.pDynamicStates    = dynStates;
+
+    VkPipelineVertexInputStateCreateInfo vi{};
+    vi.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
+    // No vertex bindings — positions come from gl_VertexIndex.
+
+    // Push-constant range used by all glow passes (fragment stage only).
+    // GlowBlurPush (16 bytes) and GlowCompositePush (32 bytes) — declare
+    // the larger so both fit within one layout's range.
+    VkPushConstantRange blurPcRange{};
+    blurPcRange.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+    blurPcRange.offset     = 0;
+    blurPcRange.size       = static_cast<uint32_t>(sizeof(GlowBlurPush));
+
+    VkPushConstantRange compositePcRange{};
+    compositePcRange.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+    compositePcRange.offset     = 0;
+    compositePcRange.size       = static_cast<uint32_t>(sizeof(GlowCompositePush));
+
+    // -----------------------------------------------------------------
+    // GlowBlurH pipeline: reads mask (usampler2D, NEAREST) -> writes R16_SFLOAT scratch[0].
+    // Descriptor set layout: binding 0 = usampler2D uMask.
+    // -----------------------------------------------------------------
+    {
+        VkDescriptorSetLayoutBinding b{};
+        b.binding         = 0;
+        b.descriptorType  = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        b.descriptorCount = 1;
+        b.stageFlags      = VK_SHADER_STAGE_FRAGMENT_BIT;
+
+        VkDescriptorSetLayoutCreateInfo dslInfo{};
+        dslInfo.sType        = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+        dslInfo.bindingCount = 1;
+        dslInfo.pBindings    = &b;
+        VK_CHECK(vkCreateDescriptorSetLayout(ctx.device(), &dslInfo, nullptr, &glowBlurHSetLayout_));
+
+        VkPipelineLayoutCreateInfo plInfo{};
+        plInfo.sType                  = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+        plInfo.setLayoutCount         = 1;
+        plInfo.pSetLayouts            = &glowBlurHSetLayout_;
+        plInfo.pushConstantRangeCount = 1;
+        plInfo.pPushConstantRanges    = &blurPcRange;
+        VK_CHECK(vkCreatePipelineLayout(ctx.device(), &plInfo, nullptr, &glowBlurHPipeLayout_));
+
+        auto fspv = compileGlsl(VK_SHADER_STAGE_FRAGMENT_BIT, kGlowBlurHFrag);
+        if (fspv.empty()) { Log::error("VkPostProcess: glow blur-H shader compile failed"); return false; }
+
+        VkShaderModule vsm = makeModule(vspv);
+        VkShaderModule fsm = makeModule(fspv);
+        if (!vsm || !fsm) {
+            if (vsm) vkDestroyShaderModule(ctx.device(), vsm, nullptr);
+            if (fsm) vkDestroyShaderModule(ctx.device(), fsm, nullptr);
+            Log::error("VkPostProcess: glow blur-H shader module creation failed");
+            return false;
+        }
+
+        VkPipelineShaderStageCreateInfo stages[2]{};
+        stages[0].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+        stages[0].stage = VK_SHADER_STAGE_VERTEX_BIT; stages[0].module = vsm; stages[0].pName = "main";
+        stages[1].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+        stages[1].stage = VK_SHADER_STAGE_FRAGMENT_BIT; stages[1].module = fsm; stages[1].pName = "main";
+
+        // BlurH writes a single R16_SFLOAT output — single-channel blend state.
+        VkPipelineColorBlendAttachmentState singleAtt{};
+        singleAtt.colorWriteMask = VK_COLOR_COMPONENT_R_BIT;
+        singleAtt.blendEnable    = VK_FALSE;
+        VkPipelineColorBlendStateCreateInfo singleBlend{};
+        singleBlend.sType           = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO;
+        singleBlend.attachmentCount = 1;
+        singleBlend.pAttachments    = &singleAtt;
+
+        VkGraphicsPipelineCreateInfo pInfo{};
+        pInfo.sType               = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
+        pInfo.stageCount          = 2; pInfo.pStages = stages;
+        pInfo.pVertexInputState   = &vi;
+        pInfo.pInputAssemblyState = &ia;
+        pInfo.pViewportState      = &vpState;
+        pInfo.pRasterizationState = &rs;
+        pInfo.pMultisampleState   = &ms;
+        pInfo.pDepthStencilState  = &ds;
+        pInfo.pColorBlendState    = &singleBlend;
+        pInfo.pDynamicState       = &dyn;
+        pInfo.layout              = glowBlurHPipeLayout_;
+        pInfo.renderPass          = glowPass_;  // offscreen R16_SFLOAT pass
+        pInfo.subpass             = 0;
+        VkResult r = vkCreateGraphicsPipelines(ctx.device(), VK_NULL_HANDLE, 1, &pInfo, nullptr, &glowBlurHPipeline_);
+        vkDestroyShaderModule(ctx.device(), vsm, nullptr);
+        vkDestroyShaderModule(ctx.device(), fsm, nullptr);
+        VK_CHECK(r);
+    }
+
+    // -----------------------------------------------------------------
+    // GlowBlurV pipeline: reads scratch[0] (sampler2D, linear) -> writes scratch[1].
+    // Descriptor set layout: binding 0 = sampler2D uCov.
+    // -----------------------------------------------------------------
+    {
+        VkDescriptorSetLayoutBinding b{};
+        b.binding         = 0;
+        b.descriptorType  = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        b.descriptorCount = 1;
+        b.stageFlags      = VK_SHADER_STAGE_FRAGMENT_BIT;
+
+        VkDescriptorSetLayoutCreateInfo dslInfo{};
+        dslInfo.sType        = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+        dslInfo.bindingCount = 1;
+        dslInfo.pBindings    = &b;
+        VK_CHECK(vkCreateDescriptorSetLayout(ctx.device(), &dslInfo, nullptr, &glowBlurVSetLayout_));
+
+        VkPipelineLayoutCreateInfo plInfo{};
+        plInfo.sType                  = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+        plInfo.setLayoutCount         = 1;
+        plInfo.pSetLayouts            = &glowBlurVSetLayout_;
+        plInfo.pushConstantRangeCount = 1;
+        plInfo.pPushConstantRanges    = &blurPcRange;
+        VK_CHECK(vkCreatePipelineLayout(ctx.device(), &plInfo, nullptr, &glowBlurVPipeLayout_));
+
+        auto fspv = compileGlsl(VK_SHADER_STAGE_FRAGMENT_BIT, kGlowBlurVFrag);
+        if (fspv.empty()) { Log::error("VkPostProcess: glow blur-V shader compile failed"); return false; }
+
+        VkShaderModule vsm = makeModule(vspv);
+        VkShaderModule fsm = makeModule(fspv);
+        if (!vsm || !fsm) {
+            if (vsm) vkDestroyShaderModule(ctx.device(), vsm, nullptr);
+            if (fsm) vkDestroyShaderModule(ctx.device(), fsm, nullptr);
+            Log::error("VkPostProcess: glow blur-V shader module creation failed");
+            return false;
+        }
+
+        VkPipelineShaderStageCreateInfo stages[2]{};
+        stages[0].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+        stages[0].stage = VK_SHADER_STAGE_VERTEX_BIT; stages[0].module = vsm; stages[0].pName = "main";
+        stages[1].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+        stages[1].stage = VK_SHADER_STAGE_FRAGMENT_BIT; stages[1].module = fsm; stages[1].pName = "main";
+
+        VkPipelineColorBlendAttachmentState singleAtt{};
+        singleAtt.colorWriteMask = VK_COLOR_COMPONENT_R_BIT;
+        singleAtt.blendEnable    = VK_FALSE;
+        VkPipelineColorBlendStateCreateInfo singleBlend{};
+        singleBlend.sType           = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO;
+        singleBlend.attachmentCount = 1;
+        singleBlend.pAttachments    = &singleAtt;
+
+        VkGraphicsPipelineCreateInfo pInfo{};
+        pInfo.sType               = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
+        pInfo.stageCount          = 2; pInfo.pStages = stages;
+        pInfo.pVertexInputState   = &vi;
+        pInfo.pInputAssemblyState = &ia;
+        pInfo.pViewportState      = &vpState;
+        pInfo.pRasterizationState = &rs;
+        pInfo.pMultisampleState   = &ms;
+        pInfo.pDepthStencilState  = &ds;
+        pInfo.pColorBlendState    = &singleBlend;
+        pInfo.pDynamicState       = &dyn;
+        pInfo.layout              = glowBlurVPipeLayout_;
+        pInfo.renderPass          = glowPass_;  // offscreen R16_SFLOAT pass
+        pInfo.subpass             = 0;
+        VkResult r = vkCreateGraphicsPipelines(ctx.device(), VK_NULL_HANDLE, 1, &pInfo, nullptr, &glowBlurVPipeline_);
+        vkDestroyShaderModule(ctx.device(), vsm, nullptr);
+        vkDestroyShaderModule(ctx.device(), fsm, nullptr);
+        VK_CHECK(r);
+    }
+
+    // -----------------------------------------------------------------
+    // GlowComposite pipeline: reads scene + scratch[1] + mask; writes swapchain.
+    // Descriptor set layout: binding 0 = sampler2D uScene,
+    //                        binding 1 = sampler2D uBlur,
+    //                        binding 2 = usampler2D uMask.
+    // -----------------------------------------------------------------
+    {
+        VkDescriptorSetLayoutBinding bindings[3]{};
+        bindings[0].binding = 0; bindings[0].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER; bindings[0].descriptorCount = 1; bindings[0].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+        bindings[1].binding = 1; bindings[1].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER; bindings[1].descriptorCount = 1; bindings[1].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+        bindings[2].binding = 2; bindings[2].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER; bindings[2].descriptorCount = 1; bindings[2].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+
+        VkDescriptorSetLayoutCreateInfo dslInfo{};
+        dslInfo.sType        = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+        dslInfo.bindingCount = 3;
+        dslInfo.pBindings    = bindings;
+        VK_CHECK(vkCreateDescriptorSetLayout(ctx.device(), &dslInfo, nullptr, &glowCompositeSetLayout_));
+
+        VkPipelineLayoutCreateInfo plInfo{};
+        plInfo.sType                  = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+        plInfo.setLayoutCount         = 1;
+        plInfo.pSetLayouts            = &glowCompositeSetLayout_;
+        plInfo.pushConstantRangeCount = 1;
+        plInfo.pPushConstantRanges    = &compositePcRange;
+        VK_CHECK(vkCreatePipelineLayout(ctx.device(), &plInfo, nullptr, &glowCompositePipeLayout_));
+
+        auto fspv = compileGlsl(VK_SHADER_STAGE_FRAGMENT_BIT, kGlowCompositeFrag);
+        if (fspv.empty()) { Log::error("VkPostProcess: glow composite shader compile failed"); return false; }
+
+        VkShaderModule vsm = makeModule(vspv);
+        VkShaderModule fsm = makeModule(fspv);
+        if (!vsm || !fsm) {
+            if (vsm) vkDestroyShaderModule(ctx.device(), vsm, nullptr);
+            if (fsm) vkDestroyShaderModule(ctx.device(), fsm, nullptr);
+            Log::error("VkPostProcess: glow composite shader module creation failed");
+            return false;
+        }
+
+        VkPipelineShaderStageCreateInfo stages[2]{};
+        stages[0].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+        stages[0].stage = VK_SHADER_STAGE_VERTEX_BIT; stages[0].module = vsm; stages[0].pName = "main";
+        stages[1].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+        stages[1].stage = VK_SHADER_STAGE_FRAGMENT_BIT; stages[1].module = fsm; stages[1].pName = "main";
+
+        VkGraphicsPipelineCreateInfo pInfo{};
+        pInfo.sType               = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
+        pInfo.stageCount          = 2; pInfo.pStages = stages;
+        pInfo.pVertexInputState   = &vi;
+        pInfo.pInputAssemblyState = &ia;
+        pInfo.pViewportState      = &vpState;
+        pInfo.pRasterizationState = &rs;
+        pInfo.pMultisampleState   = &ms;
+        pInfo.pDepthStencilState  = &ds;
+        pInfo.pColorBlendState    = &blend;  // 4-channel RGBA for swapchain
+        pInfo.pDynamicState       = &dyn;
+        pInfo.layout              = glowCompositePipeLayout_;
+        pInfo.renderPass          = swapchainPass;  // writes to swapchain
+        pInfo.subpass             = 0;
+        VkResult r = vkCreateGraphicsPipelines(ctx.device(), VK_NULL_HANDLE, 1, &pInfo, nullptr, &glowCompositePipeline_);
+        vkDestroyShaderModule(ctx.device(), vsm, nullptr);
+        vkDestroyShaderModule(ctx.device(), fsm, nullptr);
+        VK_CHECK(r);
+    }
+
+    // -----------------------------------------------------------------
+    // Allocate the three glow descriptor sets from the shared pool.
+    // -----------------------------------------------------------------
+    {
+        VkDescriptorSetLayout layouts[3] = {
+            glowBlurHSetLayout_,
+            glowBlurVSetLayout_,
+            glowCompositeSetLayout_,
+        };
+        VkDescriptorSet sets[3] = {};
+        VkDescriptorSetAllocateInfo dsAlloc{};
+        dsAlloc.sType              = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+        dsAlloc.descriptorPool     = descPool_;
+        dsAlloc.descriptorSetCount = 3;
+        dsAlloc.pSetLayouts        = layouts;
+        VK_CHECK(vkAllocateDescriptorSets(ctx.device(), &dsAlloc, sets));
+        glowBlurHDescSet_     = sets[0];
+        glowBlurVDescSet_     = sets[1];
+        glowCompositeDescSet_ = sets[2];
+    }
+
+    // Write initial descriptor values (same views as resize would write).
+    // GlowBlurH: binding 0 = maskColorView_ + maskSampler_ (NEAREST — integer texture).
+    {
+        VkDescriptorImageInfo imgInfo{};
+        imgInfo.sampler     = maskSampler_;
+        imgInfo.imageView   = maskColorView_;
+        imgInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        VkWriteDescriptorSet write{};
+        write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        write.dstSet = glowBlurHDescSet_; write.dstBinding = 0;
+        write.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        write.descriptorCount = 1; write.pImageInfo = &imgInfo;
+        vkUpdateDescriptorSets(ctx.device(), 1, &write, 0, nullptr);
+    }
+    // GlowBlurV: binding 0 = glowScratchView_[0] + sampler_ (linear).
+    {
+        VkDescriptorImageInfo imgInfo{};
+        imgInfo.sampler     = sampler_;
+        imgInfo.imageView   = glowScratchView_[0];
+        imgInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        VkWriteDescriptorSet write{};
+        write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        write.dstSet = glowBlurVDescSet_; write.dstBinding = 0;
+        write.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        write.descriptorCount = 1; write.pImageInfo = &imgInfo;
+        vkUpdateDescriptorSets(ctx.device(), 1, &write, 0, nullptr);
+    }
+    // GlowComposite: binding 0 = sceneColorView_, binding 1 = scratch[1], binding 2 = maskColorView_.
+    {
+        VkDescriptorImageInfo imgInfos[3]{};
+        imgInfos[0].sampler = sampler_;     imgInfos[0].imageView = sceneColorView_;    imgInfos[0].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        imgInfos[1].sampler = sampler_;     imgInfos[1].imageView = glowScratchView_[1]; imgInfos[1].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        imgInfos[2].sampler = maskSampler_; imgInfos[2].imageView = maskColorView_;     imgInfos[2].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        VkWriteDescriptorSet writes[3]{};
+        for (int i = 0; i < 3; ++i) {
+            writes[i].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+            writes[i].dstSet = glowCompositeDescSet_; writes[i].dstBinding = static_cast<uint32_t>(i);
+            writes[i].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+            writes[i].descriptorCount = 1; writes[i].pImageInfo = &imgInfos[i];
+        }
+        vkUpdateDescriptorSets(ctx.device(), 3, writes, 0, nullptr);
+    }
+
+    return true;
+}
+
 void VkPostProcess::runChain(VkCommandBuffer cb,
                              const std::vector<PostPass>& passes,
                              const EffectTable& effects,
@@ -1091,7 +1693,150 @@ void VkPostProcess::runChain(VkCommandBuffer cb,
                 break;
             }
 
-            // GlowBlurH, GlowBlurV, GlowComposite, XRay land in tasks D and E.
+            case PostPass::GlowComposite: {
+                // GlowBlurH and GlowBlurV ran in runChainOffscreenPasses (before
+                // the swapchain pass). Here we composite the blurred coverage over
+                // the scene, writing to the swapchain (which the caller has begun).
+                const EffectStyle* gs = nullptr;
+                for (int id = 1; id < EffectTable::kMaxIds; ++id) {
+                    if (effects.style(static_cast<uint8_t>(id)).kind == EffectKind::GlowOutline) {
+                        gs = &effects.style(static_cast<uint8_t>(id));
+                        break;
+                    }
+                }
+
+                GlowCompositePush pc{};
+                if (gs) {
+                    pc.color[0]  = gs->color.x;
+                    pc.color[1]  = gs->color.y;
+                    pc.color[2]  = gs->color.z;
+                    pc.color[3]  = 1.0f;
+                    pc.intensity = gs->intensity;
+                } else {
+                    // Fallback defaults (shouldn't happen if GlowOutline is in passes).
+                    pc.color[0] = 1.0f; pc.color[1] = 0.6f; pc.color[2] = 0.1f; pc.color[3] = 1.0f;
+                    pc.intensity = 1.0f;
+                }
+
+                vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, glowCompositePipeline_);
+                vkCmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                                        glowCompositePipeLayout_, 0, 1, &glowCompositeDescSet_, 0, nullptr);
+                vkCmdPushConstants(cb, glowCompositePipeLayout_,
+                                   VK_SHADER_STAGE_FRAGMENT_BIT,
+                                   0, sizeof(GlowCompositePush), &pc);
+                vkCmdDraw(cb, 3, 1, 0, 0);
+                break;
+            }
+
+            // GlowBlurH, GlowBlurV are offscreen passes — handled in runChainOffscreenPasses.
+            // XRay lands in task E.
+            default:
+                break;
+        }
+    }
+}
+
+void VkPostProcess::runChainOffscreenPasses(VkCommandBuffer cb,
+                                            const std::vector<PostPass>& passes,
+                                            const EffectTable& effects,
+                                            VkExtent2D swapExtent) {
+    // Find GlowOutline style (used for both blur passes' push constants).
+    const EffectStyle* gs = nullptr;
+    for (int id = 1; id < EffectTable::kMaxIds; ++id) {
+        if (effects.style(static_cast<uint8_t>(id)).kind == EffectKind::GlowOutline) {
+            gs = &effects.style(static_cast<uint8_t>(id));
+            break;
+        }
+    }
+
+    for (const PostPass pass : passes) {
+        switch (pass) {
+            case PostPass::GlowBlurH: {
+                // Horizontal blur: read mask -> write scratch[0].
+                // Runs in glowPass_ / glowFb_[0], outside the swapchain pass.
+                GlowBlurPush pc{};
+                pc.texel[0] = (swapExtent.width  > 0) ? 1.0f / static_cast<float>(swapExtent.width)  : 0.0f;
+                pc.texel[1] = (swapExtent.height > 0) ? 1.0f / static_cast<float>(swapExtent.height) : 0.0f;
+                pc.radius   = gs ? gs->width : 2.0f;
+                pc._pad     = 0.0f;
+
+                VkClearValue clearVal{};
+                clearVal.color.float32[0] = 0.0f;
+
+                VkRenderPassBeginInfo rpBegin{};
+                rpBegin.sType             = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
+                rpBegin.renderPass        = glowPass_;
+                rpBegin.framebuffer       = glowFb_[0];  // H writes scratch[0]
+                rpBegin.renderArea.offset = {0, 0};
+                rpBegin.renderArea.extent = extent_;
+                rpBegin.clearValueCount   = 1;
+                rpBegin.pClearValues      = &clearVal;
+                vkCmdBeginRenderPass(cb, &rpBegin, VK_SUBPASS_CONTENTS_INLINE);
+
+                // Full-screen viewport for the scratch target.
+                VkViewport vp{};
+                vp.x = 0.0f; vp.y = 0.0f;
+                vp.width  = static_cast<float>(extent_.width);
+                vp.height = static_cast<float>(extent_.height);
+                vp.minDepth = 0.0f; vp.maxDepth = 1.0f;
+                vkCmdSetViewport(cb, 0, 1, &vp);
+                VkRect2D scissor{{0, 0}, extent_};
+                vkCmdSetScissor(cb, 0, 1, &scissor);
+
+                vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, glowBlurHPipeline_);
+                vkCmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                                        glowBlurHPipeLayout_, 0, 1, &glowBlurHDescSet_, 0, nullptr);
+                vkCmdPushConstants(cb, glowBlurHPipeLayout_,
+                                   VK_SHADER_STAGE_FRAGMENT_BIT,
+                                   0, sizeof(GlowBlurPush), &pc);
+                vkCmdDraw(cb, 3, 1, 0, 0);
+                vkCmdEndRenderPass(cb);
+                break;
+            }
+
+            case PostPass::GlowBlurV: {
+                // Vertical blur: read scratch[0] -> write scratch[1].
+                GlowBlurPush pc{};
+                pc.texel[0] = (swapExtent.width  > 0) ? 1.0f / static_cast<float>(swapExtent.width)  : 0.0f;
+                pc.texel[1] = (swapExtent.height > 0) ? 1.0f / static_cast<float>(swapExtent.height) : 0.0f;
+                pc.radius   = gs ? gs->width : 2.0f;
+                pc._pad     = 0.0f;
+
+                VkClearValue clearVal{};
+                clearVal.color.float32[0] = 0.0f;
+
+                VkRenderPassBeginInfo rpBegin{};
+                rpBegin.sType             = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
+                rpBegin.renderPass        = glowPass_;
+                rpBegin.framebuffer       = glowFb_[1];  // V writes scratch[1]
+                rpBegin.renderArea.offset = {0, 0};
+                rpBegin.renderArea.extent = extent_;
+                rpBegin.clearValueCount   = 1;
+                rpBegin.pClearValues      = &clearVal;
+                vkCmdBeginRenderPass(cb, &rpBegin, VK_SUBPASS_CONTENTS_INLINE);
+
+                VkViewport vp{};
+                vp.x = 0.0f; vp.y = 0.0f;
+                vp.width  = static_cast<float>(extent_.width);
+                vp.height = static_cast<float>(extent_.height);
+                vp.minDepth = 0.0f; vp.maxDepth = 1.0f;
+                vkCmdSetViewport(cb, 0, 1, &vp);
+                VkRect2D scissor{{0, 0}, extent_};
+                vkCmdSetScissor(cb, 0, 1, &scissor);
+
+                vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, glowBlurVPipeline_);
+                vkCmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                                        glowBlurVPipeLayout_, 0, 1, &glowBlurVDescSet_, 0, nullptr);
+                vkCmdPushConstants(cb, glowBlurVPipeLayout_,
+                                   VK_SHADER_STAGE_FRAGMENT_BIT,
+                                   0, sizeof(GlowBlurPush), &pc);
+                vkCmdDraw(cb, 3, 1, 0, 0);
+                vkCmdEndRenderPass(cb);
+                break;
+            }
+
+            // All other passes (Copy, Outline, GlowComposite, XRay) run in runChain
+            // inside the swapchain pass — nothing to do here.
             default:
                 break;
         }
