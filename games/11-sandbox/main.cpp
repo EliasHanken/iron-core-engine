@@ -695,13 +695,40 @@ int main() {
                                 scene.pointLights.data(),
                                 scene.pointLights.size()),
                             scene.fog, view, proj);
-        for (const auto& re : resolved) {
+        // M37 D2: iterate the World as the source-of-truth for what to draw.
+        // RenderHandles supplies the load-time-fixed GPU handles; the live
+        // model matrix + material scalars are still read through the legacy
+        // sceneIndexToEntity mapping back to scene.entities (which the
+        // Inspector + gizmo edit each frame). D4 will move that live-edit
+        // path onto the World directly.
+        auto& transforms = world.view<iron::Transform>();
+        for (std::size_t row = 0; row < transforms.size(); ++row) {
+            const iron::EntityId       e  = transforms.entityAt(row);
+            const iron::RenderHandles* rh = world.get<iron::RenderHandles>(e);
+            if (!rh) continue;
+
+            // sceneIndex for this World entity — drives the selection check
+            // and indexes the still-authoritative scene.entities for live edits.
+            int sceneIdx = -1;
+            for (std::size_t i = 0; i < sceneIndexToEntity.size(); ++i) {
+                if (sceneIndexToEntity[i] == e) { sceneIdx = static_cast<int>(i); break; }
+            }
+            if (sceneIdx < 0) continue;
+            const iron::SceneEntity& se = scene.entities[sceneIdx];
+
             iron::DrawCall call;
-            call.mesh     = re.mesh;
-            call.shader   = litShader;
-            call.model    = re.model;
-            call.material = re.material;
-            call.effectId = (re.entityIndex == selectedIndex) ? 1 : 0;
+            call.mesh                 = rh->mesh;
+            call.shader               = litShader;
+            call.model                = iron::translation(se.position)
+                                      * se.rotation.toMat4()
+                                      * iron::scaling(se.scale);
+            call.material.texture     = rh->albedo;
+            call.material.normalMap   = rh->normal;
+            call.material.specularMap = rh->specular;
+            call.material.emissive    = se.material.emissive;
+            call.material.uvScale     = se.material.uvScale;
+            call.material.reflectivity = se.material.reflectivity;
+            call.effectId             = (sceneIdx == selectedIndex) ? 1 : 0;
             renderer.submit(call);
         }
         if (selectedIndex >= 0 && selectedIndex < static_cast<int>(scene.entities.size()))
