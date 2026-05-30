@@ -23,6 +23,8 @@
 #include "render/Renderer.h"
 #include "render/RendererFactory.h"
 #include "render/TextureLoader.h"
+#include "reflection/RegisterCoreTypes.h"
+#include "reflection/Reflection.h"
 #include "scene/FreeFlyCamera.h"
 #include "scene/Mesh.h"
 #include "scene/SceneFormat.h"
@@ -306,6 +308,13 @@ int main() {
     std::vector<ResolvedEntity> resolved;
 
     iron::World world;
+    // M38: type registry — populated at startup; consumed by M39+ editor /
+    // serialization. Sandbox doesn't use it directly in v1.
+    iron::Reflection reflection;
+    iron::registerTransform(reflection);
+    iron::registerMeshRef(reflection);
+    iron::registerMaterialDef(reflection);
+    iron::registerRenderHandles(reflection);
     std::vector<iron::EntityId> sceneIndexToEntity;   // parallel to scene.entities
 
     // Cache primitive meshes so N cubes/planes share one MeshHandle.
