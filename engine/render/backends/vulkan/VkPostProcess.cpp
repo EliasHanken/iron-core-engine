@@ -132,6 +132,34 @@ void main() {
 }
 )";
 
+// kXrayFrag — tint where the tagged object is occluded by nearer scene geometry.
+// binding 0: sampler2D  uScene      — full scene color
+// binding 1: usampler2D uMask       — tagged object id (0 = no object)
+// binding 2: sampler2D  uMaskDepth  — tagged object's own depth (from mask pass)
+// binding 3: sampler2D  uSceneDepth — full scene depth (includes occluders)
+// Tints toward pc.color where id != 0 AND sceneDepth < maskDepth (occluded).
+// Both depths use the same projection, so raw float comparison is correct;
+// smaller depth value means nearer to the camera.
+const char* kXrayFrag = R"(#version 450
+layout(location = 0) in vec2 vUV;
+layout(location = 0) out vec4 outColor;
+layout(set = 0, binding = 0) uniform sampler2D uScene;
+layout(set = 0, binding = 1) uniform usampler2D uMask;
+layout(set = 0, binding = 2) uniform sampler2D uMaskDepth;
+layout(set = 0, binding = 3) uniform sampler2D uSceneDepth;
+layout(push_constant) uniform Push { vec4 color; float intensity; } pc;
+void main() {
+    vec3 scene = texture(uScene, vUV).rgb;
+    uint id = texture(uMask, vUV).r;
+    if (id == 0u) { outColor = vec4(scene, 1.0); return; }
+    float md = texture(uMaskDepth, vUV).r;   // tagged object depth
+    float sd = texture(uSceneDepth, vUV).r;  // nearest scene depth
+    // Occluded when something is in front of the object (smaller depth = nearer).
+    float occluded = (sd < md - 1e-4) ? 1.0 : 0.0;
+    outColor = vec4(mix(scene, pc.color.rgb, occluded * pc.intensity), 1.0);
+}
+)";
+
 }  // namespace
 
 // ---------------------------------------------------------------------------
@@ -168,10 +196,17 @@ bool VkPostProcess::init(VkContext& ctx, VkFormat colorFormat, VkFormat depthFor
     if (!createOutlinePipeline(ctx, swapchainPass)) return false;
     if (!createMaskPipeline(ctx)) return false;
     if (!createGlowPipelines(ctx, swapchainPass)) return false;
+    if (!createXRayPipeline(ctx, swapchainPass)) return false;
     return true;
 }
 
 void VkPostProcess::destroy(VkContext& ctx) {
+    // X-ray pipeline objects.
+    if (xrayPipeline_)   { vkDestroyPipeline(ctx.device(), xrayPipeline_, nullptr); xrayPipeline_ = VK_NULL_HANDLE; }
+    if (xrayPipeLayout_) { vkDestroyPipelineLayout(ctx.device(), xrayPipeLayout_, nullptr); xrayPipeLayout_ = VK_NULL_HANDLE; }
+    if (xraySetLayout_)  { vkDestroyDescriptorSetLayout(ctx.device(), xraySetLayout_, nullptr); xraySetLayout_ = VK_NULL_HANDLE; }
+    xrayDescSet_ = VK_NULL_HANDLE;  // freed with descPool_ below
+
     // Mask pipeline objects (no descriptor set layout — push-constant only).
     if (maskPipeline_)   { vkDestroyPipeline(ctx.device(), maskPipeline_, nullptr); maskPipeline_ = VK_NULL_HANDLE; }
     if (maskPipeLayout_) { vkDestroyPipelineLayout(ctx.device(), maskPipeLayout_, nullptr); maskPipeLayout_ = VK_NULL_HANDLE; }
@@ -318,6 +353,35 @@ bool VkPostProcess::resize(VkContext& ctx, VkExtent2D extent) {
         vkUpdateDescriptorSets(ctx.device(), 3, writes, 0, nullptr);
     }
 
+    // XRay: binding 0 = sceneColorView_, binding 1 = maskColorView_,
+    //        binding 2 = maskDepthView_, binding 3 = sceneDepthView_.
+    {
+        VkDescriptorImageInfo imgInfos[4]{};
+        imgInfos[0].sampler     = sampler_;
+        imgInfos[0].imageView   = sceneColorView_;
+        imgInfos[0].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        imgInfos[1].sampler     = maskSampler_;
+        imgInfos[1].imageView   = maskColorView_;
+        imgInfos[1].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        imgInfos[2].sampler     = maskSampler_;
+        imgInfos[2].imageView   = maskDepthView_;
+        imgInfos[2].imageLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL;
+        imgInfos[3].sampler     = maskSampler_;
+        imgInfos[3].imageView   = sceneDepthView_;
+        imgInfos[3].imageLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL;
+
+        VkWriteDescriptorSet writes[4]{};
+        for (int i = 0; i < 4; ++i) {
+            writes[i].sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+            writes[i].dstSet          = xrayDescSet_;
+            writes[i].dstBinding      = static_cast<uint32_t>(i);
+            writes[i].descriptorType  = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+            writes[i].descriptorCount = 1;
+            writes[i].pImageInfo      = &imgInfos[i];
+        }
+        vkUpdateDescriptorSets(ctx.device(), 4, writes, 0, nullptr);
+    }
+
     return true;
 }
 
@@ -440,7 +504,10 @@ bool VkPostProcess::createTargets(VkContext& ctx) {
         VK_CHECK(vkCreateImageView(ctx.device(), &vInfo, nullptr, &sceneColorView_));
     }
 
-    // --- Scene depth image (depthFormat_, DEPTH_STENCIL_ATTACHMENT) ---
+    // --- Scene depth image (depthFormat_, DEPTH_STENCIL_ATTACHMENT | SAMPLED) ---
+    // SAMPLED_BIT is required so the x-ray pass can compare scene depth against
+    // the tagged object's own (mask) depth. The render pass transitions depth to
+    // DEPTH_STENCIL_READ_ONLY_OPTIMAL at the end so the x-ray shader can sample it.
     {
         VkImageCreateInfo iInfo{};
         iInfo.sType         = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
@@ -451,7 +518,8 @@ bool VkPostProcess::createTargets(VkContext& ctx) {
         iInfo.arrayLayers   = 1;
         iInfo.samples       = VK_SAMPLE_COUNT_1_BIT;
         iInfo.tiling        = VK_IMAGE_TILING_OPTIMAL;
-        iInfo.usage         = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT;
+        iInfo.usage         = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT |
+                              VK_IMAGE_USAGE_SAMPLED_BIT;
         iInfo.sharingMode   = VK_SHARING_MODE_EXCLUSIVE;
         iInfo.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
 
@@ -490,11 +558,11 @@ bool VkPostProcess::createTargets(VkContext& ctx) {
     attachments[1].format         = depthFormat_;
     attachments[1].samples        = VK_SAMPLE_COUNT_1_BIT;
     attachments[1].loadOp         = VK_ATTACHMENT_LOAD_OP_CLEAR;
-    attachments[1].storeOp        = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+    attachments[1].storeOp        = VK_ATTACHMENT_STORE_OP_STORE;  // must store so x-ray can sample it
     attachments[1].stencilLoadOp  = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
     attachments[1].stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
     attachments[1].initialLayout  = VK_IMAGE_LAYOUT_UNDEFINED;
-    attachments[1].finalLayout    = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+    attachments[1].finalLayout    = VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL;  // sampleable for x-ray
 
     VkAttachmentReference colorRef{0, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL};
     VkAttachmentReference depthRef{1, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL};
@@ -505,21 +573,30 @@ bool VkPostProcess::createTargets(VkContext& ctx) {
     subpass.pColorAttachments       = &colorRef;
     subpass.pDepthStencilAttachment = &depthRef;
 
-    VkSubpassDependency deps[2]{};
-    // Entry: wait for prior frame's sampling to finish before writing color.
+    VkSubpassDependency deps[3]{};
+    // Entry: wait for prior frame's sampling to finish before writing color + depth.
     deps[0].srcSubpass    = VK_SUBPASS_EXTERNAL;
     deps[0].dstSubpass    = 0;
     deps[0].srcStageMask  = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
-    deps[0].dstStageMask  = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+    deps[0].dstStageMask  = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT |
+                            VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT;
     deps[0].srcAccessMask = VK_ACCESS_SHADER_READ_BIT;
-    deps[0].dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
-    // Exit: composite pass can sample after color writes complete.
+    deps[0].dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT |
+                            VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+    // Exit (color): composite pass can sample color after writes complete.
     deps[1].srcSubpass    = 0;
     deps[1].dstSubpass    = VK_SUBPASS_EXTERNAL;
     deps[1].srcStageMask  = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
     deps[1].dstStageMask  = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
     deps[1].srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
     deps[1].dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+    // Exit (depth): x-ray pass can sample depth after depth writes complete.
+    deps[2].srcSubpass    = 0;
+    deps[2].dstSubpass    = VK_SUBPASS_EXTERNAL;
+    deps[2].srcStageMask  = VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT;
+    deps[2].dstStageMask  = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
+    deps[2].srcAccessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+    deps[2].dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
 
     VkRenderPassCreateInfo rpInfo{};
     rpInfo.sType           = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO;
@@ -527,7 +604,7 @@ bool VkPostProcess::createTargets(VkContext& ctx) {
     rpInfo.pAttachments    = attachments;
     rpInfo.subpassCount    = 1;
     rpInfo.pSubpasses      = &subpass;
-    rpInfo.dependencyCount = 2;
+    rpInfo.dependencyCount = 3;
     rpInfo.pDependencies   = deps;
     VK_CHECK(vkCreateRenderPass(ctx.device(), &rpInfo, nullptr, &scenePass_));
 
@@ -944,20 +1021,21 @@ bool VkPostProcess::createCopyPipeline(VkContext& ctx, VkRenderPass swapchainPas
     vkDestroyShaderModule(ctx.device(), fsm, nullptr);
     VK_CHECK(copyPipeResult);
 
-    // Descriptor pool: 5 sets total, 8 combined-image-sampler descriptors.
+    // Descriptor pool: 6 sets total, 12 combined-image-sampler descriptors.
     //   set 0: copy         — 1 sampler  (scene color)
     //   set 1: outline      — 2 samplers (scene color + mask)
     //   set 2: glowBlurH    — 1 sampler  (mask)
     //   set 3: glowBlurV    — 1 sampler  (scratch[0])
     //   set 4: glowComposite — 3 samplers (scene color + scratch[1] + mask)
-    // Total: 5 sets, 8 combined-image-samplers.
+    //   set 5: xray         — 4 samplers (scene color + mask id + mask depth + scene depth)
+    // Total: 6 sets, 12 combined-image-samplers.
     VkDescriptorPoolSize poolSize{};
     poolSize.type            = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-    poolSize.descriptorCount = 8;
+    poolSize.descriptorCount = 12;
 
     VkDescriptorPoolCreateInfo dpInfo{};
     dpInfo.sType         = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
-    dpInfo.maxSets       = 5;
+    dpInfo.maxSets       = 6;
     dpInfo.poolSizeCount = 1;
     dpInfo.pPoolSizes    = &poolSize;
     VK_CHECK(vkCreateDescriptorPool(ctx.device(), &dpInfo, nullptr, &descPool_));
@@ -1258,7 +1336,7 @@ bool VkPostProcess::createOutlinePipeline(VkContext& ctx, VkRenderPass swapchain
     VK_CHECK(outlinePipeResult);
 
     // Allocate the outline descriptor set from the shared pool (allocated in
-    // createCopyPipeline with maxSets=2, descriptorCount=3).
+    // createCopyPipeline with maxSets=6, descriptorCount=12).
     VkDescriptorSetAllocateInfo dsAlloc{};
     dsAlloc.sType              = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
     dsAlloc.descriptorPool     = descPool_;
@@ -1728,8 +1806,43 @@ void VkPostProcess::runChain(VkCommandBuffer cb,
                 break;
             }
 
+            case PostPass::XRay: {
+                // V1 note: each in-swapchain pass independently samples sceneColor
+                // and writes the full screen. If multiple effect kinds were active,
+                // later passes would overwrite earlier ones. In practice, a single
+                // effect kind is active per frame (one selected object, one kind).
+                const EffectStyle* xs = nullptr;
+                for (int id = 1; id < EffectTable::kMaxIds; ++id) {
+                    if (effects.style(static_cast<uint8_t>(id)).kind == EffectKind::XRay) {
+                        xs = &effects.style(static_cast<uint8_t>(id));
+                        break;
+                    }
+                }
+
+                XRayPush pc{};
+                if (xs) {
+                    pc.color[0]  = xs->color.x;
+                    pc.color[1]  = xs->color.y;
+                    pc.color[2]  = xs->color.z;
+                    pc.color[3]  = 1.0f;
+                    pc.intensity = xs->intensity;
+                } else {
+                    // Fallback defaults (shouldn't happen if XRay is in passes).
+                    pc.color[0] = 1.0f; pc.color[1] = 0.6f; pc.color[2] = 0.1f; pc.color[3] = 1.0f;
+                    pc.intensity = 0.5f;
+                }
+
+                vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, xrayPipeline_);
+                vkCmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                                        xrayPipeLayout_, 0, 1, &xrayDescSet_, 0, nullptr);
+                vkCmdPushConstants(cb, xrayPipeLayout_,
+                                   VK_SHADER_STAGE_FRAGMENT_BIT,
+                                   0, sizeof(XRayPush), &pc);
+                vkCmdDraw(cb, 3, 1, 0, 0);
+                break;
+            }
+
             // GlowBlurH, GlowBlurV are offscreen passes — handled in runChainOffscreenPasses.
-            // XRay lands in task E.
             default:
                 break;
         }
@@ -1841,6 +1954,180 @@ void VkPostProcess::runChainOffscreenPasses(VkCommandBuffer cb,
                 break;
         }
     }
+}
+
+bool VkPostProcess::createXRayPipeline(VkContext& ctx, VkRenderPass swapchainPass) {
+    // Compile shaders (reuse kFullscreenVert from the copy pipeline).
+    auto vspv = compileGlsl(VK_SHADER_STAGE_VERTEX_BIT,   kFullscreenVert);
+    auto fspv = compileGlsl(VK_SHADER_STAGE_FRAGMENT_BIT, kXrayFrag);
+    if (vspv.empty() || fspv.empty()) {
+        Log::error("VkPostProcess: x-ray shader compile failed");
+        return false;
+    }
+
+    VkShaderModule vsm = VK_NULL_HANDLE, fsm = VK_NULL_HANDLE;
+    VkShaderModuleCreateInfo smInfo{};
+    smInfo.sType    = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
+    smInfo.codeSize = vspv.size() * sizeof(std::uint32_t);
+    smInfo.pCode    = vspv.data();
+    VK_CHECK(vkCreateShaderModule(ctx.device(), &smInfo, nullptr, &vsm));
+    smInfo.codeSize = fspv.size() * sizeof(std::uint32_t);
+    smInfo.pCode    = fspv.data();
+    if (vkCreateShaderModule(ctx.device(), &smInfo, nullptr, &fsm) != VK_SUCCESS) {
+        vkDestroyShaderModule(ctx.device(), vsm, nullptr);
+        Log::error("VkPostProcess: x-ray fragment shader module creation failed");
+        return false;
+    }
+
+    // Descriptor set layout: 4 bindings (all COMBINED_IMAGE_SAMPLER, fragment stage).
+    //   binding 0: sampler2D  uScene      (scene color, linear sampler_)
+    //   binding 1: usampler2D uMask       (mask id, NEAREST maskSampler_)
+    //   binding 2: sampler2D  uMaskDepth  (tagged object depth, NEAREST maskSampler_)
+    //   binding 3: sampler2D  uSceneDepth (full scene depth, NEAREST maskSampler_)
+    // Depth images use NEAREST to avoid filtering across depth edges.
+    VkDescriptorSetLayoutBinding bindings[4]{};
+    for (int i = 0; i < 4; ++i) {
+        bindings[i].binding         = static_cast<uint32_t>(i);
+        bindings[i].descriptorType  = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        bindings[i].descriptorCount = 1;
+        bindings[i].stageFlags      = VK_SHADER_STAGE_FRAGMENT_BIT;
+    }
+
+    VkDescriptorSetLayoutCreateInfo dslInfo{};
+    dslInfo.sType        = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+    dslInfo.bindingCount = 4;
+    dslInfo.pBindings    = bindings;
+    VK_CHECK(vkCreateDescriptorSetLayout(ctx.device(), &dslInfo, nullptr, &xraySetLayout_));
+
+    // Push constant for x-ray params (fragment stage).
+    VkPushConstantRange pcRange{};
+    pcRange.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+    pcRange.offset     = 0;
+    pcRange.size       = static_cast<uint32_t>(sizeof(XRayPush));
+
+    VkPipelineLayoutCreateInfo plInfo{};
+    plInfo.sType                  = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+    plInfo.setLayoutCount         = 1;
+    plInfo.pSetLayouts            = &xraySetLayout_;
+    plInfo.pushConstantRangeCount = 1;
+    plInfo.pPushConstantRanges    = &pcRange;
+    VK_CHECK(vkCreatePipelineLayout(ctx.device(), &plInfo, nullptr, &xrayPipeLayout_));
+
+    // Pipeline — full-screen triangle, no vertex input, depth test off.
+    VkPipelineShaderStageCreateInfo stages[2]{};
+    stages[0].sType  = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+    stages[0].stage  = VK_SHADER_STAGE_VERTEX_BIT;
+    stages[0].module = vsm;
+    stages[0].pName  = "main";
+    stages[1].sType  = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+    stages[1].stage  = VK_SHADER_STAGE_FRAGMENT_BIT;
+    stages[1].module = fsm;
+    stages[1].pName  = "main";
+
+    VkPipelineVertexInputStateCreateInfo vi{};
+    vi.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
+
+    VkPipelineInputAssemblyStateCreateInfo ia{};
+    ia.sType    = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO;
+    ia.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+
+    VkPipelineViewportStateCreateInfo vp{};
+    vp.sType         = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO;
+    vp.viewportCount = 1;
+    vp.scissorCount  = 1;
+
+    VkPipelineRasterizationStateCreateInfo rs{};
+    rs.sType       = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO;
+    rs.polygonMode = VK_POLYGON_MODE_FILL;
+    rs.cullMode    = VK_CULL_MODE_NONE;
+    rs.frontFace   = VK_FRONT_FACE_COUNTER_CLOCKWISE;
+    rs.lineWidth   = 1.0f;
+
+    VkPipelineMultisampleStateCreateInfo ms{};
+    ms.sType                = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO;
+    ms.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
+
+    VkPipelineDepthStencilStateCreateInfo ds{};
+    ds.sType            = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO;
+    ds.depthTestEnable  = VK_FALSE;
+    ds.depthWriteEnable = VK_FALSE;
+
+    VkPipelineColorBlendAttachmentState att{};
+    att.colorWriteMask = 0xF;
+    att.blendEnable    = VK_FALSE;
+
+    VkPipelineColorBlendStateCreateInfo cb{};
+    cb.sType           = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO;
+    cb.attachmentCount = 1;
+    cb.pAttachments    = &att;
+
+    VkDynamicState dynStates[] = {VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR};
+    VkPipelineDynamicStateCreateInfo dyn{};
+    dyn.sType             = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO;
+    dyn.dynamicStateCount = 2;
+    dyn.pDynamicStates    = dynStates;
+
+    VkGraphicsPipelineCreateInfo pInfo{};
+    pInfo.sType               = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
+    pInfo.stageCount          = 2;
+    pInfo.pStages             = stages;
+    pInfo.pVertexInputState   = &vi;
+    pInfo.pInputAssemblyState = &ia;
+    pInfo.pViewportState      = &vp;
+    pInfo.pRasterizationState = &rs;
+    pInfo.pMultisampleState   = &ms;
+    pInfo.pDepthStencilState  = &ds;
+    pInfo.pColorBlendState    = &cb;
+    pInfo.pDynamicState       = &dyn;
+    pInfo.layout              = xrayPipeLayout_;
+    pInfo.renderPass          = swapchainPass;  // writes to swapchain like Outline
+    pInfo.subpass             = 0;
+    // Capture result so shader modules are destroyed even if pipeline creation fails.
+    VkResult xrayPipeResult = vkCreateGraphicsPipelines(ctx.device(), VK_NULL_HANDLE, 1,
+                                                         &pInfo, nullptr, &xrayPipeline_);
+    vkDestroyShaderModule(ctx.device(), vsm, nullptr);
+    vkDestroyShaderModule(ctx.device(), fsm, nullptr);
+    VK_CHECK(xrayPipeResult);
+
+    // Allocate the x-ray descriptor set from the shared pool.
+    VkDescriptorSetAllocateInfo dsAlloc{};
+    dsAlloc.sType              = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+    dsAlloc.descriptorPool     = descPool_;
+    dsAlloc.descriptorSetCount = 1;
+    dsAlloc.pSetLayouts        = &xraySetLayout_;
+    VK_CHECK(vkAllocateDescriptorSets(ctx.device(), &dsAlloc, &xrayDescSet_));
+
+    // Write the x-ray descriptor set:
+    //   binding 0: scene color   (linear sampler — floating-point color)
+    //   binding 1: mask id       (NEAREST maskSampler_ — integer texture)
+    //   binding 2: mask depth    (NEAREST maskSampler_ — depth, avoid edge filtering)
+    //   binding 3: scene depth   (NEAREST maskSampler_ — depth, avoid edge filtering)
+    VkDescriptorImageInfo imgInfos[4]{};
+    imgInfos[0].sampler     = sampler_;
+    imgInfos[0].imageView   = sceneColorView_;
+    imgInfos[0].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    imgInfos[1].sampler     = maskSampler_;
+    imgInfos[1].imageView   = maskColorView_;
+    imgInfos[1].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    imgInfos[2].sampler     = maskSampler_;
+    imgInfos[2].imageView   = maskDepthView_;
+    imgInfos[2].imageLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL;
+    imgInfos[3].sampler     = maskSampler_;
+    imgInfos[3].imageView   = sceneDepthView_;
+    imgInfos[3].imageLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL;
+
+    VkWriteDescriptorSet writes[4]{};
+    for (int i = 0; i < 4; ++i) {
+        writes[i].sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        writes[i].dstSet          = xrayDescSet_;
+        writes[i].dstBinding      = static_cast<uint32_t>(i);
+        writes[i].descriptorType  = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        writes[i].descriptorCount = 1;
+        writes[i].pImageInfo      = &imgInfos[i];
+    }
+    vkUpdateDescriptorSets(ctx.device(), 4, writes, 0, nullptr);
+
+    return true;
 }
 
 }  // namespace iron

@@ -74,6 +74,10 @@ public:
     VkImageView maskColorView() const { return maskColorView_; }
     VkImageView maskDepthView() const { return maskDepthView_; }
 
+    // Scene depth view (full scene depth buffer, sampleable). Used by the x-ray
+    // pass to compare against the masked object's own depth.
+    VkImageView sceneDepthView() const { return sceneDepthView_; }
+
     // Push constants for the outline pipeline.
     struct OutlinePush {
         float color[4];   // rgb outline color, a unused
@@ -94,6 +98,13 @@ public:
     struct GlowCompositePush {
         float color[4];      // rgb halo color + padding
         float intensity;     // halo strength (style.intensity)
+        float _pad[3];
+    };
+
+    // Push constants for the x-ray pipeline.
+    struct XRayPush {
+        float color[4];      // rgb tint color + padding
+        float intensity;     // tint strength
         float _pad[3];
     };
 
@@ -177,12 +188,19 @@ private:
     ::VkPipeline          glowCompositePipeline_   = VK_NULL_HANDLE;
     VkDescriptorSet       glowCompositeDescSet_    = VK_NULL_HANDLE;
 
+    // --- X-ray pipeline ---
+    VkDescriptorSetLayout xraySetLayout_  = VK_NULL_HANDLE;
+    VkPipelineLayout      xrayPipeLayout_ = VK_NULL_HANDLE;
+    ::VkPipeline          xrayPipeline_   = VK_NULL_HANDLE;
+    VkDescriptorSet       xrayDescSet_    = VK_NULL_HANDLE;
+
     bool createTargets(VkContext& ctx);
     void destroyTargets(VkContext& ctx);
     bool createCopyPipeline(VkContext& ctx, VkRenderPass swapchainPass);
     bool createOutlinePipeline(VkContext& ctx, VkRenderPass swapchainPass);
     bool createMaskPipeline(VkContext& ctx);
     bool createGlowPipelines(VkContext& ctx, VkRenderPass swapchainPass);
+    bool createXRayPipeline(VkContext& ctx, VkRenderPass swapchainPass);
 };
 
 }  // namespace iron
