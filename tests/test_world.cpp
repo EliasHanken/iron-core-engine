@@ -218,6 +218,23 @@ static void test_world_view_empty_when_no_component_of_type() {
     CHECK(v.size() == 0);
 }
 
+#include "world/Transform.h"
+
+static void test_transform_component_roundtrip() {
+    iron::World w;
+    iron::EntityId e = w.create();
+    iron::Transform t{};
+    t.position = iron::Vec3{1, 2, 3};
+    t.scale    = iron::Vec3{2, 2, 2};
+    w.add<iron::Transform>(e, t);
+    auto* got = w.get<iron::Transform>(e);
+    CHECK(got != nullptr);
+    CHECK(got->position.x == 1.0f);
+    CHECK(got->position.y == 2.0f);
+    CHECK(got->position.z == 3.0f);
+    CHECK(got->scale.x    == 2.0f);
+}
+
 int main() {
     test_entityid_default_is_invalid();
     test_entityid_with_generation_is_valid();
@@ -241,6 +258,7 @@ int main() {
     test_world_view_size_matches_components_present();
     test_world_view_iteration_and_entity_at();
     test_world_view_empty_when_no_component_of_type();
+    test_transform_component_roundtrip();
     if (g_failures == 0) std::printf("All world tests passed.\n");
     return g_failures == 0 ? 0 : 1;
 }
