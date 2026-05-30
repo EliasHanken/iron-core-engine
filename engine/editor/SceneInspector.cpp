@@ -8,11 +8,22 @@
 
 namespace iron {
 
-bool SceneInspector::draw(SceneEntity& e) {
+bool SceneInspector::draw(SceneEntity& e, GizmoSpace& space) {
     bool changed = false;
     ImGui::Begin("Inspector");
 
     ImGui::Text("Name: %s", e.name.empty() ? "(unnamed)" : e.name.c_str());
+
+    // Gizmo space toggle (mirrors the X key). Scale handles are always local
+    // regardless of this setting.
+    ImGui::SeparatorText("Gizmo Space");
+    int spaceInt = (space == GizmoSpace::Local) ? 1 : 0;
+    bool spaceChanged = false;
+    spaceChanged |= ImGui::RadioButton("World", &spaceInt, 0);
+    ImGui::SameLine();
+    spaceChanged |= ImGui::RadioButton("Local", &spaceInt, 1);
+    if (spaceChanged)
+        space = (spaceInt == 1) ? GizmoSpace::Local : GizmoSpace::World;
 
     ImGui::SeparatorText("Transform");
     changed |= ImGui::DragFloat3("Position", &e.position.x, 0.05f);
