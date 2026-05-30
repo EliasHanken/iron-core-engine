@@ -599,8 +599,8 @@ int main() {
                     view, proj,
                     iron::Vec2{static_cast<float>(input.mouseX()),
                                static_cast<float>(input.mouseY())},
-                    iron::Vec2{static_cast<float>(kInitialW),
-                               static_cast<float>(kInitialH)},
+                    iron::Vec2{static_cast<float>(app.window().width()),
+                               static_cast<float>(app.window().height())},
                     cam.position);
 
                 const bool lmbPressed = input.mouseButtonPressed(GLFW_MOUSE_BUTTON_LEFT);
