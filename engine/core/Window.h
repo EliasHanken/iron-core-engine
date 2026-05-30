@@ -32,10 +32,17 @@ public:
 
     bool valid() const { return handle_ != nullptr; }
 
+    // Returns true once after a framebuffer resize, then clears the flag.
+    bool consumeResized();
+
 private:
     GLFWwindow* handle_ = nullptr;
     int width_ = 0;
     int height_ = 0;
+    bool resized_ = false;
+
+    // Allow the file-scope callback to update width_/height_/resized_.
+    friend void framebufferSizeCallback(GLFWwindow*, int, int);
 };
 
 } // namespace iron
