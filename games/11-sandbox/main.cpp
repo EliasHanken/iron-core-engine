@@ -49,8 +49,8 @@
 
 namespace {
 
-constexpr int kScreenW = 1280;
-constexpr int kScreenH = 720;
+constexpr int kInitialW = 1280;
+constexpr int kInitialH = 720;
 
 // Transform a model-space AABB by `model` and return its world-space AABB
 // (min/max of the 8 transformed corners). Loose for rotated boxes — fine for
@@ -240,8 +240,8 @@ int main() {
 #else
     iron::Application::Config cfg;
     cfg.title  = "Iron Core - Sandbox";
-    cfg.width  = kScreenW;
-    cfg.height = kScreenH;
+    cfg.width  = kInitialW;
+    cfg.height = kInitialH;
     iron::Application app(cfg);
     if (!app.valid()) {
         iron::Log::error("sandbox: Application init failed");
@@ -254,7 +254,7 @@ int main() {
         return 1;
     }
     iron::Renderer& renderer = *renderer_ptr;
-    renderer.setViewport(kScreenW, kScreenH);
+    renderer.setViewport(app.window().width(), app.window().height());
 
     // Skybox: procedural sunset cubemap (also what the helmet's reflection
     // samples). Falls back to clear color if creation fails.
@@ -434,10 +434,15 @@ int main() {
     iron::FreeFlyCamera cam;
     cam.position = {0.0f, 2.0f, 6.0f};
 
-    const float aspect = static_cast<float>(kScreenW) / static_cast<float>(kScreenH);
-    const iron::Mat4 proj = iron::perspective(
-        cam.fovDeg * (std::numbers::pi_v<float> / 180.0f),
-        aspect, 0.1f, 200.0f);
+    // M37.5: projection rebuilds on resize; lambda captures FOV/near/far closures.
+    auto computeProj = [&]() {
+        const float aspect = static_cast<float>(app.window().width())
+                           / static_cast<float>(app.window().height());
+        return iron::perspective(
+            cam.fovDeg * (std::numbers::pi_v<float> / 180.0f),
+            aspect, 0.1f, 200.0f);
+    };
+    iron::Mat4 proj = computeProj();   // not const — Task B2 will reassign this
 
     app.window().setCursorCaptured(false);  // free by default; RMB captures look
 
@@ -576,8 +581,8 @@ int main() {
                     view, proj,
                     iron::Vec2{static_cast<float>(input.mouseX()),
                                static_cast<float>(input.mouseY())},
-                    iron::Vec2{static_cast<float>(kScreenW),
-                               static_cast<float>(kScreenH)},
+                    iron::Vec2{static_cast<float>(kInitialW),
+                               static_cast<float>(kInitialH)},
                     cam.position);
 
                 const bool lmbPressed = input.mouseButtonPressed(GLFW_MOUSE_BUTTON_LEFT);
