@@ -750,7 +750,8 @@ bool VkPostProcess::createTargets(VkContext& ctx) {
         maskDeps[1].srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT |
                                     VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
         maskDeps[1].dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
-        maskDeps[1].dependencyFlags = VK_DEPENDENCY_BY_REGION_BIT;
+        // No BY_REGION: outline shader reads a 3x3 mask neighborhood which can
+        // cross framebuffer tiles on tiled GPUs.
 
         VkRenderPassCreateInfo maskRpInfo{};
         maskRpInfo.sType           = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO;
@@ -850,7 +851,8 @@ bool VkPostProcess::createTargets(VkContext& ctx) {
         glowDeps[1].dstStageMask    = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
         glowDeps[1].srcAccessMask   = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
         glowDeps[1].dstAccessMask   = VK_ACCESS_SHADER_READ_BIT;
-        glowDeps[1].dependencyFlags = VK_DEPENDENCY_BY_REGION_BIT;
+        // No BY_REGION: glow V blur samples y-offset taps on scratch[0] which
+        // cross framebuffer tiles; glow composite samples blurred scratch[1].
 
         VkRenderPassCreateInfo glowRpInfo{};
         glowRpInfo.sType           = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO;
