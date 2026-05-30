@@ -19,6 +19,7 @@
 #include "render/Light.h"
 #include "render/Material.h"
 #include "render/ProceduralSky.h"
+#include "render/RenderHandles.h"
 #include "render/Renderer.h"
 #include "render/RendererFactory.h"
 #include "render/TextureLoader.h"
@@ -26,6 +27,8 @@
 #include "scene/Mesh.h"
 #include "scene/SceneFormat.h"
 #include "scene/SceneIO.h"
+#include "world/Transform.h"
+#include "world/World.h"
 #include "editor/EnvironmentPanel.h"
 #include "editor/Gizmo.h"
 #include "editor/ImGuiLayer.h"
@@ -302,6 +305,9 @@ int main() {
     };
     std::vector<ResolvedEntity> resolved;
 
+    iron::World world;
+    std::vector<iron::EntityId> sceneIndexToEntity;   // parallel to scene.entities
+
     // Cache primitive meshes so N cubes/planes share one MeshHandle.
     iron::MeshHandle cubeMesh  = iron::kInvalidHandle;
     iron::MeshHandle planeMesh = iron::kInvalidHandle;
@@ -389,9 +395,36 @@ int main() {
         return true;
     };
 
+    // Pack a resolved entity's GPU handles into the new RenderHandles
+    // component shape (M37). Field names differ between the legacy
+    // iron::Material (texture/normalMap/specularMap) and the new
+    // RenderHandles (albedo/normal/specular).
+    auto toRenderHandles = [](const ResolvedEntity& re) -> iron::RenderHandles {
+        iron::RenderHandles rh{};
+        rh.mesh     = re.mesh;
+        rh.albedo   = re.material.texture;
+        rh.normal   = re.material.normalMap;
+        rh.specular = re.material.specularMap;
+        return rh;
+    };
+
     for (int ei = 0; ei < static_cast<int>(scene.entities.size()); ++ei) {
         ResolvedEntity re;
-        if (resolveEntity(scene.entities[ei], ei, re)) resolved.push_back(re);
+        if (!resolveEntity(scene.entities[ei], ei, re)) continue;
+        resolved.push_back(re);
+
+        // M37: mirror into the World.
+        const iron::SceneEntity& se = scene.entities[ei];
+        iron::EntityId entity = world.create();
+        iron::Transform t{};
+        t.position = se.position;
+        t.rotation = se.rotation;
+        t.scale    = se.scale;
+        world.add<iron::Transform>(entity, t);
+        world.add<iron::MeshRef>(entity, se.mesh);
+        world.add<iron::MaterialDef>(entity, se.material);
+        world.add<iron::RenderHandles>(entity, toRenderHandles(re));
+        sceneIndexToEntity.push_back(entity);
     }
 
     iron::Log::info("sandbox: resolved %zu / %zu entities from scene",
