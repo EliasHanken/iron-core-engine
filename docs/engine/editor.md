@@ -59,10 +59,12 @@ Displays the entity list from `scene.entities`. Clicking a row sets
 
 ```cpp
 // engine/editor/SceneInspector.h
-bool draw(SceneEntity& entity);
+bool draw(SceneEntity& entity, GizmoSpace& space);
 ```
 
-Edits the selected entity in place. Returns `true` if any field changed.
+Edits the selected entity in place. Returns `true` if any field changed. Also
+hosts the gizmo **World/Local** space toggle at the top of the panel (mirrors the
+**X** key), reading from and writing to `space`.
 
 Editable fields:
 
@@ -109,8 +111,11 @@ A game becomes an editor host by:
    // draw panels — they edit scene in place
    if (outliner.draw(scene, selectedIdx))
        iron::saveSceneFile(scene, scenePath);
-   if (selectedIdx >= 0)
-       inspector.draw(scene.entities[selectedIdx]);
+   if (selectedIdx >= 0) {
+       iron::GizmoSpace sp = gizmo.space();   // gizmo is the source of truth
+       inspector.draw(scene.entities[selectedIdx], sp);
+       gizmo.setSpace(sp);                    // Inspector may flip it; no-op mid-drag
+   }
    envPanel.draw(scene);
 
    // re-derive render data from the (possibly edited) scene
@@ -192,11 +197,15 @@ the Outliner highlights the entity in the viewport.
 | **W** | Translate mode |
 | **E** | Rotate mode |
 | **R** | Scale mode |
+| **X** | Toggle World / Local space (also in the Inspector) |
 | Hold **RMB** | Free-fly look (gizmo keys suppressed while flying) |
 
 When an entity is selected the `iron::Gizmo` controller
-(`editor/Gizmo.h`, in `ironcore_editor`) draws world-axis handles for the
-active mode. The gizmo is distance-scaled to maintain a constant apparent
+(`editor/Gizmo.h`, in `ironcore_editor`) draws handles for the active mode in
+either **World** (canonical X/Y/Z) or **Local** (aligned to the entity's
+rotation) space — toggled with **X** or the Inspector's *Gizmo Space* toggle.
+Scale handles are always per-local-axis regardless of the setting (matching
+Unreal/Unity). The gizmo is distance-scaled to maintain a constant apparent
 screen size regardless of how far the camera is from the entity.
 
 The gizmo renders **always-on-top** of scene geometry via a depth-disabled
@@ -222,6 +231,13 @@ Dragging any handle transforms the entity live by updating its position,
 rotation, or scale in the in-memory `SceneFile`. The same mutations are
 immediately reflected in the Inspector. Press **Save Scene** to persist them.
 
+The selected entity also gets an always-on-top **oriented bounding box**
+(selection-orange): the sandbox transforms each corner of the entity's local
+bounds by the model matrix every frame, so the box rotates and scales **with**
+the object instead of a world-axis AABB that just grows on rotation. It hugs the
+mesh's local *bounds*, not its vertices — a true vertex silhouette
+(stencil/edge-detect pass) is a later milestone.
+
 ### Engine helpers
 
 | Symbol | Header | Purpose |
@@ -241,9 +257,9 @@ ray-vs-AABB nearest). Full suite 46/46 green.
   world-aligned bounding box, so the selectable region is larger than the
   visual mesh. The thin floor plane is given a small Y thickness so it remains
   pickable.
-- **World-axis only.** Handles align to world X/Y/Z (no local-space gizmos);
-  the planar handles cover the world planes only. No screen-space center
-  free-move, snapping, multi-select, or undo.
+- **Bounds-box outline, no vertex silhouette.** The selection outline is the
+  oriented local-bounds box, not a true mesh silhouette (a stencil/edge-detect
+  outline is a later milestone). No snapping, multi-select, or undo.
 - **The gizmo sits at the entity pivot**, which for off-center assets (e.g. the
   helmet's origin near its top) isn't the visual center. That's the asset's
   authored pivot; per-asset re-pivoting is a future feature.

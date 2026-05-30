@@ -410,6 +410,15 @@ int main() {
     bool prevLook = false;  // was the camera capturing last frame?
     iron::Gizmo gizmo;
 
+    // Keyboard shortcuts for delete/duplicate are detected in the fixed-step
+    // update() (in lockstep with input edge-tracking) and latched here for the
+    // render() callback to consume. Detecting keyPressed() directly in render()
+    // is wrong: render runs every frame but input edges only advance per
+    // fixed step, so at high FPS one Ctrl+D fired on every render frame until
+    // the next input update — spawning a pile of duplicates.
+    bool wantDeleteShortcut    = false;
+    bool wantDuplicateShortcut = false;
+
     // Gizmo origin = the entity's transform pivot. It's rotation-stable (the
     // pivot IS the rotation center, so the gizmo stays put while the object spins
     // around it) and is the standard editor convention. A bounds-center origin
@@ -491,6 +500,17 @@ int main() {
             if (input.keyPressed(GLFW_KEY_W)) gizmo.setMode(iron::GizmoMode::Translate);
             if (input.keyPressed(GLFW_KEY_E)) gizmo.setMode(iron::GizmoMode::Rotate);
             if (input.keyPressed(GLFW_KEY_R)) gizmo.setMode(iron::GizmoMode::Scale);
+            if (input.keyPressed(GLFW_KEY_X)) gizmo.toggleSpace();
+
+            // Latch delete/duplicate edges here (lockstep with input), consumed
+            // once in render(). Suppressed while ImGui owns the keyboard (e.g.
+            // typing in the glTF path field).
+            if (!imgui.wantsKeyboard()) {
+                if (input.keyPressed(GLFW_KEY_DELETE)) wantDeleteShortcut = true;
+                else if (input.keyDown(GLFW_KEY_LEFT_CONTROL) &&
+                         input.keyPressed(GLFW_KEY_D))
+                    wantDuplicateShortcut = true;
+            }
 
             const bool uiBusy = imgui.wantsMouse();
             if (!uiBusy || gizmo.dragging()) {
@@ -533,8 +553,11 @@ int main() {
         // --- editor UI ---
         imgui.beginFrame();
         const iron::SceneOutliner::Result outRes = outliner.draw(scene, selectedIndex);
-        if (selectedIndex >= 0 && selectedIndex < static_cast<int>(scene.entities.size()))
-            inspector.draw(scene.entities[selectedIndex]);
+        if (selectedIndex >= 0 && selectedIndex < static_cast<int>(scene.entities.size())) {
+            iron::GizmoSpace sp = gizmo.space();
+            inspector.draw(scene.entities[selectedIndex], sp);
+            gizmo.setSpace(sp);  // Inspector may flip it; setSpace is a no-op mid-drag
+        }
         environment.draw(scene);
         if (outRes.saveClicked) {
             if (iron::saveSceneFile(scene, scenePath))
@@ -546,12 +569,14 @@ int main() {
         // --- add / delete / duplicate (Outliner buttons OR keyboard shortcuts) ---
         using Action = iron::SceneOutliner::Result::Action;
         Action action = outRes.action;
-        if (action == Action::None && !imgui.wantsKeyboard()) {
-            iron::Input& kin = app.input();
-            if (kin.keyPressed(GLFW_KEY_DELETE)) action = Action::Delete;
-            else if (kin.keyDown(GLFW_KEY_LEFT_CONTROL) && kin.keyPressed(GLFW_KEY_D))
-                action = Action::Duplicate;
+        if (action == Action::None) {
+            // Consume the latched keyboard shortcuts (set in update(), once per
+            // real key-press edge — not per render frame).
+            if (wantDeleteShortcut)         action = Action::Delete;
+            else if (wantDuplicateShortcut) action = Action::Duplicate;
         }
+        wantDeleteShortcut    = false;
+        wantDuplicateShortcut = false;
         const bool selValid = selectedIndex >= 0 &&
                               selectedIndex < static_cast<int>(scene.entities.size());
         if (action == Action::AddCube) {
@@ -624,10 +649,11 @@ int main() {
             renderer.submit(call);
         }
         if (selectedIndex >= 0 && selectedIndex < static_cast<int>(scene.entities.size()))
-            gizmo.draw(renderer, gizmoOriginFor(selectedIndex), cam.position);
+            gizmo.draw(renderer, gizmoOriginFor(selectedIndex),
+                       scene.entities[selectedIndex].rotation, cam.position);
 
-        // --- selection outline: the selected entity's world-AABB drawn as an
-        // always-on-top box, so the active object reads clearly. ---
+        // --- selection outline: the selected entity's oriented bounding box
+        // drawn as an always-on-top box, so the active object reads clearly. ---
         if (selectedIndex >= 0 && selectedIndex < static_cast<int>(scene.entities.size())) {
             for (const auto& re : resolved) {
                 if (re.entityIndex != selectedIndex) continue;
@@ -635,12 +661,18 @@ int main() {
                 const iron::Mat4 m = iron::translation(se.position)
                                    * se.rotation.toMat4()
                                    * iron::scaling(se.scale);
-                const iron::Aabb wa = worldAabb(re.localBounds, m);
+                // Oriented bounding box: transform each LOCAL-bounds corner by the
+                // model matrix so the outline rotates + scales with the object,
+                // instead of a world-axis AABB that just grows/shrinks on spin.
+                const iron::Aabb& lb = re.localBounds;
                 iron::Vec3 c[8];
-                for (int i = 0; i < 8; ++i)
-                    c[i] = iron::Vec3{(i & 1) ? wa.max.x : wa.min.x,
-                                      (i & 2) ? wa.max.y : wa.min.y,
-                                      (i & 4) ? wa.max.z : wa.min.z};
+                for (int i = 0; i < 8; ++i) {
+                    const iron::Vec3 lc{(i & 1) ? lb.max.x : lb.min.x,
+                                        (i & 2) ? lb.max.y : lb.min.y,
+                                        (i & 4) ? lb.max.z : lb.min.z};
+                    const iron::Vec4 w = m * iron::Vec4{lc.x, lc.y, lc.z, 1.0f};
+                    c[i] = iron::Vec3{w.x, w.y, w.z};  // model has no perspective; w == 1
+                }
                 const int edges[12][2] = {{0,1},{2,3},{4,5},{6,7},{0,2},{1,3},
                                           {4,6},{5,7},{0,4},{1,5},{2,6},{3,7}};
                 const iron::Vec3 outline{1.0f, 0.6f, 0.1f};  // selection orange

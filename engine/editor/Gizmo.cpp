@@ -15,6 +15,7 @@ constexpr float kPlaneInset       = 0.08f;  // planar-handle square inner corner
 constexpr float kPlaneReach       = 0.30f;  // planar-handle square outer corner (fraction of size)
 constexpr float kCenterPickFrac   = 0.12f;  // center free-move handle pick radius (fraction of size)
 constexpr float kCenterHalf       = 0.09f;  // center handle half-size (fraction of size)
+constexpr float kRingPickFrac     = 0.20f;  // rotate-ring pick band, screen-space (fraction of size)
 constexpr float kTwoPi            = 6.28318530718f;
 
 // Handle ids: 0/1/2 = single axes, 3/4/5 = planar (3 + plane-normal-axis,
@@ -25,6 +26,13 @@ Vec3 axisDir(int a)   { return a == 0 ? Vec3{1, 0, 0} : a == 1 ? Vec3{0, 1, 0} :
 Vec3 axisColor(int a) { return a == 0 ? Vec3{1.0f, 0.25f, 0.25f}
                              : a == 1 ? Vec3{0.25f, 1.0f, 0.25f}
                                       : Vec3{0.35f, 0.45f, 1.0f}; }
+
+// Fill ax[0..2] with the gizmo's handle axes. World: the canonical X/Y/Z. Local:
+// the entity's local axes (its rotation applied), expressed in world space.
+void buildBasis(bool local, const Quat& rot, Vec3 ax[3]) {
+    for (int a = 0; a < 3; ++a)
+        ax[a] = local ? rot.rotate(axisDir(a)) : axisDir(a);
+}
 
 float gizmoSize(Vec3 camPos, Vec3 origin) {
     const float d = length(camPos - origin) * kGizmoScreenScale;
@@ -105,33 +113,30 @@ bool rayPlane(const Ray& ray, Vec3 origin, Vec3 n, Vec3& hit) {
     return true;
 }
 
-// Angle of the ray's hit point on the rotation plane of `axis` about `origin`.
-// Returns false when the ray is parallel to the plane.
-bool ringAngle(const Ray& ray, Vec3 origin, int axis, float& out) {
-    Vec3 hit;
-    if (!rayPlane(ray, origin, axisDir(axis), hit)) return false;
-    Vec3 u, v;
-    if (axis == 0)      { u = Vec3{0, 1, 0}; v = Vec3{0, 0, 1}; }
-    else if (axis == 1) { u = Vec3{0, 0, 1}; v = Vec3{1, 0, 0}; }
-    else                { u = Vec3{1, 0, 0}; v = Vec3{0, 1, 0}; }
-    const Vec3 d = hit - origin;
-    out = std::atan2(dot(d, v), dot(d, u));
-    return true;
+// Camera-facing right/up basis at `origin`. right/up span the screen plane; the
+// plane normal (camPos - origin) points toward the camera, so atan2(.,.) in this
+// basis increases counter-clockwise as seen by the viewer. Used by the center
+// handle billboard and the rotate ring's screen-space picking + angle.
+void cameraBasis(Vec3 origin, Vec3 camPos, Vec3& right, Vec3& up) {
+    const Vec3 n = normalize(camPos - origin);
+    Vec3 r = cross(Vec3{0, 1, 0}, n);
+    right = (length(r) < 1e-4f) ? Vec3{1, 0, 0} : normalize(r);
+    up = cross(n, right);
 }
 
-// The two in-plane unit axes of the world plane whose normal is axis `n`.
-void planeAxes(int n, Vec3& u, Vec3& v) {
-    if (n == 0)      { u = axisDir(1); v = axisDir(2); }  // YZ
-    else if (n == 1) { u = axisDir(0); v = axisDir(2); }  // XZ (horizontal)
-    else             { u = axisDir(0); v = axisDir(1); }  // XY
+// The two in-plane axes of the plane whose normal is basis-axis `n`.
+void planeAxes(const Vec3 ax[3], int n, Vec3& u, Vec3& v) {
+    if (n == 0)      { u = ax[1]; v = ax[2]; }  // YZ
+    else if (n == 1) { u = ax[0]; v = ax[2]; }  // XZ (horizontal)
+    else             { u = ax[0]; v = ax[1]; }  // XY
 }
 
-// True if the planar handle for plane-normal axis `n` is under the ray. The
-// square sits in the [inset, reach] corner of the two in-plane axes near origin.
-bool planeHandleHit(const Ray& ray, Vec3 origin, int n, float size) {
+// True if the planar handle for basis-axis `n` is under the ray. The square sits
+// in the [inset, reach] corner of the two in-plane axes near origin.
+bool planeHandleHit(const Ray& ray, Vec3 origin, const Vec3 ax[3], int n, float size) {
     Vec3 hit;
-    if (!rayPlane(ray, origin, axisDir(n), hit)) return false;
-    Vec3 u, v; planeAxes(n, u, v);
+    if (!rayPlane(ray, origin, ax[n], hit)) return false;
+    Vec3 u, v; planeAxes(ax, n, u, v);
     const Vec3 d = hit - origin;
     const float du = dot(d, u), dv = dot(d, v);
     const float lo = kPlaneInset * size, hi = kPlaneReach * size;
@@ -139,42 +144,53 @@ bool planeHandleHit(const Ray& ray, Vec3 origin, int n, float size) {
 }
 
 // Which handle is under the ray for the given mode, or -1.
-int pickHandle(GizmoMode mode, const Ray& ray, Vec3 origin, float size) {
+int pickHandle(GizmoMode mode, const Ray& ray, Vec3 origin, const Vec3 ax[3],
+               Vec3 camPos, float size) {
     if (mode == GizmoMode::Translate) {
         // Center free-move handle (innermost) wins right at the origin.
         if (rayPointDistance(ray, origin) < size * kCenterPickFrac) return kCenterHandle;
         // Then the planar corner squares.
         for (int n = 0; n < 3; ++n)
-            if (planeHandleHit(ray, origin, n, size)) return 3 + n;
+            if (planeHandleHit(ray, origin, ax, n, size)) return 3 + n;
     }
     if (mode == GizmoMode::Translate || mode == GizmoMode::Scale) {
         int picked = -1;
         float best = size * kHandlePickFrac;
         for (int a = 0; a < 3; ++a) {
-            const float d = raySegmentDistance(ray, origin, origin + axisDir(a) * size);
+            const float d = raySegmentDistance(ray, origin, origin + ax[a] * size);
             if (d < best) { best = d; picked = a; }
         }
         return picked;
     }
-    // Rotate: rings.
+    // Rotate: measure the cursor's distance to each ring in the camera's screen
+    // plane, so oblique and edge-on rings stay easy to grab (a ray-vs-plane band
+    // misses them). Project the cursor to the gizmo's depth, then sample each ring
+    // and keep the nearest within tolerance.
+    Vec3 right, up;
+    cameraBasis(origin, camPos, right, up);
+    const Vec3 n = normalize(camPos - origin);
+    const float vd = dot(ray.direction, n);
+    if (std::fabs(vd) < 1e-5f) return -1;                 // ray skims the screen plane
+    const Vec3 M = camPos + ray.direction * (-length(camPos - origin) / vd);
+    const float mx = dot(M - origin, right), my = dot(M - origin, up);
+
     int picked = -1;
-    float best = size * kHandlePickFrac;
+    float best = size * kRingPickFrac;
+    constexpr int S = 64;
     for (int a = 0; a < 3; ++a) {
-        Vec3 hit;
-        if (rayPlane(ray, origin, axisDir(a), hit)) {
-            const float err = std::fabs(length(hit - origin) - size);
-            if (err < best) { best = err; picked = a; }
+        const Vec3 axisN = ax[a];
+        const Vec3 seed = std::fabs(axisN.x) > 0.5f ? Vec3{0, 1, 0} : Vec3{1, 0, 0};
+        const Vec3 U = normalize(seed - axisN * dot(seed, axisN));
+        const Vec3 V = cross(axisN, U);
+        for (int i = 0; i < S; ++i) {
+            const float t = static_cast<float>(i) / S * kTwoPi;
+            const Vec3 p = (U * std::cos(t) + V * std::sin(t)) * size;  // ring pt rel origin
+            const float sx = dot(p, right) - mx, sy = dot(p, up) - my;
+            const float d = std::sqrt(sx * sx + sy * sy);
+            if (d < best) { best = d; picked = a; }
         }
     }
     return picked;
-}
-
-// Camera-facing right/up basis at `origin` (for the center handle's billboard).
-void cameraBasis(Vec3 origin, Vec3 camPos, Vec3& right, Vec3& up) {
-    const Vec3 n = normalize(camPos - origin);
-    Vec3 r = cross(Vec3{0, 1, 0}, n);
-    right = (length(r) < 1e-4f) ? Vec3{1, 0, 0} : normalize(r);
-    up = cross(n, right);
 }
 
 void drawRing(Renderer& r, Vec3 c, Vec3 axis, float radius, Vec3 color) {
@@ -220,20 +236,32 @@ void drawArrowhead(Renderer& r, Vec3 tip, Vec3 dir, float size, Vec3 color) {
 }  // namespace
 
 void Gizmo::setMode(GizmoMode m) { if (axis_ < 0) mode_ = m; }
+void Gizmo::setSpace(GizmoSpace s) { if (axis_ < 0) space_ = s; }
+void Gizmo::toggleSpace() {
+    if (axis_ < 0)
+        space_ = (space_ == GizmoSpace::World) ? GizmoSpace::Local : GizmoSpace::World;
+}
 
 bool Gizmo::update(SceneEntity& e, Vec3 origin, const Ray& ray,
                    bool mousePressed, bool mouseDown, Vec3 camPos) {
     const float size = gizmoSize(camPos, origin);
+    // Scale is inherently per-local-axis (matches Unreal/Unity, whose world/local
+    // toggle is disabled for scale).
+    const bool effectiveLocal = (mode_ == GizmoMode::Scale) || (space_ == GizmoSpace::Local);
+
+    // Idle / pre-drag: orient handles by the entity's CURRENT rotation.
+    Vec3 ax[3];
+    buildBasis(effectiveLocal, e.rotation, ax);
 
     if (!mouseDown) {
         axis_ = -1;
-        hoveredAxis_ = pickHandle(mode_, ray, origin, size);  // hover feedback
+        hoveredAxis_ = pickHandle(mode_, ray, origin, ax, camPos, size);  // hover feedback
         return false;
     }
 
     // Begin a drag on press over a handle.
     if (mousePressed && axis_ < 0) {
-        const int picked = pickHandle(mode_, ray, origin, size);
+        const int picked = pickHandle(mode_, ray, origin, ax, camPos, size);
         hoveredAxis_ = picked;
         if (picked < 0) return false;   // empty press -> host re-selects
         axis_        = picked;
@@ -245,35 +273,61 @@ bool Gizmo::update(SceneEntity& e, Vec3 origin, const Ray& ray,
             startNormal_ = normalize(camPos - startOrigin_);
             Vec3 hit;
             startHit_ = rayPlane(ray, startOrigin_, startNormal_, hit) ? hit : startOrigin_;
-        } else if (picked >= 3) {             // planar: the handle's world plane
+        } else if (picked >= 3) {             // planar: the handle's oriented plane
             Vec3 hit;
-            startHit_ = rayPlane(ray, startOrigin_, axisDir(picked - 3), hit) ? hit : startOrigin_;
+            startHit_ = rayPlane(ray, startOrigin_, ax[picked - 3], hit) ? hit : startOrigin_;
+        } else if (mode_ == GizmoMode::Rotate) {
+            // Tangent drag: freeze a screen-space tangent at the grab point. The
+            // rotation angle is the cursor's displacement along that tangent /
+            // radius (arc-length rolling), so the grabbed point follows the
+            // cursor 1:1. Stable on every ring orientation and free of the
+            // center singularity an angle-around-center measurement has.
+            const Vec3 n = ax[picked];                        // frozen ring normal
+            const Vec3 c = normalize(camPos - startOrigin_);  // camera-facing plane normal
+            Vec3 right, up; cameraBasis(startOrigin_, camPos, right, up);
+            Vec3 tangent = right;                             // fallback if degenerate
+            Vec3 hit;
+            if (rayPlane(ray, startOrigin_, c, hit)) {
+                const Vec3 d = hit - startOrigin_;
+                const Vec3 r = d - n * dot(d, n);            // grab dir within the ring plane
+                if (length(r) > 1e-5f) {
+                    const Vec3 t = cross(n, normalize(r));   // world tangent along the ring
+                    const Vec3 proj = t - c * dot(t, c);     // projected onto the camera plane
+                    if (length(proj) > 1e-5f) tangent = normalize(proj);
+                }
+                startParam_ = dot(hit - startOrigin_, tangent);
+            } else {
+                startParam_ = 0.0f;
+            }
+            startTangent_ = tangent;
+            lastParam_    = startParam_;
         } else {
             float p = 0.0f;
-            if (mode_ == GizmoMode::Rotate) ringAngle(ray, startOrigin_, picked, p);
-            else                            rayAxisParam(ray, startOrigin_, axisDir(picked), p);
+            rayAxisParam(ray, startOrigin_, ax[picked], p);
             startParam_ = p;
             lastParam_  = p;
         }
         return true;
     }
 
-    // Continue a drag. On a degenerate/near-parallel solve, hold the last value
-    // (no movement this frame) instead of jumping.
+    // Continue a drag. Freeze the basis to startRot_ so the handle frame is fixed
+    // for the whole drag (a Rotate drag changes e.rotation every frame). On a
+    // degenerate/near-parallel solve, hold the last value (no movement this frame).
     if (axis_ >= 0) {
+        buildBasis(effectiveLocal, startRot_, ax);
         if (axis_ == kCenterHandle) {  // free-move in the camera-facing plane
             Vec3 hit;
             if (rayPlane(ray, startOrigin_, startNormal_, hit))
                 e.position = startPos_ + (hit - startHit_);
             return true;
         }
-        if (axis_ >= 3) {  // planar drag: move in the handle's world plane
+        if (axis_ >= 3) {  // planar drag: move in the handle's oriented plane
             Vec3 hit;
-            if (rayPlane(ray, startOrigin_, axisDir(axis_ - 3), hit))
+            if (rayPlane(ray, startOrigin_, ax[axis_ - 3], hit))
                 e.position = startPos_ + (hit - startHit_);
             return true;
         }
-        const Vec3 dir = axisDir(axis_);
+        const Vec3 dir = ax[axis_];
         if (mode_ == GizmoMode::Translate) {
             float p;
             if (rayAxisParam(ray, startOrigin_, dir, p)) lastParam_ = p; else p = lastParam_;
@@ -284,19 +338,40 @@ bool Gizmo::update(SceneEntity& e, Vec3 origin, const Ray& ray,
             float s = (axis_ == 0 ? startScale_.x : axis_ == 1 ? startScale_.y : startScale_.z) + (p - startParam_);
             if (s < 0.01f) s = 0.01f;
             if (axis_ == 0) e.scale.x = s; else if (axis_ == 1) e.scale.y = s; else e.scale.z = s;
-        } else {  // Rotate
-            float ang;
-            if (ringAngle(ray, startOrigin_, axis_, ang)) lastParam_ = ang; else ang = lastParam_;
-            e.rotation = Quat::fromAxisAngle(dir, ang - startParam_) * startRot_;
+        } else {  // Rotate — tangent drag (see the begin-drag setup above)
+            const Vec3 c = normalize(camPos - startOrigin_);  // camera-facing plane normal
+            Vec3 hit;
+            float s;
+            if (rayPlane(ray, startOrigin_, c, hit)) {
+                s = dot(hit - startOrigin_, startTangent_);   // displacement along frozen tangent
+                lastParam_ = s;
+            } else {
+                s = lastParam_;                               // degenerate: hold
+            }
+            // Arc-length / radius = radians: projecting the world tangent onto the
+            // camera plane already encodes the on-screen handedness, so the grabbed
+            // point follows the cursor for any ring orientation (no facing flip).
+            // `dir` (= ax[axis_]) is frozen to startRot_, so World mode reduces to a
+            // world-axis rotation about that axis.
+            const float angle = (s - startParam_) / size;
+            e.rotation = Quat::fromAxisAngle(dir, angle) * startRot_;
         }
         return true;
     }
     return false;
 }
 
-void Gizmo::draw(Renderer& renderer, Vec3 origin, Vec3 camPos) const {
+void Gizmo::draw(Renderer& renderer, Vec3 origin, Quat rotation, Vec3 camPos) const {
     const float size = gizmoSize(camPos, origin);
     const int highlight = (axis_ >= 0) ? axis_ : hoveredAxis_;
+    const bool effectiveLocal = (mode_ == GizmoMode::Scale) || (space_ == GizmoSpace::Local);
+    // Draw in the LIVE entity frame so the handles track the object during a
+    // drag (a Local rotate spins the rings with the mesh for feedback). The
+    // dragged rotate-ring's normal is invariant under its own rotation, so it
+    // stays put while the other two follow. The rotation MATH in update() still
+    // uses the frozen startRot_ basis for a stable axis + angle reference.
+    Vec3 ax[3];
+    buildBasis(effectiveLocal, rotation, ax);
 
     auto colorFor = [&](int id) -> Vec3 {
         Vec3 c;
@@ -312,16 +387,16 @@ void Gizmo::draw(Renderer& renderer, Vec3 origin, Vec3 camPos) const {
     };
 
     if (mode_ == GizmoMode::Rotate) {
-        for (int a = 0; a < 3; ++a) drawRing(renderer, origin, axisDir(a), size, colorFor(a));
+        for (int a = 0; a < 3; ++a) drawRing(renderer, origin, ax[a], size, colorFor(a));
         return;
     }
 
     // Axis handles (translate arrows / scale boxes).
     for (int a = 0; a < 3; ++a) {
-        const Vec3 tip = origin + axisDir(a) * size;
+        const Vec3 tip = origin + ax[a] * size;
         renderer.drawLineOverlayThick(origin, tip, colorFor(a));
         if (mode_ == GizmoMode::Scale)          drawBox(renderer, tip, size * 0.08f, colorFor(a));
-        else if (mode_ == GizmoMode::Translate) drawArrowhead(renderer, tip, axisDir(a), size, colorFor(a));
+        else if (mode_ == GizmoMode::Translate) drawArrowhead(renderer, tip, ax[a], size, colorFor(a));
     }
 
     if (mode_ != GizmoMode::Translate) return;
@@ -331,15 +406,14 @@ void Gizmo::draw(Renderer& renderer, Vec3 origin, Vec3 camPos) const {
     const float reach = kPlaneReach * size;
     for (int n = 0; n < 3; ++n) {
         Vec3 u, v;
-        planeAxes(n, u, v);
+        planeAxes(ax, n, u, v);
         const Vec3 c10 = origin + u * reach;
         const Vec3 c11 = origin + u * reach + v * reach;
         const Vec3 c01 = origin + v * reach;
         const Vec3 col = colorFor(3 + n);
         renderer.drawTriOverlay(origin, c10, c11, col);
         renderer.drawTriOverlay(origin, c11, c01, col);
-        // Outline only the two OUTER edges (the L away from the origin) so the
-        // flat reads clearly without doubling the axis lines.
+        // Outline only the two OUTER edges (the L away from the origin).
         renderer.drawLineOverlayThick(c10, c11, col);
         renderer.drawLineOverlayThick(c01, c11, col);
     }
