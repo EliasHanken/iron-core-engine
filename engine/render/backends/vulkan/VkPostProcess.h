@@ -5,10 +5,13 @@
 #endif
 
 #include "math/Mat4.h"
+#include "render/PostChainPlan.h"
+#include "render/PostEffect.h"
 
 #include <vulkan/vulkan.h>
 #include <vk_mem_alloc.h>
 #include <cstdint>
+#include <vector>
 
 namespace iron {
 
@@ -43,6 +46,13 @@ public:
     void endScenePass(VkCommandBuffer cb) const;
     void recordComposite(VkCommandBuffer cb) const;
 
+    // Run the post-process chain for this frame into the (already-begun) swapchain
+    // pass. `passes` from planPostChain(); `effects` supplies per-id styles.
+    void runChain(VkCommandBuffer cb,
+                  const std::vector<PostPass>& passes,
+                  const EffectTable& effects,
+                  VkExtent2D swapExtent);
+
     // --- Mask pass API (Phase C) ---
     VkRenderPass maskPass() const { return maskPass_; }
 
@@ -64,9 +74,18 @@ public:
     VkImageView maskColorView() const { return maskColorView_; }
     VkImageView maskDepthView() const { return maskDepthView_; }
 
+    // Push constants for the outline pipeline.
+    struct OutlinePush {
+        float color[4];   // rgb outline color, a unused
+        float texel[2];   // 1/width, 1/height (of the mask/screen)
+        float width;      // outline thickness in pixels
+        float _pad;
+    };
+
 private:
     VkContext* ctx_ = nullptr;
-    VkSampler  sampler_ = VK_NULL_HANDLE;
+    VkSampler  sampler_     = VK_NULL_HANDLE;  // linear-repeat (from VkTextureStore)
+    VkSampler  maskSampler_ = VK_NULL_HANDLE;  // NEAREST — required for integer (R8_UINT) textures
     VkExtent2D extent_{};
     VkFormat   colorFormat_ = VK_FORMAT_UNDEFINED;
     VkFormat   depthFormat_ = VK_FORMAT_UNDEFINED;
@@ -98,6 +117,12 @@ private:
     VkDescriptorPool      descPool_       = VK_NULL_HANDLE;
     VkDescriptorSet       copyDescSet_    = VK_NULL_HANDLE;
 
+    // --- Outline pipeline ---
+    VkDescriptorSetLayout outlineSetLayout_  = VK_NULL_HANDLE;
+    VkPipelineLayout      outlinePipeLayout_ = VK_NULL_HANDLE;
+    ::VkPipeline          outlinePipeline_   = VK_NULL_HANDLE;
+    VkDescriptorSet       outlineDescSet_    = VK_NULL_HANDLE;
+
     // --- Mask pipeline (push-constant only, no descriptor sets) ---
     VkPipelineLayout maskPipeLayout_ = VK_NULL_HANDLE;
     ::VkPipeline     maskPipeline_   = VK_NULL_HANDLE;
@@ -105,6 +130,7 @@ private:
     bool createTargets(VkContext& ctx);
     void destroyTargets(VkContext& ctx);
     bool createCopyPipeline(VkContext& ctx, VkRenderPass swapchainPass);
+    bool createOutlinePipeline(VkContext& ctx, VkRenderPass swapchainPass);
     bool createMaskPipeline(VkContext& ctx);
 };
 

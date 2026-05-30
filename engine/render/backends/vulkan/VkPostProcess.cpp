@@ -43,6 +43,36 @@ layout(location = 0) out uint outId;
 void main() { outId = pc.id; }
 )";
 
+// --- Outline pass shaders ---
+// Full-screen triangle (vertex = kFullscreenVert). Samples scene-color (binding 0)
+// and the R8_UINT mask id (binding 1). Edge-detects the mask with a 3x3 kernel
+// and composites the outline color over the scene.
+const char* kOutlineFrag = R"(#version 450
+layout(location = 0) in vec2 vUV;
+layout(location = 0) out vec4 outColor;
+layout(set = 0, binding = 0) uniform sampler2D uScene;
+layout(set = 0, binding = 1) uniform usampler2D uMask;
+layout(push_constant) uniform Push {
+    vec4  color;
+    vec2  texel;
+    float width;
+    float _pad;
+} pc;
+void main() {
+    vec3 scene = texture(uScene, vUV).rgb;
+    uint here = texture(uMask, vUV).r;
+    float edge = 0.0;
+    for (int dx = -1; dx <= 1; ++dx)
+    for (int dy = -1; dy <= 1; ++dy) {
+        if (dx == 0 && dy == 0) continue;
+        vec2 o = vec2(float(dx), float(dy)) * pc.texel * pc.width;
+        uint n = texture(uMask, vUV + o).r;
+        if (n != here) edge = 1.0;
+    }
+    outColor = vec4(mix(scene, pc.color.rgb, edge), 1.0);
+}
+)";
+
 }  // namespace
 
 // ---------------------------------------------------------------------------
@@ -58,8 +88,25 @@ bool VkPostProcess::init(VkContext& ctx, VkFormat colorFormat, VkFormat depthFor
     extent_      = extent;
     sampler_     = sharedSampler;
 
+    // Create a NEAREST sampler for integer textures (R8_UINT mask).
+    // The shared sampler_ from VkTextureStore is LINEAR; integer formats
+    // cannot be linearly filtered (Vulkan validation error), so a dedicated
+    // NEAREST sampler is required here.
+    {
+        VkSamplerCreateInfo si{};
+        si.sType        = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
+        si.magFilter    = VK_FILTER_NEAREST;
+        si.minFilter    = VK_FILTER_NEAREST;
+        si.mipmapMode   = VK_SAMPLER_MIPMAP_MODE_NEAREST;
+        si.addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+        si.addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+        si.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+        VK_CHECK(vkCreateSampler(ctx.device(), &si, nullptr, &maskSampler_));
+    }
+
     if (!createTargets(ctx)) return false;
     if (!createCopyPipeline(ctx, swapchainPass)) return false;
+    if (!createOutlinePipeline(ctx, swapchainPass)) return false;
     if (!createMaskPipeline(ctx)) return false;
     return true;
 }
@@ -69,12 +116,22 @@ void VkPostProcess::destroy(VkContext& ctx) {
     if (maskPipeline_)   { vkDestroyPipeline(ctx.device(), maskPipeline_, nullptr); maskPipeline_ = VK_NULL_HANDLE; }
     if (maskPipeLayout_) { vkDestroyPipelineLayout(ctx.device(), maskPipeLayout_, nullptr); maskPipeLayout_ = VK_NULL_HANDLE; }
 
+    // Outline pipeline objects.
+    if (outlinePipeline_)   { vkDestroyPipeline(ctx.device(), outlinePipeline_, nullptr); outlinePipeline_ = VK_NULL_HANDLE; }
+    if (outlinePipeLayout_) { vkDestroyPipelineLayout(ctx.device(), outlinePipeLayout_, nullptr); outlinePipeLayout_ = VK_NULL_HANDLE; }
+    if (outlineSetLayout_)  { vkDestroyDescriptorSetLayout(ctx.device(), outlineSetLayout_, nullptr); outlineSetLayout_ = VK_NULL_HANDLE; }
+    // outlineDescSet_ is freed when descPool_ is destroyed below.
+    outlineDescSet_ = VK_NULL_HANDLE;
+
     // Copy (composite) pipeline objects.
     if (copyPipeline_)   { vkDestroyPipeline(ctx.device(), copyPipeline_, nullptr); copyPipeline_ = VK_NULL_HANDLE; }
     if (copyPipeLayout_) { vkDestroyPipelineLayout(ctx.device(), copyPipeLayout_, nullptr); copyPipeLayout_ = VK_NULL_HANDLE; }
     if (copySetLayout_)  { vkDestroyDescriptorSetLayout(ctx.device(), copySetLayout_, nullptr); copySetLayout_ = VK_NULL_HANDLE; }
-    // descPool_ owns copyDescSet_; destroying the pool frees the set.
+    // descPool_ owns copyDescSet_ and outlineDescSet_; destroying the pool frees both.
     if (descPool_)       { vkDestroyDescriptorPool(ctx.device(), descPool_, nullptr); descPool_ = VK_NULL_HANDLE; copyDescSet_ = VK_NULL_HANDLE; }
+
+    // NEAREST sampler for integer mask texture.
+    if (maskSampler_)    { vkDestroySampler(ctx.device(), maskSampler_, nullptr); maskSampler_ = VK_NULL_HANDLE; }
 
     // Render target objects.
     destroyTargets(ctx);
@@ -86,19 +143,47 @@ bool VkPostProcess::resize(VkContext& ctx, VkExtent2D extent) {
     if (!createTargets(ctx)) return false;
 
     // Re-write the copy descriptor set to point at the new sceneColorView_.
-    VkDescriptorImageInfo imgInfo{};
-    imgInfo.sampler     = sampler_;
-    imgInfo.imageView   = sceneColorView_;
-    imgInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    {
+        VkDescriptorImageInfo imgInfo{};
+        imgInfo.sampler     = sampler_;
+        imgInfo.imageView   = sceneColorView_;
+        imgInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 
-    VkWriteDescriptorSet write{};
-    write.sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-    write.dstSet          = copyDescSet_;
-    write.dstBinding      = 0;
-    write.descriptorType  = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-    write.descriptorCount = 1;
-    write.pImageInfo      = &imgInfo;
-    vkUpdateDescriptorSets(ctx.device(), 1, &write, 0, nullptr);
+        VkWriteDescriptorSet write{};
+        write.sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        write.dstSet          = copyDescSet_;
+        write.dstBinding      = 0;
+        write.descriptorType  = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        write.descriptorCount = 1;
+        write.pImageInfo      = &imgInfo;
+        vkUpdateDescriptorSets(ctx.device(), 1, &write, 0, nullptr);
+    }
+
+    // Re-write the outline descriptor set to point at the new views.
+    {
+        VkDescriptorImageInfo imgInfos[2]{};
+        imgInfos[0].sampler     = sampler_;
+        imgInfos[0].imageView   = sceneColorView_;
+        imgInfos[0].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        imgInfos[1].sampler     = maskSampler_;
+        imgInfos[1].imageView   = maskColorView_;
+        imgInfos[1].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+
+        VkWriteDescriptorSet writes[2]{};
+        writes[0].sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        writes[0].dstSet          = outlineDescSet_;
+        writes[0].dstBinding      = 0;
+        writes[0].descriptorType  = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        writes[0].descriptorCount = 1;
+        writes[0].pImageInfo      = &imgInfos[0];
+        writes[1].sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        writes[1].dstSet          = outlineDescSet_;
+        writes[1].dstBinding      = 1;
+        writes[1].descriptorType  = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        writes[1].descriptorCount = 1;
+        writes[1].pImageInfo      = &imgInfos[1];
+        vkUpdateDescriptorSets(ctx.device(), 2, writes, 0, nullptr);
+    }
 
     return true;
 }
@@ -608,21 +693,22 @@ bool VkPostProcess::createCopyPipeline(VkContext& ctx, VkRenderPass swapchainPas
     pInfo.layout              = copyPipeLayout_;
     pInfo.renderPass          = swapchainPass;
     pInfo.subpass             = 0;
-    VK_CHECK(vkCreateGraphicsPipelines(ctx.device(), VK_NULL_HANDLE, 1, &pInfo,
-                                       nullptr, &copyPipeline_));
-
-    // Shader modules are no longer needed after pipeline creation.
+    // Capture result so shader modules are destroyed even if pipeline creation fails.
+    VkResult copyPipeResult = vkCreateGraphicsPipelines(ctx.device(), VK_NULL_HANDLE, 1,
+                                                        &pInfo, nullptr, &copyPipeline_);
     vkDestroyShaderModule(ctx.device(), vsm, nullptr);
     vkDestroyShaderModule(ctx.device(), fsm, nullptr);
+    VK_CHECK(copyPipeResult);
 
-    // Descriptor pool: one set with one combined-image-sampler.
+    // Descriptor pool: two sets total (copy + outline), three combined-image-sampler
+    // descriptors (1 for copy, 2 for outline — scene-color + mask-id).
     VkDescriptorPoolSize poolSize{};
     poolSize.type            = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-    poolSize.descriptorCount = 1;
+    poolSize.descriptorCount = 3;
 
     VkDescriptorPoolCreateInfo dpInfo{};
     dpInfo.sType         = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
-    dpInfo.maxSets       = 1;
+    dpInfo.maxSets       = 2;
     dpInfo.poolSizeCount = 1;
     dpInfo.pPoolSizes    = &poolSize;
     VK_CHECK(vkCreateDescriptorPool(ctx.device(), &dpInfo, nullptr, &descPool_));
@@ -779,13 +865,237 @@ bool VkPostProcess::createMaskPipeline(VkContext& ctx) {
     pInfo.layout              = maskPipeLayout_;
     pInfo.renderPass          = maskPass_;
     pInfo.subpass             = 0;
-    VK_CHECK(vkCreateGraphicsPipelines(ctx.device(), VK_NULL_HANDLE, 1, &pInfo,
-                                       nullptr, &maskPipeline_));
-
+    // Capture result so shader modules are destroyed even if pipeline creation fails.
+    VkResult maskPipeResult = vkCreateGraphicsPipelines(ctx.device(), VK_NULL_HANDLE, 1,
+                                                        &pInfo, nullptr, &maskPipeline_);
     vkDestroyShaderModule(ctx.device(), vsm, nullptr);
     vkDestroyShaderModule(ctx.device(), fsm, nullptr);
+    VK_CHECK(maskPipeResult);
 
     return true;
+}
+
+bool VkPostProcess::createOutlinePipeline(VkContext& ctx, VkRenderPass swapchainPass) {
+    // Compile shaders (reuse kFullscreenVert from the copy pipeline).
+    auto vspv = compileGlsl(VK_SHADER_STAGE_VERTEX_BIT,   kFullscreenVert);
+    auto fspv = compileGlsl(VK_SHADER_STAGE_FRAGMENT_BIT, kOutlineFrag);
+    if (vspv.empty() || fspv.empty()) {
+        Log::error("VkPostProcess: outline shader compile failed");
+        return false;
+    }
+
+    VkShaderModule vsm = VK_NULL_HANDLE, fsm = VK_NULL_HANDLE;
+    VkShaderModuleCreateInfo smInfo{};
+    smInfo.sType    = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
+    smInfo.codeSize = vspv.size() * sizeof(std::uint32_t);
+    smInfo.pCode    = vspv.data();
+    VK_CHECK(vkCreateShaderModule(ctx.device(), &smInfo, nullptr, &vsm));
+    smInfo.codeSize = fspv.size() * sizeof(std::uint32_t);
+    smInfo.pCode    = fspv.data();
+    if (vkCreateShaderModule(ctx.device(), &smInfo, nullptr, &fsm) != VK_SUCCESS) {
+        vkDestroyShaderModule(ctx.device(), vsm, nullptr);
+        Log::error("VkPostProcess: outline fragment shader module creation failed");
+        return false;
+    }
+
+    // Descriptor set layout: binding 0 = sampler2D (scene color), binding 1 = usampler2D (mask id).
+    // Both are COMBINED_IMAGE_SAMPLER; the mask uses maskSampler_ (NEAREST) at runtime.
+    VkDescriptorSetLayoutBinding bindings[2]{};
+    bindings[0].binding         = 0;
+    bindings[0].descriptorType  = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    bindings[0].descriptorCount = 1;
+    bindings[0].stageFlags      = VK_SHADER_STAGE_FRAGMENT_BIT;
+    bindings[1].binding         = 1;
+    bindings[1].descriptorType  = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    bindings[1].descriptorCount = 1;
+    bindings[1].stageFlags      = VK_SHADER_STAGE_FRAGMENT_BIT;
+
+    VkDescriptorSetLayoutCreateInfo dslInfo{};
+    dslInfo.sType        = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+    dslInfo.bindingCount = 2;
+    dslInfo.pBindings    = bindings;
+    VK_CHECK(vkCreateDescriptorSetLayout(ctx.device(), &dslInfo, nullptr, &outlineSetLayout_));
+
+    // Push constant for outline params (fragment stage).
+    VkPushConstantRange pcRange{};
+    pcRange.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+    pcRange.offset     = 0;
+    pcRange.size       = static_cast<uint32_t>(sizeof(OutlinePush));
+
+    VkPipelineLayoutCreateInfo plInfo{};
+    plInfo.sType                  = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+    plInfo.setLayoutCount         = 1;
+    plInfo.pSetLayouts            = &outlineSetLayout_;
+    plInfo.pushConstantRangeCount = 1;
+    plInfo.pPushConstantRanges    = &pcRange;
+    VK_CHECK(vkCreatePipelineLayout(ctx.device(), &plInfo, nullptr, &outlinePipeLayout_));
+
+    // Pipeline — full-screen triangle, no vertex input, depth test off.
+    VkPipelineShaderStageCreateInfo stages[2]{};
+    stages[0].sType  = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+    stages[0].stage  = VK_SHADER_STAGE_VERTEX_BIT;
+    stages[0].module = vsm;
+    stages[0].pName  = "main";
+    stages[1].sType  = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+    stages[1].stage  = VK_SHADER_STAGE_FRAGMENT_BIT;
+    stages[1].module = fsm;
+    stages[1].pName  = "main";
+
+    VkPipelineVertexInputStateCreateInfo vi{};
+    vi.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
+    // No vertex bindings — positions come from gl_VertexIndex.
+
+    VkPipelineInputAssemblyStateCreateInfo ia{};
+    ia.sType    = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO;
+    ia.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+
+    VkPipelineViewportStateCreateInfo vp{};
+    vp.sType         = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO;
+    vp.viewportCount = 1;
+    vp.scissorCount  = 1;
+
+    VkPipelineRasterizationStateCreateInfo rs{};
+    rs.sType       = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO;
+    rs.polygonMode = VK_POLYGON_MODE_FILL;
+    rs.cullMode    = VK_CULL_MODE_NONE;
+    rs.frontFace   = VK_FRONT_FACE_COUNTER_CLOCKWISE;
+    rs.lineWidth   = 1.0f;
+
+    VkPipelineMultisampleStateCreateInfo ms{};
+    ms.sType                = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO;
+    ms.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
+
+    VkPipelineDepthStencilStateCreateInfo ds{};
+    ds.sType            = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO;
+    ds.depthTestEnable  = VK_FALSE;
+    ds.depthWriteEnable = VK_FALSE;
+
+    VkPipelineColorBlendAttachmentState att{};
+    att.colorWriteMask = 0xF;
+    att.blendEnable    = VK_FALSE;
+
+    VkPipelineColorBlendStateCreateInfo cb{};
+    cb.sType           = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO;
+    cb.attachmentCount = 1;
+    cb.pAttachments    = &att;
+
+    VkDynamicState dynStates[] = {VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR};
+    VkPipelineDynamicStateCreateInfo dyn{};
+    dyn.sType             = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO;
+    dyn.dynamicStateCount = 2;
+    dyn.pDynamicStates    = dynStates;
+
+    VkGraphicsPipelineCreateInfo pInfo{};
+    pInfo.sType               = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
+    pInfo.stageCount          = 2;
+    pInfo.pStages             = stages;
+    pInfo.pVertexInputState   = &vi;
+    pInfo.pInputAssemblyState = &ia;
+    pInfo.pViewportState      = &vp;
+    pInfo.pRasterizationState = &rs;
+    pInfo.pMultisampleState   = &ms;
+    pInfo.pDepthStencilState  = &ds;
+    pInfo.pColorBlendState    = &cb;
+    pInfo.pDynamicState       = &dyn;
+    pInfo.layout              = outlinePipeLayout_;
+    pInfo.renderPass          = swapchainPass;
+    pInfo.subpass             = 0;
+    // Capture result so shader modules are destroyed even if pipeline creation fails.
+    VkResult outlinePipeResult = vkCreateGraphicsPipelines(ctx.device(), VK_NULL_HANDLE,
+                                                           1, &pInfo, nullptr,
+                                                           &outlinePipeline_);
+    vkDestroyShaderModule(ctx.device(), vsm, nullptr);
+    vkDestroyShaderModule(ctx.device(), fsm, nullptr);
+    VK_CHECK(outlinePipeResult);
+
+    // Allocate the outline descriptor set from the shared pool (allocated in
+    // createCopyPipeline with maxSets=2, descriptorCount=3).
+    VkDescriptorSetAllocateInfo dsAlloc{};
+    dsAlloc.sType              = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+    dsAlloc.descriptorPool     = descPool_;
+    dsAlloc.descriptorSetCount = 1;
+    dsAlloc.pSetLayouts        = &outlineSetLayout_;
+    VK_CHECK(vkAllocateDescriptorSets(ctx.device(), &dsAlloc, &outlineDescSet_));
+
+    // Write the outline descriptor set: binding 0 = scene color (linear sampler),
+    // binding 1 = mask id (NEAREST sampler — integer texture cannot be linear-filtered).
+    VkDescriptorImageInfo imgInfos[2]{};
+    imgInfos[0].sampler     = sampler_;
+    imgInfos[0].imageView   = sceneColorView_;
+    imgInfos[0].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    imgInfos[1].sampler     = maskSampler_;
+    imgInfos[1].imageView   = maskColorView_;
+    imgInfos[1].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+
+    VkWriteDescriptorSet writes[2]{};
+    writes[0].sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    writes[0].dstSet          = outlineDescSet_;
+    writes[0].dstBinding      = 0;
+    writes[0].descriptorType  = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    writes[0].descriptorCount = 1;
+    writes[0].pImageInfo      = &imgInfos[0];
+    writes[1].sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    writes[1].dstSet          = outlineDescSet_;
+    writes[1].dstBinding      = 1;
+    writes[1].descriptorType  = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    writes[1].descriptorCount = 1;
+    writes[1].pImageInfo      = &imgInfos[1];
+    vkUpdateDescriptorSets(ctx.device(), 2, writes, 0, nullptr);
+
+    return true;
+}
+
+void VkPostProcess::runChain(VkCommandBuffer cb,
+                             const std::vector<PostPass>& passes,
+                             const EffectTable& effects,
+                             VkExtent2D swapExtent) {
+    for (const PostPass pass : passes) {
+        switch (pass) {
+            case PostPass::Copy:
+                recordComposite(cb);
+                break;
+
+            case PostPass::Outline: {
+                // Find the first active Outline style in the effect table.
+                const EffectStyle* os = nullptr;
+                for (int id = 1; id < EffectTable::kMaxIds; ++id) {
+                    if (effects.style(static_cast<uint8_t>(id)).kind == EffectKind::Outline) {
+                        os = &effects.style(static_cast<uint8_t>(id));
+                        break;
+                    }
+                }
+
+                OutlinePush pc{};
+                if (os) {
+                    pc.color[0] = os->color.x;
+                    pc.color[1] = os->color.y;
+                    pc.color[2] = os->color.z;
+                    pc.color[3] = 1.0f;
+                    pc.width    = os->width;
+                } else {
+                    // Fallback defaults (shouldn't happen if Outline is in passes).
+                    pc.color[0] = 1.0f; pc.color[1] = 0.6f; pc.color[2] = 0.1f; pc.color[3] = 1.0f;
+                    pc.width    = 2.0f;
+                }
+                pc.texel[0] = (swapExtent.width  > 0) ? 1.0f / static_cast<float>(swapExtent.width)  : 0.0f;
+                pc.texel[1] = (swapExtent.height > 0) ? 1.0f / static_cast<float>(swapExtent.height) : 0.0f;
+                pc._pad     = 0.0f;
+
+                vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, outlinePipeline_);
+                vkCmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                                        outlinePipeLayout_, 0, 1, &outlineDescSet_, 0, nullptr);
+                vkCmdPushConstants(cb, outlinePipeLayout_,
+                                   VK_SHADER_STAGE_FRAGMENT_BIT,
+                                   0, sizeof(OutlinePush), &pc);
+                vkCmdDraw(cb, 3, 1, 0, 0);
+                break;
+            }
+
+            // GlowBlurH, GlowBlurV, GlowComposite, XRay land in tasks D and E.
+            default:
+                break;
+        }
+    }
 }
 
 }  // namespace iron

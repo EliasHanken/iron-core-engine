@@ -4,6 +4,7 @@
 
 #include "render/backends/vulkan/VulkanRenderer.h"
 #include "render/backends/vulkan/VkUtils.h"
+#include "render/PostChainPlan.h"
 #include "core/Log.h"
 #include "core/Window.h"
 #include "math/Transform.h"
@@ -989,7 +990,12 @@ void VulkanRenderer::endFrame() {
             VkRect2D scissor{{0, 0}, swapchain_.extent()};
             vkCmdSetScissor(cb, 0, 1, &scissor);
         }
-        postProcess_.recordComposite(cb);
+        // Run the post-process chain. With no effects active, planPostChain returns
+        // {Copy} and runChain calls recordComposite — identical to prior behaviour.
+        {
+            const std::vector<PostPass> passes = planPostChain(effects_.activeKinds());
+            postProcess_.runChain(cb, passes, effects_, swapchain_.extent());
+        }
 
         // UI/overlays (ImGui) draw AFTER composite so they are never affected
         // by post-process effects.
@@ -1056,6 +1062,10 @@ void VulkanRenderer::setViewport(int width, int height) {
     pendingResize_ = true;
     pendingResizeWidth_ = width;
     pendingResizeHeight_ = height;
+}
+
+void VulkanRenderer::setEffectStyle(uint8_t effectId, const EffectStyle& style) {
+    effects_.setStyle(effectId, style);
 }
 
 VkCommandBuffer VulkanRenderer::currentCommandBuffer() {

@@ -94,6 +94,9 @@ public:
 
     void setViewport(int width, int height) override;
 
+    // M36 — stores an effect style; looked up each frame via runChain.
+    void setEffectStyle(uint8_t effectId, const EffectStyle& style) override;
+
     // --- engine-internal accessors (not part of iron::Renderer) ---
 
     // Returns the current frame's primary command buffer. Only meaningful
@@ -193,6 +196,7 @@ private:
 
     // M36 — offscreen scene-color target + post-process composite pipeline.
     VkPostProcess         postProcess_;
+    EffectTable           effects_;   // M36 C3 — per-id effect styles; updated via setEffectStyle
 
     // M17 — planar reflection RTT + shared pipeline + currently-set plane.
     VkReflectionTarget    reflection_;
