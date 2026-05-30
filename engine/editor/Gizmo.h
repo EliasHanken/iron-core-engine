@@ -12,10 +12,10 @@ class Renderer;
 enum class GizmoMode { Translate, Rotate, Scale };
 enum class GizmoSpace { World, Local };
 
-// A world-axis transform gizmo for the editor. Operates on a single SceneEntity:
-// hit-tests its handles against a mouse ray (for hover + click-grab), drags
-// translate/rotate/scale, and draws itself as always-on-top debug lines at an
-// explicit origin (the entity's visible-bounds center, supplied by the host).
+// A transform gizmo for the editor, in World or Local space. Operates on a
+// single SceneEntity: hit-tests its handles against a mouse ray (for hover +
+// click-grab), drags translate/rotate/scale, and draws itself as always-on-top
+// debug lines at an explicit origin (the entity's pivot, supplied by the host).
 class Gizmo {
 public:
     void setMode(GizmoMode m);          // ignored mid-drag
