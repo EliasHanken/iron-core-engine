@@ -26,10 +26,43 @@ static void test_component_type_ids_are_distinct() {
     CHECK(a == a2);
 }
 
+#include "world/ComponentArray.h"
+
+static void test_component_array_add_and_get() {
+    iron::ComponentArray<int> arr;
+    iron::EntityId e{0, 1};
+    int* p = arr.add(e, 42);
+    CHECK(p != nullptr);
+    CHECK(*p == 42);
+    CHECK(arr.get(e) != nullptr);
+    CHECK(*arr.get(e) == 42);
+    CHECK(arr.size() == 1);
+}
+
+static void test_component_array_get_missing_returns_null() {
+    iron::ComponentArray<int> arr;
+    iron::EntityId e{0, 1};
+    CHECK(arr.get(e) == nullptr);
+}
+
+static void test_component_array_add_two_entities() {
+    iron::ComponentArray<int> arr;
+    iron::EntityId a{0, 1};
+    iron::EntityId b{1, 1};
+    arr.add(a, 10);
+    arr.add(b, 20);
+    CHECK(arr.size() == 2);
+    CHECK(*arr.get(a) == 10);
+    CHECK(*arr.get(b) == 20);
+}
+
 int main() {
     test_entityid_default_is_invalid();
     test_entityid_with_generation_is_valid();
     test_component_type_ids_are_distinct();
+    test_component_array_add_and_get();
+    test_component_array_get_missing_returns_null();
+    test_component_array_add_two_entities();
     if (g_failures == 0) std::printf("All world tests passed.\n");
     return g_failures == 0 ? 0 : 1;
 }
