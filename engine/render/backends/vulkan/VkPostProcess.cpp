@@ -191,12 +191,12 @@ bool VkPostProcess::init(VkContext& ctx, VkFormat colorFormat, VkFormat depthFor
         VK_CHECK(vkCreateSampler(ctx.device(), &si, nullptr, &maskSampler_));
     }
 
-    if (!createTargets(ctx)) return false;
-    if (!createCopyPipeline(ctx, swapchainPass)) return false;
-    if (!createOutlinePipeline(ctx, swapchainPass)) return false;
-    if (!createMaskPipeline(ctx)) return false;
-    if (!createGlowPipelines(ctx, swapchainPass)) return false;
-    if (!createXRayPipeline(ctx, swapchainPass)) return false;
+    if (!createTargets(ctx))                       { destroy(ctx); return false; }
+    if (!createCopyPipeline(ctx, swapchainPass))   { destroy(ctx); return false; }
+    if (!createOutlinePipeline(ctx, swapchainPass)){ destroy(ctx); return false; }
+    if (!createMaskPipeline(ctx))                  { destroy(ctx); return false; }
+    if (!createGlowPipelines(ctx, swapchainPass))  { destroy(ctx); return false; }
+    if (!createXRayPipeline(ctx, swapchainPass))   { destroy(ctx); return false; }
     return true;
 }
 

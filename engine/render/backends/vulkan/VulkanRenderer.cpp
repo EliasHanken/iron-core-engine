@@ -940,27 +940,43 @@ void VulkanRenderer::endFrame() {
         postProcess_.endScenePass(cb);
     }
 
-    // --- M36 Pass 3b: mask pass — tagged draws write effectId + depth ---
-    // Only runs when at least one static draw has effectId != 0. Skinned draws
-    // are not yet supported in the mask pass (out of scope for this task).
+    // --- M36: derive per-frame active effects from actually-tagged draws ---
+    // Using effects_.activeKinds() (the permanent style table) would run effect
+    // passes on frames where no draw is tagged — sampling a stale/UNDEFINED
+    // mask. Plan the chain from this frame's submissions instead.
+    std::vector<EffectKind> activeKindsThisFrame;
     {
-        bool anyTagged = false;
-        for (const DrawCall& call : sceneDraws_)
-            if (call.effectId != 0) { anyTagged = true; break; }
-        if (anyTagged) {
-            postProcess_.beginMaskPass(cb);
-            postProcess_.bindMaskPipeline(cb);
-            for (const DrawCall& call : sceneDraws_)
-                if (call.effectId != 0) recordMaskDraw(cb, call);
-            postProcess_.endMaskPass(cb);
+        std::array<bool, 4> seen{};
+        for (const DrawCall& call : sceneDraws_) {
+            if (call.effectId == 0) continue;
+            const EffectKind k = effects_.style(call.effectId).kind;
+            if (k == EffectKind::None) continue;
+            seen[static_cast<int>(k)] = true;
         }
+        for (int k = 1; k < 4; ++k)
+            if (seen[k]) activeKindsThisFrame.push_back(static_cast<EffectKind>(k));
+    }
+    const bool anyTaggedThisFrame = !activeKindsThisFrame.empty();
+
+    // --- M36 Pass 3b: mask pass — tagged draws write effectId + depth ---
+    // Only runs when this frame has at least one effective tagged draw. Skinned
+    // draws are not yet supported in the mask pass (out of scope for this task).
+    if (anyTaggedThisFrame) {
+        postProcess_.beginMaskPass(cb);
+        postProcess_.bindMaskPipeline(cb);
+        for (const DrawCall& call : sceneDraws_) {
+            if (call.effectId == 0) continue;
+            if (effects_.style(call.effectId).kind == EffectKind::None) continue;
+            recordMaskDraw(cb, call);
+        }
+        postProcess_.endMaskPass(cb);
     }
 
     // --- M36 Phase D: offscreen pre-passes (GlowBlurH, GlowBlurV) ---
     // These must run OUTSIDE the swapchain render pass because they begin their
     // own render pass (glowPass_). For Copy/Outline/XRay this is a no-op.
     {
-        const std::vector<PostPass> passes = planPostChain(effects_.activeKinds());
+        const std::vector<PostPass> passes = planPostChain(activeKindsThisFrame);
         postProcess_.runChainOffscreenPasses(cb, passes, effects_, swapchain_.extent());
     }
 
@@ -999,9 +1015,9 @@ void VulkanRenderer::endFrame() {
             vkCmdSetScissor(cb, 0, 1, &scissor);
         }
         // Run the in-swapchain-pass chain (Copy, Outline, GlowComposite, XRay).
-        // With no effects active, planPostChain returns {Copy} — identical to prior behaviour.
+        // With no effects active this frame, planPostChain returns {Copy}.
         {
-            const std::vector<PostPass> passes = planPostChain(effects_.activeKinds());
+            const std::vector<PostPass> passes = planPostChain(activeKindsThisFrame);
             postProcess_.runChain(cb, passes, effects_, swapchain_.extent());
         }
 
