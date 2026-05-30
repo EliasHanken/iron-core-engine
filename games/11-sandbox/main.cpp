@@ -478,7 +478,7 @@ int main() {
     app.setUpdate([&](const iron::FrameTime& t) {
         iron::Input& input = app.input();
         if (input.keyPressed(GLFW_KEY_ESCAPE))
-            glfwSetWindowShouldClose(app.window().handle(), GLFW_TRUE);
+            selectedIndex = -1;
 
         // Look + fly only while RIGHT mouse is held and ImGui isn't using it.
         const bool look = input.mouseButtonDown(GLFW_MOUSE_BUTTON_RIGHT)
