@@ -128,6 +128,34 @@ static void test_component_array_iteration_after_swap() {
     CHECK(arr.entityAt(1) == c);
 }
 
+#include "world/World.h"
+
+static void test_world_create_returns_valid_entity() {
+    iron::World w;
+    iron::EntityId e = w.create();
+    CHECK(e.valid());
+    CHECK(w.alive(e));
+}
+
+static void test_world_destroy_kills_entity() {
+    iron::World w;
+    iron::EntityId e = w.create();
+    w.destroy(e);
+    CHECK(!w.alive(e));
+}
+
+static void test_world_recycle_bumps_generation() {
+    iron::World w;
+    iron::EntityId a = w.create();
+    w.destroy(a);
+    iron::EntityId b = w.create();
+    CHECK(b.valid());
+    CHECK(b.index == a.index);   // slot reused
+    CHECK(b.generation != a.generation);
+    CHECK(!w.alive(a));          // stale handle stays dead
+    CHECK(w.alive(b));
+}
+
 int main() {
     test_entityid_default_is_invalid();
     test_entityid_with_generation_is_valid();
@@ -141,6 +169,9 @@ int main() {
     test_component_array_operator_index();
     test_component_array_entity_at();
     test_component_array_iteration_after_swap();
+    test_world_create_returns_valid_entity();
+    test_world_destroy_kills_entity();
+    test_world_recycle_bumps_generation();
     if (g_failures == 0) std::printf("All world tests passed.\n");
     return g_failures == 0 ? 0 : 1;
 }

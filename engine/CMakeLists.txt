@@ -36,6 +36,7 @@ add_library(ironcore STATIC
   render/ProceduralSky.cpp
   render/TextureLoader.cpp
   util/FileWatcher.cpp
+  world/World.cpp
   debug/GizmoRegistry.cpp
 )
 
