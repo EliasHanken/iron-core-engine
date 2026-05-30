@@ -31,6 +31,7 @@ add_library(ironcore STATIC
   audio/AudioEngine.cpp
   game/Collision.cpp
   render/RendererFactory.cpp
+  render/PostChainPlan.cpp
   render/ReflectionPlane.cpp
   render/ProceduralSky.cpp
   render/TextureLoader.cpp
