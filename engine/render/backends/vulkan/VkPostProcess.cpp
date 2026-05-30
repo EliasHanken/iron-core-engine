@@ -733,6 +733,9 @@ bool VkPostProcess::createTargets(VkContext& ctx) {
         maskDeps[0].dstStageMask  = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT |
                                     VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT;
         maskDeps[0].srcAccessMask = VK_ACCESS_SHADER_READ_BIT;
+        // Depth is written at LATE_FRAGMENT_TESTS; cover it in the dst stage so the
+        // DEPTH_STENCIL_ATTACHMENT_WRITE access has a matching stage.
+        maskDeps[0].dstStageMask |= VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT;
         maskDeps[0].dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT |
                                     VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
 
