@@ -266,6 +266,17 @@ int main() {
     renderer.setShadowBounds(iron::Vec3{0.0f, 2.0f, 0.0f}, 25.0f);
     renderer.disableReflectionPlane();
 
+    // Register effect id 1 (selection highlight) with the default Outline style.
+    // Re-registered whenever the inspector's effect-kind picker changes.
+    {
+        iron::EffectStyle es;
+        es.kind      = iron::EffectKind::Outline;
+        es.color     = iron::Vec3{1.0f, 0.6f, 0.1f};  // selection orange
+        es.width     = 3.0f;
+        es.intensity = 1.5f;
+        renderer.setEffectStyle(1, es);
+    }
+
     // --- M29: load the scene file ---
     const std::string exeDir = iron::executableDir();
     const std::string scenePath = exeDir + "/assets/scenes/demo.json";
@@ -409,6 +420,7 @@ int main() {
     int  selectedIndex = scene.entities.empty() ? -1 : 0;
     bool prevLook = false;  // was the camera capturing last frame?
     iron::Gizmo gizmo;
+    iron::EffectKind selectionEffect = iron::EffectKind::Outline;  // default selection effect
 
     // Keyboard shortcuts for delete/duplicate are detected in the fixed-step
     // update() (in lockstep with input edge-tracking) and latched here for the
@@ -555,8 +567,18 @@ int main() {
         const iron::SceneOutliner::Result outRes = outliner.draw(scene, selectedIndex);
         if (selectedIndex >= 0 && selectedIndex < static_cast<int>(scene.entities.size())) {
             iron::GizmoSpace sp = gizmo.space();
-            inspector.draw(scene.entities[selectedIndex], sp);
+            iron::EffectKind ek = selectionEffect;
+            inspector.draw(scene.entities[selectedIndex], sp, ek);
             gizmo.setSpace(sp);  // Inspector may flip it; setSpace is a no-op mid-drag
+            if (ek != selectionEffect) {
+                selectionEffect = ek;
+                iron::EffectStyle es;
+                es.kind      = selectionEffect;
+                es.color     = iron::Vec3{1.0f, 0.6f, 0.1f};
+                es.width     = 3.0f;
+                es.intensity = 1.5f;
+                renderer.setEffectStyle(1, es);
+            }
         }
         environment.draw(scene);
         if (outRes.saveClicked) {
@@ -646,6 +668,7 @@ int main() {
             call.shader   = litShader;
             call.model    = re.model;
             call.material = re.material;
+            call.effectId = (re.entityIndex == selectedIndex) ? 1 : 0;
             renderer.submit(call);
         }
         if (selectedIndex >= 0 && selectedIndex < static_cast<int>(scene.entities.size()))
