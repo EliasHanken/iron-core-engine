@@ -91,6 +91,43 @@ static void test_component_array_remove_then_readd() {
     CHECK(*arr.get(e) == 99);
 }
 
+static void test_component_array_operator_index() {
+    iron::ComponentArray<int> arr;
+    iron::EntityId a{0, 1};
+    iron::EntityId b{1, 1};
+    arr.add(a, 10);
+    arr.add(b, 20);
+    CHECK(arr[0] == 10);
+    CHECK(arr[1] == 20);
+}
+
+static void test_component_array_entity_at() {
+    iron::ComponentArray<int> arr;
+    iron::EntityId a{0, 1};
+    iron::EntityId b{1, 1};
+    arr.add(a, 10);
+    arr.add(b, 20);
+    CHECK(arr.entityAt(0) == a);
+    CHECK(arr.entityAt(1) == b);
+}
+
+static void test_component_array_iteration_after_swap() {
+    // Insert A,B,C; remove B; verify rows 0,1 are A=10, C=30.
+    iron::ComponentArray<int> arr;
+    iron::EntityId a{0, 1};
+    iron::EntityId b{1, 1};
+    iron::EntityId c{2, 1};
+    arr.add(a, 10);
+    arr.add(b, 20);
+    arr.add(c, 30);
+    arr.remove(b);
+    CHECK(arr.size() == 2);
+    CHECK(arr[0] == 10);
+    CHECK(arr[1] == 30);
+    CHECK(arr.entityAt(0) == a);
+    CHECK(arr.entityAt(1) == c);
+}
+
 int main() {
     test_entityid_default_is_invalid();
     test_entityid_with_generation_is_valid();
@@ -101,6 +138,9 @@ int main() {
     test_component_array_remove_invalidates_get();
     test_component_array_remove_swaps_correctly();
     test_component_array_remove_then_readd();
+    test_component_array_operator_index();
+    test_component_array_entity_at();
+    test_component_array_iteration_after_swap();
     if (g_failures == 0) std::printf("All world tests passed.\n");
     return g_failures == 0 ? 0 : 1;
 }

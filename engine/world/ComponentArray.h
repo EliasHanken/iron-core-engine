@@ -62,6 +62,11 @@ public:
         sparse_[e.index] = kNoRow;
     }
 
+    T&       operator[](size_t denseRow)       { return dense_[denseRow]; }
+    const T& operator[](size_t denseRow) const { return dense_[denseRow]; }
+
+    EntityId entityAt(size_t denseRow) const { return denseEntities_[denseRow]; }
+
 protected:
     std::vector<T>        dense_;
     std::vector<EntityId> denseEntities_;
