@@ -205,72 +205,105 @@ git commit -m "M36: VkPostProcess skeleton — offscreen scene-color target + co
 
 - [ ] **Step 1: Initialize `postProcess_` in `VulkanRenderer::init`**
 
-After the swapchain + shared sampler exist (find where `reflection_.init(...)` is called and mirror its placement), add:
+Find where `reflection_.init(...)` is called and mirror its placement + how it obtains its shared sampler (read those exact lines — `reflection_.init(context_, <sampler>)`). The swapchain pass the composite renders into is `pipelines_.renderPass()` (the engine's main color+depth pass, same one `scenePass()` returns today). Add:
 
 ```cpp
 if (!postProcess_.init(context_, swapchain_.colorFormat(), swapchain_.depthFormat(),
-                       swapchain_.extent(), /*shared sampler*/ sharedSampler_,
-                       swapchain_.renderPass())) {
+                       swapchain_.extent(), /*shared sampler from reflection setup*/ sharedSampler,
+                       pipelines_.renderPass())) {
     Log::error("VulkanRenderer: post-process init failed");
     return false;
 }
 ```
-(Use the same shared sampler the reflection target uses — read how `reflection_.init` gets its sampler and reuse it. If there's no member sampler, follow `VkReflectionTarget`'s sampler approach.)
+(Use the same sampler `reflection_.init` uses. If reflection creates its own sampler internally rather than receiving one, give `VkPostProcess` its own sampler like `VkReflectionTarget` does — match whichever the codebase actually does.)
+
+> NOTE — `scenePass()` accessor: external subsystems (particles) build pipelines against `scenePass()` and then record via `enqueueDeferredScenePass`, which now fires in the **offscreen** pass. So `VulkanRenderer::scenePass()` MUST return `postProcess_.scenePass()` (the offscreen pass), not `pipelines_.renderPass()`, so particle pipelines are render-pass-compatible with where they're recorded. Update `scenePass()` accordingly in this task and confirm particles still draw (they should now be post-processable too, which is fine/desirable).
 
 - [ ] **Step 2: Split `endFrame` — geometry into offscreen, composite+UI into swapchain**
 
-Replace the single scene-pass block in `endFrame` with two passes. The geometry (scene draws, skinned, skybox, deferred/particles) goes into `postProcess_.scenePass()`; the composite + debug-lines + HUD go into the swapchain pass:
+**First read the ACTUAL `endFrame` scene-pass block** (around `VulkanRenderer.cpp:870–940`). Ground truth from that code (your snippets MUST match these, not generic Vulkan):
+- The scene pass currently begins `pipelines_.renderPass()` with `pipelines_.framebuffer(currentImageIndex_)` and 2 clear values (color from `pendingClear_`, depth `{1.0f,0}`).
+- Viewport is set via a helper `setSceneViewport(cb, swapchain_.extent())` — it uses a **negative-height (clip-Y-flipped) viewport**. Reuse this helper; do NOT hand-roll a positive-height `VkViewport`, or geometry renders Y-mirrored.
+- Skybox draws **first**, inside the pass, with translation stripped from the view: `Mat4 v = pendingView_; v.at(0,3)=v.at(1,3)=v.at(2,3)=0; vp = pendingProjection_ * v;` then `skybox_.record(cb, context_.device(), frames_, cubemaps_.get(pendingSkybox_), vp)` guarded by `cubemaps_.has(pendingSkybox_)`.
+- Then `for (const DrawCall& call : sceneDraws_) recordSceneDraw(cb, call);`
+- Then skinned draws, then `for (auto& fn : deferredScenePass_) fn(cb); deferredScenePass_.clear();`
+- After deferred (ImGui) it **re-calls `setSceneViewport`** to undo ImGui's positive-height viewport, then records debug lines + HUD:
+  `debugLines_.record(cb, context_.device(), frames_, pendingDebugView_, pendingDebugProj_)` and
+  `hud_.record(cb, context_.device(), frames_, textures_, pendingHudBatch_, pendingHudW_, pendingHudH_)`.
+
+**The restructure:** move skybox + scene draws + skinned + the particle deferred callbacks into the offscreen scene pass; move composite + ImGui + debug-lines + HUD into the swapchain pass. Concretely, replace the single `// --- Scene pass ---` block with:
 
 ```cpp
     // --- offscreen scene pass: geometry renders into the post-process color ---
-    const float clear[4] = {pendingClear_.x, pendingClear_.y, pendingClear_.z, 1.0f};
-    postProcess_.beginScenePass(cb, clear);
     {
-        // replay buffered scene draws
-        for (const auto& call : sceneDraws_)
-            if (meshes_.valid(call.mesh)) recordSceneDraw(cb, call);
+        const float clear[4] = {pendingClear_.x, pendingClear_.y, pendingClear_.z, 1.0f};
+        postProcess_.beginScenePass(cb, clear);          // begins scenePass_ + sets viewport
+        setSceneViewport(cb, postProcess_.extent());     // negative-height Y-flip, like today
+
+        if (cubemaps_.has(pendingSkybox_)) {
+            Mat4 v = pendingView_;
+            v.at(0, 3) = 0.0f; v.at(1, 3) = 0.0f; v.at(2, 3) = 0.0f;
+            const Mat4 vp = pendingProjection_ * v;
+            skybox_.record(cb, context_.device(), frames_,
+                           cubemaps_.get(pendingSkybox_), vp);
+        }
+        for (const DrawCall& call : sceneDraws_) recordSceneDraw(cb, call);
         for (std::size_t i = 0; i < skinnedDraws_.size(); ++i)
             recordSkinnedDraw(cb, skinnedDraws_[i], skinnedBoneMatricesStash_[i]);
-        if (pendingSkybox_ != kInvalidHandle)
-            skybox_.record(cb, pendingSkybox_, pendingView_, pendingProjection_);
-        for (auto& fn : deferredScenePass_) fn(cb);   // particles
+        for (auto& fn : deferredScenePass_) fn(cb);       // particles only (see note)
+        deferredScenePass_.clear();
+        postProcess_.endScenePass(cb);
     }
-    postProcess_.endScenePass(cb);
 
     // --- swapchain pass: composite the scene, then UI/overlays on top ---
-    VkClearValue clears[2];
-    clears[0].color = {{0, 0, 0, 1.0f}};
-    clears[1].depthStencil = {1.0f, 0};
-    VkRenderPassBeginInfo rp{VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO};
-    rp.renderPass = swapchain_.renderPass();
-    rp.framebuffer = swapchain_.framebuffer(currentImageIndex_);
-    rp.renderArea.offset = {0, 0};
-    rp.renderArea.extent = swapchain_.extent();
-    rp.clearValueCount = 2;
-    rp.pClearValues = clears;
-    vkCmdBeginRenderPass(cb, &rp, VK_SUBPASS_CONTENTS_INLINE);
+    {
+        VkClearValue clears[2]{};
+        clears[0].color.float32[0] = 0.0f; clears[0].color.float32[1] = 0.0f;
+        clears[0].color.float32[2] = 0.0f; clears[0].color.float32[3] = 1.0f;
+        clears[1].depthStencil = {1.0f, 0};
+        VkRenderPassBeginInfo rpBegin{};
+        rpBegin.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
+        rpBegin.renderPass = pipelines_.renderPass();
+        rpBegin.framebuffer = pipelines_.framebuffer(currentImageIndex_);
+        rpBegin.renderArea.offset = {0, 0};
+        rpBegin.renderArea.extent = swapchain_.extent();
+        rpBegin.clearValueCount = 2;
+        rpBegin.pClearValues = clears;
+        vkCmdBeginRenderPass(cb, &rpBegin, VK_SUBPASS_CONTENTS_INLINE);
 
-    VkViewport vp{0, 0, (float)swapchain_.extent().width,
-                  (float)swapchain_.extent().height, 0.0f, 1.0f};
-    vkCmdSetViewport(cb, 0, 1, &vp);
-    VkRect2D scis{{0, 0}, swapchain_.extent()};
-    vkCmdSetScissor(cb, 0, 1, &scis);
+        // Composite uses a full-screen triangle in NDC — it does NOT depend on the
+        // scene's Y-flip convention (it samples scene-color by vUV). Set a plain
+        // full extent viewport/scissor for it.
+        postProcess_.recordComposite(cb);   // Phase A: straight copy of scene-color
 
-    postProcess_.recordComposite(cb);   // Phase A: straight copy
+        // UI / overlays draw AFTER composite. ImGui is enqueued by the host as a
+        // deferred callback (see note); fire the UI-deferred queue here.
+        for (auto& fn : deferredUiPass_) fn(cb);
+        deferredUiPass_.clear();
 
-    if (pendingDebugFlush_)
-        debugLines_.record(cb, pendingDebugView_, pendingDebugProj_);
-    if (pendingHudValid_)
-        hud_.record(cb, pendingHudBatch_, pendingHudW_, pendingHudH_);
-
-    vkCmdEndRenderPass(cb);
+        // ImGui may set a positive-height viewport; restore the flipped one before
+        // debug lines + HUD so they match scene convention.
+        setSceneViewport(cb, swapchain_.extent());
+        if (pendingDebugFlush_) {
+            debugLines_.record(cb, context_.device(), frames_,
+                               pendingDebugView_, pendingDebugProj_);
+            pendingDebugFlush_ = false;
+        }
+        if (pendingHudValid_) {
+            hud_.record(cb, context_.device(), frames_, textures_,
+                        pendingHudBatch_, pendingHudW_, pendingHudH_);
+            pendingHudValid_ = false;
+        }
+        vkCmdEndRenderPass(cb);
+    }
 ```
 
-> IMPORTANT: ImGui records via a deferred callback in the sandbox host (`enqueueDeferredScenePass`). For Phase A, ImGui must end up drawn on the **swapchain** pass, not the offscreen pass, or the editor UI gets post-processed later. Two options — pick the one matching how the sandbox enqueues ImGui (read `games/11-sandbox/main.cpp` + `engine/editor/ImGuiLayer.cpp`):
-> - **(preferred)** Keep `deferredScenePass_` for particles (offscreen), and record ImGui/HUD/debug in the swapchain pass. If ImGui currently uses `enqueueDeferredScenePass`, add a second queue `enqueueDeferredUiPass(...)` that fires in the swapchain pass, and switch `ImGuiLayer` to it.
-> - If ImGui is recorded directly by `ImGuiLayer` against `scenePass()`, update `ImGuiLayer` to target the swapchain pass instead.
+> IMPORTANT — ImGui must move to the swapchain pass. Today the sandbox enqueues ImGui via `enqueueDeferredScenePass` (read `games/11-sandbox/main.cpp` + `engine/editor/ImGuiLayer.cpp` to confirm), and that queue now fires in the **offscreen** pass — wrong for UI. Fix by **adding a second deferred queue for UI**:
+> - In `VulkanRenderer.h` add `std::vector<std::function<void(VkCommandBuffer)>> deferredUiPass_;` and a public `void enqueueDeferredUiPass(std::function<void(VkCommandBuffer)>);` mirroring `enqueueDeferredScenePass` (also clear it in `beginFrame` like the scene one).
+> - Point `ImGuiLayer` at `enqueueDeferredUiPass` instead of `enqueueDeferredScenePass` (particles stay on the scene queue). If `ImGuiLayer` calls the renderer through `iron::Renderer`, add `enqueueDeferredUiPass` as an engine-internal method on `VulkanRenderer` and have `ImGuiLayer` use it the same way it currently reaches `enqueueDeferredScenePass` (it already depends on the Vulkan renderer for ImGui-Vulkan init).
+> - Net goal: **particles render offscreen (get post-processed); ImGui + HUD + debug lines render on the swapchain after composite (never post-processed).** Confirm in the commit message which queue ImGui landed on.
 >
-> Implement whichever fits; the goal: **ImGui + HUD + gizmo/debug lines render in the swapchain pass, after composite.** Document the choice in the commit message.
+> Also clear `deferredUiPass_` in `beginFrame` next to `deferredScenePass_.clear()` / the existing per-frame resets.
 
 - [ ] **Step 3: Handle resize in `setViewport`**
 
