@@ -69,6 +69,49 @@ static void test_typeidof_optional_enum() {
           == iron::TypeId::OptionalEnum);
 }
 
+#include "reflection/Reflection.h"
+#include "world/Transform.h"
+
+static void test_reflection_register_type_stores_name() {
+    iron::Reflection r;
+    r.registerType<iron::Transform>("Transform");
+    CHECK(r.typeName<iron::Transform>() == "Transform");
+}
+
+static void test_reflection_unregistered_type_has_empty_name() {
+    iron::Reflection r;
+    CHECK(r.typeName<iron::Transform>().empty());
+}
+
+static void test_reflection_field_offsets_match_offsetof() {
+    iron::Reflection r;
+    r.registerType<iron::Transform>("Transform")
+        .field("position", &iron::Transform::position)
+        .field("rotation", &iron::Transform::rotation)
+        .field("scale",    &iron::Transform::scale);
+    auto fields = r.fieldsOf<iron::Transform>();
+    CHECK(fields.size() == 3);
+    CHECK(fields[0].name == "position");
+    CHECK(fields[1].name == "rotation");
+    CHECK(fields[2].name == "scale");
+    CHECK(fields[0].offset == offsetof(iron::Transform, position));
+    CHECK(fields[1].offset == offsetof(iron::Transform, rotation));
+    CHECK(fields[2].offset == offsetof(iron::Transform, scale));
+    CHECK(fields[0].type == iron::TypeId::Vec3);
+    CHECK(fields[1].type == iron::TypeId::Quat);
+    CHECK(fields[2].type == iron::TypeId::Vec3);
+}
+
+static void test_reflection_field_meta_roundtrip() {
+    iron::Reflection r;
+    r.registerType<iron::Transform>("Transform")
+        .field("scale", &iron::Transform::scale, {.min = 0.001f, .max = 1000.0f});
+    auto fields = r.fieldsOf<iron::Transform>();
+    CHECK(fields.size() == 1);
+    CHECK(fields[0].meta.min == 0.001f);
+    CHECK(fields[0].meta.max == 1000.0f);
+}
+
 int main() {
     test_typeid_unknown_is_zero();
     test_fieldmeta_defaults_are_zero();
@@ -78,6 +121,10 @@ int main() {
     test_typeidof_vec3_quat();
     test_typeidof_enum();
     test_typeidof_optional_enum();
+    test_reflection_register_type_stores_name();
+    test_reflection_unregistered_type_has_empty_name();
+    test_reflection_field_offsets_match_offsetof();
+    test_reflection_field_meta_roundtrip();
     if (g_failures == 0) std::printf("All type-reflection tests passed.\n");
     return g_failures == 0 ? 0 : 1;
 }
