@@ -235,6 +235,25 @@ static void test_transform_component_roundtrip() {
     CHECK(got->scale.x    == 2.0f);
 }
 
+#include "render/RenderHandles.h"
+
+static void test_render_handles_component_roundtrip() {
+    iron::World w;
+    iron::EntityId e = w.create();
+    iron::RenderHandles rh{};
+    rh.mesh     = 7;
+    rh.albedo   = 11;
+    rh.normal   = 13;
+    rh.specular = 17;
+    w.add<iron::RenderHandles>(e, rh);
+    auto* got = w.get<iron::RenderHandles>(e);
+    CHECK(got != nullptr);
+    CHECK(got->mesh   == 7u);
+    CHECK(got->albedo == 11u);
+    CHECK(got->normal == 13u);
+    CHECK(got->specular == 17u);
+}
+
 int main() {
     test_entityid_default_is_invalid();
     test_entityid_with_generation_is_valid();
@@ -259,6 +278,7 @@ int main() {
     test_world_view_iteration_and_entity_at();
     test_world_view_empty_when_no_component_of_type();
     test_transform_component_roundtrip();
+    test_render_handles_component_roundtrip();
     if (g_failures == 0) std::printf("All world tests passed.\n");
     return g_failures == 0 ? 0 : 1;
 }
