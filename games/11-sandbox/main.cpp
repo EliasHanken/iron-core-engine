@@ -410,6 +410,15 @@ int main() {
     bool prevLook = false;  // was the camera capturing last frame?
     iron::Gizmo gizmo;
 
+    // Keyboard shortcuts for delete/duplicate are detected in the fixed-step
+    // update() (in lockstep with input edge-tracking) and latched here for the
+    // render() callback to consume. Detecting keyPressed() directly in render()
+    // is wrong: render runs every frame but input edges only advance per
+    // fixed step, so at high FPS one Ctrl+D fired on every render frame until
+    // the next input update — spawning a pile of duplicates.
+    bool wantDeleteShortcut    = false;
+    bool wantDuplicateShortcut = false;
+
     // Gizmo origin = the entity's transform pivot. It's rotation-stable (the
     // pivot IS the rotation center, so the gizmo stays put while the object spins
     // around it) and is the standard editor convention. A bounds-center origin
@@ -493,6 +502,16 @@ int main() {
             if (input.keyPressed(GLFW_KEY_R)) gizmo.setMode(iron::GizmoMode::Scale);
             if (input.keyPressed(GLFW_KEY_X)) gizmo.toggleSpace();
 
+            // Latch delete/duplicate edges here (lockstep with input), consumed
+            // once in render(). Suppressed while ImGui owns the keyboard (e.g.
+            // typing in the glTF path field).
+            if (!imgui.wantsKeyboard()) {
+                if (input.keyPressed(GLFW_KEY_DELETE)) wantDeleteShortcut = true;
+                else if (input.keyDown(GLFW_KEY_LEFT_CONTROL) &&
+                         input.keyPressed(GLFW_KEY_D))
+                    wantDuplicateShortcut = true;
+            }
+
             const bool uiBusy = imgui.wantsMouse();
             if (!uiBusy || gizmo.dragging()) {
                 const iron::Mat4 view = cam.viewMatrix();
@@ -550,12 +569,14 @@ int main() {
         // --- add / delete / duplicate (Outliner buttons OR keyboard shortcuts) ---
         using Action = iron::SceneOutliner::Result::Action;
         Action action = outRes.action;
-        if (action == Action::None && !imgui.wantsKeyboard()) {
-            iron::Input& kin = app.input();
-            if (kin.keyPressed(GLFW_KEY_DELETE)) action = Action::Delete;
-            else if (kin.keyDown(GLFW_KEY_LEFT_CONTROL) && kin.keyPressed(GLFW_KEY_D))
-                action = Action::Duplicate;
+        if (action == Action::None) {
+            // Consume the latched keyboard shortcuts (set in update(), once per
+            // real key-press edge — not per render frame).
+            if (wantDeleteShortcut)         action = Action::Delete;
+            else if (wantDuplicateShortcut) action = Action::Duplicate;
         }
+        wantDeleteShortcut    = false;
+        wantDuplicateShortcut = false;
         const bool selValid = selectedIndex >= 0 &&
                               selectedIndex < static_cast<int>(scene.entities.size());
         if (action == Action::AddCube) {
