@@ -43,6 +43,25 @@ public:
 
     size_t size() const { return dense_.size(); }
 
+    void remove(EntityId e) {
+        if (e.index >= sparse_.size()) return;
+        const uint32_t row = sparse_[e.index];
+        if (row == kNoRow) return;
+        if (!(denseEntities_[row] == e)) return;  // stale handle
+
+        const uint32_t last = static_cast<uint32_t>(dense_.size() - 1);
+        if (row != last) {
+            // Swap-and-pop: move the last entry into the freed row, then update
+            // the swapped entity's sparse index to point at its new row.
+            dense_[row]         = std::move(dense_[last]);
+            denseEntities_[row] = denseEntities_[last];
+            sparse_[denseEntities_[row].index] = row;
+        }
+        dense_.pop_back();
+        denseEntities_.pop_back();
+        sparse_[e.index] = kNoRow;
+    }
+
 protected:
     std::vector<T>        dense_;
     std::vector<EntityId> denseEntities_;

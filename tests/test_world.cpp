@@ -56,6 +56,41 @@ static void test_component_array_add_two_entities() {
     CHECK(*arr.get(b) == 20);
 }
 
+static void test_component_array_remove_invalidates_get() {
+    iron::ComponentArray<int> arr;
+    iron::EntityId e{0, 1};
+    arr.add(e, 7);
+    arr.remove(e);
+    CHECK(arr.get(e) == nullptr);
+    CHECK(arr.size() == 0);
+}
+
+static void test_component_array_remove_swaps_correctly() {
+    // Insert A,B,C; remove B; verify C's sparse index points at row 1 (B's old row).
+    iron::ComponentArray<int> arr;
+    iron::EntityId a{0, 1};
+    iron::EntityId b{1, 1};
+    iron::EntityId c{2, 1};
+    arr.add(a, 10);
+    arr.add(b, 20);
+    arr.add(c, 30);
+    arr.remove(b);
+    CHECK(arr.size() == 2);
+    CHECK(arr.get(b) == nullptr);
+    CHECK(*arr.get(a) == 10);
+    CHECK(*arr.get(c) == 30);  // sparse for c must be updated after the swap
+}
+
+static void test_component_array_remove_then_readd() {
+    iron::ComponentArray<int> arr;
+    iron::EntityId e{0, 1};
+    arr.add(e, 7);
+    arr.remove(e);
+    arr.add(e, 99);
+    CHECK(arr.size() == 1);
+    CHECK(*arr.get(e) == 99);
+}
+
 int main() {
     test_entityid_default_is_invalid();
     test_entityid_with_generation_is_valid();
@@ -63,6 +98,9 @@ int main() {
     test_component_array_add_and_get();
     test_component_array_get_missing_returns_null();
     test_component_array_add_two_entities();
+    test_component_array_remove_invalidates_get();
+    test_component_array_remove_swaps_correctly();
+    test_component_array_remove_then_readd();
     if (g_failures == 0) std::printf("All world tests passed.\n");
     return g_failures == 0 ? 0 : 1;
 }
