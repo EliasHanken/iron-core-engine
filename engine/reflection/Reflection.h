@@ -72,6 +72,13 @@ public:
         return registered_[id] ? types_[id].name : std::string_view{};
     }
 
+    template <class T>
+    const FieldDesc* fieldByName(std::string_view name) const {
+        for (const FieldDesc& f : fieldsOf<T>())
+            if (f.name == name) return &f;
+        return nullptr;
+    }
+
 private:
     struct TypeEntry {
         std::string_view       name;

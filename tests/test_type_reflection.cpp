@@ -112,6 +112,55 @@ static void test_reflection_field_meta_roundtrip() {
     CHECK(fields[0].meta.max == 1000.0f);
 }
 
+static void test_reflection_field_by_name_hit() {
+    iron::Reflection r;
+    r.registerType<iron::Transform>("Transform")
+        .field("position", &iron::Transform::position)
+        .field("rotation", &iron::Transform::rotation)
+        .field("scale",    &iron::Transform::scale);
+    const iron::FieldDesc* f = r.fieldByName<iron::Transform>("position");
+    CHECK(f != nullptr);
+    CHECK(f->name == "position");
+    CHECK(f->type == iron::TypeId::Vec3);
+}
+
+static void test_reflection_field_by_name_miss() {
+    iron::Reflection r;
+    r.registerType<iron::Transform>("Transform")
+        .field("position", &iron::Transform::position);
+    CHECK(r.fieldByName<iron::Transform>("nonexistent") == nullptr);
+}
+
+static void test_reflection_ptr_through_field_mutates_object() {
+    iron::Reflection r;
+    r.registerType<iron::Transform>("Transform")
+        .field("position", &iron::Transform::position);
+    iron::Transform t{};
+    const iron::FieldDesc* f = r.fieldByName<iron::Transform>("position");
+    CHECK(f != nullptr);
+    iron::Vec3* p = f->ptr<iron::Vec3>(&t);
+    p->x = 1.0f;
+    p->y = 2.0f;
+    p->z = 3.0f;
+    CHECK(t.position.x == 1.0f);
+    CHECK(t.position.y == 2.0f);
+    CHECK(t.position.z == 3.0f);
+}
+
+static void test_reflection_const_ptr_through_field() {
+    iron::Reflection r;
+    r.registerType<iron::Transform>("Transform")
+        .field("position", &iron::Transform::position);
+    iron::Transform t{};
+    t.position = iron::Vec3{4.0f, 5.0f, 6.0f};
+    const iron::FieldDesc* f = r.fieldByName<iron::Transform>("position");
+    CHECK(f != nullptr);
+    const iron::Vec3* p = f->ptr<iron::Vec3>(static_cast<const void*>(&t));
+    CHECK(p->x == 4.0f);
+    CHECK(p->y == 5.0f);
+    CHECK(p->z == 6.0f);
+}
+
 int main() {
     test_typeid_unknown_is_zero();
     test_fieldmeta_defaults_are_zero();
@@ -125,6 +174,10 @@ int main() {
     test_reflection_unregistered_type_has_empty_name();
     test_reflection_field_offsets_match_offsetof();
     test_reflection_field_meta_roundtrip();
+    test_reflection_field_by_name_hit();
+    test_reflection_field_by_name_miss();
+    test_reflection_ptr_through_field_mutates_object();
+    test_reflection_const_ptr_through_field();
     if (g_failures == 0) std::printf("All type-reflection tests passed.\n");
     return g_failures == 0 ? 0 : 1;
 }
