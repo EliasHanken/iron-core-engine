@@ -40,6 +40,7 @@ inline constexpr bool is_optional_enum_v = false;
 template <class E>
 inline constexpr bool is_optional_enum_v<std::optional<E>> = std::is_enum_v<E>;
 
+// Not constexpr: componentTypeId<T>() is runtime-initialised (function-local static).
 // Return the enum's registry id for enum-bearing field types; 0 otherwise.
 // Used by the Inspector / SceneIO dispatch to look up value names without
 // knowing the concrete enum type E.

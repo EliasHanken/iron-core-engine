@@ -120,11 +120,13 @@ public:
 
     template <class E>
     std::span<const EnumValue> enumValues() const {
+        static_assert(std::is_enum_v<E>, "enumValues requires an enum type");
         return enumValuesById(componentTypeId<E>());
     }
 
     template <class E>
     std::string_view enumName() const {
+        static_assert(std::is_enum_v<E>, "enumName requires an enum type");
         return enumNameById(componentTypeId<E>());
     }
 
@@ -149,6 +151,9 @@ private:
     std::array<TypeEntry, kMaxTypes> types_{};
     std::array<bool, kMaxTypes>      registered_{};
 
+    // Both name and values[*].name must outlive this registry entry
+    // (string literals from sidecar .cpp satisfy this — same contract as
+    // FieldDesc::name and TypeEntry::name).
     struct EnumEntry {
         std::string_view       name;
         std::vector<EnumValue> values;
