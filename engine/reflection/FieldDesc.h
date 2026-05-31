@@ -21,9 +21,10 @@ struct FieldMeta {
 // from the sidecar .cpp); the registry stores it as a string_view.
 struct FieldDesc {
     std::string_view name;
-    TypeId           type   = TypeId::Unknown;
-    uint32_t         offset = 0;
-    FieldMeta        meta   = {};
+    TypeId           type        = TypeId::Unknown;
+    uint32_t         offset      = 0;
+    FieldMeta        meta        = {};
+    uint32_t         enumTypeId  = 0;   // 0 = not an enum field; else registry id of E
 
     template <class T>
     T* ptr(void* obj) const {

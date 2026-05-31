@@ -249,6 +249,44 @@ static void test_field_records_widget_hints() {
     CHECK(fields[1].meta.dragSpeed == 0.0f);
 }
 
+static void test_enum_typeidof_helper_returns_zero_for_non_enum() {
+    CHECK(iron::enumTypeIdOf<float>()       == 0u);
+    CHECK(iron::enumTypeIdOf<int32_t>()     == 0u);
+    CHECK(iron::enumTypeIdOf<iron::Vec3>()  == 0u);
+    CHECK(iron::enumTypeIdOf<std::string>() == 0u);
+}
+
+static void test_enum_typeidof_helper_returns_componenttypeid_for_enum() {
+    const uint32_t a = iron::enumTypeIdOf<iron::PrimitiveKind>();
+    const uint32_t b = iron::componentTypeId<iron::PrimitiveKind>();
+    CHECK(a == b);
+    CHECK(a != 0u);
+}
+
+static void test_enum_typeidof_helper_unwraps_optional() {
+    const uint32_t a = iron::enumTypeIdOf<std::optional<iron::PrimitiveKind>>();
+    const uint32_t b = iron::componentTypeId<iron::PrimitiveKind>();
+    CHECK(a == b);
+}
+
+static void test_field_stores_enum_typeid() {
+    struct Probe {
+        float                              a;
+        iron::PrimitiveKind                b;
+        std::optional<iron::PrimitiveKind> c;
+    };
+    iron::Reflection r;
+    r.registerType<Probe>("Probe")
+        .field("a", &Probe::a)
+        .field("b", &Probe::b)
+        .field("c", &Probe::c);
+    auto fields = r.fieldsOf<Probe>();
+    CHECK(fields.size() == 3);
+    CHECK(fields[0].enumTypeId == 0u);
+    CHECK(fields[1].enumTypeId == iron::componentTypeId<iron::PrimitiveKind>());
+    CHECK(fields[2].enumTypeId == iron::componentTypeId<iron::PrimitiveKind>());
+}
+
 int main() {
     test_typeid_unknown_is_zero();
     test_fieldmeta_defaults_are_zero();
@@ -273,6 +311,10 @@ int main() {
     test_register_all_four_in_one_registry();
     test_fieldmeta_widget_hint_defaults();
     test_field_records_widget_hints();
+    test_enum_typeidof_helper_returns_zero_for_non_enum();
+    test_enum_typeidof_helper_returns_componenttypeid_for_enum();
+    test_enum_typeidof_helper_unwraps_optional();
+    test_field_stores_enum_typeid();
     if (g_failures == 0) std::printf("All type-reflection tests passed.\n");
     return g_failures == 0 ? 0 : 1;
 }

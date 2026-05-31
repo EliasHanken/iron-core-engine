@@ -36,7 +36,7 @@ public:
                 reinterpret_cast<const uint8_t*>(&(probe.*member)) -
                 reinterpret_cast<const uint8_t*>(&probe));
             reg_.types_[typeId_].fields.push_back(
-                FieldDesc{ name, TypeIdOf<F>::v, off, meta });
+                FieldDesc{ name, TypeIdOf<F>::v, off, meta, enumTypeIdOf<F>() });
             return *this;
         }
 
