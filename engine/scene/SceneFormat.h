@@ -1,9 +1,9 @@
 #pragma once
 
-#include "math/Quaternion.h"
 #include "math/Vec.h"
 #include "render/Fog.h"
 #include "render/Light.h"
+#include "world/Transform.h"
 
 #include <optional>
 #include <string>
@@ -35,12 +35,12 @@ struct MaterialDef {
     float       reflectivity = 0.0f;
 };
 
-// One placed object: a transform + what to draw.
+// One placed object: a transform + what to draw. The transform is M37's
+// iron::Transform component (M39 unifies SceneEntity with the World's
+// component model — see iron-core-engine-progress).
 struct SceneEntity {
     std::string name;
-    Vec3        position = {0.0f, 0.0f, 0.0f};
-    Quat        rotation = Quat::identity();   // serialized as [x, y, z, w]
-    Vec3        scale    = {1.0f, 1.0f, 1.0f};
+    Transform   transform;
     MeshRef     mesh;
     MaterialDef material;
 };

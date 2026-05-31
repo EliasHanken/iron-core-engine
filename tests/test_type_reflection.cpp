@@ -227,6 +227,138 @@ static void test_register_all_four_in_one_registry() {
     CHECK(!r.typeName<iron::RenderHandles>().empty());
 }
 
+static void test_fieldmeta_widget_hint_defaults() {
+    iron::FieldMeta m;
+    CHECK(m.dragSpeed == 0.0f);
+    CHECK(m.color  == false);
+    CHECK(m.slider == false);
+}
+
+static void test_field_records_widget_hints() {
+    struct Probe { float a; iron::Vec3 b; };
+    iron::Reflection r;
+    r.registerType<Probe>("Probe")
+        .field("a", &Probe::a, {.min = 0.0f, .max = 1.0f, .slider = true})
+        .field("b", &Probe::b, {.color = true});
+    auto fields = r.fieldsOf<Probe>();
+    CHECK(fields.size() == 2);
+    CHECK(fields[0].meta.slider == true);
+    CHECK(fields[0].meta.min == 0.0f);
+    CHECK(fields[0].meta.max == 1.0f);
+    CHECK(fields[1].meta.color == true);
+    CHECK(fields[1].meta.dragSpeed == 0.0f);
+}
+
+static void test_enum_typeidof_helper_returns_zero_for_non_enum() {
+    CHECK(iron::enumTypeIdOf<float>()       == 0u);
+    CHECK(iron::enumTypeIdOf<int32_t>()     == 0u);
+    CHECK(iron::enumTypeIdOf<iron::Vec3>()  == 0u);
+    CHECK(iron::enumTypeIdOf<std::string>() == 0u);
+    CHECK(iron::enumTypeIdOf<std::optional<float>>() == 0u);
+}
+
+static void test_enum_typeidof_helper_returns_componenttypeid_for_enum() {
+    const uint32_t a = iron::enumTypeIdOf<iron::PrimitiveKind>();
+    const uint32_t b = iron::componentTypeId<iron::PrimitiveKind>();
+    CHECK(a == b);
+    CHECK(a != 0u);
+}
+
+static void test_enum_typeidof_helper_unwraps_optional() {
+    const uint32_t a = iron::enumTypeIdOf<std::optional<iron::PrimitiveKind>>();
+    const uint32_t b = iron::componentTypeId<iron::PrimitiveKind>();
+    CHECK(a == b);
+}
+
+static void test_field_stores_enum_typeid() {
+    struct Probe {
+        float                              a;
+        iron::PrimitiveKind                b;
+        std::optional<iron::PrimitiveKind> c;
+    };
+    iron::Reflection r;
+    r.registerType<Probe>("Probe")
+        .field("a", &Probe::a)
+        .field("b", &Probe::b)
+        .field("c", &Probe::c);
+    auto fields = r.fieldsOf<Probe>();
+    CHECK(fields.size() == 3);
+    CHECK(fields[0].enumTypeId == 0u);
+    CHECK(fields[1].enumTypeId == iron::componentTypeId<iron::PrimitiveKind>());
+    CHECK(fields[2].enumTypeId == iron::componentTypeId<iron::PrimitiveKind>());
+}
+
+static void test_register_enum_stores_name() {
+    iron::Reflection r;
+    r.registerEnum<iron::PrimitiveKind>("PrimitiveKind")
+        .value("cube",  iron::PrimitiveKind::Cube)
+        .value("plane", iron::PrimitiveKind::Plane);
+    CHECK(r.enumName<iron::PrimitiveKind>() == "PrimitiveKind");
+}
+
+static void test_unregistered_enum_has_empty_name() {
+    iron::Reflection r;
+    CHECK(r.enumName<iron::PrimitiveKind>().empty());
+}
+
+static void test_enum_values_lookup_template_and_by_id() {
+    iron::Reflection r;
+    r.registerEnum<iron::PrimitiveKind>("PrimitiveKind")
+        .value("cube",  iron::PrimitiveKind::Cube)
+        .value("plane", iron::PrimitiveKind::Plane);
+
+    auto vs = r.enumValues<iron::PrimitiveKind>();
+    CHECK(vs.size() == 2);
+    CHECK(vs[0].name == "cube");
+    CHECK(vs[1].name == "plane");
+    CHECK(static_cast<iron::PrimitiveKind>(vs[0].value) == iron::PrimitiveKind::Cube);
+    CHECK(static_cast<iron::PrimitiveKind>(vs[1].value) == iron::PrimitiveKind::Plane);
+
+    const uint32_t id = iron::componentTypeId<iron::PrimitiveKind>();
+    auto byId = r.enumValuesById(id);
+    CHECK(byId.size() == 2);
+    CHECK(byId[0].name == "cube");
+    CHECK(r.enumNameById(id) == "PrimitiveKind");
+}
+
+static void test_unregistered_enum_id_returns_empty() {
+    iron::Reflection r;
+    const uint32_t id = iron::componentTypeId<iron::PrimitiveKind>();
+    CHECK(r.enumValuesById(id).empty());
+    CHECK(r.enumNameById(id).empty());
+}
+
+static void test_register_mesh_ref_also_registers_primitive_kind() {
+    iron::Reflection r;
+    iron::registerMeshRef(r);
+    CHECK(r.enumName<iron::PrimitiveKind>() == "PrimitiveKind");
+    auto vs = r.enumValues<iron::PrimitiveKind>();
+    CHECK(vs.size() == 2);
+    CHECK(vs[0].name == "cube");
+    CHECK(static_cast<iron::PrimitiveKind>(vs[0].value) == iron::PrimitiveKind::Cube);
+    CHECK(vs[1].name == "plane");
+    CHECK(static_cast<iron::PrimitiveKind>(vs[1].value) == iron::PrimitiveKind::Plane);
+
+    const iron::FieldDesc* p = r.fieldByName<iron::MeshRef>("primitive");
+    CHECK(p != nullptr);
+    CHECK(p->enumTypeId == iron::componentTypeId<iron::PrimitiveKind>());
+}
+
+static void test_material_def_widget_hints() {
+    iron::Reflection r;
+    iron::registerMaterialDef(r);
+    const iron::FieldDesc* em = r.fieldByName<iron::MaterialDef>("emissive");
+    CHECK(em != nullptr);
+    CHECK(em->meta.color  == true);
+    CHECK(em->meta.slider == false);
+
+    const iron::FieldDesc* refl = r.fieldByName<iron::MaterialDef>("reflectivity");
+    CHECK(refl != nullptr);
+    CHECK(refl->meta.slider == true);
+    CHECK(refl->meta.min    == 0.0f);
+    CHECK(refl->meta.max    == 1.0f);
+}
+
 int main() {
     test_typeid_unknown_is_zero();
     test_fieldmeta_defaults_are_zero();
@@ -249,6 +381,18 @@ int main() {
     test_register_material_def_end_to_end();
     test_register_render_handles_end_to_end();
     test_register_all_four_in_one_registry();
+    test_fieldmeta_widget_hint_defaults();
+    test_field_records_widget_hints();
+    test_enum_typeidof_helper_returns_zero_for_non_enum();
+    test_enum_typeidof_helper_returns_componenttypeid_for_enum();
+    test_enum_typeidof_helper_unwraps_optional();
+    test_field_stores_enum_typeid();
+    test_register_enum_stores_name();
+    test_unregistered_enum_has_empty_name();
+    test_enum_values_lookup_template_and_by_id();
+    test_unregistered_enum_id_returns_empty();
+    test_register_mesh_ref_also_registers_primitive_kind();
+    test_material_def_widget_hints();
     if (g_failures == 0) std::printf("All type-reflection tests passed.\n");
     return g_failures == 0 ? 0 : 1;
 }

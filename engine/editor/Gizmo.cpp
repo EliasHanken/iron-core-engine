@@ -251,7 +251,7 @@ bool Gizmo::update(SceneEntity& e, Vec3 origin, const Ray& ray,
 
     // Idle / pre-drag: orient handles by the entity's CURRENT rotation.
     Vec3 ax[3];
-    buildBasis(effectiveLocal, e.rotation, ax);
+    buildBasis(effectiveLocal, e.transform.rotation, ax);
 
     if (!mouseDown) {
         axis_ = -1;
@@ -265,9 +265,9 @@ bool Gizmo::update(SceneEntity& e, Vec3 origin, const Ray& ray,
         hoveredAxis_ = picked;
         if (picked < 0) return false;   // empty press -> host re-selects
         axis_        = picked;
-        startPos_    = e.position;
-        startScale_  = e.scale;
-        startRot_    = e.rotation;
+        startPos_    = e.transform.position;
+        startScale_  = e.transform.scale;
+        startRot_    = e.transform.rotation;
         startOrigin_ = origin;
         if (picked == kCenterHandle) {        // center free-move: camera-facing plane
             startNormal_ = normalize(camPos - startOrigin_);
@@ -311,33 +311,33 @@ bool Gizmo::update(SceneEntity& e, Vec3 origin, const Ray& ray,
     }
 
     // Continue a drag. Freeze the basis to startRot_ so the handle frame is fixed
-    // for the whole drag (a Rotate drag changes e.rotation every frame). On a
+    // for the whole drag (a Rotate drag changes e.transform.rotation every frame). On a
     // degenerate/near-parallel solve, hold the last value (no movement this frame).
     if (axis_ >= 0) {
         buildBasis(effectiveLocal, startRot_, ax);
         if (axis_ == kCenterHandle) {  // free-move in the camera-facing plane
             Vec3 hit;
             if (rayPlane(ray, startOrigin_, startNormal_, hit))
-                e.position = startPos_ + (hit - startHit_);
+                e.transform.position = startPos_ + (hit - startHit_);
             return true;
         }
         if (axis_ >= 3) {  // planar drag: move in the handle's oriented plane
             Vec3 hit;
             if (rayPlane(ray, startOrigin_, ax[axis_ - 3], hit))
-                e.position = startPos_ + (hit - startHit_);
+                e.transform.position = startPos_ + (hit - startHit_);
             return true;
         }
         const Vec3 dir = ax[axis_];
         if (mode_ == GizmoMode::Translate) {
             float p;
             if (rayAxisParam(ray, startOrigin_, dir, p)) lastParam_ = p; else p = lastParam_;
-            e.position = startPos_ + dir * (p - startParam_);
+            e.transform.position = startPos_ + dir * (p - startParam_);
         } else if (mode_ == GizmoMode::Scale) {
             float p;
             if (rayAxisParam(ray, startOrigin_, dir, p)) lastParam_ = p; else p = lastParam_;
             float s = (axis_ == 0 ? startScale_.x : axis_ == 1 ? startScale_.y : startScale_.z) + (p - startParam_);
             if (s < 0.01f) s = 0.01f;
-            if (axis_ == 0) e.scale.x = s; else if (axis_ == 1) e.scale.y = s; else e.scale.z = s;
+            if (axis_ == 0) e.transform.scale.x = s; else if (axis_ == 1) e.transform.scale.y = s; else e.transform.scale.z = s;
         } else {  // Rotate — tangent drag (see the begin-drag setup above)
             const Vec3 c = normalize(camPos - startOrigin_);  // camera-facing plane normal
             Vec3 hit;
@@ -354,7 +354,7 @@ bool Gizmo::update(SceneEntity& e, Vec3 origin, const Ray& ray,
             // `dir` (= ax[axis_]) is frozen to startRot_, so World mode reduces to a
             // world-axis rotation about that axis.
             const float angle = (s - startParam_) / size;
-            e.rotation = Quat::fromAxisAngle(dir, angle) * startRot_;
+            e.transform.rotation = Quat::fromAxisAngle(dir, angle) * startRot_;
         }
         return true;
     }

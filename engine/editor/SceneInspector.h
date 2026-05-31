@@ -6,17 +6,18 @@
 namespace iron {
 
 struct SceneEntity;
+class  Reflection;
 
-// Details panel for a single entity: transform (position, euler rotation,
-// scale) and material scalars (emissive, uvScale, reflectivity). Mesh info is
-// shown read-only. Mutates the entity in place. Also hosts the gizmo World/Local
-// space toggle (mirrors the `X` key), which it reads from and writes to `space`.
-// Also hosts the selection post-process effect picker, which it reads from and
-// writes to `effectKind` (editor tool state — not a scene-dirty field).
+// Details panel for a single entity. Renders transform / mesh / material via
+// iron::Reflection-driven dispatch. Editor-tool widgets (gizmo space, effect
+// picker) stay hand-rolled — they are not entity data.
 class SceneInspector {
 public:
     // Returns true if any entity field changed this frame.
-    bool draw(SceneEntity& entity, GizmoSpace& space, EffectKind& effectKind);
+    bool draw(const Reflection& reflection,
+              SceneEntity& entity,
+              GizmoSpace& space,
+              EffectKind& effectKind);
 };
 
 }  // namespace iron

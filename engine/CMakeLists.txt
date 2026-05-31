@@ -42,6 +42,7 @@ add_library(ironcore STATIC
   scene/MaterialDef.reflect.cpp
   scene/MeshRef.reflect.cpp
   world/Transform.reflect.cpp
+  scene/ReflectionIO.cpp
 )
 
 target_include_directories(ironcore PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
@@ -54,7 +55,11 @@ target_link_libraries(ironcore PRIVATE
   Jolt::Jolt)
 
 # M29 — scene serialization uses nlohmann/json (header-only, vendored).
-target_link_libraries(ironcore PRIVATE nlohmann_json)
+# PUBLIC: M39 ReflectionIO.h includes <nlohmann/json.hpp> in its template
+# signatures, so consumers (tests, sandbox) must see the same vendored copy
+# as the engine to avoid ABI-version mismatches between competing copies of
+# the header (e.g. vcpkg's nlohmann-json port).
+target_link_libraries(ironcore PUBLIC nlohmann_json)
 
 # M26 — audio: OpenAL Soft (via vcpkg) + dr_wav (vendored header-only).
 # OpenAL headers are PRIVATE to keep the engine's public API free of

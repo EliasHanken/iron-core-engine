@@ -1,6 +1,7 @@
 #include "scene/SceneIO.h"
 
 #include "core/Log.h"
+#include "scene/ReflectionIO.h"
 
 #include <nlohmann/json.hpp>
 
@@ -13,22 +14,12 @@ namespace {
 using json = nlohmann::json;
 
 json toJson(const Vec3& v) { return json::array({v.x, v.y, v.z}); }
-json toJson(const Quat& q) { return json::array({q.x, q.y, q.z, q.w}); }
 
 void readVec3(const json& j, const char* key, Vec3& out) {
     if (j.contains(key) && j[key].is_array() && j[key].size() == 3) {
         out.x = j[key][0].get<float>();
         out.y = j[key][1].get<float>();
         out.z = j[key][2].get<float>();
-    }
-}
-
-void readQuat(const json& j, const char* key, Quat& out) {
-    if (j.contains(key) && j[key].is_array() && j[key].size() == 4) {
-        out.x = j[key][0].get<float>();
-        out.y = j[key][1].get<float>();
-        out.z = j[key][2].get<float>();
-        out.w = j[key][3].get<float>();
     }
 }
 
@@ -40,83 +31,29 @@ void readString(const json& j, const char* key, std::string& out) {
     if (j.contains(key) && j[key].is_string()) out = j[key].get<std::string>();
 }
 
-const char* primitiveName(PrimitiveKind k) {
-    switch (k) {
-        case PrimitiveKind::Cube:  return "cube";
-        case PrimitiveKind::Plane: return "plane";
-    }
-    return "cube";
-}
-
-json materialToJson(const MaterialDef& m) {
+json entityToJson(const Reflection& r, const SceneEntity& e) {
     json j = json::object();
-    if (!m.albedoPath.empty())   j["albedoPath"]   = m.albedoPath;
-    if (!m.normalPath.empty())   j["normalPath"]   = m.normalPath;
-    if (!m.specularPath.empty()) j["specularPath"] = m.specularPath;
-    j["emissive"]     = toJson(m.emissive);
-    j["uvScale"]      = m.uvScale;
-    j["reflectivity"] = m.reflectivity;
+    j["name"]      = e.name;
+    j["transform"] = componentToJson(r, e.transform);
+    j["mesh"]      = componentToJson(r, e.mesh);
+    j["material"]  = componentToJson(r, e.material);
     return j;
 }
 
-json meshToJson(const MeshRef& m) {
-    json j = json::object();
-    if (m.primitive.has_value()) {
-        j["primitive"] = primitiveName(m.primitive.value());
-    } else {
-        j["gltfPath"] = m.gltfPath;
-    }
-    return j;
-}
-
-json entityToJson(const SceneEntity& e) {
-    json j = json::object();
-    j["name"]     = e.name;
-    j["position"] = toJson(e.position);
-    j["rotation"] = toJson(e.rotation);
-    j["scale"]    = toJson(e.scale);
-    j["mesh"]     = meshToJson(e.mesh);
-    j["material"] = materialToJson(e.material);
-    return j;
-}
-
-MaterialDef materialFromJson(const json& j) {
-    MaterialDef m;
-    readString(j, "albedoPath",   m.albedoPath);
-    readString(j, "normalPath",   m.normalPath);
-    readString(j, "specularPath", m.specularPath);
-    readVec3  (j, "emissive",     m.emissive);
-    readFloat (j, "uvScale",      m.uvScale);
-    readFloat (j, "reflectivity", m.reflectivity);
-    return m;
-}
-
-MeshRef meshFromJson(const json& j) {
-    MeshRef m;
-    if (j.contains("primitive") && j["primitive"].is_string()) {
-        const std::string p = j["primitive"].get<std::string>();
-        if (p == "cube")       m.primitive = PrimitiveKind::Cube;
-        else if (p == "plane") m.primitive = PrimitiveKind::Plane;
-        else Log::warn("SceneIO: unknown primitive '%s'; treating as gltf/none", p.c_str());
-    }
-    readString(j, "gltfPath", m.gltfPath);
-    return m;
-}
-
-SceneEntity entityFromJson(const json& j) {
+SceneEntity entityFromJson(const Reflection& r, const json& j) {
     SceneEntity e;
     readString(j, "name", e.name);
-    readVec3  (j, "position", e.position);
-    readQuat  (j, "rotation", e.rotation);
-    readVec3  (j, "scale",    e.scale);
-    if (j.contains("mesh"))     e.mesh     = meshFromJson(j["mesh"]);
-    if (j.contains("material")) e.material = materialFromJson(j["material"]);
+    if (j.contains("transform")) componentFromJson(r, e.transform, j["transform"]);
+    if (j.contains("mesh"))      componentFromJson(r, e.mesh,      j["mesh"]);
+    if (j.contains("material"))  componentFromJson(r, e.material,  j["material"]);
     return e;
 }
 
 }  // namespace
 
-bool saveSceneFile(const SceneFile& scene, const std::string& path) {
+bool saveSceneFile(const Reflection& reflection,
+                   const SceneFile& scene,
+                   const std::string& path) {
     json root = json::object();
     root["clearColor"] = toJson(scene.clearColor);
 
@@ -143,7 +80,7 @@ bool saveSceneFile(const SceneFile& scene, const std::string& path) {
     root["pointLights"] = pls;
 
     json ents = json::array();
-    for (const auto& e : scene.entities) ents.push_back(entityToJson(e));
+    for (const auto& e : scene.entities) ents.push_back(entityToJson(reflection, e));
     root["entities"] = ents;
 
     std::ofstream f(path);
@@ -155,7 +92,8 @@ bool saveSceneFile(const SceneFile& scene, const std::string& path) {
     return true;
 }
 
-std::optional<SceneFile> loadSceneFile(const std::string& path) {
+std::optional<SceneFile> loadSceneFile(const Reflection& reflection,
+                                       const std::string& path) {
     std::ifstream f(path);
     if (!f) {
         Log::error("SceneIO: cannot open '%s'", path.c_str());
@@ -196,7 +134,7 @@ std::optional<SceneFile> loadSceneFile(const std::string& path) {
     }
     if (root.contains("entities") && root["entities"].is_array()) {
         for (const auto& j : root["entities"]) {
-            scene.entities.push_back(entityFromJson(j));
+            scene.entities.push_back(entityFromJson(reflection, j));
         }
     }
     return scene;

@@ -3,6 +3,7 @@
 #include "math/Quaternion.h"
 #include "math/Vec.h"
 #include "reflection/TypeId.h"
+#include "world/Entity.h"   // componentTypeId<T>()
 
 #include <cstdint>
 #include <optional>
@@ -31,5 +32,26 @@ struct TypeIdOf<E> { static constexpr TypeId v = TypeId::Enum; };
 
 template <class E> requires std::is_enum_v<E>
 struct TypeIdOf<std::optional<E>> { static constexpr TypeId v = TypeId::OptionalEnum; };
+
+// Detect std::optional<E> where E is an enum (e.g. MeshRef::primitive).
+template <class F>
+inline constexpr bool is_optional_enum_v = false;
+
+template <class E>
+inline constexpr bool is_optional_enum_v<std::optional<E>> = std::is_enum_v<E>;
+
+// Not constexpr: componentTypeId<T>() is runtime-initialised (function-local static).
+// Return the enum's registry id for enum-bearing field types; 0 otherwise.
+// Used by the Inspector / SceneIO dispatch to look up value names without
+// knowing the concrete enum type E.
+template <class F>
+uint32_t enumTypeIdOf() {
+    if constexpr (std::is_enum_v<F>)
+        return componentTypeId<F>();
+    else if constexpr (is_optional_enum_v<F>)
+        return componentTypeId<typename F::value_type>();
+    else
+        return 0u;
+}
 
 }  // namespace iron
