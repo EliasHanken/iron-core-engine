@@ -44,7 +44,7 @@ inline constexpr bool is_optional_enum_v<std::optional<E>> = std::is_enum_v<E>;
 // Used by the Inspector / SceneIO dispatch to look up value names without
 // knowing the concrete enum type E.
 template <class F>
-constexpr uint32_t enumTypeIdOf() {
+uint32_t enumTypeIdOf() {
     if constexpr (std::is_enum_v<F>)
         return componentTypeId<F>();
     else if constexpr (is_optional_enum_v<F>)

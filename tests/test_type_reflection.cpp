@@ -254,6 +254,7 @@ static void test_enum_typeidof_helper_returns_zero_for_non_enum() {
     CHECK(iron::enumTypeIdOf<int32_t>()     == 0u);
     CHECK(iron::enumTypeIdOf<iron::Vec3>()  == 0u);
     CHECK(iron::enumTypeIdOf<std::string>() == 0u);
+    CHECK(iron::enumTypeIdOf<std::optional<float>>() == 0u);
 }
 
 static void test_enum_typeidof_helper_returns_componenttypeid_for_enum() {
