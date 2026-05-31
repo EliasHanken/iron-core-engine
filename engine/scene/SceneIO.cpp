@@ -72,9 +72,9 @@ json meshToJson(const MeshRef& m) {
 json entityToJson(const SceneEntity& e) {
     json j = json::object();
     j["name"]     = e.name;
-    j["position"] = toJson(e.position);
-    j["rotation"] = toJson(e.rotation);
-    j["scale"]    = toJson(e.scale);
+    j["position"] = toJson(e.transform.position);
+    j["rotation"] = toJson(e.transform.rotation);
+    j["scale"]    = toJson(e.transform.scale);
     j["mesh"]     = meshToJson(e.mesh);
     j["material"] = materialToJson(e.material);
     return j;
@@ -106,9 +106,9 @@ MeshRef meshFromJson(const json& j) {
 SceneEntity entityFromJson(const json& j) {
     SceneEntity e;
     readString(j, "name", e.name);
-    readVec3  (j, "position", e.position);
-    readQuat  (j, "rotation", e.rotation);
-    readVec3  (j, "scale",    e.scale);
+    readVec3  (j, "position", e.transform.position);
+    readQuat  (j, "rotation", e.transform.rotation);
+    readVec3  (j, "scale",    e.transform.scale);
     if (j.contains("mesh"))     e.mesh     = meshFromJson(j["mesh"]);
     if (j.contains("material")) e.material = materialFromJson(j["material"]);
     return e;

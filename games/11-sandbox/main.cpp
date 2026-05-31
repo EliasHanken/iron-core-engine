@@ -400,7 +400,7 @@ int main() {
         out.material.emissive     = e.material.emissive;
         out.material.uvScale      = e.material.uvScale;
         out.material.reflectivity = e.material.reflectivity;
-        out.model = iron::translation(e.position) * e.rotation.toMat4() * iron::scaling(e.scale);
+        out.model = iron::translation(e.transform.position) * e.transform.rotation.toMat4() * iron::scaling(e.transform.scale);
         return true;
     };
 
@@ -425,11 +425,7 @@ int main() {
         // M37: mirror into the World.
         const iron::SceneEntity& se = scene.entities[ei];
         iron::EntityId entity = world.create();
-        iron::Transform t{};
-        t.position = se.position;
-        t.rotation = se.rotation;
-        t.scale    = se.scale;
-        world.add<iron::Transform>(entity, t);
+        world.add<iron::Transform>(entity, se.transform);
         world.add<iron::MeshRef>(entity, se.mesh);
         world.add<iron::MaterialDef>(entity, se.material);
         world.add<iron::RenderHandles>(entity, toRenderHandles(re));
@@ -485,7 +481,7 @@ int main() {
     // helmet's dangling cables pull the AABB center off the body), and swings
     // when rotating about an off-center pivot — so we use the pivot.
     auto gizmoOriginFor = [&](int sel) -> iron::Vec3 {
-        return scene.entities[sel].position;
+        return scene.entities[sel].transform.position;
     };
 
     // Generate a scene-unique entity name from a base ("cube" -> "cube", "cube 2"...).
@@ -517,11 +513,7 @@ int main() {
             // M37: mirror into the World.
             const iron::SceneEntity& se = scene.entities[idx];
             iron::EntityId entity = world.create();
-            iron::Transform t{};
-            t.position = se.position;
-            t.rotation = se.rotation;
-            t.scale    = se.scale;
-            world.add<iron::Transform>(entity, t);
+            world.add<iron::Transform>(entity, se.transform);
             world.add<iron::MeshRef>(entity, se.mesh);
             world.add<iron::MaterialDef>(entity, se.material);
             world.add<iron::RenderHandles>(entity, toRenderHandles(re));
@@ -626,9 +618,9 @@ int main() {
                     std::vector<iron::Aabb> worldAabbs(resolved.size());
                     for (std::size_t i = 0; i < resolved.size(); ++i) {
                         const iron::SceneEntity& e = scene.entities[resolved[i].entityIndex];
-                        const iron::Mat4 model = iron::translation(e.position)
-                                               * e.rotation.toMat4()
-                                               * iron::scaling(e.scale);
+                        const iron::Mat4 model = iron::translation(e.transform.position)
+                                               * e.transform.rotation.toMat4()
+                                               * iron::scaling(e.transform.scale);
                         worldAabbs[i] = worldAabb(resolved[i].localBounds, model);
                     }
                     const int ri = iron::pickEntity(ray, worldAabbs);
@@ -688,13 +680,13 @@ int main() {
         if (action == Action::AddCube) {
             iron::SceneEntity ne;
             ne.name = uniqueName("cube");
-            ne.position = spawnPos();
+            ne.transform.position = spawnPos();
             ne.mesh.primitive = iron::PrimitiveKind::Cube;
             appendAndSelect(ne);
         } else if (action == Action::AddPlane) {
             iron::SceneEntity ne;
             ne.name = uniqueName("plane");
-            ne.position = spawnPos();
+            ne.transform.position = spawnPos();
             ne.mesh.primitive = iron::PrimitiveKind::Plane;
             appendAndSelect(ne);
         } else if (action == Action::AddGltf) {
@@ -705,13 +697,13 @@ int main() {
             if (dot != std::string::npos) stem = stem.substr(0, dot);
             iron::SceneEntity ne;
             ne.name = uniqueName(stem.empty() ? "gltf" : stem);
-            ne.position = spawnPos();
+            ne.transform.position = spawnPos();
             ne.mesh.gltfPath = outRes.gltfPath;
             appendAndSelect(ne);
         } else if (action == Action::Duplicate && selValid) {
             iron::SceneEntity ne = scene.entities[selectedIndex];  // copy mesh+material+transform
             ne.name = uniqueName(ne.name);
-            ne.position.x += 0.5f;  // slight offset so the copy is visible
+            ne.transform.position.x += 0.5f;  // slight offset so the copy is visible
             appendAndSelect(ne);
         } else if (action == Action::Delete && selValid) {
             const int d = selectedIndex;
@@ -738,9 +730,9 @@ int main() {
         // read live by beginFrame below.
         for (auto& re : resolved) {
             const iron::SceneEntity& e = scene.entities[re.entityIndex];
-            re.model = iron::translation(e.position)
-                     * e.rotation.toMat4()
-                     * iron::scaling(e.scale);
+            re.model = iron::translation(e.transform.position)
+                     * e.transform.rotation.toMat4()
+                     * iron::scaling(e.transform.scale);
             re.material.emissive     = e.material.emissive;
             re.material.uvScale      = e.material.uvScale;
             re.material.reflectivity = e.material.reflectivity;
@@ -755,9 +747,7 @@ int main() {
             const iron::SceneEntity& se = scene.entities[i];
             iron::EntityId e = sceneIndexToEntity[i];
             if (auto* t = world.get<iron::Transform>(e)) {
-                t->position = se.position;
-                t->rotation = se.rotation;
-                t->scale    = se.scale;
+                *t = se.transform;
             }
             if (auto* m = world.get<iron::MaterialDef>(e)) {
                 *m = se.material;
@@ -804,7 +794,7 @@ int main() {
         }
         if (selectedIndex >= 0 && selectedIndex < static_cast<int>(scene.entities.size()))
             gizmo.draw(renderer, gizmoOriginFor(selectedIndex),
-                       scene.entities[selectedIndex].rotation, cam.position);
+                       scene.entities[selectedIndex].transform.rotation, cam.position);
 
         // --- selection outline: the selected entity's oriented bounding box
         // drawn as an always-on-top box, so the active object reads clearly. ---
@@ -812,9 +802,9 @@ int main() {
             for (const auto& re : resolved) {
                 if (re.entityIndex != selectedIndex) continue;
                 const iron::SceneEntity& se = scene.entities[selectedIndex];
-                const iron::Mat4 m = iron::translation(se.position)
-                                   * se.rotation.toMat4()
-                                   * iron::scaling(se.scale);
+                const iron::Mat4 m = iron::translation(se.transform.position)
+                                   * se.transform.rotation.toMat4()
+                                   * iron::scaling(se.transform.scale);
                 // Oriented bounding box: transform each LOCAL-bounds corner by the
                 // model matrix so the outline rotates + scales with the object,
                 // instead of a world-axis AABB that just grows/shrinks on spin.

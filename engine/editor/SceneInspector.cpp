@@ -33,15 +33,15 @@ bool SceneInspector::draw(SceneEntity& e, GizmoSpace& space, EffectKind& effectK
         effectKind = static_cast<EffectKind>(ki);
 
     ImGui::SeparatorText("Transform");
-    changed |= ImGui::DragFloat3("Position", &e.position.x, 0.05f);
+    changed |= ImGui::DragFloat3("Position", &e.transform.position.x, 0.05f);
 
-    Vec3 euler = quatToEuler(e.rotation);  // degrees
+    Vec3 euler = quatToEuler(e.transform.rotation);  // degrees
     if (ImGui::DragFloat3("Rotation", &euler.x, 0.5f)) {
-        e.rotation = eulerToQuat(euler);
+        e.transform.rotation = eulerToQuat(euler);
         changed = true;
     }
 
-    changed |= ImGui::DragFloat3("Scale", &e.scale.x, 0.05f);
+    changed |= ImGui::DragFloat3("Scale", &e.transform.scale.x, 0.05f);
 
     ImGui::SeparatorText("Material");
     changed |= ImGui::ColorEdit3("Emissive", &e.material.emissive.x);

@@ -35,17 +35,17 @@ SceneFile makeSampleScene() {
 
     SceneEntity floor;
     floor.name     = "floor";
-    floor.position = {0.0f, 0.0f, 0.0f};
-    floor.scale    = {20.0f, 1.0f, 20.0f};
+    floor.transform.position = {0.0f, 0.0f, 0.0f};
+    floor.transform.scale    = {20.0f, 1.0f, 20.0f};
     floor.mesh.primitive = PrimitiveKind::Plane;
     floor.material.uvScale = 8.0f;
     s.entities.push_back(floor);
 
     SceneEntity helmet;
     helmet.name     = "helmet";
-    helmet.position = {2.0f, 1.5f, 0.0f};
-    helmet.rotation = Quat::fromAxisAngle(Vec3{0, 1, 0}, 0.7f);
-    helmet.scale    = {1.5f, 1.5f, 1.5f};
+    helmet.transform.position = {2.0f, 1.5f, 0.0f};
+    helmet.transform.rotation = Quat::fromAxisAngle(Vec3{0, 1, 0}, 0.7f);
+    helmet.transform.scale    = {1.5f, 1.5f, 1.5f};
     helmet.mesh.gltfPath        = "assets/damaged-helmet/DamagedHelmet.gltf";
     helmet.material.emissive    = {0.1f, 0.0f, 0.0f};
     helmet.material.reflectivity = 0.3f;
@@ -82,13 +82,13 @@ int main() {
                 CHECK(l.entities[0].mesh.primitive.has_value());
                 CHECK(l.entities[0].mesh.primitive.value() == PrimitiveKind::Plane);
                 CHECK(l.entities[0].mesh.gltfPath.empty());
-                CHECK_NEAR(l.entities[0].scale.x, 20.0f);
+                CHECK_NEAR(l.entities[0].transform.scale.x, 20.0f);
                 CHECK_NEAR(l.entities[0].material.uvScale, 8.0f);
                 CHECK(l.entities[1].name == "helmet");
                 CHECK(!l.entities[1].mesh.primitive.has_value());
                 CHECK(l.entities[1].mesh.gltfPath == "assets/damaged-helmet/DamagedHelmet.gltf");
                 CHECK_NEAR(l.entities[1].material.reflectivity, 0.3f);
-                const Quat q = l.entities[1].rotation;
+                const Quat q = l.entities[1].transform.rotation;
                 const Quat e = Quat::fromAxisAngle(Vec3{0, 1, 0}, 0.7f);
                 CHECK_NEAR(q.x, e.x);
                 CHECK_NEAR(q.y, e.y);
@@ -129,9 +129,9 @@ int main() {
             if (!l.entities.empty()) {
                 CHECK(l.entities[0].mesh.primitive.has_value());
                 CHECK(l.entities[0].mesh.primitive.value() == PrimitiveKind::Cube);
-                CHECK_NEAR(l.entities[0].position.x, 0.0f);
-                CHECK_NEAR(l.entities[0].scale.x, 1.0f);
-                CHECK_NEAR(l.entities[0].rotation.w, 1.0f);
+                CHECK_NEAR(l.entities[0].transform.position.x, 0.0f);
+                CHECK_NEAR(l.entities[0].transform.scale.x, 1.0f);
+                CHECK_NEAR(l.entities[0].transform.rotation.w, 1.0f);
             }
             CHECK_NEAR(l.clearColor.x, 0.5f);
             CHECK(l.pointLights.empty());
