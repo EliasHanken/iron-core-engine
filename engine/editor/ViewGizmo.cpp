@@ -53,49 +53,60 @@ void setIsometricView(FreeFlyCamera& cam, float distance) {
 }
 
 bool drawViewGizmo(FreeFlyCamera& cam, float size, float margin) {
-    // The library's Context holds hover state across frames if not reset.
-    // BeginFrame() unconditionally resets per-frame interaction state.
     ImViewGuizmo::BeginFrame();
 
-    // ImViewGuizmo::Rotate calls ImGui::GetWindowDrawList() internally,
-    // which requires an active ImGui window. Our intended call site (after
-    // all panels, before imguiLayer.render()) has no active window — wrap
-    // the gizmo + button in a transparent fullscreen overlay window that
-    // doesn't steal focus or input from anything else.
+    // Scale the library widget so its rendered diameter matches `size`. The
+    // library's default is 256.f * style.scale; we override scale every frame
+    // so callers get a predictable on-screen size.
+    ImViewGuizmo::GetStyle().scale = size / 256.0f;
+
     const ImVec2 viewportSize = ImGui::GetMainViewport()->Size;
     const ImVec2 viewportPos  = ImGui::GetMainViewport()->Pos;
-    ImGui::SetNextWindowPos(viewportPos);
-    ImGui::SetNextWindowSize(viewportSize);
+
+    // The overlay window is sized to JUST the gizmo + Iso button area — not
+    // fullscreen — so ImGui's WantCaptureMouse stays false outside the corner
+    // and WASD / RMB-look continue to work in the rest of the viewport.
+    constexpr float kButtonHeight = 26.0f;  // approximate ImGui button height
+    constexpr float kPad          = 6.0f;   // visual padding around widget
+    const float windowW = size + kPad * 2.0f;
+    const float windowH = size + kPad * 2.0f + kButtonHeight + 4.0f;
+
+    ImGui::SetNextWindowPos({viewportPos.x + viewportSize.x - windowW - margin,
+                             viewportPos.y + margin});
+    ImGui::SetNextWindowSize({windowW, windowH});
     ImGui::SetNextWindowBgAlpha(0.0f);
     constexpr ImGuiWindowFlags kOverlayFlags =
         ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoNav |
         ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoBringToFrontOnFocus |
-        ImGuiWindowFlags_NoScrollWithMouse | ImGuiWindowFlags_NoFocusOnAppearing |
-        ImGuiWindowFlags_NoBackground | ImGuiWindowFlags_NoSavedSettings;
+        ImGuiWindowFlags_NoFocusOnAppearing | ImGuiWindowFlags_NoBackground |
+        ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoScrollbar |
+        ImGuiWindowFlags_NoScrollWithMouse;
     ImGui::Begin("##viewgizmo_overlay", nullptr, kOverlayFlags);
 
-    const ImVec2 gizmoPos{viewportPos.x + viewportSize.x - size - margin,
-                          viewportPos.y + margin};
+    // Gizmo CENTER in screen space (library treats `position` as the center).
+    const ImVec2 windowOrigin = ImGui::GetWindowPos();
+    const ImVec2 gizmoCenter{windowOrigin.x + kPad + size * 0.5f,
+                             windowOrigin.y + kPad + size * 0.5f};
 
-    // Adapter: yaw/pitch (radians) → quat (degrees through eulerToQuat) → glm types.
+    // Adapter: iron radians → degrees → quat → glm.
     glm::vec3 pos = toGlm(cam.position);
     glm::quat rot = toGlm(eulerToQuat({cam.pitch * kRad2Deg,
                                        cam.yaw   * kRad2Deg,
                                        0.0f}));
     const glm::vec3 pivot{0.0f, 0.0f, 0.0f};  // orbit around world origin
 
-    bool changed = ImViewGuizmo::Rotate(pos, rot, pivot, gizmoPos);
+    bool changed = ImViewGuizmo::Rotate(pos, rot, pivot, gizmoCenter);
     if (changed) {
         cam.position = fromGlm(pos);
         const Vec3 eDeg = quatToEuler(fromGlm(rot));
         cam.pitch = eDeg.x * kDeg2Rad;
         cam.yaw   = eDeg.y * kDeg2Rad;
-        // eDeg.z (roll) is discarded — yaw/pitch can't carry it. Axis-snap
-        // produces zero roll; pure drag-orbit may lose roll (v1 limit).
+        // eDeg.z (roll) is discarded — yaw/pitch can't carry it.
     }
 
-    // "Iso" button right below the gizmo, centered horizontally.
-    ImGui::SetCursorScreenPos({gizmoPos.x + size * 0.25f, gizmoPos.y + size + 4.0f});
+    // Iso button below the gizmo, using window-relative coordinates so it
+    // sits inside the (small) overlay window's hit zone.
+    ImGui::SetCursorPos({kPad + size * 0.25f, kPad + size + 4.0f});
     if (ImGui::Button("Iso", ImVec2(size * 0.5f, 0.0f))) {
         setIsometricView(cam);
         changed = true;
