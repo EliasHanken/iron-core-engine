@@ -84,6 +84,63 @@ public:
         return nullptr;
     }
 
+    // ── Enum registry ──────────────────────────────────────────────────────
+    struct EnumValue {
+        std::string_view name;
+        int64_t          value;
+    };
+
+    template <class E>
+    class EnumBuilder {
+    public:
+        EnumBuilder& value(std::string_view name, E v) {
+            static_assert(std::is_enum_v<E>, "EnumBuilder requires an enum type");
+            reg_.enums_[typeId_].values.push_back(
+                EnumValue{ name, static_cast<int64_t>(
+                    static_cast<std::underlying_type_t<E>>(v)) });
+            return *this;
+        }
+    private:
+        friend class Reflection;
+        EnumBuilder(Reflection& r, uint32_t id) : reg_(r), typeId_(id) {}
+        Reflection& reg_;
+        uint32_t    typeId_;
+    };
+
+    template <class E>
+    EnumBuilder<E> registerEnum(std::string_view name) {
+        static_assert(std::is_enum_v<E>, "registerEnum requires an enum type");
+        const uint32_t id = componentTypeId<E>();
+        assert(id < kMaxTypes && "Too many reflected enums (raise Reflection::kMaxTypes)");
+        enums_[id].name = name;
+        enums_[id].values.clear();
+        enumsRegistered_[id] = true;
+        return EnumBuilder<E>(*this, id);
+    }
+
+    template <class E>
+    std::span<const EnumValue> enumValues() const {
+        return enumValuesById(componentTypeId<E>());
+    }
+
+    template <class E>
+    std::string_view enumName() const {
+        return enumNameById(componentTypeId<E>());
+    }
+
+    // Dispatch-side, non-template lookups (Inspector / SceneIO call these via
+    // FieldDesc::enumTypeId without knowing the concrete enum type E).
+    std::span<const EnumValue> enumValuesById(uint32_t id) const {
+        return (id < kMaxTypes && enumsRegistered_[id])
+            ? std::span<const EnumValue>(enums_[id].values)
+            : std::span<const EnumValue>{};
+    }
+    std::string_view enumNameById(uint32_t id) const {
+        return (id < kMaxTypes && enumsRegistered_[id])
+            ? enums_[id].name
+            : std::string_view{};
+    }
+
 private:
     struct TypeEntry {
         std::string_view       name;
@@ -91,6 +148,13 @@ private:
     };
     std::array<TypeEntry, kMaxTypes> types_{};
     std::array<bool, kMaxTypes>      registered_{};
+
+    struct EnumEntry {
+        std::string_view       name;
+        std::vector<EnumValue> values;
+    };
+    std::array<EnumEntry, kMaxTypes> enums_{};
+    std::array<bool, kMaxTypes>      enumsRegistered_{};
 };
 
 }  // namespace iron

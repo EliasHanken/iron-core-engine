@@ -288,6 +288,46 @@ static void test_field_stores_enum_typeid() {
     CHECK(fields[2].enumTypeId == iron::componentTypeId<iron::PrimitiveKind>());
 }
 
+static void test_register_enum_stores_name() {
+    iron::Reflection r;
+    r.registerEnum<iron::PrimitiveKind>("PrimitiveKind")
+        .value("cube",  iron::PrimitiveKind::Cube)
+        .value("plane", iron::PrimitiveKind::Plane);
+    CHECK(r.enumName<iron::PrimitiveKind>() == "PrimitiveKind");
+}
+
+static void test_unregistered_enum_has_empty_name() {
+    iron::Reflection r;
+    CHECK(r.enumName<iron::PrimitiveKind>().empty());
+}
+
+static void test_enum_values_lookup_template_and_by_id() {
+    iron::Reflection r;
+    r.registerEnum<iron::PrimitiveKind>("PrimitiveKind")
+        .value("cube",  iron::PrimitiveKind::Cube)
+        .value("plane", iron::PrimitiveKind::Plane);
+
+    auto vs = r.enumValues<iron::PrimitiveKind>();
+    CHECK(vs.size() == 2);
+    CHECK(vs[0].name == "cube");
+    CHECK(vs[1].name == "plane");
+    CHECK(static_cast<iron::PrimitiveKind>(vs[0].value) == iron::PrimitiveKind::Cube);
+    CHECK(static_cast<iron::PrimitiveKind>(vs[1].value) == iron::PrimitiveKind::Plane);
+
+    const uint32_t id = iron::componentTypeId<iron::PrimitiveKind>();
+    auto byId = r.enumValuesById(id);
+    CHECK(byId.size() == 2);
+    CHECK(byId[0].name == "cube");
+    CHECK(r.enumNameById(id) == "PrimitiveKind");
+}
+
+static void test_unregistered_enum_id_returns_empty() {
+    iron::Reflection r;
+    const uint32_t id = iron::componentTypeId<iron::PrimitiveKind>();
+    CHECK(r.enumValuesById(id).empty());
+    CHECK(r.enumNameById(id).empty());
+}
+
 int main() {
     test_typeid_unknown_is_zero();
     test_fieldmeta_defaults_are_zero();
@@ -316,6 +356,10 @@ int main() {
     test_enum_typeidof_helper_returns_componenttypeid_for_enum();
     test_enum_typeidof_helper_unwraps_optional();
     test_field_stores_enum_typeid();
+    test_register_enum_stores_name();
+    test_unregistered_enum_has_empty_name();
+    test_enum_values_lookup_template_and_by_id();
+    test_unregistered_enum_id_returns_empty();
     if (g_failures == 0) std::printf("All type-reflection tests passed.\n");
     return g_failures == 0 ? 0 : 1;
 }
