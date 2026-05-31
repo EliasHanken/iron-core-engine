@@ -14,12 +14,6 @@
 
 namespace iron {
 
-template <class T>
-nlohmann::json componentToJson(const Reflection& r, const T& obj);
-
-template <class T>
-void componentFromJson(const Reflection& r, T& obj, const nlohmann::json& j);
-
 // Non-template byte-pointer workers — public so the templates above can be
 // defined inline here without pulling the implementation into every TU.
 nlohmann::json componentToJsonByPtr(const Reflection& r,

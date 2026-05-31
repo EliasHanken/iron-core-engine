@@ -118,37 +118,38 @@ void componentFromJsonByPtr(const Reflection& r,
     if (!j.is_object()) return;
     for (const FieldDesc& f : fields) {
         const std::string key(f.name);
-        const bool present = j.contains(key);
+        const auto it = j.find(key);
+        const bool present = (it != j.end());
         switch (f.type) {
             case TypeId::Bool:
-                if (present && j[key].is_boolean()) *f.ptr<bool>(obj) = j[key].get<bool>();
+                if (present && it->is_boolean()) *f.ptr<bool>(obj) = it->get<bool>();
                 break;
             case TypeId::Int32:
-                if (present && j[key].is_number_integer()) *f.ptr<int32_t>(obj) = j[key].get<int32_t>();
+                if (present && it->is_number_integer()) *f.ptr<int32_t>(obj) = it->get<int32_t>();
                 break;
             case TypeId::UInt32:
-                if (present && j[key].is_number_integer()) *f.ptr<uint32_t>(obj) = j[key].get<uint32_t>();
+                if (present && it->is_number_integer()) *f.ptr<uint32_t>(obj) = it->get<uint32_t>();
                 break;
             case TypeId::UInt8:
-                if (present && j[key].is_number_integer()) *f.ptr<uint8_t>(obj) = static_cast<uint8_t>(j[key].get<uint32_t>());
+                if (present && it->is_number_integer()) *f.ptr<uint8_t>(obj) = static_cast<uint8_t>(it->get<uint32_t>());
                 break;
             case TypeId::Float:
-                if (present && j[key].is_number()) *f.ptr<float>(obj) = j[key].get<float>();
+                if (present && it->is_number()) *f.ptr<float>(obj) = it->get<float>();
                 break;
             case TypeId::String:
-                if (present && j[key].is_string()) *f.ptr<std::string>(obj) = j[key].get<std::string>();
+                if (present && it->is_string()) *f.ptr<std::string>(obj) = it->get<std::string>();
                 break;
             case TypeId::Vec3:
-                if (present) readVec3(j[key], *f.ptr<Vec3>(obj));
+                if (present) readVec3(*it, *f.ptr<Vec3>(obj));
                 break;
             case TypeId::Quat:
-                if (present) readQuat(j[key], *f.ptr<Quat>(obj));
+                if (present) readQuat(*it, *f.ptr<Quat>(obj));
                 break;
             case TypeId::Enum: {
-                if (!present || !j[key].is_string()) break;
+                if (!present || !it->is_string()) break;
                 auto vs = r.enumValuesById(f.enumTypeId);
-                const std::string s = j[key].get<std::string>();
-                int64_t matched = vs.empty() ? 0 : vs[0].value;  // fallback: first
+                const std::string s = it->get<std::string>();
+                int64_t matched = vs.empty() ? 0 : vs[0].value;
                 bool found = false;
                 for (const auto& ev : vs) {
                     if (ev.name == s) { matched = ev.value; found = true; break; }
@@ -168,9 +169,9 @@ void componentFromJsonByPtr(const Reflection& r,
                     f.ptr<std::optional<int32_t>>(obj)->reset();
                     break;
                 }
-                if (!j[key].is_string()) break;
+                if (!it->is_string()) break;
                 auto vs = r.enumValuesById(f.enumTypeId);
-                const std::string s = j[key].get<std::string>();
+                const std::string s = it->get<std::string>();
                 int64_t matched = vs.empty() ? 0 : vs[0].value;
                 bool found = false;
                 for (const auto& ev : vs) {

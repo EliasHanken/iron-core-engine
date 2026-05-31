@@ -95,6 +95,12 @@ public:
     public:
         EnumBuilder& value(std::string_view name, E v) {
             static_assert(std::is_enum_v<E>, "EnumBuilder requires an enum type");
+            // v1 limit: ReflectionIO's enum dispatch reads/writes the field
+            // payload as int32_t. Future enums with a different underlying
+            // type need a templated dispatch — fail loudly here until that
+            // exists.
+            static_assert(sizeof(std::underlying_type_t<E>) == sizeof(int32_t),
+                "ReflectionIO v1: enum underlying type must be int32_t (see ReflectionIO.cpp)");
             reg_.enums_[typeId_].values.push_back(
                 EnumValue{ name, static_cast<int64_t>(
                     static_cast<std::underlying_type_t<E>>(v)) });

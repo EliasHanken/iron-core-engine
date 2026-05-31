@@ -1,5 +1,6 @@
 #include "reflection/RegisterCoreTypes.h"
 #include "reflection/Reflection.h"
+#include "render/RenderHandles.h"
 #include "scene/ReflectionIO.h"
 #include "scene/SceneFormat.h"
 #include "world/Transform.h"
@@ -132,6 +133,25 @@ static void test_min_max_do_not_clamp_on_load() {
     CHECK(back.reflectivity == 1.5f);
 }
 
+static void test_render_handles_roundtrip() {
+    iron::Reflection r = makeReg();
+    iron::RenderHandles h;
+    h.mesh     = 7u;
+    h.albedo   = 13u;
+    h.normal   = 23u;
+    h.specular = 31u;
+    json j = iron::componentToJson(r, h);
+    CHECK(j["mesh"].is_number());
+    CHECK(j["albedo"].get<uint32_t>() == 13u);
+
+    iron::RenderHandles back;
+    iron::componentFromJson(r, back, j);
+    CHECK(back.mesh     == 7u);
+    CHECK(back.albedo   == 13u);
+    CHECK(back.normal   == 23u);
+    CHECK(back.specular == 31u);
+}
+
 int main() {
     test_transform_roundtrip();
     test_mesh_ref_roundtrip_primitive_cube();
@@ -141,6 +161,7 @@ int main() {
     test_unknown_enum_name_logs_falls_back_to_first_value();
     test_widget_hints_do_not_affect_serialization();
     test_min_max_do_not_clamp_on_load();
+    test_render_handles_roundtrip();
     if (g_failures == 0) std::printf("All reflection-IO tests passed.\n");
     return g_failures == 0 ? 0 : 1;
 }
