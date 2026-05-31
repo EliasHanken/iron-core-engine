@@ -178,6 +178,9 @@ int main() {
         const size_t firstTrans = contents.find("\"transform\"");
         CHECK(firstName  != std::string::npos);
         CHECK(firstTrans != std::string::npos);
+        // nlohmann::json's default backing is std::map (alphabetical), so
+        // "name" < "transform" lexicographically — invariant holds regardless
+        // of insertion order. Swap-to-ordered_json would invalidate this.
         CHECK(firstTrans > firstName);
         fs::remove(path);
     }

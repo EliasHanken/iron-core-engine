@@ -19,7 +19,7 @@
 //   Quat         → euler-decomposed DragFloat3 (degrees); recompose on edit
 //                  (speed = meta.dragSpeed or 0.5)
 //   Enum         → Combo over enumValuesById(f.enumTypeId); unknown current
-//                  value shows index 0 with a one-shot warning and does not
+//                  value shows index 0 with a per-frame warning and does not
 //                  write back until the user picks a value
 //   OptionalEnum → "None" + Combo; None resets the optional, others assign
 //

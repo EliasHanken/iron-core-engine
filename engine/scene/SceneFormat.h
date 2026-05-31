@@ -1,6 +1,5 @@
 #pragma once
 
-#include "math/Quaternion.h"
 #include "math/Vec.h"
 #include "render/Fog.h"
 #include "render/Light.h"
