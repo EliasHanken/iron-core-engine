@@ -432,9 +432,12 @@ bool drawViewGizmo(FreeFlyCamera& cam, Vec3 pivot, float size, float margin) {
         dl->AddText(textPos, IM_COL32(20, 20, 20, 255), label);
     }
 
-    // Iso button — uses the same pivot the gizmo orbits around.
+    // Iso button — uses the same pivot the gizmo orbits around. Capture the
+    // pre-click iso state so Push/Pop pair stays balanced even if the click
+    // flips isoMode mid-block.
     ImGui::SetCursorPos({kPad + size * 0.25f, kPad + size + 4.0f});
-    if (isoMode) {
+    const bool wasIsoActive = isoMode;
+    if (wasIsoActive) {
         ImGui::PushStyleColor(ImGuiCol_Button,
             ImGui::GetStyleColorVec4(ImGuiCol_ButtonActive));
     }
@@ -453,7 +456,7 @@ bool drawViewGizmo(FreeFlyCamera& cam, Vec3 pivot, float size, float margin) {
         }
         changed = true;
     }
-    if (isoMode) ImGui::PopStyleColor();
+    if (wasIsoActive) ImGui::PopStyleColor();
 
     ImGui::End();
     return changed;
