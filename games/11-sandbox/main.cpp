@@ -36,6 +36,7 @@
 #include "editor/ImGuiLayer.h"
 #include "editor/SceneInspector.h"
 #include "editor/SceneOutliner.h"
+#include "editor/ViewGizmo.h"
 #include "math/Aabb.h"
 #include "scene/Picking.h"
 
@@ -828,6 +829,7 @@ int main() {
             }
         }
         renderer.flushDebugLines(view, proj);
+        iron::drawViewGizmo(cam);
         imgui.render();   // enqueues the UI overlay into the scene pass tail
         renderer.endFrame();
         app.window().swapBuffers();
