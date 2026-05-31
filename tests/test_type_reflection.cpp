@@ -227,6 +227,28 @@ static void test_register_all_four_in_one_registry() {
     CHECK(!r.typeName<iron::RenderHandles>().empty());
 }
 
+static void test_fieldmeta_widget_hint_defaults() {
+    iron::FieldMeta m;
+    CHECK(m.dragSpeed == 0.0f);
+    CHECK(m.color  == false);
+    CHECK(m.slider == false);
+}
+
+static void test_field_records_widget_hints() {
+    struct Probe { float a; iron::Vec3 b; };
+    iron::Reflection r;
+    r.registerType<Probe>("Probe")
+        .field("a", &Probe::a, {.min = 0.0f, .max = 1.0f, .slider = true})
+        .field("b", &Probe::b, {.color = true});
+    auto fields = r.fieldsOf<Probe>();
+    CHECK(fields.size() == 2);
+    CHECK(fields[0].meta.slider == true);
+    CHECK(fields[0].meta.min == 0.0f);
+    CHECK(fields[0].meta.max == 1.0f);
+    CHECK(fields[1].meta.color == true);
+    CHECK(fields[1].meta.dragSpeed == 0.0f);
+}
+
 int main() {
     test_typeid_unknown_is_zero();
     test_fieldmeta_defaults_are_zero();
@@ -249,6 +271,8 @@ int main() {
     test_register_material_def_end_to_end();
     test_register_render_handles_end_to_end();
     test_register_all_four_in_one_registry();
+    test_fieldmeta_widget_hint_defaults();
+    test_field_records_widget_hints();
     if (g_failures == 0) std::printf("All type-reflection tests passed.\n");
     return g_failures == 0 ? 0 : 1;
 }
