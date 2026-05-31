@@ -97,16 +97,28 @@ bool drawViewGizmo(FreeFlyCamera& cam, Vec3 pivot, float size, float margin) {
     // FreeFlyCamera to a quaternion internally (separate milestone). Click
     // axis-snap and the Iso button are unaffected (snapped orientations
     // have zero roll).
+    // ImViewGuizmo's internal camera convention is Y-down, Z-forward
+    // (worldUp = (0, -1, 0), worldForward = (0, 0, +1)). Ours is Y-up,
+    // -Z-forward. The basis change is a 180° rotation about the X axis,
+    // which we apply at the quat boundary as q_lib = flip * q_ours and
+    // reverse on the way back. The flip quaternion is its own inverse.
+    //
+    // 180° about X axis: angle = π, half = π/2, sin(π/2) = 1, cos(π/2) = 0.
+    // Components (w, x, y, z) = (0, 1, 0, 0); glm::quat ctor is (w, x, y, z).
+    static const glm::quat kBasisFlip{0.0f, 1.0f, 0.0f, 0.0f};
+
     glm::vec3 pos = toGlm(cam.position);
-    glm::quat rot = toGlm(eulerToQuat({cam.pitch * kRad2Deg,
-                                       cam.yaw   * kRad2Deg,
-                                       0.0f}));
+    glm::quat rot = kBasisFlip * toGlm(eulerToQuat({cam.pitch * kRad2Deg,
+                                                    cam.yaw   * kRad2Deg,
+                                                    0.0f}));
     const glm::vec3 pivotGlm = toGlm(pivot);
 
     bool changed = ImViewGuizmo::Rotate(pos, rot, pivotGlm, gizmoCenter);
     if (changed) {
         cam.position = fromGlm(pos);
-        const Vec3 eDeg = quatToEuler(fromGlm(rot));
+        // Undo the basis flip before extracting yaw/pitch.
+        const glm::quat unflipped = kBasisFlip * rot;
+        const Vec3 eDeg = quatToEuler(fromGlm(unflipped));
         cam.pitch = eDeg.x * kDeg2Rad;
         cam.yaw   = eDeg.y * kDeg2Rad;
     }
