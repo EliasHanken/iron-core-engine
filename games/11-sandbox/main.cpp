@@ -456,6 +456,18 @@ int main() {
 
     app.window().setCursorCaptured(false);  // free by default; RMB captures look
 
+    // --- M40: scroll accumulator for wheel-zoom ---
+    // Install OUR scroll callback BEFORE imgui.init(). ImGui (via
+    // install_callbacks=true) will chain to ours and ALSO process its own
+    // event for panel scrolling. We accumulate wheel deltas here so the
+    // per-frame setUpdate phase can read them — independent of ImGui's IO
+    // frame timing (which sets MouseWheel during beginFrame, after setUpdate).
+    static double g_scrollAccum = 0.0;
+    glfwSetScrollCallback(app.window().handle(),
+                          [](GLFWwindow* /*w*/, double /*dx*/, double dy) {
+                              g_scrollAccum += dy;
+                          });
+
     // --- Editor ---
     iron::ImGuiLayer imgui;
     if (!imgui.init(app.window(), renderer)) {
@@ -557,28 +569,30 @@ int main() {
         if (input.keyPressed(GLFW_KEY_ESCAPE))
             selectedIndex = -1;
 
-        // M40: mouse wheel zooms toward the selection pivot (selected entity
-        // if any, else world origin). Multiplicative: each tick scales the
-        // distance-to-pivot by 0.9^wheel. Guarded by wantsMouse() so panels
-        // can scroll their own contents.
-        if (!imgui.wantsMouse()) {
-            const float wheel = ImGui::GetIO().MouseWheel;
-            if (wheel != 0.0f) {
-                const iron::Vec3 zoomPivot =
-                    (selectedIndex >= 0 && selectedIndex < static_cast<int>(scene.entities.size()))
-                        ? scene.entities[selectedIndex].transform.position
-                        : iron::Vec3{0.0f, 0.0f, 0.0f};
-                const iron::Vec3 rel = cam.position - zoomPivot;
-                const float currentDist = iron::length(rel);
-                if (currentDist > 1e-4f) {
-                    const float newDist = std::max(0.5f, currentDist * std::pow(0.9f, wheel));
-                    const iron::Vec3 dir = rel * (1.0f / currentDist);
-                    cam.position = {zoomPivot.x + dir.x * newDist,
-                                    zoomPivot.y + dir.y * newDist,
-                                    zoomPivot.z + dir.z * newDist};
-                }
+        // M40: wheel-zoom toward the selection pivot (selected entity if any,
+        // else world origin). Reads from g_scrollAccum (filled by our GLFW
+        // scroll callback above) so the value is always current regardless of
+        // ImGui's frame timing. Consume + reset each frame.
+        if (g_scrollAccum != 0.0 && !imgui.wantsMouse()) {
+            const float wheel = static_cast<float>(g_scrollAccum);
+            const iron::Vec3 zoomPivot =
+                (selectedIndex >= 0 && selectedIndex < static_cast<int>(scene.entities.size()))
+                    ? scene.entities[selectedIndex].transform.position
+                    : iron::Vec3{0.0f, 0.0f, 0.0f};
+            const iron::Vec3 rel = cam.position - zoomPivot;
+            const float currentDist = iron::length(rel);
+            if (currentDist > 1e-4f) {
+                const float newDist = std::max(0.5f, currentDist * std::pow(0.9f, wheel));
+                const iron::Vec3 dir = rel * (1.0f / currentDist);
+                cam.position = {zoomPivot.x + dir.x * newDist,
+                                zoomPivot.y + dir.y * newDist,
+                                zoomPivot.z + dir.z * newDist};
             }
         }
+        // Always reset the accumulator at the bottom of this frame's read
+        // (even if wantsMouse was true — we don't want the value to leak
+        // into the next frame after the panel is dismissed).
+        g_scrollAccum = 0.0;
 
         // Look + fly only while RIGHT mouse is held and ImGui isn't using it.
         const bool look = input.mouseButtonDown(GLFW_MOUSE_BUTTON_RIGHT)
