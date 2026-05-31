@@ -674,7 +674,8 @@ int main() {
                 if (selectedIndex >= 0 && selectedIndex < static_cast<int>(scene.entities.size()))
                     consumed = gizmo.update(scene.entities[selectedIndex],
                                             gizmoOriginFor(selectedIndex), ray,
-                                            lmbPressed, lmbDown, cam.position);
+                                            lmbPressed, lmbDown, cam.position,
+                                            cam.fovDeg);
 
                 // A fresh click that didn't grab a handle re-selects (or clears).
                 if (lmbPressed && !consumed && !uiBusy) {
@@ -857,7 +858,8 @@ int main() {
         }
         if (selectedIndex >= 0 && selectedIndex < static_cast<int>(scene.entities.size()))
             gizmo.draw(renderer, gizmoOriginFor(selectedIndex),
-                       scene.entities[selectedIndex].transform.rotation, cam.position);
+                       scene.entities[selectedIndex].transform.rotation, cam.position,
+                       cam.fovDeg);
 
         // --- selection outline: the selected entity's oriented bounding box
         // drawn as an always-on-top box, so the active object reads clearly. ---

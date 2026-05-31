@@ -34,8 +34,17 @@ void buildBasis(bool local, const Quat& rot, Vec3 ax[3]) {
         ax[a] = local ? rot.rotate(axisDir(a)) : axisDir(a);
 }
 
-float gizmoSize(Vec3 camPos, Vec3 origin) {
-    const float d = length(camPos - origin) * kGizmoScreenScale;
+constexpr float kGizmoDefaultFovDeg = 60.0f;  // matches FreeFlyCamera default
+
+// World size that yields a CONSTANT screen-space size regardless of FOV.
+// Perspective projection: screenSize = worldSize / (distance * tan(fov/2)).
+// To keep screen size constant when fov changes, multiply by
+// tan(fov/2) / tan(defaultFov/2).
+float gizmoSize(Vec3 camPos, Vec3 origin, float fovDeg) {
+    constexpr float kDeg2Rad = 3.14159265358979323846f / 180.0f;
+    const float fovComp = std::tan(fovDeg            * 0.5f * kDeg2Rad) /
+                          std::tan(kGizmoDefaultFovDeg * 0.5f * kDeg2Rad);
+    const float d = length(camPos - origin) * kGizmoScreenScale * fovComp;
     return d < 0.001f ? 0.001f : d;
 }
 
@@ -243,8 +252,8 @@ void Gizmo::toggleSpace() {
 }
 
 bool Gizmo::update(SceneEntity& e, Vec3 origin, const Ray& ray,
-                   bool mousePressed, bool mouseDown, Vec3 camPos) {
-    const float size = gizmoSize(camPos, origin);
+                   bool mousePressed, bool mouseDown, Vec3 camPos, float fovDeg) {
+    const float size = gizmoSize(camPos, origin, fovDeg);
     // Scale is inherently per-local-axis (matches Unreal/Unity, whose world/local
     // toggle is disabled for scale).
     const bool effectiveLocal = (mode_ == GizmoMode::Scale) || (space_ == GizmoSpace::Local);
@@ -361,8 +370,9 @@ bool Gizmo::update(SceneEntity& e, Vec3 origin, const Ray& ray,
     return false;
 }
 
-void Gizmo::draw(Renderer& renderer, Vec3 origin, Quat rotation, Vec3 camPos) const {
-    const float size = gizmoSize(camPos, origin);
+void Gizmo::draw(Renderer& renderer, Vec3 origin, Quat rotation, Vec3 camPos,
+                 float fovDeg) const {
+    const float size = gizmoSize(camPos, origin, fovDeg);
     const int highlight = (axis_ >= 0) ? axis_ : hoveredAxis_;
     const bool effectiveLocal = (mode_ == GizmoMode::Scale) || (space_ == GizmoSpace::Local);
     // Draw in the LIVE entity frame so the handles track the object during a
