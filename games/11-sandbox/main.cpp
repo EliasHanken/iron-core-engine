@@ -464,18 +464,23 @@ int main() {
     iron::BodyId debugCubeBody  = iron::kInvalidBody;
     iron::BodyId debugFloorBody = iron::kInvalidBody;
 
-    // Spawn/despawn the debug body pair. Filled in by Task C1.
+    // Spawn/despawn the debug body pair.
     auto spawnDebugBodies = [&]() {
-        // Task C1 fills this in with the falling-cube + static-floor pair.
-        (void)debugCubeBody;
-        (void)debugFloorBody;
-        (void)physics;
+        // Falling demo cube — 1m³, mass 5kg, dropped from above the origin.
+        debugCubeBody = physics.createDynamicBox(
+            iron::Vec3{0.0f, 5.0f, 0.0f},   // position
+            iron::Vec3{0.5f, 0.5f, 0.5f},   // half-extents
+            5.0f);                          // mass
+        // Static floor — 20×0.5×20, top face at y=0 so the cube lands at y=0.5.
+        debugFloorBody = physics.createStaticBox(
+            iron::Vec3{0.0f, -0.25f, 0.0f},   // position
+            iron::Vec3{10.0f, 0.25f, 10.0f}); // half-extents
     };
     auto despawnDebugBodies = [&]() {
-        // Task C1 destroys the bodies. In B1 this is a no-op.
-        (void)debugCubeBody;
-        (void)debugFloorBody;
-        (void)physics;
+        if (debugCubeBody.isValid())  physics.destroyBody(debugCubeBody);
+        if (debugFloorBody.isValid()) physics.destroyBody(debugFloorBody);
+        debugCubeBody  = iron::kInvalidBody;
+        debugFloorBody = iron::kInvalidBody;
     };
 
     auto togglePlayMode = [&]() {
@@ -1002,6 +1007,43 @@ int main() {
                 for (auto& ed : edges)
                     renderer.drawLineOverlay(c[ed[0]], c[ed[1]], outline);
                 break;
+            }
+        }
+        // M41: draw the debug falling cube as a magenta wireframe, tracking
+        // the Jolt body each Play frame. No-op in Edit mode.
+        if (editor.isPlaying() && debugCubeBody.isValid()) {
+            const iron::Vec3 p = physics.bodyPosition(debugCubeBody);
+            const iron::Vec3 magenta{1.0f, 0.2f, 0.8f};
+            constexpr float h = 0.5f;  // half-extent
+            // 8 corners of the AABB centered at p.
+            const iron::Vec3 c[8] = {
+                {p.x - h, p.y - h, p.z - h}, {p.x + h, p.y - h, p.z - h},
+                {p.x + h, p.y + h, p.z - h}, {p.x - h, p.y + h, p.z - h},
+                {p.x - h, p.y - h, p.z + h}, {p.x + h, p.y - h, p.z + h},
+                {p.x + h, p.y + h, p.z + h}, {p.x - h, p.y + h, p.z + h},
+            };
+            // 12 edges of a box: 4 bottom + 4 top + 4 verticals.
+            const int e[12][2] = {
+                {0,1},{1,2},{2,3},{3,0},
+                {4,5},{5,6},{6,7},{7,4},
+                {0,4},{1,5},{2,6},{3,7},
+            };
+            for (const auto& edge : e) {
+                renderer.drawLineOverlay(c[edge[0]], c[edge[1]], magenta);
+            }
+            // Also draw the floor outline so the user can see what's catching
+            // the cube. Floor is 20×0.5×20 centered at (0, -0.25, 0).
+            const iron::Vec3 fmin{-10.0f, -0.5f, -10.0f};
+            const iron::Vec3 fmax{ 10.0f,  0.0f,  10.0f};
+            const iron::Vec3 floorMagenta{0.6f, 0.15f, 0.5f};  // dimmer
+            const iron::Vec3 f[8] = {
+                {fmin.x, fmin.y, fmin.z}, {fmax.x, fmin.y, fmin.z},
+                {fmax.x, fmax.y, fmin.z}, {fmin.x, fmax.y, fmin.z},
+                {fmin.x, fmin.y, fmax.z}, {fmax.x, fmin.y, fmax.z},
+                {fmax.x, fmax.y, fmax.z}, {fmin.x, fmax.y, fmax.z},
+            };
+            for (const auto& edge : e) {
+                renderer.drawLineOverlay(f[edge[0]], f[edge[1]], floorMagenta);
             }
         }
         renderer.flushDebugLines(view, proj);
