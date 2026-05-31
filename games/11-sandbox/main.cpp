@@ -541,6 +541,9 @@ int main() {
             renderer.setViewport(w, h);
             if (w > 0 && h > 0) proj = computeProj();
         }
+        // M40: rebuild every frame so cam.fovDeg changes (e.g. the view-gizmo's
+        // FOV tween) actually reach the renderer. Cost is ~10 flops.
+        if (app.window().width() > 0 && app.window().height() > 0) proj = computeProj();
         // Skip the frame entirely when minimized. Returning from the
         // setUpdate callback is the per-frame skip — the loop ticks again
         // when the OS sends the next event.
