@@ -38,6 +38,10 @@ add_library(ironcore STATIC
   util/FileWatcher.cpp
   world/World.cpp
   debug/GizmoRegistry.cpp
+  render/RenderHandles.reflect.cpp
+  scene/MaterialDef.reflect.cpp
+  scene/MeshRef.reflect.cpp
+  world/Transform.reflect.cpp
 )
 
 target_include_directories(ironcore PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
