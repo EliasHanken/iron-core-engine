@@ -10,10 +10,12 @@ add_library(ironcore_editor STATIC
   SceneInspector.cpp
   EnvironmentPanel.cpp
   ReflectionInspector.cpp
+  ViewGizmo.cpp
 )
 
 # ironcore PUBLIC propagates the engine include dir (engine/), GLFW, Vulkan, and
 # the IRON_RENDER_BACKEND_VULKAN define. ImGui stays PRIVATE — no ImGui type
-# appears in this module's public headers.
+# appears in this module's public headers. imviewguizmo INTERFACE transitively
+# brings in glm::glm so ViewGizmo.cpp can use glm types.
 target_link_libraries(ironcore_editor PUBLIC ironcore)
-target_link_libraries(ironcore_editor PRIVATE imgui::imgui)
+target_link_libraries(ironcore_editor PRIVATE imgui::imgui imviewguizmo)
