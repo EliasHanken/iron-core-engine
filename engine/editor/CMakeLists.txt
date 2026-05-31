@@ -9,6 +9,7 @@ add_library(ironcore_editor STATIC
   SceneOutliner.cpp
   SceneInspector.cpp
   EnvironmentPanel.cpp
+  ReflectionInspector.cpp
 )
 
 # ironcore PUBLIC propagates the engine include dir (engine/), GLFW, Vulkan, and
