@@ -95,5 +95,49 @@ int main() {
         CHECK_NEAR(std::fabs(mid.w), std::fabs(a.w));
     }
 
+    // iron::slerp free-function alias forwards to Quat::slerp identically.
+    {
+        const Quat a = Quat::fromAxisAngle(Vec3{0.0f, 1.0f, 0.0f}, 0.0f);
+        const Quat b = Quat::fromAxisAngle(Vec3{0.0f, 1.0f, 0.0f}, 1.0f);
+        const Quat viaStatic = Quat::slerp(a, b, 0.3f);
+        const Quat viaAlias  = slerp(a, b, 0.3f);
+        CHECK_NEAR(viaAlias.x, viaStatic.x);
+        CHECK_NEAR(viaAlias.y, viaStatic.y);
+        CHECK_NEAR(viaAlias.z, viaStatic.z);
+        CHECK_NEAR(viaAlias.w, viaStatic.w);
+    }
+
+    // quatLookAt(eye, target, up) — identity case: eye at origin looking down -Z
+    // with +Y up should produce a (near) identity quaternion.
+    {
+        const Quat q = quatLookAt(Vec3{0, 0, 0}, Vec3{0, 0, -1}, Vec3{0, 1, 0});
+        const Vec3 fwd = q.rotate(Vec3{0, 0, -1});
+        CHECK_NEAR(fwd.x, 0.0f);
+        CHECK_NEAR(fwd.y, 0.0f);
+        CHECK_NEAR(fwd.z, -1.0f);
+    }
+
+    // quatLookAt — looking from (+5, 0, 0) toward origin should produce a
+    // rotation that maps the camera's local -Z onto the world direction (-1,0,0).
+    {
+        const Quat q = quatLookAt(Vec3{5, 0, 0}, Vec3{0, 0, 0}, Vec3{0, 1, 0});
+        const Vec3 fwd = q.rotate(Vec3{0, 0, -1});
+        CHECK_NEAR(fwd.x, -1.0f);
+        CHECK_NEAR(fwd.y, 0.0f);
+        CHECK_NEAR(fwd.z, 0.0f);
+    }
+
+    // quatLookAt — looking from (0, 5, 0) toward origin should map local -Z to
+    // world (0, -1, 0). With +Y up colinear with the look direction we pass a
+    // deliberate alternate up vector (+Z) — the test only checks the forward
+    // axis, which is unambiguous.
+    {
+        const Quat q = quatLookAt(Vec3{0, 5, 0}, Vec3{0, 0, 0}, Vec3{0, 0, 1});
+        const Vec3 fwd = q.rotate(Vec3{0, 0, -1});
+        CHECK_NEAR(fwd.x, 0.0f);
+        CHECK_NEAR(fwd.y, -1.0f);
+        CHECK_NEAR(fwd.z, 0.0f);
+    }
+
     return iron_test_result();
 }

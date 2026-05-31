@@ -116,6 +116,19 @@ inline Quat Quat::slerp(const Quat& a, const Quat& b, float t) {
     };
 }
 
+// Free-function alias for Quat::slerp, for naming uniformity with iron::length /
+// normalize / dot / cross (all free functions in the iron:: namespace).
+inline Quat slerp(const Quat& a, const Quat& b, float t) {
+    return Quat::slerp(a, b, t);
+}
+
+// Build a unit quaternion that orients an object at `eye` to look toward
+// `target` with `up` as the reference up-vector. If `up` is colinear with
+// the look direction, the implementation picks +Z as a fallback up-axis
+// (callers can pass a deliberate alternate `up` to disambiguate — see the
+// quatLookAt test for the +Y look-direction case).
+Quat quatLookAt(Vec3 eye, Vec3 target, Vec3 up);
+
 // --- Euler (degrees, intrinsic XYZ) <-> quaternion, for editor rotation UI ---
 // Not for animation/runtime math (use quaternions directly); these exist so a
 // Details-panel can show/edit rotation as human-readable degrees.
