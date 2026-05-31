@@ -15,11 +15,10 @@
 // compiles cleanly.
 #include <algorithm>
 #include <array>
+#include <cmath>
 
 #define IMVIEWGUIZMO_IMPLEMENTATION
 #include <ImViewGuizmo.h>
-
-#include <cmath>
 
 namespace iron {
 
@@ -54,35 +53,55 @@ void setIsometricView(FreeFlyCamera& cam, float distance) {
 }
 
 bool drawViewGizmo(FreeFlyCamera& cam, float size, float margin) {
-    const ImVec2 viewportSize = ImGui::GetMainViewport()->Size;
-    const ImVec2 gizmoPos{viewportSize.x - size - margin, margin};
+    // The library's Context holds hover state across frames if not reset.
+    // BeginFrame() unconditionally resets per-frame interaction state.
+    ImViewGuizmo::BeginFrame();
 
-    // Convert iron::FreeFlyCamera state → glm types for the library call.
-    // eulerToQuat / quatToEuler operate in DEGREES (per Quaternion.h docs);
-    // cam.yaw / cam.pitch are RADIANS. Convert at the boundary.
+    // ImViewGuizmo::Rotate calls ImGui::GetWindowDrawList() internally,
+    // which requires an active ImGui window. Our intended call site (after
+    // all panels, before imguiLayer.render()) has no active window — wrap
+    // the gizmo + button in a transparent fullscreen overlay window that
+    // doesn't steal focus or input from anything else.
+    const ImVec2 viewportSize = ImGui::GetMainViewport()->Size;
+    const ImVec2 viewportPos  = ImGui::GetMainViewport()->Pos;
+    ImGui::SetNextWindowPos(viewportPos);
+    ImGui::SetNextWindowSize(viewportSize);
+    ImGui::SetNextWindowBgAlpha(0.0f);
+    constexpr ImGuiWindowFlags kOverlayFlags =
+        ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoNav |
+        ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoBringToFrontOnFocus |
+        ImGuiWindowFlags_NoScrollWithMouse | ImGuiWindowFlags_NoFocusOnAppearing |
+        ImGuiWindowFlags_NoBackground | ImGuiWindowFlags_NoSavedSettings;
+    ImGui::Begin("##viewgizmo_overlay", nullptr, kOverlayFlags);
+
+    const ImVec2 gizmoPos{viewportPos.x + viewportSize.x - size - margin,
+                          viewportPos.y + margin};
+
+    // Adapter: yaw/pitch (radians) → quat (degrees through eulerToQuat) → glm types.
     glm::vec3 pos = toGlm(cam.position);
     glm::quat rot = toGlm(eulerToQuat({cam.pitch * kRad2Deg,
                                        cam.yaw   * kRad2Deg,
                                        0.0f}));
+    const glm::vec3 pivot{0.0f, 0.0f, 0.0f};  // orbit around world origin
 
-    // Pivot at the world origin — standard orbit-around-scene behaviour.
-    const glm::vec3 pivot{0.0f, 0.0f, 0.0f};
     bool changed = ImViewGuizmo::Rotate(pos, rot, pivot, gizmoPos);
     if (changed) {
         cam.position = fromGlm(pos);
         const Vec3 eDeg = quatToEuler(fromGlm(rot));
         cam.pitch = eDeg.x * kDeg2Rad;
         cam.yaw   = eDeg.y * kDeg2Rad;
-        // eDeg.z (roll) is discarded — yaw/pitch can't carry it.
-        // Axis-snap produces zero roll; pure drag-orbit may lose it (v1 limit).
+        // eDeg.z (roll) is discarded — yaw/pitch can't carry it. Axis-snap
+        // produces zero roll; pure drag-orbit may lose roll (v1 limit).
     }
 
-    // "Iso" button immediately below the gizmo, centered horizontally.
+    // "Iso" button right below the gizmo, centered horizontally.
     ImGui::SetCursorScreenPos({gizmoPos.x + size * 0.25f, gizmoPos.y + size + 4.0f});
     if (ImGui::Button("Iso", ImVec2(size * 0.5f, 0.0f))) {
         setIsometricView(cam);
         changed = true;
     }
+
+    ImGui::End();
     return changed;
 }
 
