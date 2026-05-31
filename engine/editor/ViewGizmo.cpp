@@ -90,23 +90,129 @@ void setIsometricView(FreeFlyCamera& cam, Vec3 pivot, float distance) {
 
 namespace {
 
-// Snap the camera to look at `pivot` from along the world axis `axisDir`,
-// preserving current distance-to-pivot. The view direction becomes -axisDir;
-// derive yaw/pitch from that.
-void snapToAxis(FreeFlyCamera& cam, Vec3 pivot, Vec3 axisDir) {
+// ── Camera tween ─────────────────────────────────────────────────────────
+// Smooth in-flight transition between two camera poses, parameterised by
+// distance-to-pivot + a unit direction so the camera arcs around the pivot
+// instead of dipping through it.
+struct CameraTween {
+    bool  active     = false;
+    float elapsed    = 0.0f;
+    float duration   = 0.0f;
+    Vec3  pivot{};
+    Vec3  startDir{};      // unit, points from pivot toward camera at start
+    Vec3  targetDir{};     // unit
+    float startDist  = 0.0f;
+    float targetDist = 0.0f;
+    float startYaw   = 0.0f;
+    float targetYaw  = 0.0f;
+    float startPitch = 0.0f;
+    float targetPitch = 0.0f;
+};
+
+constexpr float kTweenDuration = 0.30f;   // seconds, eyeballed
+
+// Ease-in-out: t * t * (3 - 2t).
+float smoothstep01(float t) {
+    t = std::max(0.0f, std::min(1.0f, t));
+    return t * t * (3.0f - 2.0f * t);
+}
+
+// Shortest-path angular interpolation. Input angles in radians (any range);
+// output is angle-wrapped lerp from `a` to `b`.
+float lerpAngle(float a, float b, float t) {
+    float delta = b - a;
+    while (delta >  kPi) delta -= 2.0f * kPi;
+    while (delta < -kPi) delta += 2.0f * kPi;
+    return a + delta * t;
+}
+
+// Spherical lerp of two unit vectors. Used to arc the camera around the
+// pivot instead of dipping through it.
+Vec3 slerpDir(Vec3 a, Vec3 b, float t) {
+    float d = dot(a, b);
+    d = std::max(-1.0f, std::min(1.0f, d));
+    const float angle = std::acos(d);
+    if (angle < 1e-4f) return a;                       // already aligned
+    const float sinAngle = std::sin(angle);
+    const float wA = std::sin((1.0f - t) * angle) / sinAngle;
+    const float wB = std::sin(t * angle) / sinAngle;
+    return Vec3{a.x * wA + b.x * wB,
+                a.y * wA + b.y * wB,
+                a.z * wA + b.z * wB};
+}
+
+// Begin a tween from cam's current pose to (targetPos, targetYaw, targetPitch).
+void beginTween(CameraTween& tw, const FreeFlyCamera& cam, Vec3 pivot,
+                Vec3 targetPos, float targetYaw, float targetPitch) {
+    const Vec3 startRel  = cam.position - pivot;
+    const Vec3 targetRel = targetPos    - pivot;
+    tw.active       = true;
+    tw.elapsed      = 0.0f;
+    tw.duration     = kTweenDuration;
+    tw.pivot        = pivot;
+    tw.startDist    = std::max(0.001f, length(startRel));
+    tw.targetDist   = std::max(0.001f, length(targetRel));
+    tw.startDir     = startRel  * (1.0f / tw.startDist);
+    tw.targetDir    = targetRel * (1.0f / tw.targetDist);
+    tw.startYaw     = cam.yaw;
+    tw.targetYaw    = targetYaw;
+    tw.startPitch   = cam.pitch;
+    tw.targetPitch  = targetPitch;
+}
+
+// Advance an active tween by dt seconds. Writes interpolated state to `cam`.
+// Returns true while the tween is still in flight, false once it completes.
+bool tickTween(CameraTween& tw, FreeFlyCamera& cam, float dt) {
+    if (!tw.active) return false;
+    tw.elapsed += dt;
+    const float raw  = std::min(1.0f, tw.elapsed / tw.duration);
+    const float t    = smoothstep01(raw);
+    const Vec3  dir  = normalize(slerpDir(tw.startDir, tw.targetDir, t));
+    const float dist = tw.startDist + (tw.targetDist - tw.startDist) * t;
+    cam.position = {tw.pivot.x + dir.x * dist,
+                    tw.pivot.y + dir.y * dist,
+                    tw.pivot.z + dir.z * dist};
+    cam.yaw   = lerpAngle(tw.startYaw, tw.targetYaw, t);
+    cam.pitch = tw.startPitch + (tw.targetPitch - tw.startPitch) * t;
+    if (raw >= 1.0f) tw.active = false;
+    return tw.active;
+}
+
+// Compute the target camera state for a click-snap-to-axis WITHOUT applying it.
+// Caller passes the result to beginTween or applies directly.
+struct CameraPose {
+    Vec3  position;
+    float yaw;
+    float pitch;
+};
+
+CameraPose computeAxisSnapPose(const FreeFlyCamera& cam, Vec3 pivot, Vec3 axisDir) {
     const float distance = std::max(0.001f, length(cam.position - pivot));
-    cam.position = {pivot.x + axisDir.x * distance,
-                    pivot.y + axisDir.y * distance,
-                    pivot.z + axisDir.z * distance};
-    // View direction is from camera toward pivot, i.e. -axisDir.
-    // From FreeFlyCamera::forward() = {-sy*cp, sp, -cy*cp}:
-    //   sp = -axisDir.y → pitch = asin(-axisDir.y), but clamped.
-    //   yaw = atan2(axisDir.x, axisDir.z) (derived by matching components)
-    Vec3 view = Vec3{-axisDir.x, -axisDir.y, -axisDir.z};
+    const Vec3 view = Vec3{-axisDir.x, -axisDir.y, -axisDir.z};
     float pitch = std::asin(view.y);
     pitch = std::max(-kPitchClamp, std::min(kPitchClamp, pitch));
-    cam.pitch = pitch;
-    cam.yaw   = std::atan2(-view.x, -view.z);
+    return CameraPose{
+        Vec3{pivot.x + axisDir.x * distance,
+             pivot.y + axisDir.y * distance,
+             pivot.z + axisDir.z * distance},
+        std::atan2(-view.x, -view.z),
+        pitch,
+    };
+}
+
+// Compute the target camera state for an iso snap that PRESERVES the current
+// camera distance from pivot (so Iso just rotates around, no zoom-far-out).
+CameraPose computeIsoPose(const FreeFlyCamera& cam, Vec3 pivot) {
+    const Vec3 isoDir = normalize(Vec3{1.0f, 1.0f, 1.0f});
+    const float distance = std::max(0.001f, length(cam.position - pivot));
+    const Vec3 forward = normalize(Vec3{-1.0f, -1.0f, -1.0f});
+    return CameraPose{
+        Vec3{pivot.x + isoDir.x * distance,
+             pivot.y + isoDir.y * distance,
+             pivot.z + isoDir.z * distance},
+        std::atan2(-forward.x, -forward.z),
+        std::asin(forward.y),
+    };
 }
 
 // Apply a one-frame drag: rotate the camera around `pivot` by (dYaw, dPitch).
@@ -127,10 +233,19 @@ void orbitAroundPivot(FreeFlyCamera& cam, Vec3 pivot, float dYaw, float dPitch) 
 }  // namespace
 
 bool drawViewGizmo(FreeFlyCamera& cam, Vec3 pivot, float size, float margin) {
-    // Persistent drag state — we own this, no library involved.
-    static bool  dragActive   = false;
-    static int   dragButton   = -1;
-    static ImVec2 lastMouse{0.0f, 0.0f};
+    // Persistent state — we own this, no library involved.
+    static bool       dragActive = false;
+    static int        dragButton = -1;
+    static ImVec2     lastMouse{0.0f, 0.0f};
+    static CameraTween tween;
+
+    // Advance any in-flight camera tween BEFORE input handling, so a fresh
+    // user drag can cancel it cleanly.
+    bool changed = false;
+    if (tween.active) {
+        tickTween(tween, cam, ImGui::GetIO().DeltaTime);
+        changed = true;
+    }
 
     const ImVec2 viewportSize = ImGui::GetMainViewport()->Size;
     const ImVec2 viewportPos  = ImGui::GetMainViewport()->Pos;
@@ -202,19 +317,21 @@ bool drawViewGizmo(FreeFlyCamera& cam, Vec3 pivot, float size, float margin) {
         }
     }
 
-    bool changed = false;
-
     // Click / drag handling.
     if (hovered && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
         if (hoveredAxis >= 0) {
-            // Click on a handle → snap to that axis view.
-            snapToAxis(cam, pivot, kAxes[hoveredAxis].worldDir);
+            // Click on a handle → tween to that axis view.
+            const CameraPose target = computeAxisSnapPose(cam, pivot,
+                                                          kAxes[hoveredAxis].worldDir);
+            beginTween(tween, cam, pivot,
+                       target.position, target.yaw, target.pitch);
             changed = true;
         } else {
-            // Click on empty gizmo area → begin drag-orbit.
-            dragActive = true;
-            dragButton = ImGuiMouseButton_Left;
-            lastMouse  = mousePos;
+            // Click on empty gizmo area → begin drag-orbit; cancel any tween.
+            tween.active = false;
+            dragActive   = true;
+            dragButton   = ImGuiMouseButton_Left;
+            lastMouse    = mousePos;
         }
     }
     if (dragActive) {
@@ -270,7 +387,11 @@ bool drawViewGizmo(FreeFlyCamera& cam, Vec3 pivot, float size, float margin) {
     // Iso button — uses the same pivot the gizmo orbits around.
     ImGui::SetCursorPos({kPad + size * 0.25f, kPad + size + 4.0f});
     if (ImGui::Button("Iso", ImVec2(size * 0.5f, 0.0f))) {
-        setIsometricView(cam, pivot);
+        // Tween to iso pose, preserving current distance to pivot (no
+        // zoom-far-out feel — the camera just rotates around to the angle).
+        const CameraPose target = computeIsoPose(cam, pivot);
+        beginTween(tween, cam, pivot,
+                   target.position, target.yaw, target.pitch);
         changed = true;
     }
 
