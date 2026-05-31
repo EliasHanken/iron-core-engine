@@ -20,11 +20,14 @@ constexpr float kFloatDefaultSpeed = 0.05f;
 constexpr float kEulerDefaultSpeed = 0.5f;
 
 bool drawString(const FieldDesc& f, void* obj) {
+    // Resizable backing so long paths don't get silently truncated. ImGui::InputText
+    // writes up to size()-1 chars + null; we headroom-pad to (current + 128, min 256)
+    // so users can keep typing without hitting the cap on a typical edit.
     auto* s = f.ptr<std::string>(obj);
-    char buf[256];
-    std::snprintf(buf, sizeof(buf), "%s", s->c_str());
-    if (ImGui::InputText(std::string(f.name).c_str(), buf, sizeof(buf))) {
-        *s = buf;
+    std::string buf = *s;
+    buf.resize(std::max(buf.size() + 128, size_t{256}));
+    if (ImGui::InputText(std::string(f.name).c_str(), buf.data(), buf.size())) {
+        *s = buf.c_str();   // trim at first null
         return true;
     }
     return false;
