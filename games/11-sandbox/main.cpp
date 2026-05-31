@@ -41,9 +41,11 @@
 #include "scene/Picking.h"
 
 #include <GLFW/glfw3.h>
+#include <imgui.h>
 
 #include <algorithm>
 #include <array>
+#include <cmath>
 #include <cstdio>
 #include <numbers>
 #include <span>
@@ -554,6 +556,29 @@ int main() {
         iron::Input& input = app.input();
         if (input.keyPressed(GLFW_KEY_ESCAPE))
             selectedIndex = -1;
+
+        // M40: mouse wheel zooms toward the selection pivot (selected entity
+        // if any, else world origin). Multiplicative: each tick scales the
+        // distance-to-pivot by 0.9^wheel. Guarded by wantsMouse() so panels
+        // can scroll their own contents.
+        if (!imgui.wantsMouse()) {
+            const float wheel = ImGui::GetIO().MouseWheel;
+            if (wheel != 0.0f) {
+                const iron::Vec3 zoomPivot =
+                    (selectedIndex >= 0 && selectedIndex < static_cast<int>(scene.entities.size()))
+                        ? scene.entities[selectedIndex].transform.position
+                        : iron::Vec3{0.0f, 0.0f, 0.0f};
+                const iron::Vec3 rel = cam.position - zoomPivot;
+                const float currentDist = iron::length(rel);
+                if (currentDist > 1e-4f) {
+                    const float newDist = std::max(0.5f, currentDist * std::pow(0.9f, wheel));
+                    const iron::Vec3 dir = rel * (1.0f / currentDist);
+                    cam.position = {zoomPivot.x + dir.x * newDist,
+                                    zoomPivot.y + dir.y * newDist,
+                                    zoomPivot.z + dir.z * newDist};
+                }
+            }
+        }
 
         // Look + fly only while RIGHT mouse is held and ImGui isn't using it.
         const bool look = input.mouseButtonDown(GLFW_MOUSE_BUTTON_RIGHT)

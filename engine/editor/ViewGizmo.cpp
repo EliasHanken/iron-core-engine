@@ -276,6 +276,7 @@ bool drawViewGizmo(FreeFlyCamera& cam, Vec3 pivot, float size, float margin) {
     static ImVec2     lastMouse{0.0f, 0.0f};
     static CameraTween tween;
     static FovTween    fovTween;
+    static bool       isoMode    = false;
 
     // Advance any in-flight camera tween BEFORE input handling, so a fresh
     // user drag can cancel it cleanly.
@@ -363,24 +364,22 @@ bool drawViewGizmo(FreeFlyCamera& cam, Vec3 pivot, float size, float margin) {
     // Click / drag handling.
     if (hovered && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
         if (hoveredAxis >= 0) {
-            // Click on a handle → tween to that axis view + drop FOV to give
-            // it the orthographic-flat "snapped" look.
+            // Click on a handle → tween orientation to that axis view. FOV is
+            // governed solely by isoMode (the Iso button toggles it); axis
+            // clicks no longer touch FOV.
             const CameraPose target = computeAxisSnapPose(cam, pivot,
                                                           kAxes[hoveredAxis].worldDir);
             beginTween(tween, cam, pivot,
                        target.position, target.yaw, target.pitch);
-            beginFovTween(fovTween, cam, kSnapFov);
             changed = true;
         } else {
             // Click on empty gizmo area → begin drag-orbit. Cancel any
-            // pos/orientation tween, and tween FOV back up to the natural
-            // perspective default (snapped views drop FOV to feel iso; drag
-            // returns it).
+            // in-flight pos/orientation tween. FOV is untouched so the user
+            // can rotate while staying in iso mode.
             tween.active = false;
             dragActive   = true;
             dragButton   = ImGuiMouseButton_Left;
             lastMouse    = mousePos;
-            beginFovTween(fovTween, cam, kDefaultFov);
         }
     }
     if (dragActive) {
@@ -435,15 +434,26 @@ bool drawViewGizmo(FreeFlyCamera& cam, Vec3 pivot, float size, float margin) {
 
     // Iso button — uses the same pivot the gizmo orbits around.
     ImGui::SetCursorPos({kPad + size * 0.25f, kPad + size + 4.0f});
+    if (isoMode) {
+        ImGui::PushStyleColor(ImGuiCol_Button,
+            ImGui::GetStyleColorVec4(ImGuiCol_ButtonActive));
+    }
     if (ImGui::Button("Iso", ImVec2(size * 0.5f, 0.0f))) {
-        // Tween to iso pose, preserving current distance to pivot, AND drop
-        // FOV to the snapped/telephoto value for the orthographic-flat look.
-        const CameraPose target = computeIsoPose(cam, pivot);
-        beginTween(tween, cam, pivot,
-                   target.position, target.yaw, target.pitch);
-        beginFovTween(fovTween, cam, kSnapFov);
+        // Toggle iso mode. Entering: orbit to iso pose + drop FOV (telephoto
+        // = orthographic feel). Exiting: only restore FOV; keep current
+        // orientation/position so the user doesn't get teleported back.
+        isoMode = !isoMode;
+        if (isoMode) {
+            const CameraPose target = computeIsoPose(cam, pivot);
+            beginTween(tween, cam, pivot,
+                       target.position, target.yaw, target.pitch);
+            beginFovTween(fovTween, cam, kSnapFov);
+        } else {
+            beginFovTween(fovTween, cam, kDefaultFov);
+        }
         changed = true;
     }
+    if (isoMode) ImGui::PopStyleColor();
 
     ImGui::End();
     return changed;
