@@ -279,21 +279,11 @@ json entityToJson(const Reflection& r, const SceneEntity& e) {
 }
 ```
 
-`entityFromJson` — legacy-flat backward compatibility for one release:
+`entityFromJson` — nested format only, no legacy fallback:
 ```cpp
 SceneEntity entityFromJson(const Reflection& r, const json& j) {
     SceneEntity e;
     readString(j, "name", e.name);
-
-    // Legacy: flat position/rotation/scale at entity level.
-    if (j.contains("position") || j.contains("rotation") || j.contains("scale")) {
-        readVec3(j, "position", e.transform.position);
-        readQuat(j, "rotation", e.transform.rotation);
-        readVec3(j, "scale",    e.transform.scale);
-        Log::info("SceneIO: loaded entity '%s' from legacy flat transform format",
-                  e.name.c_str());
-    }
-    // Preferred: nested.
     if (j.contains("transform")) componentFromJson(r, e.transform, j["transform"]);
     if (j.contains("mesh"))      componentFromJson(r, e.mesh,      j["mesh"]);
     if (j.contains("material"))  componentFromJson(r, e.material,  j["material"]);
@@ -301,7 +291,7 @@ SceneEntity entityFromJson(const Reflection& r, const json& j) {
 }
 ```
 
-Save always emits nested. Legacy fallback to be removed in M40+.
+**Format break is explicit.** No backward-compat shim — the engine is pre-1.0 with one scene-file consumer (`games/11-sandbox/assets/scenes/demo.json`, ~4 entities), so we hand-migrate it as part of M39 and drop the flat-format path entirely. Each top-level entity field `position`/`rotation`/`scale` in `demo.json` collapses into a single nested `"transform": {"position": [...], "rotation": [...], "scale": [...]}` block.
 
 `saveSceneFile` / `loadSceneFile` take an additional `const Reflection&` parameter. Sun / fog / point lights / clearColor stay hand-rolled (not registered in M38; out of scope for M39).
 
@@ -317,9 +307,8 @@ Save always emits nested. Legacy fallback to be removed in M40+.
 - `test_min_max_do_not_clamp_on_load` — load a value outside [min, max], confirm stored as-is
 - `test_optional_enum_omits_on_nullopt` — JSON output does NOT contain the key
 
-**Updated file: `tests/test_scene_io.cpp`** — keep existing roundtrip but use the new nested format. Add:
-- `test_scene_io_loads_legacy_flat_transform_format` — hand-authored old JSON loads correctly
-- `test_scene_io_save_emits_nested_transform_format` — saved JSON contains `"transform": {...}` and NOT top-level `"position"`
+**Updated file: `tests/test_scene_io.cpp`** — existing roundtrip cases ported to the new nested format. Add:
+- `test_scene_io_save_emits_nested_transform_format` — saved JSON contains `"transform": {...}` and NOT top-level `"position"` / `"rotation"` / `"scale"`
 
 49 → 50 total CTest cases (one new file).
 
@@ -340,7 +329,7 @@ The Inspector dispatch is visual-gated (no ImGui in unit tests), same as the cur
 - `engine/reflection/Reflection.h` — `TypeBuilder::field` populates `enumTypeId`; add `EnumBuilder<E>` + `registerEnum<E>` + `enumValues<E>` + `enumName<E>` + non-template `enumValuesById` / `enumNameById`
 - `engine/scene/SceneFormat.h` — `SceneEntity` contains `Transform transform`; drop bare position/rotation/scale; `#include "world/Transform.h"`
 - `engine/scene/SceneIO.h` — `saveSceneFile` / `loadSceneFile` take `const Reflection&`
-- `engine/scene/SceneIO.cpp` — call `componentToJson` / `componentFromJson` for each entity's three components; legacy fallback for flat top-level pos/rot/scale
+- `engine/scene/SceneIO.cpp` — call `componentToJson` / `componentFromJson` for each entity's three components; nested format only, no legacy fallback
 - `engine/scene/MeshRef.reflect.cpp` — add `registerEnum<PrimitiveKind>`
 - `engine/scene/MaterialDef.reflect.cpp` — add `.color = true` and `.slider = true` hints
 - `engine/editor/SceneInspector.h` — `draw` takes `const Reflection&`
@@ -349,7 +338,8 @@ The Inspector dispatch is visual-gated (no ImGui in unit tests), same as the cur
 - `engine/editor/EnvironmentPanel.cpp` — single occurrence rename if applicable
 - `engine/CMakeLists.txt` — add `editor/ReflectionInspector.cpp` + `scene/ReflectionIO.cpp` to `ironcore` source list
 - `tests/CMakeLists.txt` — `iron_add_test(test_reflection_io test_reflection_io.cpp)`
-- `tests/test_scene_io.cpp` — nested format + legacy load tests
+- `tests/test_scene_io.cpp` — port existing roundtrip cases to nested format; add nested-emit assertion
+- `games/11-sandbox/assets/scenes/demo.json` — hand-migrate the 4 entities: collapse flat `position`/`rotation`/`scale` into a nested `"transform": {...}` block per entity
 - `games/11-sandbox/main.cpp` — pass `reflection` to `inspector.draw` and `loadSceneFile` / `saveSceneFile`; transform field rename in any direct accesses; simplify Inspector → World sync to a struct assignment
 
 **Untouched on purpose:** Renderer (Vulkan), World / ComponentArray, picking, Outliner (its add/delete/duplicate paths only mutate `scene.entities` — the SceneEntity reshape is transparent to it), shipping games (net-shooter, 02-strandbound, 04-net-pingpong, 05-net-cubes, 06-net-tag, etc.), all of the M16/M17 reflection (the misnamed-overlap is unfortunate but harmless).
@@ -372,8 +362,8 @@ Roughly 9 tasks. M38-comparable scope.
 4. `MaterialDef::emissive` renders as `ColorEdit3`.
 5. `MaterialDef::reflectivity` renders as `SliderFloat` 0..1.
 6. `SceneIO::saveSceneFile` / `loadSceneFile` roundtrip through `componentToJson` / `componentFromJson`.
-7. Legacy flat scene files (position / rotation / scale at entity level) still load — read into `e.transform.*`.
-8. New saves emit nested `"transform": {...}` and do NOT include top-level position/rotation/scale keys.
+7. `demo.json` migrated in-place to the nested format; loads cleanly under the new SceneIO.
+8. Saves emit nested `"transform": {...}` and do NOT include top-level position/rotation/scale keys. Reading flat-format JSON produces an entity with default-initialized transform (no silent migration).
 9. `SceneEntity` no longer has bare position/rotation/scale fields.
 10. All four editor flows still work: click-select, gizmo drag (translate / rotate / scale), add/delete/duplicate, save/load.
 11. 50 / 50 tests green.
