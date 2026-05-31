@@ -43,7 +43,7 @@ int main() {
     // --- Test 4: distance parameter scales position linearly ---
     {
         FreeFlyCamera cam;
-        setIsometricView(cam, 25.0f);
+        setIsometricView(cam, Vec3{0.0f, 0.0f, 0.0f}, 25.0f);
         CHECK_NEAR(cam.position.x, 25.0f);
         CHECK_NEAR(cam.position.y, 25.0f);
         CHECK_NEAR(cam.position.z, 25.0f);
@@ -54,8 +54,21 @@ int main() {
     // --- Test 5: call is idempotent ---
     {
         FreeFlyCamera cam;
-        setIsometricView(cam, 10.0f);
-        setIsometricView(cam, 10.0f);
+        setIsometricView(cam, Vec3{0.0f, 0.0f, 0.0f}, 10.0f);
+        setIsometricView(cam, Vec3{0.0f, 0.0f, 0.0f}, 10.0f);
+        CHECK_NEAR(cam.yaw,   kIsoYaw);
+        CHECK_NEAR(cam.pitch, kIsoPitch);
+    }
+
+    // --- Test 6: pivot translates the camera position (orientation unchanged) ---
+    {
+        FreeFlyCamera cam;
+        const Vec3 pivot{5.0f, -3.0f, 2.0f};
+        setIsometricView(cam, pivot, 10.0f);
+        CHECK_NEAR(cam.position.x, 15.0f);   // 5 + 10
+        CHECK_NEAR(cam.position.y, 7.0f);    // -3 + 10
+        CHECK_NEAR(cam.position.z, 12.0f);   // 2 + 10
+        // Forward direction (and therefore yaw/pitch) unchanged from origin case.
         CHECK_NEAR(cam.yaw,   kIsoYaw);
         CHECK_NEAR(cam.pitch, kIsoPitch);
     }

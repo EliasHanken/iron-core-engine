@@ -829,7 +829,13 @@ int main() {
             }
         }
         renderer.flushDebugLines(view, proj);
-        iron::drawViewGizmo(cam);
+        // M40: gizmo + Iso orbit around the selected entity (or world origin
+        // if nothing is selected).
+        const iron::Vec3 viewPivot =
+            (selectedIndex >= 0 && selectedIndex < static_cast<int>(scene.entities.size()))
+                ? scene.entities[selectedIndex].transform.position
+                : iron::Vec3{0.0f, 0.0f, 0.0f};
+        iron::drawViewGizmo(cam, viewPivot);
         imgui.render();   // enqueues the UI overlay into the scene pass tail
         renderer.endFrame();
         app.window().swapBuffers();

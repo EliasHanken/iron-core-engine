@@ -37,22 +37,25 @@ inline Quat      fromGlm(const glm::quat& q) { return Quat{q.x, q.y, q.z, q.w}; 
 
 }  // namespace
 
-void setIsometricView(FreeFlyCamera& cam, float distance) {
-    // Stock 3/4 isometric pose: camera at (+d, +d, +d) looking at origin.
-    // Forward direction = normalize(-1, -1, -1).
+void setIsometricView(FreeFlyCamera& cam, Vec3 pivot, float distance) {
+    // Stock 3/4 isometric pose, centered on `pivot`. Camera at
+    // pivot + (d, d, d) looking back toward pivot. Forward direction
+    // remains normalize(-1, -1, -1) regardless of pivot — pivot only
+    // translates the camera position.
     //
-    // FreeFlyCamera::forward() = { -sin(yaw)*cos(pitch), sin(pitch), -cos(yaw)*cos(pitch) }
-    // Solving for forward = (-1/√3, -1/√3, -1/√3):
-    //   sin(pitch) = -1/√3 → pitch = -asin(1/√3) ≈ -35.26°
-    //   sin(yaw)*cos(pitch) = +1/√3, cos(pitch) = √(2/3) → sin(yaw) = +1/√2
-    //   → yaw = +π/4
-    cam.position = {distance, distance, distance};
+    // FreeFlyCamera::forward() = { -sin(yaw)*cp, sin(pitch), -cos(yaw)*cp }
+    // For forward = (-1/√3, -1/√3, -1/√3):
+    //   sin(pitch) = -1/√3 → pitch = -asin(1/√3)
+    //   sin(yaw) = +1/√2 → yaw = +π/4
+    cam.position = {pivot.x + distance,
+                    pivot.y + distance,
+                    pivot.z + distance};
     const Vec3 forward = normalize(Vec3{-1.0f, -1.0f, -1.0f});
-    cam.yaw   = std::atan2(-forward.x, -forward.z);  // +π/4
-    cam.pitch = std::asin(forward.y);                // -asin(1/√3)
+    cam.yaw   = std::atan2(-forward.x, -forward.z);
+    cam.pitch = std::asin(forward.y);
 }
 
-bool drawViewGizmo(FreeFlyCamera& cam, float size, float margin) {
+bool drawViewGizmo(FreeFlyCamera& cam, Vec3 pivot, float size, float margin) {
     ImViewGuizmo::BeginFrame();
 
     // Scale the library widget so its rendered diameter matches `size`. The
@@ -88,27 +91,30 @@ bool drawViewGizmo(FreeFlyCamera& cam, float size, float margin) {
     const ImVec2 gizmoCenter{windowOrigin.x + kPad + size * 0.5f,
                              windowOrigin.y + kPad + size * 0.5f};
 
-    // Adapter: iron radians → degrees → quat → glm.
+    // Adapter: iron radians → degrees → quat → glm. Pure drag-rotate may
+    // accumulate visible drift because yaw/pitch can't carry roll — the
+    // round-trip discards it. v1 limit; the proper fix is migrating
+    // FreeFlyCamera to a quaternion internally (separate milestone). Click
+    // axis-snap and the Iso button are unaffected (snapped orientations
+    // have zero roll).
     glm::vec3 pos = toGlm(cam.position);
     glm::quat rot = toGlm(eulerToQuat({cam.pitch * kRad2Deg,
                                        cam.yaw   * kRad2Deg,
                                        0.0f}));
-    const glm::vec3 pivot{0.0f, 0.0f, 0.0f};  // orbit around world origin
+    const glm::vec3 pivotGlm = toGlm(pivot);
 
-    bool changed = ImViewGuizmo::Rotate(pos, rot, pivot, gizmoCenter);
+    bool changed = ImViewGuizmo::Rotate(pos, rot, pivotGlm, gizmoCenter);
     if (changed) {
         cam.position = fromGlm(pos);
         const Vec3 eDeg = quatToEuler(fromGlm(rot));
         cam.pitch = eDeg.x * kDeg2Rad;
         cam.yaw   = eDeg.y * kDeg2Rad;
-        // eDeg.z (roll) is discarded — yaw/pitch can't carry it.
     }
 
-    // Iso button below the gizmo, using window-relative coordinates so it
-    // sits inside the (small) overlay window's hit zone.
+    // Iso button — uses the same pivot the gizmo orbits around.
     ImGui::SetCursorPos({kPad + size * 0.25f, kPad + size + 4.0f});
     if (ImGui::Button("Iso", ImVec2(size * 0.5f, 0.0f))) {
-        setIsometricView(cam);
+        setIsometricView(cam, pivot);
         changed = true;
     }
 
