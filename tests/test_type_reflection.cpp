@@ -328,6 +328,37 @@ static void test_unregistered_enum_id_returns_empty() {
     CHECK(r.enumNameById(id).empty());
 }
 
+static void test_register_mesh_ref_also_registers_primitive_kind() {
+    iron::Reflection r;
+    iron::registerMeshRef(r);
+    CHECK(r.enumName<iron::PrimitiveKind>() == "PrimitiveKind");
+    auto vs = r.enumValues<iron::PrimitiveKind>();
+    CHECK(vs.size() == 2);
+    CHECK(vs[0].name == "cube");
+    CHECK(static_cast<iron::PrimitiveKind>(vs[0].value) == iron::PrimitiveKind::Cube);
+    CHECK(vs[1].name == "plane");
+    CHECK(static_cast<iron::PrimitiveKind>(vs[1].value) == iron::PrimitiveKind::Plane);
+
+    const iron::FieldDesc* p = r.fieldByName<iron::MeshRef>("primitive");
+    CHECK(p != nullptr);
+    CHECK(p->enumTypeId == iron::componentTypeId<iron::PrimitiveKind>());
+}
+
+static void test_material_def_widget_hints() {
+    iron::Reflection r;
+    iron::registerMaterialDef(r);
+    const iron::FieldDesc* em = r.fieldByName<iron::MaterialDef>("emissive");
+    CHECK(em != nullptr);
+    CHECK(em->meta.color  == true);
+    CHECK(em->meta.slider == false);
+
+    const iron::FieldDesc* refl = r.fieldByName<iron::MaterialDef>("reflectivity");
+    CHECK(refl != nullptr);
+    CHECK(refl->meta.slider == true);
+    CHECK(refl->meta.min    == 0.0f);
+    CHECK(refl->meta.max    == 1.0f);
+}
+
 int main() {
     test_typeid_unknown_is_zero();
     test_fieldmeta_defaults_are_zero();
@@ -360,6 +391,8 @@ int main() {
     test_unregistered_enum_has_empty_name();
     test_enum_values_lookup_template_and_by_id();
     test_unregistered_enum_id_returns_empty();
+    test_register_mesh_ref_also_registers_primitive_kind();
+    test_material_def_widget_hints();
     if (g_failures == 0) std::printf("All type-reflection tests passed.\n");
     return g_failures == 0 ? 0 : 1;
 }

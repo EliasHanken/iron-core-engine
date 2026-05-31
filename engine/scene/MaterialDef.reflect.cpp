@@ -8,9 +8,9 @@ void registerMaterialDef(Reflection& r) {
         .field("albedoPath",   &MaterialDef::albedoPath)
         .field("normalPath",   &MaterialDef::normalPath)
         .field("specularPath", &MaterialDef::specularPath)
-        .field("emissive",     &MaterialDef::emissive)
+        .field("emissive",     &MaterialDef::emissive,     {.color = true})
         .field("uvScale",      &MaterialDef::uvScale,      {.min = 0.0f, .max = 100.0f})
-        .field("reflectivity", &MaterialDef::reflectivity, {.min = 0.0f, .max = 1.0f});
+        .field("reflectivity", &MaterialDef::reflectivity, {.min = 0.0f, .max = 1.0f, .slider = true});
 }
 
 }  // namespace iron
