@@ -2,6 +2,8 @@
 #include "scene/SceneIO.h"
 #include "math/Quaternion.h"
 #include "math/Vec.h"
+#include "reflection/Reflection.h"
+#include "reflection/RegisterCoreTypes.h"
 #include "test_framework.h"
 
 #include <filesystem>
@@ -15,6 +17,15 @@ namespace {
 
 std::string tempScenePath(const char* name) {
     return (fs::temp_directory_path() / name).string();
+}
+
+iron::Reflection makeReflectionRegistry() {
+    iron::Reflection r;
+    iron::registerTransform(r);
+    iron::registerMeshRef(r);
+    iron::registerMaterialDef(r);
+    iron::registerRenderHandles(r);
+    return r;
 }
 
 SceneFile makeSampleScene() {
@@ -60,9 +71,10 @@ int main() {
     {
         const SceneFile original = makeSampleScene();
         const std::string path = tempScenePath("iron_scene_roundtrip.json");
-        CHECK(saveSceneFile(original, path));
+        const iron::Reflection r = makeReflectionRegistry();
+        CHECK(saveSceneFile(r, original, path));
 
-        const auto loadedOpt = loadSceneFile(path);
+        const auto loadedOpt = loadSceneFile(r, path);
         CHECK(loadedOpt.has_value());
         if (loadedOpt.has_value()) {
             const SceneFile& l = *loadedOpt;
@@ -103,14 +115,16 @@ int main() {
     {
         const std::string path = tempScenePath("iron_scene_malformed.json");
         { std::ofstream f(path); f << "{ this is not valid json ]"; }
-        const auto loaded = loadSceneFile(path);
+        const iron::Reflection r = makeReflectionRegistry();
+        const auto loaded = loadSceneFile(r, path);
         CHECK(!loaded.has_value());
         fs::remove(path);
     }
 
     // --- Test 3: missing file returns nullopt ---
     {
-        const auto loaded = loadSceneFile("does/not/exist/scene.json");
+        const iron::Reflection r = makeReflectionRegistry();
+        const auto loaded = loadSceneFile(r, "does/not/exist/scene.json");
         CHECK(!loaded.has_value());
     }
 
@@ -121,7 +135,8 @@ int main() {
             std::ofstream f(path);
             f << R"({ "entities": [ { "name": "c", "mesh": { "primitive": "cube" } } ] })";
         }
-        const auto loadedOpt = loadSceneFile(path);
+        const iron::Reflection r = makeReflectionRegistry();
+        const auto loadedOpt = loadSceneFile(r, path);
         CHECK(loadedOpt.has_value());
         if (loadedOpt.has_value()) {
             const SceneFile& l = *loadedOpt;
@@ -137,6 +152,33 @@ int main() {
             CHECK(l.pointLights.empty());
             CHECK_NEAR(l.fog.density, 0.0f);
         }
+        fs::remove(path);
+    }
+
+    // --- Test 5: save emits nested "transform" (no top-level position/rotation/scale) ---
+    {
+        SceneFile s;
+        SceneEntity e;
+        e.name = "x";
+        e.transform.position = {1.0f, 2.0f, 3.0f};
+        e.transform.scale    = {4.0f, 5.0f, 6.0f};
+        e.mesh.primitive = PrimitiveKind::Cube;
+        s.entities.push_back(e);
+
+        const iron::Reflection r = makeReflectionRegistry();
+        const std::string path = tempScenePath("iron_scene_nested.json");
+        CHECK(saveSceneFile(r, s, path));
+
+        std::ifstream f(path);
+        std::string contents((std::istreambuf_iterator<char>(f)),
+                             std::istreambuf_iterator<char>());
+        f.close();
+        CHECK(contents.find("\"transform\"")  != std::string::npos);
+        const size_t firstName  = contents.find("\"name\"");
+        const size_t firstTrans = contents.find("\"transform\"");
+        CHECK(firstName  != std::string::npos);
+        CHECK(firstTrans != std::string::npos);
+        CHECK(firstTrans > firstName);
         fs::remove(path);
     }
 

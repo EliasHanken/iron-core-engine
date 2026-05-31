@@ -282,10 +282,19 @@ int main() {
         renderer.setEffectStyle(1, es);
     }
 
+    // --- M38: type registry — populated at startup; consumed by SceneIO /
+    // SceneInspector for reflection-driven ser/deser + widgets. Must come
+    // BEFORE loadSceneFile because the loader walks fieldsOf<T>().
+    iron::Reflection reflection;
+    iron::registerTransform(reflection);
+    iron::registerMeshRef(reflection);
+    iron::registerMaterialDef(reflection);
+    iron::registerRenderHandles(reflection);
+
     // --- M29: load the scene file ---
     const std::string exeDir = iron::executableDir();
     const std::string scenePath = exeDir + "/assets/scenes/demo.json";
-    const auto sceneOpt = iron::loadSceneFile(scenePath);
+    const auto sceneOpt = iron::loadSceneFile(reflection, scenePath);
     if (!sceneOpt) {
         iron::Log::error("sandbox: failed to load %s", scenePath.c_str());
         return 1;
@@ -308,13 +317,6 @@ int main() {
     std::vector<ResolvedEntity> resolved;
 
     iron::World world;
-    // M38: type registry — populated at startup; consumed by M39+ editor /
-    // serialization. Sandbox doesn't use it directly in v1.
-    iron::Reflection reflection;
-    iron::registerTransform(reflection);
-    iron::registerMeshRef(reflection);
-    iron::registerMaterialDef(reflection);
-    iron::registerRenderHandles(reflection);
     std::vector<iron::EntityId> sceneIndexToEntity;   // parallel to scene.entities
 
     // Cache primitive meshes so N cubes/planes share one MeshHandle.
@@ -644,7 +646,7 @@ int main() {
         if (selectedIndex >= 0 && selectedIndex < static_cast<int>(scene.entities.size())) {
             iron::GizmoSpace sp = gizmo.space();
             iron::EffectKind ek = selectionEffect;
-            inspector.draw(scene.entities[selectedIndex], sp, ek);
+            inspector.draw(reflection, scene.entities[selectedIndex], sp, ek);
             gizmo.setSpace(sp);  // Inspector may flip it; setSpace is a no-op mid-drag
             if (ek != selectionEffect) {
                 selectionEffect = ek;
@@ -658,7 +660,7 @@ int main() {
         }
         environment.draw(scene);
         if (outRes.saveClicked) {
-            if (iron::saveSceneFile(scene, scenePath))
+            if (iron::saveSceneFile(reflection, scene, scenePath))
                 iron::Log::info("sandbox: saved %s", scenePath.c_str());
             else
                 iron::Log::error("sandbox: save FAILED for %s", scenePath.c_str());
