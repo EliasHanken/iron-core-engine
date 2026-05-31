@@ -1,6 +1,7 @@
 add_library(ironcore STATIC
   core/Log.cpp
   core/Window.cpp
+  math/Quaternion.cpp
   core/Input.cpp
   core/Platform.cpp
   core/Application.cpp

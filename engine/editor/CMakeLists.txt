@@ -10,6 +10,7 @@ add_library(ironcore_editor STATIC
   SceneInspector.cpp
   EnvironmentPanel.cpp
   ReflectionInspector.cpp
+  ViewGizmo.cpp
 )
 
 # ironcore PUBLIC propagates the engine include dir (engine/), GLFW, Vulkan, and

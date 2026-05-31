@@ -33,13 +33,14 @@ public:
     // re-select); while dragging it applies the transform to `e` and returns
     // true. Returns false when not consuming the mouse.
     bool update(SceneEntity& e, Vec3 origin, const Ray& mouseRay,
-                bool mousePressed, bool mouseDown, Vec3 camPos);
+                bool mousePressed, bool mouseDown, Vec3 camPos, float fovDeg);
 
     // Emit the gizmo at `origin` as always-on-top debug lines; the hovered/active
     // handle is brightened.
     // `rotation` orients the handles in Local space (and is ignored in World
     // space / for Scale, which is always local).
-    void draw(Renderer& renderer, Vec3 origin, Quat rotation, Vec3 camPos) const;
+    void draw(Renderer& renderer, Vec3 origin, Quat rotation, Vec3 camPos,
+              float fovDeg) const;
 
 private:
     GizmoMode  mode_  = GizmoMode::Translate;
