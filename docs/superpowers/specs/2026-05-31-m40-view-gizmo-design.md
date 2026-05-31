@@ -65,30 +65,36 @@ target_link_libraries(imviewguizmo INTERFACE imgui::imgui)
 
 `engine/editor/CMakeLists.txt` links it PRIVATE to `ironcore_editor`. Never leaks to shipping games.
 
-### Math binding via macros (no GLM dependency)
+### Math binding — GLM as a vendored dep (revised 2026-05-31)
 
-The library uses `glm::vec3` / `glm::quat` by default but supports compile-time substitution. `ViewGizmo.cpp` substitutes our `iron::Vec3` / `iron::Quat`:
+**Original plan was wrong.** The brainstorm assumed ImViewGuizmo's macro substitution was uniform — define `IMVIEWGUIZMO_VEC3_LENGTH(v)` etc. and the library would use our types throughout. Reality (discovered during Task B1 vendoring): the library only substitutes type aliases, and its IMPLEMENTATION body directly uses GLM-specific syntax (`mat4_t(1.0f)`, `mat[col][row]`, `vec3_t(vec4_t)` ctor) that no bridge namespace can hide. Plus the library's internal camera convention uses `-Y up` while we use `+Y up`.
+
+Three options were considered:
+
+1. Local bridge POD types (~150 LOC of GLM-shaped wrappers in `ViewGizmo.cpp`)
+2. Extend `iron::Mat4` with GLM-style sugar
+3. Add `glm` as a vendored dep, use the library's defaults
+
+**Picked option 3.** Reasoning: "no GLM dependency" was a nice-to-have, not load-bearing. The principle we actually follow is *prefer community extensions over rolling our own* — GLM is itself a community extension (header-only, MIT, the most-used C++ math library, zero runtime cost). Writing 150 lines of glue to avoid one header-only dep would defeat the velocity argument that justified picking ImGui extensions in the first place.
+
+The integration shape:
+- `vcpkg.json` adds `glm`
+- `third_party/imviewguizmo/`'s INTERFACE target links `glm::glm`
+- `ViewGizmo.cpp` defines NO `IMVIEWGUIZMO_*` macros (library uses its GLM defaults)
+- `ViewGizmo.cpp` converts between `iron::Vec3`/`Quat` and `glm::vec3`/`quat` at the `drawViewGizmo` boundary (same component layout — both are `{x, y, z, w}`; trivial copy)
+- The `-Y up` library convention is **not** corrected up front. If the visual gate at D1 shows upside-down behavior, a fixed 180°-about-X correction wraps the quat at the boundary. Most likely: it Just Works because the library's `Rotate` function takes/returns a camera quat in absolute world space and the axis labels are just face-text.
 
 ```cpp
-// ViewGizmo.cpp (BEFORE including ImViewGuizmo.h)
-#include "math/Vec.h"
-#include "math/Quaternion.h"
+// ViewGizmo.cpp — use the library's GLM defaults; convert at the iron boundary.
+#include <ImViewGuizmo.h>            // declarations only (GLM is the default math)
 
-#define IMVIEWGUIZMO_VEC3                          iron::Vec3
-#define IMVIEWGUIZMO_QUAT                          iron::Quat
-#define IMVIEWGUIZMO_VEC3_LENGTH(v)                iron::length(v)
-#define IMVIEWGUIZMO_VEC3_NORMALIZE(v)             iron::normalize(v)
-#define IMVIEWGUIZMO_VEC3_DOT(a, b)                iron::dot(a, b)
-#define IMVIEWGUIZMO_VEC3_CROSS(a, b)              iron::cross(a, b)
-#define IMVIEWGUIZMO_QUAT_SLERP(a, b, t)           iron::slerp(a, b, t)
-#define IMVIEWGUIZMO_QUAT_LOOK_AT(eye, target, up) iron::quatLookAt(eye, target, up)
-// ... additional macros as the header header demands at compile time
+// ... iron::Vec3 / Quat / FreeFlyCamera adapter code ...
 
-#define IMVIEWGUIZMO_IMPLEMENTATION
-#include "ImViewGuizmo.h"
+#define IMVIEWGUIZMO_IMPLEMENTATION   // exactly one TU defines this
+#include <ImViewGuizmo.h>
 ```
 
-The exact macro names are confirmed by reading `ImViewGuizmo.h` during implementation (Task B1) — the README only documents the conceptual ones. Any missing required macro is added at that point.
+The library's GLM defaults supply a complete inline `GizmoMath` namespace. We do NOT define any `IMVIEWGUIZMO_*` substitution macros — the originally-planned `IMVIEWGUIZMO_VEC3_LENGTH(v)`-style block does not exist in the library's actual API. Conversion between `iron::Vec3`/`Quat` and `glm::vec3`/`quat` happens at the `drawViewGizmo` boundary (both layouts are `{x, y, z, w}` so it's a component-wise copy).
 
 ### Math lib additions (`engine/math/Quaternion.{h,cpp}`)
 
@@ -147,13 +153,18 @@ bool drawViewGizmo(FreeFlyCamera& cam, float size, float margin) {
 ```cpp
 void setIsometricView(FreeFlyCamera& cam, float distance) {
     cam.position = {distance, distance, distance};
+    // FreeFlyCamera::forward() = {-sin(yaw)*cp, sin(pitch), -cos(yaw)*cp}
+    // For forward = normalize(-1, -1, -1) = (-1/√3, -1/√3, -1/√3):
+    //   sin(pitch) = -1/√3  → pitch = -asin(1/√3)
+    //   -sin(yaw)*cos(pitch) = -1/√3, cos(pitch) = √(2/3) → sin(yaw) = +1/√2
+    //   → yaw = +π/4
     const iron::Vec3 forward = iron::normalize(iron::Vec3{-1.0f, -1.0f, -1.0f});
-    cam.yaw   = std::atan2(forward.x, -forward.z);  // -π/4
-    cam.pitch = std::asin(-forward.y);              // -asin(1/√3) ≈ -35.26°
+    cam.yaw   = std::atan2(-forward.x, -forward.z);  // +π/4
+    cam.pitch = std::asin(forward.y);                // -asin(1/√3) ≈ -35.26°
 }
 ```
 
-Verified against `FreeFlyCamera`'s convention (right-handed, +Y up; `yaw = 0`, `pitch = 0` looks toward world -Z).
+Verified against `FreeFlyCamera`'s actual `forward()` implementation: `Vec3{-sin(yaw)*cos(pitch), sin(pitch), -cos(yaw)*cos(pitch)}`. **Original brainstorm draft had the yaw sign wrong** — discovered when the Task C1 implementer worked the formula back through `forward()` by hand. Corrected 2026-05-31.
 
 ### Sandbox wiring
 
@@ -171,7 +182,7 @@ Camera-input suppression works automatically: `ImViewGuizmo::Rotate` and `ImGui:
 
 ## Why each "small" decision
 
-**Why macro-bind to `iron::Vec3` / `iron::Quat` instead of vendoring GLM?** Vendoring GLM is ~50k LOC of math headers for a single corner widget — wrong tradeoff. The macro path requires us to add two helpers (`slerp`, `quatLookAt`) that are general-purpose math primitives, not throwaway adapter code. Net: smaller dependency surface, two reusable engine primitives.
+**Why vendor GLM instead of writing a bridge?** Investigated during Task C1 escalation. The library's IMPLEMENTATION body uses GLM-specific syntax (`mat4_t(1.0f)` ctor, `mat[col][row]` indexing, `vec3_t(vec4_t)` ctor) outside the swappable GizmoMath namespace, so a bridge can't hide it. Choices were: (1) write ~150 LOC of glue + local POD types that mimic GLM's surface, (2) extend `iron::Mat4` with GLM-style sugar, or (3) accept GLM as a vendored dep. (3) is one line in vcpkg.json + one CMake link line; (1) and (2) trade three hours of integration work for a "no GLM" promise that was never load-bearing. The `slerp` + `quatLookAt` math helpers added in Task A1 are still useful engine-wide primitives, kept regardless.
 
 **Why a thin adapter instead of migrating `FreeFlyCamera` to a quaternion?** Quat representation is the right long-term choice (no gimbal lock), but bundling the migration into M40 would scope-creep a 1-day side milestone and force a touch on every consumer of `cam.yaw` / `cam.pitch`. The thin adapter loses pure-drag roll into the conversion, which is acceptable for v1 — axis-snap (the primary user-facing affordance) is unaffected. If drag-orbit feels off in the visual gate, FreeFlyCamera quat-migration becomes its own follow-up milestone.
 
