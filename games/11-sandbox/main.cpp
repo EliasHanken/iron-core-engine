@@ -594,6 +594,24 @@ int main() {
         // into the next frame after the panel is dismissed).
         g_scrollAccum = 0.0;
 
+        // M40: middle-mouse-button drag → orbit camera around the same
+        // pivot as wheel-zoom (selection or world origin). No cursor capture
+        // — keep cursor visible while dragging.
+        if (input.mouseButtonDown(GLFW_MOUSE_BUTTON_MIDDLE) && !imgui.wantsMouse()) {
+            const float mmdx = static_cast<float>(input.mouseDeltaX());
+            const float mmdy = static_cast<float>(input.mouseDeltaY());
+            if (mmdx != 0.0f || mmdy != 0.0f) {
+                const iron::Vec3 orbitPivot =
+                    (selectedIndex >= 0 && selectedIndex < static_cast<int>(scene.entities.size()))
+                        ? scene.entities[selectedIndex].transform.position
+                        : iron::Vec3{0.0f, 0.0f, 0.0f};
+                constexpr float kMmbOrbitSensitivity = 0.005f;
+                iron::orbitCamera(cam, orbitPivot,
+                                  -mmdx * kMmbOrbitSensitivity,
+                                  -mmdy * kMmbOrbitSensitivity);
+            }
+        }
+
         // Look + fly only while RIGHT mouse is held and ImGui isn't using it.
         const bool look = input.mouseButtonDown(GLFW_MOUSE_BUTTON_RIGHT)
                           && !imgui.wantsMouse();

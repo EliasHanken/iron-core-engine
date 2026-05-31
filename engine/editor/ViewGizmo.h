@@ -31,4 +31,9 @@ void setIsometricView(FreeFlyCamera& cam,
                       Vec3 pivot = Vec3{0.0f, 0.0f, 0.0f},
                       float distance = 10.0f);
 
+// Orbit the camera around `pivot` by (dYaw, dPitch) radians. Preserves the
+// current distance from pivot. Used by the gizmo's drag-orbit internally
+// AND by middle-mouse-button drag in the sandbox.
+void orbitCamera(FreeFlyCamera& cam, Vec3 pivot, float dYaw, float dPitch);
+
 }  // namespace iron

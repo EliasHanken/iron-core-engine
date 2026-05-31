@@ -88,6 +88,20 @@ void setIsometricView(FreeFlyCamera& cam, Vec3 pivot, float distance) {
     cam.pitch = std::asin(forward.y);
 }
 
+void orbitCamera(FreeFlyCamera& cam, Vec3 pivot, float dYaw, float dPitch) {
+    const float distance = std::max(0.001f, length(cam.position - pivot));
+    cam.yaw   += dYaw;
+    cam.pitch += dPitch;
+    cam.pitch = std::max(-kPitchClamp, std::min(kPitchClamp, cam.pitch));
+    // Re-derive position so the camera stays on the orbit sphere facing pivot
+    // (position = pivot - forward * distance). `forward()` is the public
+    // FreeFlyCamera accessor — no internal basis helper needed.
+    const Vec3 fwd = cam.forward();
+    cam.position = {pivot.x - fwd.x * distance,
+                    pivot.y - fwd.y * distance,
+                    pivot.z - fwd.z * distance};
+}
+
 namespace {
 
 // ── Camera tween ─────────────────────────────────────────────────────────
@@ -252,21 +266,6 @@ CameraPose computeIsoPose(const FreeFlyCamera& cam, Vec3 pivot) {
     };
 }
 
-// Apply a one-frame drag: rotate the camera around `pivot` by (dYaw, dPitch).
-// Preserves the orbit radius.
-void orbitAroundPivot(FreeFlyCamera& cam, Vec3 pivot, float dYaw, float dPitch) {
-    const float distance = std::max(0.001f, length(cam.position - pivot));
-    cam.yaw   += dYaw;
-    cam.pitch += dPitch;
-    cam.pitch = std::max(-kPitchClamp, std::min(kPitchClamp, cam.pitch));
-    // Re-derive position so the camera sits on the orbit sphere around pivot,
-    // facing the pivot (position = pivot - forward * distance).
-    const CameraBasis b = cameraBasisFromYawPitch(cam.yaw, cam.pitch);
-    cam.position = {pivot.x - b.forward.x * distance,
-                    pivot.y - b.forward.y * distance,
-                    pivot.z - b.forward.z * distance};
-}
-
 }  // namespace
 
 bool drawViewGizmo(FreeFlyCamera& cam, Vec3 pivot, float size, float margin) {
@@ -390,9 +389,9 @@ bool drawViewGizmo(FreeFlyCamera& cam, Vec3 pivot, float size, float margin) {
             const float dx = mousePos.x - lastMouse.x;
             const float dy = mousePos.y - lastMouse.y;
             if (dx != 0.0f || dy != 0.0f) {
-                orbitAroundPivot(cam, pivot,
-                                 -dx * kOrbitSensitivity,
-                                 -dy * kOrbitSensitivity);
+                orbitCamera(cam, pivot,
+                            -dx * kOrbitSensitivity,
+                            -dy * kOrbitSensitivity);
                 lastMouse = mousePos;
                 changed = true;
             }
