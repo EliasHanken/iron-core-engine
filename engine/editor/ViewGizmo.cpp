@@ -178,6 +178,43 @@ bool tickTween(CameraTween& tw, FreeFlyCamera& cam, float dt) {
     return tw.active;
 }
 
+// ── FOV tween (independent of CameraTween) ───────────────────────────────
+// Snapped views (axis handles + Iso) feel "isometric" by dropping the FOV
+// to a telephoto value, which flattens the perspective enough to read as
+// orthographic without changing the projection matrix. Drag-orbit returns
+// to a natural perspective FOV. The tween runs in its own state so it can
+// run alongside drag-orbit without fighting CameraTween's per-frame
+// pos/yaw/pitch writes.
+constexpr float kDefaultFov = 60.0f;   // matches FreeFlyCamera::fovDeg default
+constexpr float kSnapFov    = 30.0f;   // telephoto — flat-perspective "iso feel"
+constexpr float kFovTweenDuration = 0.30f;
+
+struct FovTween {
+    bool  active   = false;
+    float elapsed  = 0.0f;
+    float duration = kFovTweenDuration;
+    float startFov = 0.0f;
+    float targetFov = 0.0f;
+};
+
+void beginFovTween(FovTween& tw, const FreeFlyCamera& cam, float targetFov) {
+    tw.active    = true;
+    tw.elapsed   = 0.0f;
+    tw.duration  = kFovTweenDuration;
+    tw.startFov  = cam.fovDeg;
+    tw.targetFov = targetFov;
+}
+
+bool tickFovTween(FovTween& tw, FreeFlyCamera& cam, float dt) {
+    if (!tw.active) return false;
+    tw.elapsed += dt;
+    const float raw = std::min(1.0f, tw.elapsed / tw.duration);
+    const float t   = smoothstep01(raw);
+    cam.fovDeg = tw.startFov + (tw.targetFov - tw.startFov) * t;
+    if (raw >= 1.0f) tw.active = false;
+    return tw.active;
+}
+
 // Compute the target camera state for a click-snap-to-axis WITHOUT applying it.
 // Caller passes the result to beginTween or applies directly.
 struct CameraPose {
@@ -238,12 +275,18 @@ bool drawViewGizmo(FreeFlyCamera& cam, Vec3 pivot, float size, float margin) {
     static int        dragButton = -1;
     static ImVec2     lastMouse{0.0f, 0.0f};
     static CameraTween tween;
+    static FovTween    fovTween;
 
     // Advance any in-flight camera tween BEFORE input handling, so a fresh
     // user drag can cancel it cleanly.
     bool changed = false;
+    const float dt = ImGui::GetIO().DeltaTime;
     if (tween.active) {
-        tickTween(tween, cam, ImGui::GetIO().DeltaTime);
+        tickTween(tween, cam, dt);
+        changed = true;
+    }
+    if (fovTween.active) {
+        tickFovTween(fovTween, cam, dt);
         changed = true;
     }
 
@@ -320,18 +363,24 @@ bool drawViewGizmo(FreeFlyCamera& cam, Vec3 pivot, float size, float margin) {
     // Click / drag handling.
     if (hovered && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
         if (hoveredAxis >= 0) {
-            // Click on a handle → tween to that axis view.
+            // Click on a handle → tween to that axis view + drop FOV to give
+            // it the orthographic-flat "snapped" look.
             const CameraPose target = computeAxisSnapPose(cam, pivot,
                                                           kAxes[hoveredAxis].worldDir);
             beginTween(tween, cam, pivot,
                        target.position, target.yaw, target.pitch);
+            beginFovTween(fovTween, cam, kSnapFov);
             changed = true;
         } else {
-            // Click on empty gizmo area → begin drag-orbit; cancel any tween.
+            // Click on empty gizmo area → begin drag-orbit. Cancel any
+            // pos/orientation tween, and tween FOV back up to the natural
+            // perspective default (snapped views drop FOV to feel iso; drag
+            // returns it).
             tween.active = false;
             dragActive   = true;
             dragButton   = ImGuiMouseButton_Left;
             lastMouse    = mousePos;
+            beginFovTween(fovTween, cam, kDefaultFov);
         }
     }
     if (dragActive) {
@@ -387,11 +436,12 @@ bool drawViewGizmo(FreeFlyCamera& cam, Vec3 pivot, float size, float margin) {
     // Iso button — uses the same pivot the gizmo orbits around.
     ImGui::SetCursorPos({kPad + size * 0.25f, kPad + size + 4.0f});
     if (ImGui::Button("Iso", ImVec2(size * 0.5f, 0.0f))) {
-        // Tween to iso pose, preserving current distance to pivot (no
-        // zoom-far-out feel — the camera just rotates around to the angle).
+        // Tween to iso pose, preserving current distance to pivot, AND drop
+        // FOV to the snapped/telephoto value for the orthographic-flat look.
         const CameraPose target = computeIsoPose(cam, pivot);
         beginTween(tween, cam, pivot,
                    target.position, target.yaw, target.pitch);
+        beginFovTween(fovTween, cam, kSnapFov);
         changed = true;
     }
 
