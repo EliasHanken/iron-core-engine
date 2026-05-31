@@ -104,3 +104,8 @@ iron_add_test(test_type_reflection test_type_reflection.cpp)
 iron_add_test(test_reflection_io test_reflection_io.cpp)
 iron_add_test(test_iso_view test_iso_view.cpp)
 target_link_libraries(test_iso_view PRIVATE ironcore_editor)
+
+add_executable(test_editor_state test_editor_state.cpp)
+target_link_libraries(test_editor_state PRIVATE ironcore ironcore_editor)
+target_include_directories(test_editor_state PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+add_test(NAME test_editor_state COMMAND test_editor_state)
