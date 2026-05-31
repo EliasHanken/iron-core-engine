@@ -6,47 +6,80 @@
 
 #include <imgui.h>
 
-#include <glm/vec3.hpp>
-#include <glm/gtc/quaternion.hpp>
-
-// ImViewGuizmo's implementation uses std::array / std::sort / std::min / std::max
-// internally but doesn't include the corresponding standard headers itself —
-// surface them here so the single TU that defines IMVIEWGUIZMO_IMPLEMENTATION
-// compiles cleanly.
 #include <algorithm>
 #include <array>
 #include <cmath>
-
-#define IMVIEWGUIZMO_IMPLEMENTATION
-#include <ImViewGuizmo.h>
 
 namespace iron {
 
 namespace {
 
-constexpr float kRad2Deg = 180.0f / 3.14159265358979323846f;
-constexpr float kDeg2Rad = 3.14159265358979323846f / 180.0f;
+constexpr float kPi      = 3.14159265358979323846f;
+constexpr float kPitchClamp = 89.0f * (kPi / 180.0f);   // ±89° to avoid gimbal flip
+constexpr float kOrbitSensitivity = 0.0075f;             // radians per pixel
 
-// Type conversion helpers — same component layout for vectors, so it's a copy.
-inline glm::vec3 toGlm(const Vec3& v) { return glm::vec3{v.x, v.y, v.z}; }
-inline Vec3      fromGlm(const glm::vec3& v) { return Vec3{v.x, v.y, v.z}; }
+// One axis handle: world-space axis direction + RGB color + label.
+struct AxisHandle {
+    Vec3        worldDir;
+    ImU32       color;
+    const char* label;
+};
 
-// glm::quat constructor is (w, x, y, z) — note the W comes first!
-inline glm::quat toGlm(const Quat& q) { return glm::quat{q.w, q.x, q.y, q.z}; }
-inline Quat      fromGlm(const glm::quat& q) { return Quat{q.x, q.y, q.z, q.w}; }
+const std::array<AxisHandle, 6> kAxes = {
+    AxisHandle{ Vec3{ 1.0f,  0.0f,  0.0f}, IM_COL32(220,  60,  60, 255), "X"  },
+    AxisHandle{ Vec3{-1.0f,  0.0f,  0.0f}, IM_COL32(160,  60,  60, 255), "-X" },
+    AxisHandle{ Vec3{ 0.0f,  1.0f,  0.0f}, IM_COL32( 70, 200,  70, 255), "Y"  },
+    AxisHandle{ Vec3{ 0.0f, -1.0f,  0.0f}, IM_COL32( 60, 140,  60, 255), "-Y" },
+    AxisHandle{ Vec3{ 0.0f,  0.0f,  1.0f}, IM_COL32( 80, 130, 230, 255), "Z"  },
+    AxisHandle{ Vec3{ 0.0f,  0.0f, -1.0f}, IM_COL32( 60,  90, 170, 255), "-Z" },
+};
+
+// Compute the camera's right / up / forward basis from yaw and pitch.
+// Convention matches FreeFlyCamera: yaw=0, pitch=0 looks toward world -Z, +Y up.
+struct CameraBasis {
+    Vec3 right;
+    Vec3 up;
+    Vec3 forward;
+};
+
+CameraBasis cameraBasisFromYawPitch(float yaw, float pitch) {
+    const float cp = std::cos(pitch);
+    const float sp = std::sin(pitch);
+    const float cy = std::cos(yaw);
+    const float sy = std::sin(yaw);
+    // Forward matches FreeFlyCamera::forward() exactly.
+    const Vec3 fwd{-sy * cp, sp, -cy * cp};
+    // Right is forward × world-up, then re-orthogonalized for safety.
+    const Vec3 worldUp{0.0f, 1.0f, 0.0f};
+    const Vec3 right = normalize(cross(fwd, worldUp));
+    const Vec3 up    = cross(right, fwd);   // already unit
+    return {right, up, fwd};
+}
+
+// Project a world-space direction into the gizmo's screen-space using the
+// camera basis. Returns:
+//   .screenX, .screenY : 2D offset from the gizmo center, in pixels
+//   .depth             : z-depth in camera space (negative = in front of camera)
+struct ProjectedHandle {
+    float screenX;
+    float screenY;
+    float depth;
+};
+
+ProjectedHandle projectAxis(Vec3 worldDir, const CameraBasis& basis, float radiusPx) {
+    // Component along each basis axis = dot(worldDir, basis_axis).
+    const float r = dot(worldDir, basis.right);
+    const float u = dot(worldDir, basis.up);
+    const float f = dot(worldDir, basis.forward);
+    // Screen X is +right, screen Y is +down (ImGui convention) — so invert u.
+    return {r * radiusPx, -u * radiusPx, f};
+}
 
 }  // namespace
 
 void setIsometricView(FreeFlyCamera& cam, Vec3 pivot, float distance) {
-    // Stock 3/4 isometric pose, centered on `pivot`. Camera at
-    // pivot + (d, d, d) looking back toward pivot. Forward direction
-    // remains normalize(-1, -1, -1) regardless of pivot — pivot only
-    // translates the camera position.
-    //
-    // FreeFlyCamera::forward() = { -sin(yaw)*cp, sin(pitch), -cos(yaw)*cp }
-    // For forward = (-1/√3, -1/√3, -1/√3):
-    //   sin(pitch) = -1/√3 → pitch = -asin(1/√3)
-    //   sin(yaw) = +1/√2 → yaw = +π/4
+    // Stock 3/4 isometric pose around `pivot`. Camera at pivot+(d,d,d)
+    // looking back toward pivot. Forward direction normalize(-1,-1,-1).
     cam.position = {pivot.x + distance,
                     pivot.y + distance,
                     pivot.z + distance};
@@ -55,25 +88,59 @@ void setIsometricView(FreeFlyCamera& cam, Vec3 pivot, float distance) {
     cam.pitch = std::asin(forward.y);
 }
 
-bool drawViewGizmo(FreeFlyCamera& cam, Vec3 pivot, float size, float margin) {
-    ImViewGuizmo::BeginFrame();
+namespace {
 
-    // Scale the library widget so its rendered diameter matches `size`. The
-    // library's default is 256.f * style.scale; we override scale every frame
-    // so callers get a predictable on-screen size.
-    ImViewGuizmo::GetStyle().scale = size / 256.0f;
+// Snap the camera to look at `pivot` from along the world axis `axisDir`,
+// preserving current distance-to-pivot. The view direction becomes -axisDir;
+// derive yaw/pitch from that.
+void snapToAxis(FreeFlyCamera& cam, Vec3 pivot, Vec3 axisDir) {
+    const float distance = std::max(0.001f, length(cam.position - pivot));
+    cam.position = {pivot.x + axisDir.x * distance,
+                    pivot.y + axisDir.y * distance,
+                    pivot.z + axisDir.z * distance};
+    // View direction is from camera toward pivot, i.e. -axisDir.
+    // From FreeFlyCamera::forward() = {-sy*cp, sp, -cy*cp}:
+    //   sp = -axisDir.y → pitch = asin(-axisDir.y), but clamped.
+    //   yaw = atan2(axisDir.x, axisDir.z) (derived by matching components)
+    Vec3 view = Vec3{-axisDir.x, -axisDir.y, -axisDir.z};
+    float pitch = std::asin(view.y);
+    pitch = std::max(-kPitchClamp, std::min(kPitchClamp, pitch));
+    cam.pitch = pitch;
+    cam.yaw   = std::atan2(-view.x, -view.z);
+}
+
+// Apply a one-frame drag: rotate the camera around `pivot` by (dYaw, dPitch).
+// Preserves the orbit radius.
+void orbitAroundPivot(FreeFlyCamera& cam, Vec3 pivot, float dYaw, float dPitch) {
+    const float distance = std::max(0.001f, length(cam.position - pivot));
+    cam.yaw   += dYaw;
+    cam.pitch += dPitch;
+    cam.pitch = std::max(-kPitchClamp, std::min(kPitchClamp, cam.pitch));
+    // Re-derive position so the camera sits on the orbit sphere around pivot,
+    // facing the pivot (position = pivot - forward * distance).
+    const CameraBasis b = cameraBasisFromYawPitch(cam.yaw, cam.pitch);
+    cam.position = {pivot.x - b.forward.x * distance,
+                    pivot.y - b.forward.y * distance,
+                    pivot.z - b.forward.z * distance};
+}
+
+}  // namespace
+
+bool drawViewGizmo(FreeFlyCamera& cam, Vec3 pivot, float size, float margin) {
+    // Persistent drag state — we own this, no library involved.
+    static bool  dragActive   = false;
+    static int   dragButton   = -1;
+    static ImVec2 lastMouse{0.0f, 0.0f};
 
     const ImVec2 viewportSize = ImGui::GetMainViewport()->Size;
     const ImVec2 viewportPos  = ImGui::GetMainViewport()->Pos;
 
-    // The overlay window is sized to JUST the gizmo + Iso button area — not
-    // fullscreen — so ImGui's WantCaptureMouse stays false outside the corner
-    // and WASD / RMB-look continue to work in the rest of the viewport.
-    constexpr float kButtonHeight = 26.0f;  // approximate ImGui button height
-    constexpr float kPad          = 6.0f;   // visual padding around widget
+    // Small overlay window — sized to JUST the gizmo + Iso button so WASD
+    // stays free outside the corner.
+    constexpr float kButtonHeight = 26.0f;
+    constexpr float kPad          = 6.0f;
     const float windowW = size + kPad * 2.0f;
     const float windowH = size + kPad * 2.0f + kButtonHeight + 4.0f;
-
     ImGui::SetNextWindowPos({viewportPos.x + viewportSize.x - windowW - margin,
                              viewportPos.y + margin});
     ImGui::SetNextWindowSize({windowW, windowH});
@@ -86,41 +153,118 @@ bool drawViewGizmo(FreeFlyCamera& cam, Vec3 pivot, float size, float margin) {
         ImGuiWindowFlags_NoScrollWithMouse;
     ImGui::Begin("##viewgizmo_overlay", nullptr, kOverlayFlags);
 
-    // Gizmo CENTER in screen space (library treats `position` as the center).
     const ImVec2 windowOrigin = ImGui::GetWindowPos();
     const ImVec2 gizmoCenter{windowOrigin.x + kPad + size * 0.5f,
                              windowOrigin.y + kPad + size * 0.5f};
+    const float  gizmoRadius   = size * 0.36f;     // axis tip distance from center
+    const float  handleRadius  = size * 0.10f;     // hit + draw radius per handle
 
-    // Adapter: iron radians → degrees → quat → glm. Pure drag-rotate may
-    // accumulate visible drift because yaw/pitch can't carry roll — the
-    // round-trip discards it. v1 limit; the proper fix is migrating
-    // FreeFlyCamera to a quaternion internally (separate milestone). Click
-    // axis-snap and the Iso button are unaffected (snapped orientations
-    // have zero roll).
-    // ImViewGuizmo's internal camera convention is Y-down, Z-forward
-    // (worldUp = (0, -1, 0), worldForward = (0, 0, +1)). Ours is Y-up,
-    // -Z-forward. The basis change is a 180° rotation about the X axis,
-    // which we apply at the quat boundary as q_lib = flip * q_ours and
-    // reverse on the way back. The flip quaternion is its own inverse.
-    //
-    // 180° about X axis: angle = π, half = π/2, sin(π/2) = 1, cos(π/2) = 0.
-    // Components (w, x, y, z) = (0, 1, 0, 0); glm::quat ctor is (w, x, y, z).
-    static const glm::quat kBasisFlip{0.0f, 1.0f, 0.0f, 0.0f};
+    // Project all 6 handles to screen space using the current camera basis.
+    const CameraBasis basis = cameraBasisFromYawPitch(cam.yaw, cam.pitch);
+    struct Drawable { ImVec2 pos; float depth; size_t axisIdx; float radius; };
+    std::array<Drawable, 6> drawables{};
+    for (size_t i = 0; i < kAxes.size(); ++i) {
+        const ProjectedHandle p = projectAxis(kAxes[i].worldDir, basis, gizmoRadius);
+        // Shrink handles behind the gizmo center for depth feedback.
+        const float depthScale = (p.depth >= 0.0f) ? 0.65f : 1.0f;
+        drawables[i] = Drawable{
+            ImVec2{gizmoCenter.x + p.screenX, gizmoCenter.y + p.screenY},
+            p.depth,
+            i,
+            handleRadius * depthScale,
+        };
+    }
+    // Sort so larger depth (farther from camera) is drawn first — front handles
+    // overdraw back handles.
+    std::sort(drawables.begin(), drawables.end(),
+              [](const Drawable& a, const Drawable& b) { return a.depth > b.depth; });
 
-    glm::vec3 pos = toGlm(cam.position);
-    glm::quat rot = kBasisFlip * toGlm(eulerToQuat({cam.pitch * kRad2Deg,
-                                                    cam.yaw   * kRad2Deg,
-                                                    0.0f}));
-    const glm::vec3 pivotGlm = toGlm(pivot);
+    // Invisible button covers the whole gizmo area for input handling.
+    const ImVec2 buttonOrigin{windowOrigin.x + kPad,
+                              windowOrigin.y + kPad};
+    ImGui::SetCursorScreenPos(buttonOrigin);
+    ImGui::InvisibleButton("##viewgizmo_hit", ImVec2(size, size));
+    const bool  hovered    = ImGui::IsItemHovered();
+    const ImVec2 mousePos  = ImGui::GetIO().MousePos;
 
-    bool changed = ImViewGuizmo::Rotate(pos, rot, pivotGlm, gizmoCenter);
-    if (changed) {
-        cam.position = fromGlm(pos);
-        // Undo the basis flip before extracting yaw/pitch.
-        const glm::quat unflipped = kBasisFlip * rot;
-        const Vec3 eDeg = quatToEuler(fromGlm(unflipped));
-        cam.pitch = eDeg.x * kDeg2Rad;
-        cam.yaw   = eDeg.y * kDeg2Rad;
+    // Find which handle the mouse is closest to (within radius).
+    int hoveredAxis = -1;
+    if (hovered) {
+        float bestDist = handleRadius * handleRadius;
+        for (const auto& d : drawables) {
+            const float dx = mousePos.x - d.pos.x;
+            const float dy = mousePos.y - d.pos.y;
+            const float distSq = dx * dx + dy * dy;
+            if (distSq < bestDist) {
+                bestDist = distSq;
+                hoveredAxis = static_cast<int>(d.axisIdx);
+            }
+        }
+    }
+
+    bool changed = false;
+
+    // Click / drag handling.
+    if (hovered && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
+        if (hoveredAxis >= 0) {
+            // Click on a handle → snap to that axis view.
+            snapToAxis(cam, pivot, kAxes[hoveredAxis].worldDir);
+            changed = true;
+        } else {
+            // Click on empty gizmo area → begin drag-orbit.
+            dragActive = true;
+            dragButton = ImGuiMouseButton_Left;
+            lastMouse  = mousePos;
+        }
+    }
+    if (dragActive) {
+        if (!ImGui::IsMouseDown(static_cast<ImGuiMouseButton>(dragButton))) {
+            dragActive = false;
+            dragButton = -1;
+        } else {
+            const float dx = mousePos.x - lastMouse.x;
+            const float dy = mousePos.y - lastMouse.y;
+            if (dx != 0.0f || dy != 0.0f) {
+                orbitAroundPivot(cam, pivot,
+                                 -dx * kOrbitSensitivity,
+                                 -dy * kOrbitSensitivity);
+                lastMouse = mousePos;
+                changed = true;
+            }
+        }
+    }
+
+    // Render: connecting lines from center to each handle, then circles, then labels.
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+    // Center dot.
+    dl->AddCircleFilled(gizmoCenter, 3.0f, IM_COL32(220, 220, 220, 200));
+    // Pre-pass: lines for the FRONT 3 handles (depth < 0). Back lines are noisy.
+    for (const auto& d : drawables) {
+        if (d.depth < 0.0f) {
+            const ImU32 col = kAxes[d.axisIdx].color;
+            dl->AddLine(gizmoCenter, d.pos, col, 2.0f);
+        }
+    }
+    // Handles + labels.
+    for (const auto& d : drawables) {
+        ImU32 col = kAxes[d.axisIdx].color;
+        const bool isHovered = (static_cast<int>(d.axisIdx) == hoveredAxis);
+        if (isHovered) {
+            // Brighten on hover.
+            ImVec4 colVec = ImGui::ColorConvertU32ToFloat4(col);
+            colVec.x = std::min(1.0f, colVec.x + 0.25f);
+            colVec.y = std::min(1.0f, colVec.y + 0.25f);
+            colVec.z = std::min(1.0f, colVec.z + 0.25f);
+            col = ImGui::ColorConvertFloat4ToU32(colVec);
+        }
+        const float r = isHovered ? d.radius * 1.2f : d.radius;
+        dl->AddCircleFilled(d.pos, r, col, 16);
+        dl->AddCircle(d.pos, r, IM_COL32(20, 20, 20, 200), 16, 1.5f);
+        // Label centered on the handle. Use ImGui's default font.
+        const char* label = kAxes[d.axisIdx].label;
+        const ImVec2 textSize = ImGui::CalcTextSize(label);
+        const ImVec2 textPos{d.pos.x - textSize.x * 0.5f, d.pos.y - textSize.y * 0.5f};
+        dl->AddText(textPos, IM_COL32(20, 20, 20, 255), label);
     }
 
     // Iso button — uses the same pivot the gizmo orbits around.
