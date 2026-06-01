@@ -298,6 +298,55 @@ static void test_world_render_submit_pseudocode() {
     CHECK(submitted[2].mesh   == 102u);
 }
 
+struct ComponentA { int value = 0; };
+struct ComponentB { float value = 0.0f; };
+
+static void test_world_copy_constructor_deep_copies_components() {
+    iron::World original;
+    const iron::EntityId e = original.create();
+    original.add<ComponentA>(e, ComponentA{42});
+    original.add<ComponentB>(e, ComponentB{3.14f});
+
+    iron::World copy(original);
+
+    // The copy sees the same component values.
+    CHECK(copy.alive(e));
+    CHECK(copy.get<ComponentA>(e) != nullptr);
+    CHECK(copy.get<ComponentA>(e)->value == 42);
+    CHECK(copy.get<ComponentB>(e) != nullptr);
+    CHECK(copy.get<ComponentB>(e)->value == 3.14f);
+
+    // Mutating the copy does NOT affect the original (deep copy, not shared).
+    copy.get<ComponentA>(e)->value = 99;
+    CHECK(original.get<ComponentA>(e)->value == 42);
+    CHECK(copy.get<ComponentA>(e)->value == 99);
+}
+
+static void test_world_copy_assignment_overwrites_target() {
+    iron::World source;
+    const iron::EntityId e = source.create();
+    source.add<ComponentA>(e, ComponentA{7});
+
+    iron::World target;
+    const iron::EntityId existingInTarget = target.create();
+    target.add<ComponentA>(existingInTarget, ComponentA{1234});
+
+    target = source;
+
+    // After assignment, `target` mirrors `source`. The pre-existing entity
+    // in target should be gone (or at least its ComponentA isn't 1234 anymore).
+    CHECK(target.alive(e));
+    CHECK(target.get<ComponentA>(e) != nullptr);
+    CHECK(target.get<ComponentA>(e)->value == 7);
+}
+
+static void test_world_copy_handles_empty_components() {
+    iron::World original;   // never adds anything
+    iron::World copy(original);
+    iron::EntityId e = copy.create();
+    CHECK(copy.alive(e));   // copy still works
+}
+
 int main() {
     test_entityid_default_is_invalid();
     test_entityid_with_generation_is_valid();
@@ -324,6 +373,9 @@ int main() {
     test_transform_component_roundtrip();
     test_render_handles_component_roundtrip();
     test_world_render_submit_pseudocode();
+    test_world_copy_constructor_deep_copies_components();
+    test_world_copy_assignment_overwrites_target();
+    test_world_copy_handles_empty_components();
     if (g_failures == 0) std::printf("All world tests passed.\n");
     return g_failures == 0 ? 0 : 1;
 }

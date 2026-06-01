@@ -31,6 +31,7 @@
 #include "scene/SceneIO.h"
 #include "world/Transform.h"
 #include "world/World.h"
+#include "editor/EditorState.h"
 #include "editor/EnvironmentPanel.h"
 #include "editor/Gizmo.h"
 #include "editor/ImGuiLayer.h"
@@ -38,6 +39,7 @@
 #include "editor/SceneOutliner.h"
 #include "editor/ViewGizmo.h"
 #include "math/Aabb.h"
+#include "physics/PhysicsWorld.h"
 #include "scene/Picking.h"
 
 #include <GLFW/glfw3.h>
@@ -45,6 +47,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cfloat>
 #include <cmath>
 #include <cstdio>
 #include <numbers>
@@ -444,6 +447,62 @@ int main() {
     iron::FreeFlyCamera cam;
     cam.position = {0.0f, 2.0f, 6.0f};
 
+    // M41: Play/Stop mode state.
+    iron::EditorState editor;
+    iron::PhysicsWorld physics;
+    if (!physics.init()) {
+        iron::Log::error("sandbox: PhysicsWorld init failed");
+        return 1;
+    }
+    // Snapshot slots (populated on Edit→Play, consumed on Play→Edit).
+    iron::SceneFile     editScene;
+    iron::World         editWorld;
+    iron::FreeFlyCamera editCam;
+    // Debug-cube body handles (populated by spawnDebugBodies in Task C1; stay
+    // kInvalidBody during Edit mode). No persistent gizmo needed — Task C1
+    // emits drawLineOverlay calls each Play frame for the wireframe.
+    iron::BodyId debugCubeBody  = iron::kInvalidBody;
+    iron::BodyId debugFloorBody = iron::kInvalidBody;
+
+    // Spawn/despawn the debug body pair.
+    auto spawnDebugBodies = [&]() {
+        // Falling demo cube — 1m³, mass 5kg, dropped from above the origin.
+        debugCubeBody = physics.createDynamicBox(
+            iron::Vec3{0.0f, 5.0f, 0.0f},   // position
+            iron::Vec3{0.5f, 0.5f, 0.5f},   // half-extents
+            5.0f);                          // mass
+        // Static floor — 20×0.5×20, top face at y=0 so the cube lands at y=0.5.
+        debugFloorBody = physics.createStaticBox(
+            iron::Vec3{0.0f, -0.25f, 0.0f},   // position
+            iron::Vec3{10.0f, 0.25f, 10.0f}); // half-extents
+    };
+    auto despawnDebugBodies = [&]() {
+        if (debugCubeBody.isValid())  physics.destroyBody(debugCubeBody);
+        if (debugFloorBody.isValid()) physics.destroyBody(debugFloorBody);
+        debugCubeBody  = iron::kInvalidBody;
+        debugFloorBody = iron::kInvalidBody;
+    };
+
+    auto togglePlayMode = [&]() {
+        if (editor.isPlaying()) {
+            // Play → Edit: tear down debug bodies, restore snapshot.
+            despawnDebugBodies();
+            scene = editScene;
+            world = editWorld;
+            cam   = editCam;
+            editor.setMode(iron::EditorState::Mode::Edit);
+            iron::Log::info("sandbox: Play -> Edit");
+        } else {
+            // Edit → Play: snapshot, spawn debug bodies.
+            editScene = scene;
+            editWorld = world;
+            editCam   = cam;
+            editor.setMode(iron::EditorState::Mode::Play);
+            spawnDebugBodies();
+            iron::Log::info("sandbox: Edit -> Play");
+        }
+    };
+
     // M37.5: projection rebuilds on resize; lambda captures FOV/near/far closures.
     auto computeProj = [&]() {
         const float aspect = static_cast<float>(app.window().width())
@@ -565,9 +624,24 @@ int main() {
             return;
         }
 
+        // M41: physics runs only in Play mode.
+        if (editor.isPlaying()) {
+            physics.step(t.deltaSeconds);
+        }
+
         iron::Input& input = app.input();
-        if (input.keyPressed(GLFW_KEY_ESCAPE))
-            selectedIndex = -1;
+        // M41: F5 toggles Play/Edit unconditionally. Esc in Play mode exits
+        // to Edit; Esc in Edit mode keeps its existing "deselect" behaviour.
+        if (input.keyPressed(GLFW_KEY_F5)) {
+            togglePlayMode();
+        }
+        if (input.keyPressed(GLFW_KEY_ESCAPE)) {
+            if (editor.isPlaying()) {
+                togglePlayMode();
+            } else {
+                selectedIndex = -1;
+            }
+        }
 
         // M40: wheel-zoom toward the selection pivot (selected entity if any,
         // else world origin). Reads from g_scrollAccum (filled by our GLFW
@@ -640,7 +714,8 @@ int main() {
         prevLook = look;
 
         // --- editor viewport interaction (only when not flying) ---
-        if (!look) {
+        // M41: scene editing disabled in Play mode.
+        if (!editor.isPlaying() && !look) {
             if (input.keyPressed(GLFW_KEY_W)) gizmo.setMode(iron::GizmoMode::Translate);
             if (input.keyPressed(GLFW_KEY_E)) gizmo.setMode(iron::GizmoMode::Rotate);
             if (input.keyPressed(GLFW_KEY_R)) gizmo.setMode(iron::GizmoMode::Scale);
@@ -704,6 +779,45 @@ int main() {
 
         // --- editor UI ---
         imgui.beginFrame();
+
+        // M41: Play/Stop toolbar. Top-center small ImGui window.
+        {
+            const ImVec2 vpSize = ImGui::GetMainViewport()->Size;
+            const ImVec2 vpPos  = ImGui::GetMainViewport()->Pos;
+            constexpr float kToolbarW = 130.0f;
+            constexpr float kToolbarH = 38.0f;
+            ImGui::SetNextWindowPos({vpPos.x + (vpSize.x - kToolbarW) * 0.5f,
+                                     vpPos.y + 8.0f});
+            ImGui::SetNextWindowSize({kToolbarW, kToolbarH});
+            constexpr ImGuiWindowFlags kToolbarFlags =
+                ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove |
+                ImGuiWindowFlags_NoSavedSettings |
+                ImGuiWindowFlags_NoFocusOnAppearing |
+                ImGuiWindowFlags_NoNav;
+            ImGui::Begin("##play_toolbar", nullptr, kToolbarFlags);
+            const char* label = editor.isPlaying() ? "[#] Stop" : "[>] Play";
+            if (ImGui::Button(label, ImVec2(-FLT_MIN, 0.0f))) {
+                togglePlayMode();
+            }
+            ImGui::End();
+        }
+
+        // M41: "PLAY MODE" banner + colored border around the whole viewport.
+        if (editor.isPlaying()) {
+            const ImVec2 vpSize = ImGui::GetMainViewport()->Size;
+            const ImVec2 vpPos  = ImGui::GetMainViewport()->Pos;
+            ImDrawList* fg = ImGui::GetForegroundDrawList();
+            // 4px-thick orange border.
+            constexpr ImU32 kPlayCol = IM_COL32(255, 140, 0, 220);
+            const ImVec2 a{vpPos.x, vpPos.y};
+            const ImVec2 b{vpPos.x + vpSize.x, vpPos.y + vpSize.y};
+            fg->AddRect(a, b, kPlayCol, 0.0f, 0, 4.0f);
+            // "PLAY MODE" text top-right (above the view-gizmo).
+            const char* msg = "PLAY MODE";
+            const ImVec2 ts = ImGui::CalcTextSize(msg);
+            fg->AddText({b.x - ts.x - 16.0f, a.y + 16.0f}, kPlayCol, msg);
+        }
+
         const iron::SceneOutliner::Result outRes = outliner.draw(scene, selectedIndex);
         if (selectedIndex >= 0 && selectedIndex < static_cast<int>(scene.entities.size())) {
             iron::GizmoSpace sp = gizmo.space();
@@ -721,71 +835,76 @@ int main() {
             }
         }
         environment.draw(scene);
-        if (outRes.saveClicked) {
-            if (iron::saveSceneFile(reflection, scene, scenePath))
-                iron::Log::info("sandbox: saved %s", scenePath.c_str());
-            else
-                iron::Log::error("sandbox: save FAILED for %s", scenePath.c_str());
-        }
+        // M41: scene-mutating actions (save / add / delete / duplicate) gated
+        // on Edit mode. Inspector + Outliner remain visible/clickable but the
+        // user can't modify the scene during Play.
+        if (!editor.isPlaying()) {
+            if (outRes.saveClicked) {
+                if (iron::saveSceneFile(reflection, scene, scenePath))
+                    iron::Log::info("sandbox: saved %s", scenePath.c_str());
+                else
+                    iron::Log::error("sandbox: save FAILED for %s", scenePath.c_str());
+            }
 
-        // --- add / delete / duplicate (Outliner buttons OR keyboard shortcuts) ---
-        using Action = iron::SceneOutliner::Result::Action;
-        Action action = outRes.action;
-        if (action == Action::None) {
-            // Consume the latched keyboard shortcuts (set in update(), once per
-            // real key-press edge — not per render frame).
-            if (wantDeleteShortcut)         action = Action::Delete;
-            else if (wantDuplicateShortcut) action = Action::Duplicate;
-        }
-        wantDeleteShortcut    = false;
-        wantDuplicateShortcut = false;
-        const bool selValid = selectedIndex >= 0 &&
-                              selectedIndex < static_cast<int>(scene.entities.size());
-        if (action == Action::AddCube) {
-            iron::SceneEntity ne;
-            ne.name = uniqueName("cube");
-            ne.transform.position = spawnPos();
-            ne.mesh.primitive = iron::PrimitiveKind::Cube;
-            appendAndSelect(ne);
-        } else if (action == Action::AddPlane) {
-            iron::SceneEntity ne;
-            ne.name = uniqueName("plane");
-            ne.transform.position = spawnPos();
-            ne.mesh.primitive = iron::PrimitiveKind::Plane;
-            appendAndSelect(ne);
-        } else if (action == Action::AddGltf) {
-            std::string stem = outRes.gltfPath;
-            const auto slash = stem.find_last_of("/\\");
-            if (slash != std::string::npos) stem = stem.substr(slash + 1);
-            const auto dot = stem.find_last_of('.');
-            if (dot != std::string::npos) stem = stem.substr(0, dot);
-            iron::SceneEntity ne;
-            ne.name = uniqueName(stem.empty() ? "gltf" : stem);
-            ne.transform.position = spawnPos();
-            ne.mesh.gltfPath = outRes.gltfPath;
-            appendAndSelect(ne);
-        } else if (action == Action::Duplicate && selValid) {
-            iron::SceneEntity ne = scene.entities[selectedIndex];  // copy mesh+material+transform
-            ne.name = uniqueName(ne.name);
-            ne.transform.position.x += 0.5f;  // slight offset so the copy is visible
-            appendAndSelect(ne);
-        } else if (action == Action::Delete && selValid) {
-            const int d = selectedIndex;
-            scene.entities.erase(scene.entities.begin() + d);
-            // M37: mirror destroy into the World. sceneIndexToEntity is parallel
-            // to scene.entities (no reindex needed — erase shifts later entries down).
-            if (d >= 0 && d < static_cast<int>(sceneIndexToEntity.size())) {
-                iron::EntityId e = sceneIndexToEntity[d];
-                world.destroy(e);
-                sceneIndexToEntity.erase(sceneIndexToEntity.begin() + d);
+            // --- add / delete / duplicate (Outliner buttons OR keyboard shortcuts) ---
+            using Action = iron::SceneOutliner::Result::Action;
+            Action action = outRes.action;
+            if (action == Action::None) {
+                // Consume the latched keyboard shortcuts (set in update(), once per
+                // real key-press edge — not per render frame).
+                if (wantDeleteShortcut)         action = Action::Delete;
+                else if (wantDuplicateShortcut) action = Action::Duplicate;
             }
-            // Drop the deleted entity's resolved entry; shift higher indices down.
-            for (std::size_t i = 0; i < resolved.size();) {
-                if (resolved[i].entityIndex == d) { resolved.erase(resolved.begin() + i); continue; }
-                if (resolved[i].entityIndex > d) --resolved[i].entityIndex;
-                ++i;
+            wantDeleteShortcut    = false;
+            wantDuplicateShortcut = false;
+            const bool selValid = selectedIndex >= 0 &&
+                                  selectedIndex < static_cast<int>(scene.entities.size());
+            if (action == Action::AddCube) {
+                iron::SceneEntity ne;
+                ne.name = uniqueName("cube");
+                ne.transform.position = spawnPos();
+                ne.mesh.primitive = iron::PrimitiveKind::Cube;
+                appendAndSelect(ne);
+            } else if (action == Action::AddPlane) {
+                iron::SceneEntity ne;
+                ne.name = uniqueName("plane");
+                ne.transform.position = spawnPos();
+                ne.mesh.primitive = iron::PrimitiveKind::Plane;
+                appendAndSelect(ne);
+            } else if (action == Action::AddGltf) {
+                std::string stem = outRes.gltfPath;
+                const auto slash = stem.find_last_of("/\\");
+                if (slash != std::string::npos) stem = stem.substr(slash + 1);
+                const auto dot = stem.find_last_of('.');
+                if (dot != std::string::npos) stem = stem.substr(0, dot);
+                iron::SceneEntity ne;
+                ne.name = uniqueName(stem.empty() ? "gltf" : stem);
+                ne.transform.position = spawnPos();
+                ne.mesh.gltfPath = outRes.gltfPath;
+                appendAndSelect(ne);
+            } else if (action == Action::Duplicate && selValid) {
+                iron::SceneEntity ne = scene.entities[selectedIndex];  // copy mesh+material+transform
+                ne.name = uniqueName(ne.name);
+                ne.transform.position.x += 0.5f;  // slight offset so the copy is visible
+                appendAndSelect(ne);
+            } else if (action == Action::Delete && selValid) {
+                const int d = selectedIndex;
+                scene.entities.erase(scene.entities.begin() + d);
+                // M37: mirror destroy into the World. sceneIndexToEntity is parallel
+                // to scene.entities (no reindex needed — erase shifts later entries down).
+                if (d >= 0 && d < static_cast<int>(sceneIndexToEntity.size())) {
+                    iron::EntityId e = sceneIndexToEntity[d];
+                    world.destroy(e);
+                    sceneIndexToEntity.erase(sceneIndexToEntity.begin() + d);
+                }
+                // Drop the deleted entity's resolved entry; shift higher indices down.
+                for (std::size_t i = 0; i < resolved.size();) {
+                    if (resolved[i].entityIndex == d) { resolved.erase(resolved.begin() + i); continue; }
+                    if (resolved[i].entityIndex > d) --resolved[i].entityIndex;
+                    ++i;
+                }
+                selectedIndex = -1;
             }
-            selectedIndex = -1;
         }
 
         // --- re-derive render data from the (possibly edited) scene ---
@@ -888,6 +1007,43 @@ int main() {
                 for (auto& ed : edges)
                     renderer.drawLineOverlay(c[ed[0]], c[ed[1]], outline);
                 break;
+            }
+        }
+        // M41: draw the debug falling cube as a magenta wireframe, tracking
+        // the Jolt body each Play frame. No-op in Edit mode.
+        if (editor.isPlaying() && debugCubeBody.isValid()) {
+            const iron::Vec3 p = physics.bodyPosition(debugCubeBody);
+            const iron::Vec3 magenta{1.0f, 0.2f, 0.8f};
+            constexpr float h = 0.5f;  // half-extent
+            // 8 corners of the AABB centered at p.
+            const iron::Vec3 c[8] = {
+                {p.x - h, p.y - h, p.z - h}, {p.x + h, p.y - h, p.z - h},
+                {p.x + h, p.y + h, p.z - h}, {p.x - h, p.y + h, p.z - h},
+                {p.x - h, p.y - h, p.z + h}, {p.x + h, p.y - h, p.z + h},
+                {p.x + h, p.y + h, p.z + h}, {p.x - h, p.y + h, p.z + h},
+            };
+            // 12 edges of a box: 4 bottom + 4 top + 4 verticals.
+            const int e[12][2] = {
+                {0,1},{1,2},{2,3},{3,0},
+                {4,5},{5,6},{6,7},{7,4},
+                {0,4},{1,5},{2,6},{3,7},
+            };
+            for (const auto& edge : e) {
+                renderer.drawLineOverlay(c[edge[0]], c[edge[1]], magenta);
+            }
+            // Also draw the floor outline so the user can see what's catching
+            // the cube. Floor is 20×0.5×20 centered at (0, -0.25, 0).
+            const iron::Vec3 fmin{-10.0f, -0.5f, -10.0f};
+            const iron::Vec3 fmax{ 10.0f,  0.0f,  10.0f};
+            const iron::Vec3 floorMagenta{0.6f, 0.15f, 0.5f};  // dimmer
+            const iron::Vec3 f[8] = {
+                {fmin.x, fmin.y, fmin.z}, {fmax.x, fmin.y, fmin.z},
+                {fmax.x, fmax.y, fmin.z}, {fmin.x, fmax.y, fmin.z},
+                {fmin.x, fmin.y, fmax.z}, {fmax.x, fmin.y, fmax.z},
+                {fmax.x, fmax.y, fmax.z}, {fmin.x, fmax.y, fmax.z},
+            };
+            for (const auto& edge : e) {
+                renderer.drawLineOverlay(f[edge[0]], f[edge[1]], floorMagenta);
             }
         }
         renderer.flushDebugLines(view, proj);

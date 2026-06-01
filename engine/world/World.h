@@ -19,6 +19,18 @@ public:
     void     destroy(EntityId e);
     bool     alive(EntityId e) const;
 
+    // Deep copy. Snapshot/restore in editors (M41 Play/Stop) and tests rely
+    // on this. Each ComponentArray is cloned via the virtual clone() above;
+    // generations_ + freeList_ are POD-vector copies.
+    World() = default;
+    World(const World& other) { copyFrom(other); }
+    World& operator=(const World& other) {
+        if (this != &other) copyFrom(other);
+        return *this;
+    }
+    World(World&&) = default;
+    World& operator=(World&&) = default;
+
     template <class T> T*       add(EntityId e, const T& v = {}) {
         return arrayFor<T>().add(e, v);
     }
@@ -48,11 +60,15 @@ private:
     struct IComponentArray {
         virtual ~IComponentArray() = default;
         virtual void remove(EntityId e) = 0;   // type-erased remove for destroy()
+        virtual std::unique_ptr<IComponentArray> clone() const = 0;
     };
 
     template <class T>
     struct TypedComponentArray : IComponentArray, ComponentArray<T> {
         void remove(EntityId e) override { ComponentArray<T>::remove(e); }
+        std::unique_ptr<IComponentArray> clone() const override {
+            return std::make_unique<TypedComponentArray<T>>(*this);
+        }
     };
 
     template <class T>
@@ -69,6 +85,14 @@ private:
         assert(id < kMaxComponentTypes && "Too many component types registered (raise kMaxComponentTypes)");
         return arrays_[id] ? static_cast<TypedComponentArray<T>*>(arrays_[id].get())
                            : nullptr;
+    }
+
+    void copyFrom(const World& other) {
+        for (uint32_t i = 0; i < kMaxComponentTypes; ++i) {
+            arrays_[i] = other.arrays_[i] ? other.arrays_[i]->clone() : nullptr;
+        }
+        generations_ = other.generations_;
+        freeList_    = other.freeList_;
     }
 
     std::array<std::unique_ptr<IComponentArray>, kMaxComponentTypes> arrays_{};
