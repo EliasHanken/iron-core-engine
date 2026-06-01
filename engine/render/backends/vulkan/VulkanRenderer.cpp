@@ -1030,7 +1030,7 @@ void VulkanRenderer::endFrame() {
         rpBegin.pClearValues = clears;
         vkCmdBeginRenderPass(cb, &rpBegin, VK_SUBPASS_CONTENTS_INLINE);
 
-        // Plain positive-height viewport covering the swapchain (UV-space blit).
+        // Plain positive-height viewport covering the swapchain (ImGui pass).
         {
             VkViewport vp{};
             vp.x = 0.0f; vp.y = 0.0f;

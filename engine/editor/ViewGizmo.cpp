@@ -408,8 +408,10 @@ bool drawViewGizmo(FreeFlyCamera& cam, Vec3 pivot, float size, float margin,
     }
 
     // Render: connecting lines from center to each handle, then circles, then labels.
-    // When anchored to a panel rect, draw into the current window's draw list so
-    // the gizmo clips to the panel. Otherwise use the foreground draw list (legacy).
+    // When anchored to a panel rect, draw into the gizmo overlay window's draw list
+    // (the overlay window is positioned within the panel rect via SetNextWindowPos,
+    // so it appears in the panel's corner). Otherwise use the foreground draw list
+    // (legacy fullscreen overlay).
     ImDrawList* dl = useRect ? ImGui::GetWindowDrawList()
                              : ImGui::GetForegroundDrawList();
     // Center dot.
