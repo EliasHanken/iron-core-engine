@@ -1,5 +1,7 @@
 #pragma once
 
+#include <vulkan/vulkan.h>
+
 namespace iron {
 
 class Window;
@@ -28,11 +30,28 @@ public:
     bool wantsMouse() const;
     bool wantsKeyboard() const;
 
+    // Fullscreen dockspace host. Call right after beginFrame(); draw panels
+    // (including the Viewport) between beginDockspace() and endDockspace() so
+    // they dock into the central space. endDockspace() closes the host window.
+    void beginDockspace();
+    void endDockspace();
+
+    // Bind the offscreen viewport image as an ImGui texture id (for ImGui::Image
+    // in the Viewport panel). Cached: rebinds (frees the old via RemoveTexture)
+    // only when (view, sampler) change — e.g. on viewport resize. Returns the
+    // ImTextureID as void* (header stays ImGui-type-free); caller casts to
+    // ImTextureID. Returns nullptr if not initialized or handles are null.
+    void* viewportTexture(VkImageView view, VkSampler sampler);
+
 private:
     bool initialized_ = false;
     void* device_ = nullptr;          // VkDevice, stored opaquely for shutdown
     void* descriptorPool_ = nullptr;  // VkDescriptorPool, owned by this layer
     Renderer* renderer_ = nullptr;
+
+    void*       viewportTexId_      = nullptr;            // ImTextureID (VkDescriptorSet), cast to void*
+    VkImageView viewportTexView_    = VK_NULL_HANDLE;     // last-bound view (change-detect)
+    VkSampler   viewportTexSampler_ = VK_NULL_HANDLE;     // last-bound sampler
 };
 
 }  // namespace iron

@@ -79,6 +79,31 @@ void ImGuiLayer::beginFrame() {
     ImGui::NewFrame();
 }
 
+void ImGuiLayer::beginDockspace() {
+    if (!initialized_) return;
+    const ImGuiViewport* vp = ImGui::GetMainViewport();
+    ImGui::SetNextWindowPos(vp->WorkPos);
+    ImGui::SetNextWindowSize(vp->WorkSize);
+    ImGui::SetNextWindowViewport(vp->ID);
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 0.0f);
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 0.0f);
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0.0f, 0.0f));
+    const ImGuiWindowFlags flags =
+        ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoCollapse |
+        ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove |
+        ImGuiWindowFlags_NoBringToFrontOnFocus | ImGuiWindowFlags_NoNavFocus |
+        ImGuiWindowFlags_NoDocking;
+    ImGui::Begin("##DockHost", nullptr, flags);
+    ImGui::PopStyleVar(3);
+    ImGui::DockSpace(ImGui::GetID("##DockSpace"), ImVec2(0.0f, 0.0f),
+                     ImGuiDockNodeFlags_None);
+}
+
+void ImGuiLayer::endDockspace() {
+    if (!initialized_) return;
+    ImGui::End();  // ##DockHost
+}
+
 void ImGuiLayer::render() {
     if (!initialized_) return;
     ImGui::Render();
@@ -93,10 +118,34 @@ void ImGuiLayer::render() {
     });
 }
 
+void* ImGuiLayer::viewportTexture(VkImageView view, VkSampler sampler) {
+    if (!initialized_ || view == VK_NULL_HANDLE || sampler == VK_NULL_HANDLE)
+        return nullptr;
+    if (view == viewportTexView_ && sampler == viewportTexSampler_ && viewportTexId_)
+        return viewportTexId_;
+    // (Re)bind. The caller resizes the viewport target via
+    // renderer.resizeViewport(), which vkDeviceWaitIdle's, so the old descriptor
+    // is not in flight when we remove it here.
+    if (viewportTexId_) {
+        ImGui_ImplVulkan_RemoveTexture(static_cast<VkDescriptorSet>(viewportTexId_));
+        viewportTexId_ = nullptr;
+    }
+    VkDescriptorSet ds = ImGui_ImplVulkan_AddTexture(
+        sampler, view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+    viewportTexId_      = static_cast<void*>(ds);
+    viewportTexView_    = view;
+    viewportTexSampler_ = sampler;
+    return viewportTexId_;
+}
+
 void ImGuiLayer::shutdown() {
     if (!initialized_) return;
     const VkDevice device = static_cast<VkDevice>(device_);
     vkDeviceWaitIdle(device);
+    if (viewportTexId_) {
+        ImGui_ImplVulkan_RemoveTexture(static_cast<VkDescriptorSet>(viewportTexId_));
+        viewportTexId_ = nullptr;
+    }
     ImGui_ImplVulkan_Shutdown();
     ImGui_ImplGlfw_Shutdown();
     ImGui::DestroyContext();
