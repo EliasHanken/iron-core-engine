@@ -814,7 +814,7 @@ int main() {
             }
         }
         // Always reset the accumulator at the bottom of this frame's read
-        // (even if wantsMouse was true — we don't want the value to leak
+        // (even if the viewport wasn't hovered — we don't want the value to leak
         // into the next frame after the panel is dismissed).
         g_scrollAccum = 0.0;
 
@@ -836,11 +836,11 @@ int main() {
             }
         }
 
-        // Look + fly while RIGHT mouse is held and the viewport is hovered (to
-        // start) or focused (so an ongoing RMB-drag that wanders off the panel
-        // keeps controlling — cursor capture recenters it anyway).
+        // Start an RMB-look only when hovering the viewport; keep an ongoing look
+        // alive while the panel stays focused (RMB captures + recenters the cursor,
+        // so `hovered` can drop out during the drag).
         const bool look = input.mouseButtonDown(GLFW_MOUSE_BUTTON_RIGHT)
-                          && (viewport.hovered || viewport.focused);
+                          && (viewport.hovered || (prevLook && viewport.focused));
         app.window().setCursorCaptured(look);
 
         const float mdx = static_cast<float>(input.mouseDeltaX());
@@ -883,12 +883,17 @@ int main() {
                     wantDuplicateShortcut = true;
             }
 
-            // Compute viewport-local mouse from the position captured in setRender.
-            // 1-frame lag is fine and consistent with the existing immediate-mode timing.
-            iron::Vec2 vpLocal{};
+            // Unclamped window->viewport-local mouse. Used for the pick/gizmo ray so
+            // an in-progress gizmo drag that travels past the panel edge keeps a
+            // correct ray direction (the cursor isn't captured during gizmo drags).
+            const iron::Vec2 vpLocal{viewport.mousePx.x - viewport.rectMin.x,
+                                     viewport.mousePx.y - viewport.rectMin.y};
+            // Bounded check: a fresh click-pick only fires when the cursor is actually
+            // inside the scene image (not over the panel's title bar / a side panel).
+            iron::Vec2 pickLocalUnused{};
             const bool mouseInViewport =
                 viewport.mouseValid &&
-                iron::viewportLocalMouse(viewport.mousePx, viewport.rectMin, viewport.size, vpLocal);
+                iron::viewportLocalMouse(viewport.mousePx, viewport.rectMin, viewport.size, pickLocalUnused);
 
             if (viewport.hovered || gizmo.dragging()) {
                 const iron::Mat4 view = cam.viewMatrix();
