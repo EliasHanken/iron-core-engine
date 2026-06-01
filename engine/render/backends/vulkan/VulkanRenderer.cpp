@@ -1042,9 +1042,6 @@ void VulkanRenderer::endFrame() {
             vkCmdSetScissor(cb, 0, 1, &scissor);
         }
 
-        // Blit the composited viewport image to the backbuffer.
-        postProcess_.blitToSwapchain(cb);
-
         // UI/overlays (ImGui) on top — unchanged.
         for (auto& fn : deferredUiPass_) {
             fn(cb);
