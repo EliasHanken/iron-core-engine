@@ -1122,8 +1122,12 @@ VkRenderPass VulkanRenderer::scenePass() const {
 }
 
 VkRenderPass VulkanRenderer::swapchainPass() const {
-    // The swapchain (final) render pass — where composite + UI/overlays record.
-    // Debug lines, HUD, and ImGui pipelines must be built against this pass.
+    // The swapchain (final) render pass — only the viewport blit and ImGui
+    // actually record into this pass. Composite, debug-line, and HUD pipelines
+    // are built against this pass (for render-pass compatibility) but record
+    // into the offscreen viewportPass_ instead; the two passes are compatible
+    // because they share the same color+depth formats (finalLayout/ops don't
+    // affect Vulkan render-pass compatibility).
     return pipelines_.renderPass();
 }
 

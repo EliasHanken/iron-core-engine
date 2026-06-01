@@ -61,8 +61,8 @@ public:
     // No-op on unchanged/zero extent. Calls vkDeviceWaitIdle internally.
     bool resizeViewport(VkContext& ctx, VkExtent2D extent);
 
-    // Run the post-process chain for this frame into the (already-begun) swapchain
-    // pass. `passes` from planPostChain(); `effects` supplies per-id styles.
+    // Run the post-process chain for this frame into the (already-begun) viewport
+    // pass (M43a). `passes` from planPostChain(); `effects` supplies per-id styles.
     void runChain(VkCommandBuffer cb,
                   const std::vector<PostPass>& passes,
                   const EffectTable& effects,
@@ -124,9 +124,9 @@ public:
     };
 
     // Run the offscreen pre-passes (GlowBlurH, GlowBlurV) that must execute
-    // OUTSIDE the swapchain render pass. Called by VulkanRenderer::endFrame
-    // BEFORE vkCmdBeginRenderPass(swapchain). For Copy/Outline/XRay this is
-    // a no-op; for GlowOutline it runs the two blur passes into glowFb_[0/1].
+    // OUTSIDE any render pass. Called by VulkanRenderer::endFrame
+    // BEFORE beginViewportPass. For Copy/Outline/XRay this is a no-op;
+    // for GlowOutline it runs the two blur passes into glowFb_[0/1].
     void runChainOffscreenPasses(VkCommandBuffer cb,
                                  const std::vector<PostPass>& passes,
                                  const EffectTable& effects,

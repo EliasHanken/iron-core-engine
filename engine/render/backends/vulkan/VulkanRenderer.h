@@ -119,8 +119,11 @@ public:
     // scene geometry, particles).
     VkRenderPass scenePass() const;
 
-    // Engine-internal: the swapchain (final) render pass — where composite,
-    // debug lines, HUD, and UI/overlays record.
+    // Engine-internal: the swapchain (final) render pass — where the viewport
+    // blit + UI/overlays (ImGui) record. M43a: composite, debug lines, and HUD
+    // moved to the offscreen viewport pass; their pipelines stay built against
+    // THIS pass and record into the viewport pass via render-pass compatibility
+    // (same color+depth formats — finalLayout/ops don't affect compatibility).
     VkRenderPass swapchainPass() const;
 
     // M43a: the final composited scene+overlays image, sampleable. M43b's
@@ -145,8 +148,11 @@ public:
     void enqueueDeferredScenePass(std::function<void(VkCommandBuffer)> fn);
 
     // Engine-internal: UI/overlay callbacks (e.g. ImGui). Fires inside the
-    // swapchain pass AFTER the post-process composite, so overlays are never
-    // affected by post-process effects. Cleared each beginFrame.
+    // swapchain pass after the viewport blit, so overlays are never composited
+    // into the post-process chain. Cleared each beginFrame.
+    //
+    // LIFETIME: same as enqueueDeferredScenePass — captures must outlive
+    // endFrame() of the same frame.
     void enqueueDeferredUiPass(std::function<void(VkCommandBuffer)> fn);
 
 private:
@@ -226,7 +232,7 @@ private:
     std::vector<DrawCall> sceneDraws_;
     std::vector<std::function<void(VkCommandBuffer)>> deferredScenePass_;
 
-    // M36 -- UI/overlay callbacks recorded in the swapchain pass after composite.
+    // M36/M43a -- UI/overlay callbacks recorded in the swapchain pass after the viewport blit.
     std::vector<std::function<void(VkCommandBuffer)>> deferredUiPass_;
 
     // M23 — buffered skinned draws + a deep-copy of each call's bone

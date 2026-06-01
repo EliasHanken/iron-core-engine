@@ -115,7 +115,7 @@ void main() {
 )";
 
 // kGlowCompositeFrag — adds a colored halo (blurred coverage minus solid
-// interior) over the scene. Runs inside the swapchain pass.
+// interior) over the scene. Runs inside the viewport pass (M43a).
 const char* kGlowCompositeFrag = R"(#version 450
 layout(location = 0) in vec2 vUV;
 layout(location = 0) out vec4 outColor;
@@ -1991,7 +1991,8 @@ bool VkPostProcess::createGlowPipelines(VkContext& ctx, VkRenderPass swapchainPa
     }
 
     // -----------------------------------------------------------------
-    // GlowComposite pipeline: reads scene + scratch[1] + mask; writes swapchain.
+    // GlowComposite pipeline: reads scene + scratch[1] + mask; writes viewport pass
+    // (M43a). Built against swapchainPass for render-pass compatibility.
     // Descriptor set layout: binding 0 = sampler2D uScene,
     //                        binding 1 = sampler2D uBlur,
     //                        binding 2 = usampler2D uMask.
@@ -2043,10 +2044,10 @@ bool VkPostProcess::createGlowPipelines(VkContext& ctx, VkRenderPass swapchainPa
         pInfo.pRasterizationState = &rs;
         pInfo.pMultisampleState   = &ms;
         pInfo.pDepthStencilState  = &ds;
-        pInfo.pColorBlendState    = &blend;  // 4-channel RGBA for swapchain
+        pInfo.pColorBlendState    = &blend;  // 4-channel RGBA for swapchain-compatible format
         pInfo.pDynamicState       = &dyn;
         pInfo.layout              = glowCompositePipeLayout_;
-        pInfo.renderPass          = swapchainPass;  // writes to swapchain
+        pInfo.renderPass          = swapchainPass;  // built against swapchain pass; records into compatible viewport pass (M43a)
         pInfo.subpass             = 0;
         VkResult r = vkCreateGraphicsPipelines(ctx.device(), VK_NULL_HANDLE, 1, &pInfo, nullptr, &glowCompositePipeline_);
         vkDestroyShaderModule(ctx.device(), vsm, nullptr);
@@ -2169,8 +2170,8 @@ void VkPostProcess::runChain(VkCommandBuffer cb,
 
             case PostPass::GlowComposite: {
                 // GlowBlurH and GlowBlurV ran in runChainOffscreenPasses (before
-                // the swapchain pass). Here we composite the blurred coverage over
-                // the scene, writing to the swapchain (which the caller has begun).
+                // beginViewportPass). Here we composite the blurred coverage over
+                // the scene, writing into the viewport pass (which the caller has begun).
                 const EffectStyle* gs = nullptr;
                 for (int id = 1; id < EffectTable::kMaxIds; ++id) {
                     if (effects.style(static_cast<uint8_t>(id)).kind == EffectKind::GlowOutline) {
@@ -2203,7 +2204,7 @@ void VkPostProcess::runChain(VkCommandBuffer cb,
             }
 
             case PostPass::XRay: {
-                // V1 note: each in-swapchain pass independently samples sceneColor
+                // V1 note: each in-viewport-pass draw independently samples sceneColor
                 // and writes the full screen. If multiple effect kinds were active,
                 // later passes would overwrite earlier ones. In practice, a single
                 // effect kind is active per frame (one selected object, one kind).
@@ -2345,7 +2346,7 @@ void VkPostProcess::runChainOffscreenPasses(VkCommandBuffer cb,
             }
 
             // All other passes (Copy, Outline, GlowComposite, XRay) run in runChain
-            // inside the swapchain pass — nothing to do here.
+            // inside the viewport pass — nothing to do here.
             default:
                 break;
         }
@@ -2476,7 +2477,7 @@ bool VkPostProcess::createXRayPipeline(VkContext& ctx, VkRenderPass swapchainPas
     pInfo.pColorBlendState    = &cb;
     pInfo.pDynamicState       = &dyn;
     pInfo.layout              = xrayPipeLayout_;
-    pInfo.renderPass          = swapchainPass;  // writes to swapchain like Outline
+    pInfo.renderPass          = swapchainPass;  // built against swapchain pass; records into compatible viewport pass (M43a)
     pInfo.subpass             = 0;
     // Capture result so shader modules are destroyed even if pipeline creation fails.
     VkResult xrayPipeResult = vkCreateGraphicsPipelines(ctx.device(), VK_NULL_HANDLE, 1,
