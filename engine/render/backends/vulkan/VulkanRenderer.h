@@ -123,6 +123,16 @@ public:
     // debug lines, HUD, and UI/overlays record.
     VkRenderPass swapchainPass() const;
 
+    // M43a: the final composited scene+overlays image, sampleable. M43b's
+    // ImGui Viewport panel binds this via ImGui_ImplVulkan_AddTexture.
+    VkImageView viewportColorView() const;
+    VkSampler   viewportSampler() const;
+
+    // M43a: resize the offscreen viewport target independently of the swapchain.
+    // M43b drives this from the Viewport panel's content size. No-op on
+    // unchanged/zero extent. Calls vkDeviceWaitIdle internally.
+    void resizeViewport(uint32_t width, uint32_t height);
+
     // Engine-internal: external Vulkan subsystems register a deferred
     // render callback. Fires inside the scene render pass during endFrame,
     // after the geometry replay and before debug-lines + HUD.

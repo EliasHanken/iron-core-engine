@@ -980,7 +980,38 @@ void VulkanRenderer::endFrame() {
         postProcess_.runChainOffscreenPasses(cb, passes, effects_, swapchain_.extent());
     }
 
-    // --- M36 Pass 4: swapchain pass — composite scene, then UI/overlays on top ---
+    // --- M43a Pass 4: viewport pass — composite scene + overlays into the
+    // offscreen sampleable target (instead of straight to the swapchain). ---
+    {
+        const float clear[4] = {0.0f, 0.0f, 0.0f, 1.0f};
+        postProcess_.beginViewportPass(cb, clear);
+
+        // Composite chain (Copy/Outline/GlowComposite/XRay) — UV-space; the
+        // plain positive-height viewport set by beginViewportPass is correct.
+        {
+            const std::vector<PostPass> passes = planPostChain(activeKindsThisFrame);
+            postProcess_.runChain(cb, passes, effects_, postProcess_.viewportExtent());
+        }
+
+        // Debug-line + HUD overlays now render into the viewport target (they
+        // were previously in the swapchain pass). Debug lines use the
+        // negative-height scene viewport; HUD sets its own.
+        setSceneViewport(cb, postProcess_.viewportExtent());
+        if (pendingDebugFlush_) {
+            debugLines_.record(cb, context_.device(), frames_,
+                               pendingDebugView_, pendingDebugProj_);
+            pendingDebugFlush_ = false;
+        }
+        if (pendingHudValid_) {
+            hud_.record(cb, context_.device(), frames_, textures_,
+                        pendingHudBatch_, pendingHudW_, pendingHudH_);
+            pendingHudValid_ = false;
+        }
+
+        postProcess_.endViewportPass(cb);
+    }
+
+    // --- M43a Pass 5: swapchain pass — blit the viewport image, then UI on top. ---
     {
         VkClearValue clears[2]{};
         clears[0].color.float32[0] = 0.0f;
@@ -999,50 +1030,26 @@ void VulkanRenderer::endFrame() {
         rpBegin.pClearValues = clears;
         vkCmdBeginRenderPass(cb, &rpBegin, VK_SUBPASS_CONTENTS_INLINE);
 
-        // Full-screen triangle composite: samples scene-color by UV, so the
-        // blit is UV-space and does NOT need the Y-flip viewport. Use a plain
-        // positive-height viewport covering the full swapchain.
+        // Plain positive-height viewport covering the swapchain (UV-space blit).
         {
             VkViewport vp{};
-            vp.x        = 0.0f;
-            vp.y        = 0.0f;
-            vp.width    = static_cast<float>(swapchain_.extent().width);
-            vp.height   = static_cast<float>(swapchain_.extent().height);
-            vp.minDepth = 0.0f;
-            vp.maxDepth = 1.0f;
+            vp.x = 0.0f; vp.y = 0.0f;
+            vp.width  = static_cast<float>(swapchain_.extent().width);
+            vp.height = static_cast<float>(swapchain_.extent().height);
+            vp.minDepth = 0.0f; vp.maxDepth = 1.0f;
             vkCmdSetViewport(cb, 0, 1, &vp);
             VkRect2D scissor{{0, 0}, swapchain_.extent()};
             vkCmdSetScissor(cb, 0, 1, &scissor);
         }
-        // Run the in-swapchain-pass chain (Copy, Outline, GlowComposite, XRay).
-        // With no effects active this frame, planPostChain returns {Copy}.
-        {
-            const std::vector<PostPass> passes = planPostChain(activeKindsThisFrame);
-            postProcess_.runChain(cb, passes, effects_, swapchain_.extent());
-        }
 
-        // UI/overlays (ImGui) draw AFTER composite so they are never affected
-        // by post-process effects.
+        // Blit the composited viewport image to the backbuffer.
+        postProcess_.blitToSwapchain(cb);
+
+        // UI/overlays (ImGui) on top — unchanged.
         for (auto& fn : deferredUiPass_) {
             fn(cb);
         }
         deferredUiPass_.clear();
-
-        // The UI pass (ImGui) sets a positive-height viewport. Restore the
-        // negative-height scene viewport so debug-lines and HUD render with
-        // the same Y-flip convention as the scene geometry.
-        setSceneViewport(cb, swapchain_.extent());
-
-        if (pendingDebugFlush_) {
-            debugLines_.record(cb, context_.device(), frames_,
-                               pendingDebugView_, pendingDebugProj_);
-            pendingDebugFlush_ = false;
-        }
-        if (pendingHudValid_) {
-            hud_.record(cb, context_.device(), frames_, textures_,
-                        pendingHudBatch_, pendingHudW_, pendingHudH_);
-            pendingHudValid_ = false;
-        }
 
         vkCmdEndRenderPass(cb);
     }
@@ -1118,6 +1125,13 @@ VkRenderPass VulkanRenderer::swapchainPass() const {
     // The swapchain (final) render pass — where composite + UI/overlays record.
     // Debug lines, HUD, and ImGui pipelines must be built against this pass.
     return pipelines_.renderPass();
+}
+
+VkImageView VulkanRenderer::viewportColorView() const { return postProcess_.viewportColorView(); }
+VkSampler   VulkanRenderer::viewportSampler()   const { return postProcess_.viewportSampler(); }
+
+void VulkanRenderer::resizeViewport(uint32_t width, uint32_t height) {
+    postProcess_.resizeViewport(context_, VkExtent2D{width, height});
 }
 
 void VulkanRenderer::enqueueDeferredScenePass(
