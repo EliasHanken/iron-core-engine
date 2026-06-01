@@ -944,7 +944,7 @@ int main() {
                 ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove |
                 ImGuiWindowFlags_NoSavedSettings |
                 ImGuiWindowFlags_NoFocusOnAppearing |
-                ImGuiWindowFlags_NoNav;
+                ImGuiWindowFlags_NoNav | ImGuiWindowFlags_NoDocking;
             ImGui::Begin("##play_toolbar", nullptr, kToolbarFlags);
             const char* label = editor.isPlaying() ? "[#] Stop" : "[>] Play";
             if (ImGui::Button(label, ImVec2(-FLT_MIN, 0.0f))) {
@@ -1171,11 +1171,17 @@ int main() {
         // the panel content size, then show it via ImGui::Image.
         ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0, 0));
         ImGui::Begin("Viewport");
+        ImGui::PopStyleVar();
         {
             const ImVec2 avail  = ImGui::GetContentRegionAvail();
             const ImVec2 imgPos = ImGui::GetCursorScreenPos();
             const uint32_t vpW = static_cast<uint32_t>(avail.x > 1.0f ? avail.x : 1.0f);
             const uint32_t vpH = static_cast<uint32_t>(avail.y > 1.0f ? avail.y : 1.0f);
+            // Safe to resize (vkDeviceWaitIdle) here mid-setRender: submit()
+            // only queues draws and renderer.endFrame() records all render
+            // passes, so the open command buffer doesn't yet reference the
+            // viewport image when this recreates it. viewportTexture() below
+            // rebinds the ImGui descriptor to the new image view.
             vkRenderer.resizeViewport(vpW, vpH);  // no-op unless changed
             void* texId = imgui.viewportTexture(vkRenderer.viewportColorView(),
                                                 vkRenderer.viewportSampler());
@@ -1195,7 +1201,6 @@ int main() {
                           viewport.rectMin, viewport.size);
         }
         ImGui::End();
-        ImGui::PopStyleVar();
         imgui.endDockspace();
         imgui.render();   // enqueues the UI overlay into the scene pass tail
         renderer.endFrame();
