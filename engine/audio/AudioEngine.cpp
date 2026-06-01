@@ -51,6 +51,11 @@ struct AudioEngine::Impl {
     std::unordered_map<SoundHandle, LoadedSound> buffers;
     SoundHandle                                  nextHandle = 1;
 
+    // Looping voices: a reserved-source set + VoiceId -> pool-slot map.
+    std::array<bool, kSourcePoolSize>      reserved{};
+    std::unordered_map<VoiceId, std::size_t> voiceSlot;
+    VoiceId                                  nextVoice = 1;
+
     bool initialized      = false;
     bool warnedStereo     = false;
     bool warnedExhaustion = false;
@@ -175,6 +180,7 @@ void AudioEngine::playSoundAt(SoundHandle h, Vec3 worldPos, float gain) {
     // Find an idle source; if none, voice-steal the next round-robin slot.
     ALuint chosen = 0;
     for (std::size_t i = 0; i < impl_->sources.size(); ++i) {
+        if (impl_->reserved[i]) continue;
         const ALuint s = impl_->sources[i];
         ALint state = 0;
         alGetSourcei(s, AL_SOURCE_STATE, &state);
@@ -188,6 +194,13 @@ void AudioEngine::playSoundAt(SoundHandle h, Vec3 worldPos, float gain) {
             Log::warn("AudioEngine: source pool exhausted; voice-stealing");
             impl_->warnedExhaustion = true;
         }
+        // Advance past reserved (looping) slots; bail if every slot is reserved.
+        std::size_t scanned = 0;
+        while (impl_->reserved[impl_->nextSource] && scanned < impl_->sources.size()) {
+            impl_->nextSource = (impl_->nextSource + 1) % impl_->sources.size();
+            ++scanned;
+        }
+        if (scanned >= impl_->sources.size()) return;   // all reserved; drop this one-shot
         chosen = impl_->sources[impl_->nextSource];
         impl_->nextSource = (impl_->nextSource + 1) % impl_->sources.size();
         alSourceStop(chosen);
@@ -210,6 +223,7 @@ void AudioEngine::playSoundLocal(SoundHandle h, float gain) {
     // playSoundAt — the underlying source-pool logic is shared).
     ALuint chosen = 0;
     for (std::size_t i = 0; i < impl_->sources.size(); ++i) {
+        if (impl_->reserved[i]) continue;
         const ALuint s = impl_->sources[i];
         ALint state = 0;
         alGetSourcei(s, AL_SOURCE_STATE, &state);
@@ -223,6 +237,13 @@ void AudioEngine::playSoundLocal(SoundHandle h, float gain) {
             Log::warn("AudioEngine: source pool exhausted; voice-stealing");
             impl_->warnedExhaustion = true;
         }
+        // Advance past reserved (looping) slots; bail if every slot is reserved.
+        std::size_t scanned = 0;
+        while (impl_->reserved[impl_->nextSource] && scanned < impl_->sources.size()) {
+            impl_->nextSource = (impl_->nextSource + 1) % impl_->sources.size();
+            ++scanned;
+        }
+        if (scanned >= impl_->sources.size()) return;   // all reserved; drop this one-shot
         chosen = impl_->sources[impl_->nextSource];
         impl_->nextSource = (impl_->nextSource + 1) % impl_->sources.size();
         alSourceStop(chosen);
@@ -237,6 +258,59 @@ void AudioEngine::playSoundLocal(SoundHandle h, float gain) {
     // OpenAL skips spatialization and plays the sound centered.
     alSourcei (chosen, AL_SOURCE_RELATIVE,  AL_TRUE);
     alSourcePlay(chosen);
+}
+
+VoiceId AudioEngine::playLooping(SoundHandle h, Vec3 worldPos, float gain) {
+    if (!impl_->initialized || h == kInvalidSound) return kInvalidVoice;
+    auto it = impl_->buffers.find(h);
+    if (it == impl_->buffers.end()) return kInvalidVoice;
+
+    // Find a free, non-reserved, non-playing slot.
+    std::size_t slot = impl_->sources.size();
+    for (std::size_t i = 0; i < impl_->sources.size(); ++i) {
+        if (impl_->reserved[i]) continue;
+        ALint state = 0;
+        alGetSourcei(impl_->sources[i], AL_SOURCE_STATE, &state);
+        if (state != AL_PLAYING) { slot = i; break; }
+    }
+    if (slot == impl_->sources.size()) {
+        Log::warn("AudioEngine: no free source for looping voice");
+        return kInvalidVoice;
+    }
+
+    const ALuint src = impl_->sources[slot];
+    alSourcei (src, AL_BUFFER,          static_cast<ALint>(it->second.buffer));
+    alSource3f(src, AL_POSITION,        worldPos.x, worldPos.y, worldPos.z);
+    alSource3f(src, AL_VELOCITY,        0.0f, 0.0f, 0.0f);
+    alSourcef (src, AL_GAIN,            gain);
+    alSourcei (src, AL_SOURCE_RELATIVE, AL_FALSE);
+    alSourcei (src, AL_LOOPING,         AL_TRUE);
+    alSourcePlay(src);
+
+    impl_->reserved[slot] = true;
+    const VoiceId v = impl_->nextVoice++;
+    impl_->voiceSlot[v] = slot;
+    return v;
+}
+
+void AudioEngine::stop(VoiceId v) {
+    if (!impl_->initialized || v == kInvalidVoice) return;
+    auto it = impl_->voiceSlot.find(v);
+    if (it == impl_->voiceSlot.end()) return;
+    const std::size_t slot = it->second;
+    const ALuint src = impl_->sources[slot];
+    alSourceStop(src);
+    alSourcei(src, AL_LOOPING, AL_FALSE);
+    alSourcei(src, AL_BUFFER,  0);
+    impl_->reserved[slot] = false;
+    impl_->voiceSlot.erase(it);
+}
+
+void AudioEngine::setVoicePosition(VoiceId v, Vec3 worldPos) {
+    if (!impl_->initialized || v == kInvalidVoice) return;
+    auto it = impl_->voiceSlot.find(v);
+    if (it == impl_->voiceSlot.end()) return;
+    alSource3f(impl_->sources[it->second], AL_POSITION, worldPos.x, worldPos.y, worldPos.z);
 }
 
 void AudioEngine::setListener(Vec3 cameraPos, Vec3 forward, Vec3 up) {
