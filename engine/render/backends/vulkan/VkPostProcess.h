@@ -45,6 +45,8 @@ public:
     void beginScenePass(VkCommandBuffer cb, const float clearColor[4]) const;
     void endScenePass(VkCommandBuffer cb) const;
     void recordComposite(VkCommandBuffer cb) const;
+    // Full-screen blit of viewportColor into the (already-begun) swapchain pass.
+    void blitToSwapchain(VkCommandBuffer cb) const;
 
     VkImageView   viewportColorView() const { return viewportColorView_; }
     VkSampler     viewportSampler()   const { return sampler_; }
@@ -179,6 +181,13 @@ private:
     VkDescriptorPool      descPool_       = VK_NULL_HANDLE;
     VkDescriptorSet       copyDescSet_    = VK_NULL_HANDLE;
 
+    // --- M43a: viewport→swapchain blit (own copy pipeline + descriptor set,
+    // built against the swapchain pass, sampling viewportColorView_). ---
+    VkDescriptorSetLayout blitSetLayout_  = VK_NULL_HANDLE;
+    VkPipelineLayout      blitPipeLayout_ = VK_NULL_HANDLE;
+    ::VkPipeline          blitPipeline_   = VK_NULL_HANDLE;
+    VkDescriptorSet       blitDescSet_    = VK_NULL_HANDLE;
+
     // --- Outline pipeline ---
     VkDescriptorSetLayout outlineSetLayout_  = VK_NULL_HANDLE;
     VkPipelineLayout      outlinePipeLayout_ = VK_NULL_HANDLE;
@@ -226,6 +235,7 @@ private:
     bool createViewportTarget(VkContext& ctx);
     void destroyViewportTarget(VkContext& ctx);
     bool createCopyPipeline(VkContext& ctx, VkRenderPass swapchainPass);
+    bool createBlitPipeline(VkContext& ctx, VkRenderPass swapchainPass);
     bool createOutlinePipeline(VkContext& ctx, VkRenderPass swapchainPass);
     bool createMaskPipeline(VkContext& ctx);
     bool createGlowPipelines(VkContext& ctx, VkRenderPass swapchainPass);
