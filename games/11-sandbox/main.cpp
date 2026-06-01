@@ -49,6 +49,7 @@
 
 #include <GLFW/glfw3.h>
 #include <imgui.h>
+#include <imgui_internal.h>  // DockBuilder* APIs
 
 #include <algorithm>
 #include <array>
@@ -941,6 +942,27 @@ int main() {
         // --- editor UI ---
         imgui.beginFrame();
         imgui.beginDockspace();
+
+        // M43b: one-time default dock layout. DockBuilderGetNode == nullptr means
+        // no layout exists yet (fresh — no imgui.ini), so a stale imgui.ini wins.
+        static bool dockLayoutBuilt = false;
+        if (!dockLayoutBuilt) {
+            dockLayoutBuilt = true;
+            const ImGuiID dockId = ImGui::GetID("##DockSpace");
+            if (ImGui::DockBuilderGetNode(dockId) == nullptr) {
+                ImGui::DockBuilderRemoveNode(dockId);
+                ImGui::DockBuilderAddNode(dockId, ImGuiDockNodeFlags_DockSpace);
+                ImGui::DockBuilderSetNodeSize(dockId, ImGui::GetMainViewport()->WorkSize);
+                ImGuiID center = dockId;
+                ImGuiID left  = ImGui::DockBuilderSplitNode(center, ImGuiDir_Left,  0.18f, nullptr, &center);
+                ImGuiID right = ImGui::DockBuilderSplitNode(center, ImGuiDir_Right, 0.24f, nullptr, &center);
+                ImGui::DockBuilderDockWindow("Viewport",       center);
+                ImGui::DockBuilderDockWindow("Scene Outliner", left);
+                ImGui::DockBuilderDockWindow("Environment",    left);
+                ImGui::DockBuilderDockWindow("Inspector",      right);
+                ImGui::DockBuilderFinish(dockId);
+            }
+        }
 
         // M41: Play/Stop toolbar. Top-center small ImGui window.
         {

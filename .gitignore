@@ -32,3 +32,6 @@ CMakeUserPresets.json
 # OS
 Thumbs.db
 .DS_Store
+
+# ImGui per-user layout (user-specific, not for version control)
+imgui.ini
