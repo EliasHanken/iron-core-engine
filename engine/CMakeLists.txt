@@ -43,6 +43,7 @@ add_library(ironcore STATIC
   scene/MaterialDef.reflect.cpp
   scene/MeshRef.reflect.cpp
   world/Transform.reflect.cpp
+  world/CollisionShape.reflect.cpp
   scene/ReflectionIO.cpp
 )
 
