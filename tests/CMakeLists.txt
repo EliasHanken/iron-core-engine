@@ -111,3 +111,8 @@ add_executable(test_editor_state test_editor_state.cpp)
 target_link_libraries(test_editor_state PRIVATE ironcore ironcore_editor)
 target_include_directories(test_editor_state PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 add_test(NAME test_editor_state COMMAND test_editor_state)
+
+add_executable(test_viewport_input test_viewport_input.cpp)
+target_link_libraries(test_viewport_input PRIVATE ironcore ironcore_editor)
+target_include_directories(test_viewport_input PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+add_test(NAME test_viewport_input COMMAND test_viewport_input)
