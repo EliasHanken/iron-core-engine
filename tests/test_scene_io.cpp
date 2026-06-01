@@ -4,6 +4,8 @@
 #include "math/Vec.h"
 #include "reflection/Reflection.h"
 #include "reflection/RegisterCoreTypes.h"
+#include "world/CollisionShape.h"
+#include "audio/AudioEmitter.h"
 #include "test_framework.h"
 
 #include <filesystem>
@@ -25,6 +27,8 @@ iron::Reflection makeReflectionRegistry() {
     iron::registerMeshRef(r);
     iron::registerMaterialDef(r);
     iron::registerRenderHandles(r);
+    iron::registerCollisionShape(r);
+    iron::registerAudioEmitter(r);
     return r;
 }
 
@@ -182,6 +186,46 @@ int main() {
         // "name" < "transform" lexicographically — invariant holds regardless
         // of insertion order. Swap-to-ordered_json would invalidate this.
         CHECK(firstTrans > firstName);
+        fs::remove(path);
+    }
+
+    // --- M42: collision + audio optionals round-trip ---
+    {
+        iron::SceneFile s;
+        iron::SceneEntity withBoth;
+        withBoth.name = "crate";
+        withBoth.mesh.primitive = iron::PrimitiveKind::Cube;
+        withBoth.collision = iron::CollisionShape{};
+        withBoth.collision->body = iron::ColliderBody::Dynamic;
+        withBoth.collision->mass = 7.0f;
+        withBoth.audio = iron::AudioEmitter{};
+        withBoth.audio->wavPath = "hum.wav";
+        withBoth.audio->loop = true;
+        s.entities.push_back(withBoth);
+
+        iron::SceneEntity plain;
+        plain.name = "floor";
+        plain.mesh.primitive = iron::PrimitiveKind::Plane;
+        s.entities.push_back(plain);
+
+        const iron::Reflection r = makeReflectionRegistry();
+        const std::string path = tempScenePath("m42_sceneio_tmp.json");
+        CHECK(iron::saveSceneFile(r, s, path));
+        const auto loaded = iron::loadSceneFile(r, path);
+        CHECK(loaded.has_value());
+        CHECK(loaded->entities.size() == 2u);
+
+        const auto& a = loaded->entities[0];
+        CHECK(a.collision.has_value());
+        CHECK(a.collision->body == iron::ColliderBody::Dynamic);
+        CHECK_NEAR(a.collision->mass, 7.0f);
+        CHECK(a.audio.has_value());
+        CHECK(a.audio->wavPath == "hum.wav");
+
+        const auto& b = loaded->entities[1];
+        CHECK(!b.collision.has_value());
+        CHECK(!b.audio.has_value());
+
         fs::remove(path);
     }
 

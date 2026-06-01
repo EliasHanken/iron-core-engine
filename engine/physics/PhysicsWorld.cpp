@@ -210,10 +210,11 @@ namespace {
 BodyId createBodyImpl(PhysicsWorld::Impl& impl,
                       JPH::ShapeRefC shape,
                       JPH::RVec3 pos,
+                      JPH::Quat rot,
                       JPH::EMotionType motion,
                       JPH::ObjectLayer layer,
                       float mass) {
-    JPH::BodyCreationSettings settings(shape, pos, JPH::Quat::sIdentity(), motion, layer);
+    JPH::BodyCreationSettings settings(shape, pos, rot, motion, layer);
     if (motion == JPH::EMotionType::Dynamic) {
         settings.mOverrideMassProperties = JPH::EOverrideMassProperties::CalculateInertia;
         settings.mMassPropertiesOverride.mMass = mass;
@@ -227,27 +228,39 @@ BodyId createBodyImpl(PhysicsWorld::Impl& impl,
 
 }  // namespace
 
-BodyId PhysicsWorld::createStaticBox(Vec3 pos, Vec3 halfExtents) {
+BodyId PhysicsWorld::createStaticBox(Vec3 pos, Vec3 halfExtents, Quat rotation) {
     JPH::ShapeRefC shape = new JPH::BoxShape(toJ(halfExtents));
-    return createBodyImpl(*impl_, shape, toJ(pos),
+    return createBodyImpl(*impl_, shape, toJ(pos), toJ(rotation),
                           JPH::EMotionType::Static, Layers::NON_MOVING, 0.0f);
 }
 
-BodyId PhysicsWorld::createDynamicBox(Vec3 pos, Vec3 halfExtents, float mass) {
-    JPH::ShapeRefC shape = new JPH::BoxShape(toJ(halfExtents));
-    return createBodyImpl(*impl_, shape, toJ(pos),
-                          JPH::EMotionType::Dynamic, Layers::MOVING, mass);
-}
-
-BodyId PhysicsWorld::createDynamicSphere(Vec3 pos, float radius, float mass) {
+BodyId PhysicsWorld::createStaticSphere(Vec3 pos, float radius, Quat rotation) {
     JPH::ShapeRefC shape = new JPH::SphereShape(radius);
-    return createBodyImpl(*impl_, shape, toJ(pos),
+    return createBodyImpl(*impl_, shape, toJ(pos), toJ(rotation),
+                          JPH::EMotionType::Static, Layers::NON_MOVING, 0.0f);
+}
+
+BodyId PhysicsWorld::createStaticCapsule(Vec3 pos, float halfH, float r, Quat rotation) {
+    JPH::ShapeRefC shape = new JPH::CapsuleShape(halfH, r);
+    return createBodyImpl(*impl_, shape, toJ(pos), toJ(rotation),
+                          JPH::EMotionType::Static, Layers::NON_MOVING, 0.0f);
+}
+
+BodyId PhysicsWorld::createDynamicBox(Vec3 pos, Vec3 halfExtents, float mass, Quat rotation) {
+    JPH::ShapeRefC shape = new JPH::BoxShape(toJ(halfExtents));
+    return createBodyImpl(*impl_, shape, toJ(pos), toJ(rotation),
                           JPH::EMotionType::Dynamic, Layers::MOVING, mass);
 }
 
-BodyId PhysicsWorld::createDynamicCapsule(Vec3 pos, float halfH, float r, float mass) {
+BodyId PhysicsWorld::createDynamicSphere(Vec3 pos, float radius, float mass, Quat rotation) {
+    JPH::ShapeRefC shape = new JPH::SphereShape(radius);
+    return createBodyImpl(*impl_, shape, toJ(pos), toJ(rotation),
+                          JPH::EMotionType::Dynamic, Layers::MOVING, mass);
+}
+
+BodyId PhysicsWorld::createDynamicCapsule(Vec3 pos, float halfH, float r, float mass, Quat rotation) {
     JPH::ShapeRefC shape = new JPH::CapsuleShape(halfH, r);
-    return createBodyImpl(*impl_, shape, toJ(pos),
+    return createBodyImpl(*impl_, shape, toJ(pos), toJ(rotation),
                           JPH::EMotionType::Dynamic, Layers::MOVING, mass);
 }
 

@@ -39,8 +39,11 @@
 #include "editor/SceneOutliner.h"
 #include "editor/ViewGizmo.h"
 #include "math/Aabb.h"
+#include "audio/AudioEmitter.h"
+#include "audio/AudioEngine.h"
 #include "physics/PhysicsWorld.h"
 #include "scene/Picking.h"
+#include "world/CollisionShape.h"
 
 #include <GLFW/glfw3.h>
 #include <imgui.h>
@@ -53,6 +56,7 @@
 #include <numbers>
 #include <span>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 namespace {
@@ -296,6 +300,8 @@ int main() {
     iron::registerMeshRef(reflection);
     iron::registerMaterialDef(reflection);
     iron::registerRenderHandles(reflection);
+    iron::registerCollisionShape(reflection);
+    iron::registerAudioEmitter(reflection);
 
     // --- M29: load the scene file ---
     const std::string exeDir = iron::executableDir();
@@ -454,51 +460,93 @@ int main() {
         iron::Log::error("sandbox: PhysicsWorld init failed");
         return 1;
     }
+    iron::AudioEngine audio;
+    if (!audio.init())
+        iron::Log::warn("sandbox: AudioEngine init failed; emitters will be silent");
+    // WAV cache so re-entering Play doesn't reload from disk each time.
+    std::unordered_map<std::string, iron::SoundHandle> soundCache;
+    auto soundFor = [&](const std::string& relPath) -> iron::SoundHandle {
+        if (relPath.empty()) return iron::kInvalidSound;
+        auto it = soundCache.find(relPath);
+        if (it != soundCache.end()) return it->second;
+        const iron::SoundHandle h = audio.loadSound(exeDir + "/" + relPath);
+        soundCache[relPath] = h;
+        return h;
+    };
     // Snapshot slots (populated on Edit→Play, consumed on Play→Edit).
     iron::SceneFile     editScene;
     iron::World         editWorld;
     iron::FreeFlyCamera editCam;
-    // Debug-cube body handles (populated by spawnDebugBodies in Task C1; stay
-    // kInvalidBody during Edit mode). No persistent gizmo needed — Task C1
-    // emits drawLineOverlay calls each Play frame for the wireframe.
-    iron::BodyId debugCubeBody  = iron::kInvalidBody;
-    iron::BodyId debugFloorBody = iron::kInvalidBody;
+    // M42: runtime bodies/voices built from authored components on Edit->Play.
+    // Keyed by scene-entity index (parallel to scene.entities / sceneIndexToEntity).
+    std::unordered_map<int, iron::BodyId>  playBodies;
+    std::unordered_map<int, iron::VoiceId> playVoices;
 
-    // Spawn/despawn the debug body pair.
-    auto spawnDebugBodies = [&]() {
-        // Falling demo cube — 1m³, mass 5kg, dropped from above the origin.
-        debugCubeBody = physics.createDynamicBox(
-            iron::Vec3{0.0f, 5.0f, 0.0f},   // position
-            iron::Vec3{0.5f, 0.5f, 0.5f},   // half-extents
-            5.0f);                          // mass
-        // Static floor — 20×0.5×20, top face at y=0 so the cube lands at y=0.5.
-        debugFloorBody = physics.createStaticBox(
-            iron::Vec3{0.0f, -0.25f, 0.0f},   // position
-            iron::Vec3{10.0f, 0.25f, 10.0f}); // half-extents
+    auto spawnRuntime = [&]() {
+        for (int i = 0; i < static_cast<int>(scene.entities.size()); ++i) {
+            const iron::SceneEntity& e = scene.entities[i];
+            if (e.collision) {
+                const iron::CollisionShape& cs = *e.collision;
+                const iron::Vec3 p = e.transform.position;
+                const iron::Quat q = e.transform.rotation;
+                iron::BodyId b = iron::kInvalidBody;
+                const bool dyn = (cs.body == iron::ColliderBody::Dynamic);
+                switch (cs.shape) {
+                    case iron::ColliderShape::Box:
+                        b = dyn ? physics.createDynamicBox(p, cs.halfExtents, cs.mass, q)
+                                : physics.createStaticBox (p, cs.halfExtents, q);
+                        break;
+                    case iron::ColliderShape::Sphere:
+                        b = dyn ? physics.createDynamicSphere(p, cs.radius, cs.mass, q)
+                                : physics.createStaticSphere (p, cs.radius, q);
+                        break;
+                    case iron::ColliderShape::Capsule:
+                        b = dyn ? physics.createDynamicCapsule(p, cs.halfHeight, cs.radius, cs.mass, q)
+                                : physics.createStaticCapsule (p, cs.halfHeight, cs.radius, q);
+                        break;
+                }
+                if (b.isValid()) playBodies[i] = b;
+            }
+            if (e.audio && e.audio->playOnStart) {
+                const iron::AudioEmitter& em = *e.audio;
+                const iron::SoundHandle h = soundFor(em.wavPath);
+                if (h != iron::kInvalidSound) {
+                    if (em.loop && em.spatial) {
+                        const iron::VoiceId v = audio.playLooping(h, e.transform.position, em.gain);
+                        if (v != iron::kInvalidVoice) playVoices[i] = v;
+                    } else if (em.spatial) {
+                        audio.playSoundAt(h, e.transform.position, em.gain);  // one-shot
+                    } else {
+                        audio.playSoundLocal(h, em.gain);                     // 2D one-shot
+                    }
+                }
+            }
+        }
     };
-    auto despawnDebugBodies = [&]() {
-        if (debugCubeBody.isValid())  physics.destroyBody(debugCubeBody);
-        if (debugFloorBody.isValid()) physics.destroyBody(debugFloorBody);
-        debugCubeBody  = iron::kInvalidBody;
-        debugFloorBody = iron::kInvalidBody;
+
+    auto despawnRuntime = [&]() {
+        for (auto& [idx, body] : playBodies) physics.destroyBody(body);
+        for (auto& [idx, voice] : playVoices) audio.stop(voice);
+        playBodies.clear();
+        playVoices.clear();
     };
 
     auto togglePlayMode = [&]() {
         if (editor.isPlaying()) {
-            // Play → Edit: tear down debug bodies, restore snapshot.
-            despawnDebugBodies();
+            // Play → Edit: tear down runtime bodies/voices, restore snapshot.
+            despawnRuntime();
             scene = editScene;
             world = editWorld;
             cam   = editCam;
             editor.setMode(iron::EditorState::Mode::Edit);
             iron::Log::info("sandbox: Play -> Edit");
         } else {
-            // Edit → Play: snapshot, spawn debug bodies.
+            // Edit → Play: snapshot, spawn runtime bodies/voices from authored components.
             editScene = scene;
             editWorld = world;
             editCam   = cam;
             editor.setMode(iron::EditorState::Mode::Play);
-            spawnDebugBodies();
+            spawnRuntime();
             iron::Log::info("sandbox: Edit -> Play");
         }
     };
@@ -558,6 +606,63 @@ int main() {
     // when rotating about an off-center pivot — so we use the pivot.
     auto gizmoOriginFor = [&](int sel) -> iron::Vec3 {
         return scene.entities[sel].transform.position;
+    };
+
+    // M42: draw an entity's collider as a green wireframe in Edit mode, so the
+    // user can see what they're authoring. Box = 12 edges; Sphere = 3 rings;
+    // Capsule = cylinder approximation (2 rings + 4 verticals). Uses the same
+    // drawLineOverlay path as the selection outline.
+    auto drawColliderWireframe = [&](const iron::SceneEntity& e) {
+        if (!e.collision) return;
+        const iron::CollisionShape& cs = *e.collision;
+        const iron::Vec3 c  = e.transform.position;
+        const iron::Vec3 col{0.2f, 1.0f, 0.3f};  // collider green
+        const iron::Quat q  = e.transform.rotation;
+        // Rotate a local offset into world space (collider ignores entity scale).
+        auto wp = [&](float x, float y, float z) {
+            const iron::Vec4 r = q.toMat4() * iron::Vec4{x, y, z, 1.0f};
+            return iron::Vec3{c.x + r.x, c.y + r.y, c.z + r.z};
+        };
+        auto ring = [&](int axis, float r, float h) {  // circle of radius r at offset h along `axis`
+            constexpr int N = 24;
+            iron::Vec3 prev{};
+            for (int i = 0; i <= N; ++i) {
+                const float a = (static_cast<float>(i) / N) * 2.0f * std::numbers::pi_v<float>;
+                const float u = r * std::cos(a), v = r * std::sin(a);
+                iron::Vec3 cur = (axis == 0) ? wp(h, u, v)
+                               : (axis == 1) ? wp(u, h, v)
+                                             : wp(u, v, h);
+                if (i > 0) renderer.drawLineOverlay(prev, cur, col);
+                prev = cur;
+            }
+        };
+        switch (cs.shape) {
+            case iron::ColliderShape::Box: {
+                const iron::Vec3 h = cs.halfExtents;
+                iron::Vec3 v[8];
+                for (int i = 0; i < 8; ++i)
+                    v[i] = wp((i & 1) ? h.x : -h.x, (i & 2) ? h.y : -h.y, (i & 4) ? h.z : -h.z);
+                const int edges[12][2] = {{0,1},{2,3},{4,5},{6,7},{0,2},{1,3},
+                                          {4,6},{5,7},{0,4},{1,5},{2,6},{3,7}};
+                for (auto& ed : edges) renderer.drawLineOverlay(v[ed[0]], v[ed[1]], col);
+                break;
+            }
+            case iron::ColliderShape::Sphere:
+                ring(0, cs.radius, 0.0f);
+                ring(1, cs.radius, 0.0f);
+                ring(2, cs.radius, 0.0f);
+                break;
+            case iron::ColliderShape::Capsule: {
+                const float hh = cs.halfHeight, r = cs.radius;
+                ring(1, r,  hh);   // top cap ring
+                ring(1, r, -hh);   // bottom cap ring
+                renderer.drawLineOverlay(wp( r, -hh, 0), wp( r, hh, 0), col);
+                renderer.drawLineOverlay(wp(-r, -hh, 0), wp(-r, hh, 0), col);
+                renderer.drawLineOverlay(wp(0, -hh,  r), wp(0, hh,  r), col);
+                renderer.drawLineOverlay(wp(0, -hh, -r), wp(0, hh, -r), col);
+                break;
+            }
+        }
     };
 
     // Generate a scene-unique entity name from a base ("cube" -> "cube", "cube 2"...).
@@ -624,9 +729,26 @@ int main() {
             return;
         }
 
-        // M41: physics runs only in Play mode.
+        // M42: audio listener follows the camera (forward from cam; world-up).
+        audio.setListener(cam.position, cam.forward(), iron::Vec3{0.0f, 1.0f, 0.0f});
+
+        // M41/M42: physics runs only in Play mode; dynamic bodies write their
+        // pose back into scene.entities (the unconditional scene->World mirror
+        // in setRender then propagates it to the renderer). Static bodies and
+        // non-collider entities are untouched. Snapshot restores all of this on Stop.
         if (editor.isPlaying()) {
             physics.step(t.deltaSeconds);
+            for (auto& [idx, body] : playBodies) {
+                if (idx < 0 || idx >= static_cast<int>(scene.entities.size())) continue;
+                if (scene.entities[idx].collision &&
+                    scene.entities[idx].collision->body == iron::ColliderBody::Dynamic) {
+                    scene.entities[idx].transform.position = physics.bodyPosition(body);
+                    scene.entities[idx].transform.rotation = physics.bodyRotation(body);
+                    auto vit = playVoices.find(idx);
+                    if (vit != playVoices.end())
+                        audio.setVoicePosition(vit->second, scene.entities[idx].transform.position);
+                }
+            }
         }
 
         iron::Input& input = app.input();
@@ -1009,42 +1131,11 @@ int main() {
                 break;
             }
         }
-        // M41: draw the debug falling cube as a magenta wireframe, tracking
-        // the Jolt body each Play frame. No-op in Edit mode.
-        if (editor.isPlaying() && debugCubeBody.isValid()) {
-            const iron::Vec3 p = physics.bodyPosition(debugCubeBody);
-            const iron::Vec3 magenta{1.0f, 0.2f, 0.8f};
-            constexpr float h = 0.5f;  // half-extent
-            // 8 corners of the AABB centered at p.
-            const iron::Vec3 c[8] = {
-                {p.x - h, p.y - h, p.z - h}, {p.x + h, p.y - h, p.z - h},
-                {p.x + h, p.y + h, p.z - h}, {p.x - h, p.y + h, p.z - h},
-                {p.x - h, p.y - h, p.z + h}, {p.x + h, p.y - h, p.z + h},
-                {p.x + h, p.y + h, p.z + h}, {p.x - h, p.y + h, p.z + h},
-            };
-            // 12 edges of a box: 4 bottom + 4 top + 4 verticals.
-            const int e[12][2] = {
-                {0,1},{1,2},{2,3},{3,0},
-                {4,5},{5,6},{6,7},{7,4},
-                {0,4},{1,5},{2,6},{3,7},
-            };
-            for (const auto& edge : e) {
-                renderer.drawLineOverlay(c[edge[0]], c[edge[1]], magenta);
-            }
-            // Also draw the floor outline so the user can see what's catching
-            // the cube. Floor is 20×0.5×20 centered at (0, -0.25, 0).
-            const iron::Vec3 fmin{-10.0f, -0.5f, -10.0f};
-            const iron::Vec3 fmax{ 10.0f,  0.0f,  10.0f};
-            const iron::Vec3 floorMagenta{0.6f, 0.15f, 0.5f};  // dimmer
-            const iron::Vec3 f[8] = {
-                {fmin.x, fmin.y, fmin.z}, {fmax.x, fmin.y, fmin.z},
-                {fmax.x, fmax.y, fmin.z}, {fmin.x, fmax.y, fmin.z},
-                {fmin.x, fmin.y, fmax.z}, {fmax.x, fmin.y, fmax.z},
-                {fmax.x, fmax.y, fmax.z}, {fmin.x, fmax.y, fmax.z},
-            };
-            for (const auto& edge : e) {
-                renderer.drawLineOverlay(f[edge[0]], f[edge[1]], floorMagenta);
-            }
+        // M42: collider wireframes (green) in Edit mode, for every entity that
+        // has a CollisionShape. Hidden in Play mode (the moving meshes show the
+        // result). Drawn via the same drawLineOverlay path as the outline.
+        if (!editor.isPlaying()) {
+            for (const auto& e : scene.entities) drawColliderWireframe(e);
         }
         renderer.flushDebugLines(view, proj);
         // M40: gizmo + Iso orbit around the selected entity (or world origin

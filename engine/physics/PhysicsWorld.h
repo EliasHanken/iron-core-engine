@@ -58,10 +58,12 @@ public:
     void step(float dt);
 
     // --- Body creation ---
-    BodyId createStaticBox     (Vec3 pos, Vec3 halfExtents);
-    BodyId createDynamicBox    (Vec3 pos, Vec3 halfExtents, float mass);
-    BodyId createDynamicSphere (Vec3 pos, float radius,         float mass);
-    BodyId createDynamicCapsule(Vec3 pos, float halfHeight, float radius, float mass);
+    BodyId createStaticBox     (Vec3 pos, Vec3 halfExtents, Quat rotation = Quat::identity());
+    BodyId createStaticSphere  (Vec3 pos, float radius,     Quat rotation = Quat::identity());
+    BodyId createStaticCapsule (Vec3 pos, float halfHeight, float radius, Quat rotation = Quat::identity());
+    BodyId createDynamicBox    (Vec3 pos, Vec3 halfExtents, float mass, Quat rotation = Quat::identity());
+    BodyId createDynamicSphere (Vec3 pos, float radius,     float mass, Quat rotation = Quat::identity());
+    BodyId createDynamicCapsule(Vec3 pos, float halfHeight, float radius, float mass, Quat rotation = Quat::identity());
     void   destroyBody(BodyId);
 
     // --- Body state ---

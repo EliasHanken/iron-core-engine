@@ -1,7 +1,9 @@
 #include "editor/SceneInspector.h"
 
+#include "audio/AudioEmitter.h"
 #include "editor/ReflectionInspector.h"
 #include "scene/SceneFormat.h"
+#include "world/CollisionShape.h"
 
 #include <imgui.h>
 
@@ -39,6 +41,47 @@ bool SceneInspector::draw(const Reflection& reflection,
     changed |= renderComponent(reflection, e.transform);
     changed |= renderComponent(reflection, e.mesh);
     changed |= renderComponent(reflection, e.material);
+
+    // M42: optional components (collision / audio). Table-driven so the combo +
+    // render loop stay generic; a future optional component is one row here +
+    // one std::optional field on SceneEntity. (A fully generic world.add<T>
+    // combo waits for the World-migration milestone.)
+    struct OptionalComp {
+        const char* label;
+        bool (*present)(const SceneEntity&);
+        void (*attach)(SceneEntity&);
+        void (*remove)(SceneEntity&);
+        bool (*render)(const Reflection&, SceneEntity&);
+    };
+    static const OptionalComp kOptional[] = {
+        { "CollisionShape",
+          [](const SceneEntity& s){ return s.collision.has_value(); },
+          [](SceneEntity& s){ s.collision.emplace(); },
+          [](SceneEntity& s){ s.collision.reset(); },
+          [](const Reflection& r, SceneEntity& s){ return renderComponent(r, *s.collision); } },
+        { "AudioEmitter",
+          [](const SceneEntity& s){ return s.audio.has_value(); },
+          [](SceneEntity& s){ s.audio.emplace(); },
+          [](SceneEntity& s){ s.audio.reset(); },
+          [](const Reflection& r, SceneEntity& s){ return renderComponent(r, *s.audio); } },
+    };
+
+    for (const OptionalComp& oc : kOptional) {
+        if (!oc.present(e)) continue;
+        changed |= oc.render(reflection, e);
+        ImGui::PushID(oc.label);
+        if (ImGui::SmallButton("Remove")) { oc.remove(e); changed = true; }
+        ImGui::PopID();
+    }
+
+    // "Add Component" combo lists only the optionals this entity lacks.
+    if (ImGui::BeginCombo("Add Component", "Add Component ...")) {
+        for (const OptionalComp& oc : kOptional) {
+            if (oc.present(e)) continue;
+            if (ImGui::Selectable(oc.label)) { oc.attach(e); changed = true; }
+        }
+        ImGui::EndCombo();
+    }
 
     ImGui::End();
     return changed;

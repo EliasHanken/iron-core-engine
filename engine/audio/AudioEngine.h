@@ -11,6 +11,9 @@ namespace iron {
 using SoundHandle = std::uint32_t;
 constexpr SoundHandle kInvalidSound = 0;
 
+using VoiceId = std::uint32_t;
+constexpr VoiceId kInvalidVoice = 0;
+
 // One audio device + context, a per-engine pool of OpenAL sources for
 // concurrent playback, and a registry of loaded sound buffers.
 // Non-copyable; move-disabled to keep the underlying pimpl simple.
@@ -56,6 +59,21 @@ public:
     // — where 3D spatialization causes panning artifacts as the camera moves.
     // No-op if `h == kInvalidSound` or the engine failed to init.
     void playSoundLocal(SoundHandle h, float gain = 1.0f);
+
+    // Start a looping, positional voice and return a handle so it can be
+    // stopped + repositioned later. Used by authored AudioEmitters (M42).
+    // The source is reserved (excluded from one-shot voice-stealing) until
+    // stop(). Returns kInvalidVoice if the engine failed to init, h is
+    // invalid, or no free source is available.
+    VoiceId playLooping(SoundHandle h, Vec3 worldPos, float gain = 1.0f);
+
+    // Stop a voice started by playLooping and release its source. No-op on
+    // kInvalidVoice or an unknown handle.
+    void stop(VoiceId v);
+
+    // Reposition a live voice (e.g. an emitter on a physics-moving entity).
+    // No-op on kInvalidVoice or an unknown handle.
+    void setVoicePosition(VoiceId v, Vec3 worldPos);
 
     // Update the listener (camera) state. Call once per frame before any
     // playSoundAt calls. `forward` and `up` are unit vectors describing

@@ -3,6 +3,30 @@
 
 #include <cmath>
 
+static void test_static_sphere_and_capsule_and_rotation() {
+    iron::PhysicsWorld w;
+    CHECK(w.init());
+
+    // Static sphere + static capsule create live (non-zero) bodies.
+    const iron::BodyId s = w.createStaticSphere(iron::Vec3{0, 0, 0}, 1.0f);
+    const iron::BodyId c = w.createStaticCapsule(iron::Vec3{3, 0, 0}, 0.5f, 0.3f);
+    CHECK(s.isValid());
+    CHECK(c.isValid());
+
+    // A dynamic box created with a 90deg-about-Y rotation reports ~that rotation.
+    const float h = 0.70710678f;  // sin/cos(45deg) -> quat for 90deg about Y
+    const iron::Quat rot{0.0f, h, 0.0f, h};
+    const iron::BodyId b = w.createDynamicBox(iron::Vec3{0, 10, 0},
+                                              iron::Vec3{0.5f, 0.5f, 0.5f}, 1.0f, rot);
+    CHECK(b.isValid());
+    const iron::Quat got = w.bodyRotation(b);
+    // Compare via |dot| ~ 1 (quaternion double-cover safe).
+    const float dot = got.x*rot.x + got.y*rot.y + got.z*rot.z + got.w*rot.w;
+    CHECK_NEAR(std::abs(dot), 1.0f);
+
+    w.shutdown();
+}
+
 int main() {
     using namespace iron;
 
@@ -106,6 +130,8 @@ int main() {
 
         CHECK(contactCount >= 1);
     }
+
+    test_static_sphere_and_capsule_and_rotation();
 
     return iron_test_result();
 }

@@ -77,5 +77,14 @@ int main() {
         a.setListener(Vec3{1, 2, 3}, Vec3{0, 0, -1}, Vec3{0, 1, 0});
     }
 
+    // --- M42: looping-voice API is safe on an uninitialized engine ---
+    {
+        iron::AudioEngine eng;   // not init()'d (or init may fail headless)
+        const iron::VoiceId v = eng.playLooping(iron::kInvalidSound, iron::Vec3{}, 1.0f);
+        CHECK(v == iron::kInvalidVoice);
+        eng.setVoicePosition(v, iron::Vec3{1.0f, 2.0f, 3.0f});  // no crash
+        eng.stop(v);                                            // no crash
+    }
+
     return iron_test_result();
 }

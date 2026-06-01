@@ -102,6 +102,8 @@ iron_add_test(test_postprocess_chain test_postprocess_chain.cpp)
 iron_add_test(test_world test_world.cpp)
 iron_add_test(test_type_reflection test_type_reflection.cpp)
 iron_add_test(test_reflection_io test_reflection_io.cpp)
+iron_add_test(test_collision_shape test_collision_shape.cpp)
+iron_add_test(test_audio_emitter test_audio_emitter.cpp)
 iron_add_test(test_iso_view test_iso_view.cpp)
 target_link_libraries(test_iso_view PRIVATE ironcore_editor)
 
