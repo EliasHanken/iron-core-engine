@@ -46,6 +46,19 @@ public:
     void endScenePass(VkCommandBuffer cb) const;
     void recordComposite(VkCommandBuffer cb) const;
 
+    VkImageView   viewportColorView() const { return viewportColorView_; }
+    VkSampler     viewportSampler()   const { return sampler_; }
+    VkExtent2D    viewportExtent()     const { return viewportExtent_; }
+
+    // Begin/end the offscreen viewport pass (color cleared to clearColor,
+    // depth cleared to 1.0). Composite + debug-lines + HUD record between these.
+    void beginViewportPass(VkCommandBuffer cb, const float clearColor[4]) const;
+    void endViewportPass(VkCommandBuffer cb) const;
+
+    // Resize ONLY the viewport target (scene/mask/glow targets unchanged).
+    // No-op on unchanged/zero extent. Calls vkDeviceWaitIdle internally.
+    bool resizeViewport(VkContext& ctx, VkExtent2D extent);
+
     // Run the post-process chain for this frame into the (already-begun) swapchain
     // pass. `passes` from planPostChain(); `effects` supplies per-id styles.
     void runChain(VkCommandBuffer cb,
@@ -125,6 +138,20 @@ private:
     VkFormat   colorFormat_ = VK_FORMAT_UNDEFINED;
     VkFormat   depthFormat_ = VK_FORMAT_UNDEFINED;
 
+    // --- M43a: final composited "viewport" target (color + depth). Sized
+    // independently of the swapchain (defaults to swapchain extent). The
+    // composite + debug-line + HUD overlays render here; the swapchain pass
+    // then blits this image (and, later, ImGui samples it directly). ---
+    VkExtent2D    viewportExtent_{};
+    VkImage       viewportColor_      = VK_NULL_HANDLE;
+    VmaAllocation viewportColorAlloc_ = VK_NULL_HANDLE;
+    VkImageView   viewportColorView_  = VK_NULL_HANDLE;
+    VkImage       viewportDepth_      = VK_NULL_HANDLE;
+    VmaAllocation viewportDepthAlloc_ = VK_NULL_HANDLE;
+    VkImageView   viewportDepthView_  = VK_NULL_HANDLE;
+    VkRenderPass  viewportPass_       = VK_NULL_HANDLE;
+    VkFramebuffer viewportFb_         = VK_NULL_HANDLE;
+
     // --- Scene offscreen target ---
     VkImage       sceneColor_      = VK_NULL_HANDLE;
     VmaAllocation sceneColorAlloc_ = VK_NULL_HANDLE;
@@ -196,6 +223,8 @@ private:
 
     bool createTargets(VkContext& ctx);
     void destroyTargets(VkContext& ctx);
+    bool createViewportTarget(VkContext& ctx);
+    void destroyViewportTarget(VkContext& ctx);
     bool createCopyPipeline(VkContext& ctx, VkRenderPass swapchainPass);
     bool createOutlinePipeline(VkContext& ctx, VkRenderPass swapchainPass);
     bool createMaskPipeline(VkContext& ctx);

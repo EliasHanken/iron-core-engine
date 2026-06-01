@@ -169,11 +169,12 @@ void main() {
 bool VkPostProcess::init(VkContext& ctx, VkFormat colorFormat, VkFormat depthFormat,
                          VkExtent2D extent, VkSampler sharedSampler,
                          VkRenderPass swapchainPass) {
-    ctx_         = &ctx;
-    colorFormat_ = colorFormat;
-    depthFormat_ = depthFormat;
-    extent_      = extent;
-    sampler_     = sharedSampler;
+    ctx_             = &ctx;
+    colorFormat_     = colorFormat;
+    depthFormat_     = depthFormat;
+    extent_          = extent;
+    viewportExtent_  = extent;
+    sampler_         = sharedSampler;
 
     // Create a NEAREST sampler for integer textures (R8_UINT mask).
     // The shared sampler_ from VkTextureStore is LINEAR; integer formats
@@ -192,6 +193,7 @@ bool VkPostProcess::init(VkContext& ctx, VkFormat colorFormat, VkFormat depthFor
     }
 
     if (!createTargets(ctx))                       { destroy(ctx); return false; }
+    if (!createViewportTarget(ctx))                { destroy(ctx); return false; }
     if (!createCopyPipeline(ctx, swapchainPass))   { destroy(ctx); return false; }
     if (!createOutlinePipeline(ctx, swapchainPass)){ destroy(ctx); return false; }
     if (!createMaskPipeline(ctx))                  { destroy(ctx); return false; }
@@ -244,6 +246,7 @@ void VkPostProcess::destroy(VkContext& ctx) {
     if (maskSampler_)    { vkDestroySampler(ctx.device(), maskSampler_, nullptr); maskSampler_ = VK_NULL_HANDLE; }
 
     // Render target objects (including glow scratch targets + glowPass_/glowFb_).
+    destroyViewportTarget(ctx);
     destroyTargets(ctx);
 }
 
@@ -382,6 +385,8 @@ bool VkPostProcess::resize(VkContext& ctx, VkExtent2D extent) {
         vkUpdateDescriptorSets(ctx.device(), 4, writes, 0, nullptr);
     }
 
+    if (!resizeViewport(ctx, extent)) return false;
+
     return true;
 }
 
@@ -416,6 +421,43 @@ void VkPostProcess::beginScenePass(VkCommandBuffer cb, const float clearColor[4]
 }
 
 void VkPostProcess::endScenePass(VkCommandBuffer cb) const {
+    vkCmdEndRenderPass(cb);
+}
+
+void VkPostProcess::beginViewportPass(VkCommandBuffer cb, const float clearColor[4]) const {
+    VkClearValue clears[2]{};
+    clears[0].color.float32[0] = clearColor[0];
+    clears[0].color.float32[1] = clearColor[1];
+    clears[0].color.float32[2] = clearColor[2];
+    clears[0].color.float32[3] = clearColor[3];
+    clears[1].depthStencil = {1.0f, 0};
+
+    VkRenderPassBeginInfo rpBegin{};
+    rpBegin.sType             = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
+    rpBegin.renderPass        = viewportPass_;
+    rpBegin.framebuffer       = viewportFb_;
+    rpBegin.renderArea.offset = {0, 0};
+    rpBegin.renderArea.extent = viewportExtent_;
+    rpBegin.clearValueCount   = 2;
+    rpBegin.pClearValues      = clears;
+    vkCmdBeginRenderPass(cb, &rpBegin, VK_SUBPASS_CONTENTS_INLINE);
+
+    // Plain positive-height viewport covering the full viewport extent.
+    // Composite draws are UV-space full-screen quads; debug/HUD passes
+    // set their own viewport after this.
+    VkViewport vp{};
+    vp.x        = 0;
+    vp.y        = 0;
+    vp.width    = static_cast<float>(viewportExtent_.width);
+    vp.height   = static_cast<float>(viewportExtent_.height);
+    vp.minDepth = 0.0f;
+    vp.maxDepth = 1.0f;
+    vkCmdSetViewport(cb, 0, 1, &vp);
+    VkRect2D scissor{{0, 0}, viewportExtent_};
+    vkCmdSetScissor(cb, 0, 1, &scissor);
+}
+
+void VkPostProcess::endViewportPass(VkCommandBuffer cb) const {
     vkCmdEndRenderPass(cb);
 }
 
@@ -908,6 +950,176 @@ void VkPostProcess::destroyTargets(VkContext& ctx) {
     if (sceneDepthView_)  { vkDestroyImageView(ctx.device(), sceneDepthView_, nullptr); sceneDepthView_ = VK_NULL_HANDLE; }
     if (sceneColor_)      { vmaDestroyImage(ctx.allocator(), sceneColor_, sceneColorAlloc_); sceneColor_ = VK_NULL_HANDLE; sceneColorAlloc_ = VK_NULL_HANDLE; }
     if (sceneDepth_)      { vmaDestroyImage(ctx.allocator(), sceneDepth_, sceneDepthAlloc_); sceneDepth_ = VK_NULL_HANDLE; sceneDepthAlloc_ = VK_NULL_HANDLE; }
+}
+
+bool VkPostProcess::createViewportTarget(VkContext& ctx) {
+    // --- Viewport color image (colorFormat_, COLOR_ATTACHMENT | SAMPLED) ---
+    // Uses the same format as the swapchain color so pipelines built against
+    // the swapchain render pass are format-compatible with viewportPass_.
+    {
+        VkImageCreateInfo iInfo{};
+        iInfo.sType         = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
+        iInfo.imageType     = VK_IMAGE_TYPE_2D;
+        iInfo.format        = colorFormat_;
+        iInfo.extent        = {viewportExtent_.width, viewportExtent_.height, 1};
+        iInfo.mipLevels     = 1;
+        iInfo.arrayLayers   = 1;
+        iInfo.samples       = VK_SAMPLE_COUNT_1_BIT;
+        iInfo.tiling        = VK_IMAGE_TILING_OPTIMAL;
+        iInfo.usage         = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT |
+                              VK_IMAGE_USAGE_SAMPLED_BIT;
+        iInfo.sharingMode   = VK_SHARING_MODE_EXCLUSIVE;
+        iInfo.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+
+        VmaAllocationCreateInfo aInfo{};
+        aInfo.usage = VMA_MEMORY_USAGE_AUTO;
+        VK_CHECK(vmaCreateImage(ctx.allocator(), &iInfo, &aInfo,
+                                &viewportColor_, &viewportColorAlloc_, nullptr));
+
+        VkImageViewCreateInfo vInfo{};
+        vInfo.sType                           = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+        vInfo.image                           = viewportColor_;
+        vInfo.viewType                        = VK_IMAGE_VIEW_TYPE_2D;
+        vInfo.format                          = colorFormat_;
+        vInfo.subresourceRange.aspectMask     = VK_IMAGE_ASPECT_COLOR_BIT;
+        vInfo.subresourceRange.levelCount     = 1;
+        vInfo.subresourceRange.layerCount     = 1;
+        VK_CHECK(vkCreateImageView(ctx.device(), &vInfo, nullptr, &viewportColorView_));
+    }
+
+    // --- Viewport depth image (depthFormat_, DEPTH_STENCIL_ATTACHMENT only) ---
+    // No SAMPLED_BIT — nothing samples viewport depth; the attachment is
+    // present only for depth-tested draws (debug lines, HUD) recording into this pass.
+    {
+        VkImageCreateInfo iInfo{};
+        iInfo.sType         = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
+        iInfo.imageType     = VK_IMAGE_TYPE_2D;
+        iInfo.format        = depthFormat_;
+        iInfo.extent        = {viewportExtent_.width, viewportExtent_.height, 1};
+        iInfo.mipLevels     = 1;
+        iInfo.arrayLayers   = 1;
+        iInfo.samples       = VK_SAMPLE_COUNT_1_BIT;
+        iInfo.tiling        = VK_IMAGE_TILING_OPTIMAL;
+        iInfo.usage         = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT;
+        iInfo.sharingMode   = VK_SHARING_MODE_EXCLUSIVE;
+        iInfo.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+
+        VmaAllocationCreateInfo aInfo{};
+        aInfo.usage = VMA_MEMORY_USAGE_AUTO;
+        VK_CHECK(vmaCreateImage(ctx.allocator(), &iInfo, &aInfo,
+                                &viewportDepth_, &viewportDepthAlloc_, nullptr));
+
+        VkImageViewCreateInfo vInfo{};
+        vInfo.sType                           = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+        vInfo.image                           = viewportDepth_;
+        vInfo.viewType                        = VK_IMAGE_VIEW_TYPE_2D;
+        vInfo.format                          = depthFormat_;
+        vInfo.subresourceRange.aspectMask     = VK_IMAGE_ASPECT_DEPTH_BIT;
+        vInfo.subresourceRange.levelCount     = 1;
+        vInfo.subresourceRange.layerCount     = 1;
+        VK_CHECK(vkCreateImageView(ctx.device(), &vInfo, nullptr, &viewportDepthView_));
+    }
+
+    // --- Viewport render pass: color + depth, format-compatible with swapchain ---
+    // Color finalLayout = SHADER_READ_ONLY_OPTIMAL so the swapchain blit pass
+    // (Task 2) can sample it as a texture. Depth is DONT_CARE on store since
+    // nothing samples viewport depth.
+    // Two subpass dependencies (entry + color exit), mirroring the scene pass's
+    // first two deps (the scene pass adds a third for sampleable depth — not
+    // needed here since viewport depth is not sampled).
+    {
+        VkAttachmentDescription attachments[2]{};
+        // Color attachment: swapchain color format, cleared + stored, transitions
+        // to SHADER_READ_ONLY_OPTIMAL so the blit pipeline can sample it.
+        attachments[0].format         = colorFormat_;
+        attachments[0].samples        = VK_SAMPLE_COUNT_1_BIT;
+        attachments[0].loadOp         = VK_ATTACHMENT_LOAD_OP_CLEAR;
+        attachments[0].storeOp        = VK_ATTACHMENT_STORE_OP_STORE;
+        attachments[0].stencilLoadOp  = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+        attachments[0].stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+        attachments[0].initialLayout  = VK_IMAGE_LAYOUT_UNDEFINED;
+        attachments[0].finalLayout    = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        // Depth attachment: swapchain depth format, cleared, not stored (not sampled).
+        attachments[1].format         = depthFormat_;
+        attachments[1].samples        = VK_SAMPLE_COUNT_1_BIT;
+        attachments[1].loadOp         = VK_ATTACHMENT_LOAD_OP_CLEAR;
+        attachments[1].storeOp        = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+        attachments[1].stencilLoadOp  = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+        attachments[1].stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+        attachments[1].initialLayout  = VK_IMAGE_LAYOUT_UNDEFINED;
+        attachments[1].finalLayout    = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+
+        VkAttachmentReference colorRef{0, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL};
+        VkAttachmentReference depthRef{1, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL};
+
+        VkSubpassDescription subpass{};
+        subpass.pipelineBindPoint       = VK_PIPELINE_BIND_POINT_GRAPHICS;
+        subpass.colorAttachmentCount    = 1;
+        subpass.pColorAttachments       = &colorRef;
+        subpass.pDepthStencilAttachment = &depthRef;
+
+        VkSubpassDependency deps[2]{};
+        // Entry: wait for prior frame's sampling to finish before writing color + depth.
+        deps[0].srcSubpass    = VK_SUBPASS_EXTERNAL;
+        deps[0].dstSubpass    = 0;
+        deps[0].srcStageMask  = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
+        deps[0].dstStageMask  = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT |
+                                VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT |
+                                VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT;
+        deps[0].srcAccessMask = VK_ACCESS_SHADER_READ_BIT;
+        deps[0].dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT |
+                                VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+        // Exit (color): blit/sample pass can read color after color writes complete.
+        deps[1].srcSubpass    = 0;
+        deps[1].dstSubpass    = VK_SUBPASS_EXTERNAL;
+        deps[1].srcStageMask  = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+        deps[1].dstStageMask  = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
+        deps[1].srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+        deps[1].dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+
+        VkRenderPassCreateInfo rpInfo{};
+        rpInfo.sType           = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO;
+        rpInfo.attachmentCount = 2;
+        rpInfo.pAttachments    = attachments;
+        rpInfo.subpassCount    = 1;
+        rpInfo.pSubpasses      = &subpass;
+        rpInfo.dependencyCount = 2;
+        rpInfo.pDependencies   = deps;
+        VK_CHECK(vkCreateRenderPass(ctx.device(), &rpInfo, nullptr, &viewportPass_));
+
+        // --- Viewport framebuffer ---
+        VkImageView views[2] = {viewportColorView_, viewportDepthView_};
+        VkFramebufferCreateInfo fbInfo{};
+        fbInfo.sType           = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO;
+        fbInfo.renderPass      = viewportPass_;
+        fbInfo.attachmentCount = 2;
+        fbInfo.pAttachments    = views;
+        fbInfo.width           = viewportExtent_.width;
+        fbInfo.height          = viewportExtent_.height;
+        fbInfo.layers          = 1;
+        VK_CHECK(vkCreateFramebuffer(ctx.device(), &fbInfo, nullptr, &viewportFb_));
+    }
+
+    return true;
+}
+
+void VkPostProcess::destroyViewportTarget(VkContext& ctx) {
+    if (viewportFb_)         { vkDestroyFramebuffer(ctx.device(), viewportFb_, nullptr); viewportFb_ = VK_NULL_HANDLE; }
+    if (viewportPass_)       { vkDestroyRenderPass(ctx.device(), viewportPass_, nullptr); viewportPass_ = VK_NULL_HANDLE; }
+    if (viewportColorView_)  { vkDestroyImageView(ctx.device(), viewportColorView_, nullptr); viewportColorView_ = VK_NULL_HANDLE; }
+    if (viewportDepthView_)  { vkDestroyImageView(ctx.device(), viewportDepthView_, nullptr); viewportDepthView_ = VK_NULL_HANDLE; }
+    if (viewportColor_)      { vmaDestroyImage(ctx.allocator(), viewportColor_, viewportColorAlloc_); viewportColor_ = VK_NULL_HANDLE; viewportColorAlloc_ = VK_NULL_HANDLE; }
+    if (viewportDepth_)      { vmaDestroyImage(ctx.allocator(), viewportDepth_, viewportDepthAlloc_); viewportDepth_ = VK_NULL_HANDLE; viewportDepthAlloc_ = VK_NULL_HANDLE; }
+}
+
+bool VkPostProcess::resizeViewport(VkContext& ctx, VkExtent2D extent) {
+    if (extent.width == 0 || extent.height == 0) return true;
+    if (extent.width == viewportExtent_.width &&
+        extent.height == viewportExtent_.height) return true;
+    vkDeviceWaitIdle(ctx.device());
+    destroyViewportTarget(ctx);
+    viewportExtent_ = extent;
+    return createViewportTarget(ctx);
 }
 
 bool VkPostProcess::createCopyPipeline(VkContext& ctx, VkRenderPass swapchainPass) {
