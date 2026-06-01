@@ -608,6 +608,63 @@ int main() {
         return scene.entities[sel].transform.position;
     };
 
+    // M42: draw an entity's collider as a green wireframe in Edit mode, so the
+    // user can see what they're authoring. Box = 12 edges; Sphere = 3 rings;
+    // Capsule = cylinder approximation (2 rings + 4 verticals). Uses the same
+    // drawLineOverlay path as the selection outline.
+    auto drawColliderWireframe = [&](const iron::SceneEntity& e) {
+        if (!e.collision) return;
+        const iron::CollisionShape& cs = *e.collision;
+        const iron::Vec3 c  = e.transform.position;
+        const iron::Vec3 col{0.2f, 1.0f, 0.3f};  // collider green
+        const iron::Quat q  = e.transform.rotation;
+        // Rotate a local offset into world space (collider ignores entity scale).
+        auto wp = [&](float x, float y, float z) {
+            const iron::Vec4 r = q.toMat4() * iron::Vec4{x, y, z, 1.0f};
+            return iron::Vec3{c.x + r.x, c.y + r.y, c.z + r.z};
+        };
+        auto ring = [&](int axis, float r, float h) {  // circle of radius r at offset h along `axis`
+            constexpr int N = 24;
+            iron::Vec3 prev{};
+            for (int i = 0; i <= N; ++i) {
+                const float a = (static_cast<float>(i) / N) * 2.0f * std::numbers::pi_v<float>;
+                const float u = r * std::cos(a), v = r * std::sin(a);
+                iron::Vec3 cur = (axis == 0) ? wp(h, u, v)
+                               : (axis == 1) ? wp(u, h, v)
+                                             : wp(u, v, h);
+                if (i > 0) renderer.drawLineOverlay(prev, cur, col);
+                prev = cur;
+            }
+        };
+        switch (cs.shape) {
+            case iron::ColliderShape::Box: {
+                const iron::Vec3 h = cs.halfExtents;
+                iron::Vec3 v[8];
+                for (int i = 0; i < 8; ++i)
+                    v[i] = wp((i & 1) ? h.x : -h.x, (i & 2) ? h.y : -h.y, (i & 4) ? h.z : -h.z);
+                const int edges[12][2] = {{0,1},{2,3},{4,5},{6,7},{0,2},{1,3},
+                                          {4,6},{5,7},{0,4},{1,5},{2,6},{3,7}};
+                for (auto& ed : edges) renderer.drawLineOverlay(v[ed[0]], v[ed[1]], col);
+                break;
+            }
+            case iron::ColliderShape::Sphere:
+                ring(0, cs.radius, 0.0f);
+                ring(1, cs.radius, 0.0f);
+                ring(2, cs.radius, 0.0f);
+                break;
+            case iron::ColliderShape::Capsule: {
+                const float hh = cs.halfHeight, r = cs.radius;
+                ring(1, r,  hh);   // top cap ring
+                ring(1, r, -hh);   // bottom cap ring
+                renderer.drawLineOverlay(wp( r, -hh, 0), wp( r, hh, 0), col);
+                renderer.drawLineOverlay(wp(-r, -hh, 0), wp(-r, hh, 0), col);
+                renderer.drawLineOverlay(wp(0, -hh,  r), wp(0, hh,  r), col);
+                renderer.drawLineOverlay(wp(0, -hh, -r), wp(0, hh, -r), col);
+                break;
+            }
+        }
+    };
+
     // Generate a scene-unique entity name from a base ("cube" -> "cube", "cube 2"...).
     auto uniqueName = [&](const std::string& base) -> std::string {
         auto taken = [&](const std::string& n) {
@@ -1073,6 +1130,12 @@ int main() {
                     renderer.drawLineOverlay(c[ed[0]], c[ed[1]], outline);
                 break;
             }
+        }
+        // M42: collider wireframes (green) in Edit mode, for every entity that
+        // has a CollisionShape. Hidden in Play mode (the moving meshes show the
+        // result). Drawn via the same drawLineOverlay path as the outline.
+        if (!editor.isPlaying()) {
+            for (const auto& e : scene.entities) drawColliderWireframe(e);
         }
         renderer.flushDebugLines(view, proj);
         // M40: gizmo + Iso orbit around the selected entity (or world origin
