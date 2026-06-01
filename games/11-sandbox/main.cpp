@@ -797,7 +797,7 @@ int main() {
         // else world origin). Reads from g_scrollAccum (filled by our GLFW
         // scroll callback above) so the value is always current regardless of
         // ImGui's frame timing. Consume + reset each frame.
-        if (g_scrollAccum != 0.0 && !imgui.wantsMouse()) {
+        if (g_scrollAccum != 0.0 && viewport.hovered) {
             const float wheel = static_cast<float>(g_scrollAccum);
             const iron::Vec3 zoomPivot =
                 (selectedIndex >= 0 && selectedIndex < static_cast<int>(scene.entities.size()))
@@ -821,7 +821,7 @@ int main() {
         // M40: middle-mouse-button drag → orbit camera around the same
         // pivot as wheel-zoom (selection or world origin). No cursor capture
         // — keep cursor visible while dragging.
-        if (input.mouseButtonDown(GLFW_MOUSE_BUTTON_MIDDLE) && !imgui.wantsMouse()) {
+        if (input.mouseButtonDown(GLFW_MOUSE_BUTTON_MIDDLE) && viewport.hovered) {
             const float mmdx = static_cast<float>(input.mouseDeltaX());
             const float mmdy = static_cast<float>(input.mouseDeltaY());
             if (mmdx != 0.0f || mmdy != 0.0f) {
@@ -836,9 +836,11 @@ int main() {
             }
         }
 
-        // Look + fly only while RIGHT mouse is held and ImGui isn't using it.
+        // Look + fly while RIGHT mouse is held and the viewport is hovered (to
+        // start) or focused (so an ongoing RMB-drag that wanders off the panel
+        // keeps controlling — cursor capture recenters it anyway).
         const bool look = input.mouseButtonDown(GLFW_MOUSE_BUTTON_RIGHT)
-                          && !imgui.wantsMouse();
+                          && (viewport.hovered || viewport.focused);
         app.window().setCursorCaptured(look);
 
         const float mdx = static_cast<float>(input.mouseDeltaX());
@@ -881,15 +883,19 @@ int main() {
                     wantDuplicateShortcut = true;
             }
 
-            const bool uiBusy = imgui.wantsMouse();
-            if (!uiBusy || gizmo.dragging()) {
+            // Compute viewport-local mouse from the position captured in setRender.
+            // 1-frame lag is fine and consistent with the existing immediate-mode timing.
+            iron::Vec2 vpLocal{};
+            const bool mouseInViewport =
+                viewport.mouseValid &&
+                iron::viewportLocalMouse(viewport.mousePx, viewport.rectMin, viewport.size, vpLocal);
+
+            if (viewport.hovered || gizmo.dragging()) {
                 const iron::Mat4 view = cam.viewMatrix();
                 const iron::Ray ray = iron::screenPointToRay(
                     view, proj,
-                    iron::Vec2{static_cast<float>(input.mouseX()),
-                               static_cast<float>(input.mouseY())},
-                    iron::Vec2{static_cast<float>(app.window().width()),
-                               static_cast<float>(app.window().height())},
+                    vpLocal,
+                    viewport.size,
                     cam.position);
 
                 const bool lmbPressed = input.mouseButtonPressed(GLFW_MOUSE_BUTTON_LEFT);
@@ -903,7 +909,7 @@ int main() {
                                             cam.fovDeg);
 
                 // A fresh click that didn't grab a handle re-selects (or clears).
-                if (lmbPressed && !consumed && !uiBusy) {
+                if (lmbPressed && !consumed && mouseInViewport) {
                     std::vector<iron::Aabb> worldAabbs(resolved.size());
                     for (std::size_t i = 0; i < resolved.size(); ++i) {
                         const iron::SceneEntity& e = scene.entities[resolved[i].entityIndex];
