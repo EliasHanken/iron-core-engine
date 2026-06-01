@@ -37,6 +37,8 @@ json entityToJson(const Reflection& r, const SceneEntity& e) {
     j["transform"] = componentToJson(r, e.transform);
     j["mesh"]      = componentToJson(r, e.mesh);
     j["material"]  = componentToJson(r, e.material);
+    if (e.collision) j["collision"] = componentToJson(r, *e.collision);
+    if (e.audio)     j["audio"]     = componentToJson(r, *e.audio);
     return j;
 }
 
@@ -46,6 +48,14 @@ SceneEntity entityFromJson(const Reflection& r, const json& j) {
     if (j.contains("transform")) componentFromJson(r, e.transform, j["transform"]);
     if (j.contains("mesh"))      componentFromJson(r, e.mesh,      j["mesh"]);
     if (j.contains("material"))  componentFromJson(r, e.material,  j["material"]);
+    if (j.contains("collision")) {
+        e.collision = CollisionShape{};
+        componentFromJson(r, *e.collision, j["collision"]);
+    }
+    if (j.contains("audio")) {
+        e.audio = AudioEmitter{};
+        componentFromJson(r, *e.audio, j["audio"]);
+    }
     return e;
 }
 
