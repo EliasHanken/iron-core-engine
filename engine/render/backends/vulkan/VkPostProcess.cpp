@@ -115,7 +115,7 @@ void main() {
 )";
 
 // kGlowCompositeFrag — adds a colored halo (blurred coverage minus solid
-// interior) over the scene. Runs inside the swapchain pass.
+// interior) over the scene. Runs inside the viewport pass (M43a).
 const char* kGlowCompositeFrag = R"(#version 450
 layout(location = 0) in vec2 vUV;
 layout(location = 0) out vec4 outColor;
@@ -169,11 +169,12 @@ void main() {
 bool VkPostProcess::init(VkContext& ctx, VkFormat colorFormat, VkFormat depthFormat,
                          VkExtent2D extent, VkSampler sharedSampler,
                          VkRenderPass swapchainPass) {
-    ctx_         = &ctx;
-    colorFormat_ = colorFormat;
-    depthFormat_ = depthFormat;
-    extent_      = extent;
-    sampler_     = sharedSampler;
+    ctx_             = &ctx;
+    colorFormat_     = colorFormat;
+    depthFormat_     = depthFormat;
+    extent_          = extent;
+    viewportExtent_  = extent;
+    sampler_         = sharedSampler;
 
     // Create a NEAREST sampler for integer textures (R8_UINT mask).
     // The shared sampler_ from VkTextureStore is LINEAR; integer formats
@@ -192,7 +193,9 @@ bool VkPostProcess::init(VkContext& ctx, VkFormat colorFormat, VkFormat depthFor
     }
 
     if (!createTargets(ctx))                       { destroy(ctx); return false; }
+    if (!createViewportTarget(ctx))                { destroy(ctx); return false; }
     if (!createCopyPipeline(ctx, swapchainPass))   { destroy(ctx); return false; }
+    if (!createBlitPipeline(ctx, swapchainPass))   { destroy(ctx); return false; }
     if (!createOutlinePipeline(ctx, swapchainPass)){ destroy(ctx); return false; }
     if (!createMaskPipeline(ctx))                  { destroy(ctx); return false; }
     if (!createGlowPipelines(ctx, swapchainPass))  { destroy(ctx); return false; }
@@ -233,6 +236,12 @@ void VkPostProcess::destroy(VkContext& ctx) {
     if (glowBlurHSetLayout_)  { vkDestroyDescriptorSetLayout(ctx.device(), glowBlurHSetLayout_, nullptr); glowBlurHSetLayout_ = VK_NULL_HANDLE; }
     glowBlurHDescSet_ = VK_NULL_HANDLE;
 
+    // Blit (viewport→swapchain) pipeline objects.
+    if (blitPipeline_)   { vkDestroyPipeline(ctx.device(), blitPipeline_, nullptr); blitPipeline_ = VK_NULL_HANDLE; }
+    if (blitPipeLayout_) { vkDestroyPipelineLayout(ctx.device(), blitPipeLayout_, nullptr); blitPipeLayout_ = VK_NULL_HANDLE; }
+    if (blitSetLayout_)  { vkDestroyDescriptorSetLayout(ctx.device(), blitSetLayout_, nullptr); blitSetLayout_ = VK_NULL_HANDLE; }
+    blitDescSet_ = VK_NULL_HANDLE;  // freed with descPool_ below
+
     // Copy (composite) pipeline objects.
     if (copyPipeline_)   { vkDestroyPipeline(ctx.device(), copyPipeline_, nullptr); copyPipeline_ = VK_NULL_HANDLE; }
     if (copyPipeLayout_) { vkDestroyPipelineLayout(ctx.device(), copyPipeLayout_, nullptr); copyPipeLayout_ = VK_NULL_HANDLE; }
@@ -244,6 +253,7 @@ void VkPostProcess::destroy(VkContext& ctx) {
     if (maskSampler_)    { vkDestroySampler(ctx.device(), maskSampler_, nullptr); maskSampler_ = VK_NULL_HANDLE; }
 
     // Render target objects (including glow scratch targets + glowPass_/glowFb_).
+    destroyViewportTarget(ctx);
     destroyTargets(ctx);
 }
 
@@ -382,6 +392,8 @@ bool VkPostProcess::resize(VkContext& ctx, VkExtent2D extent) {
         vkUpdateDescriptorSets(ctx.device(), 4, writes, 0, nullptr);
     }
 
+    if (!resizeViewport(ctx, extent)) return false;
+
     return true;
 }
 
@@ -419,10 +431,54 @@ void VkPostProcess::endScenePass(VkCommandBuffer cb) const {
     vkCmdEndRenderPass(cb);
 }
 
+void VkPostProcess::beginViewportPass(VkCommandBuffer cb, const float clearColor[4]) const {
+    VkClearValue clears[2]{};
+    clears[0].color.float32[0] = clearColor[0];
+    clears[0].color.float32[1] = clearColor[1];
+    clears[0].color.float32[2] = clearColor[2];
+    clears[0].color.float32[3] = clearColor[3];
+    clears[1].depthStencil = {1.0f, 0};
+
+    VkRenderPassBeginInfo rpBegin{};
+    rpBegin.sType             = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
+    rpBegin.renderPass        = viewportPass_;
+    rpBegin.framebuffer       = viewportFb_;
+    rpBegin.renderArea.offset = {0, 0};
+    rpBegin.renderArea.extent = viewportExtent_;
+    rpBegin.clearValueCount   = 2;
+    rpBegin.pClearValues      = clears;
+    vkCmdBeginRenderPass(cb, &rpBegin, VK_SUBPASS_CONTENTS_INLINE);
+
+    // Plain positive-height viewport covering the full viewport extent.
+    // Composite draws are UV-space full-screen quads; debug/HUD passes
+    // set their own viewport after this.
+    VkViewport vp{};
+    vp.x        = 0;
+    vp.y        = 0;
+    vp.width    = static_cast<float>(viewportExtent_.width);
+    vp.height   = static_cast<float>(viewportExtent_.height);
+    vp.minDepth = 0.0f;
+    vp.maxDepth = 1.0f;
+    vkCmdSetViewport(cb, 0, 1, &vp);
+    VkRect2D scissor{{0, 0}, viewportExtent_};
+    vkCmdSetScissor(cb, 0, 1, &scissor);
+}
+
+void VkPostProcess::endViewportPass(VkCommandBuffer cb) const {
+    vkCmdEndRenderPass(cb);
+}
+
 void VkPostProcess::recordComposite(VkCommandBuffer cb) const {
     vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, copyPipeline_);
     vkCmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_GRAPHICS,
                             copyPipeLayout_, 0, 1, &copyDescSet_, 0, nullptr);
+    vkCmdDraw(cb, 3, 1, 0, 0);
+}
+
+void VkPostProcess::blitToSwapchain(VkCommandBuffer cb) const {
+    vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, blitPipeline_);
+    vkCmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                            blitPipeLayout_, 0, 1, &blitDescSet_, 0, nullptr);
     vkCmdDraw(cb, 3, 1, 0, 0);
 }
 
@@ -910,6 +966,193 @@ void VkPostProcess::destroyTargets(VkContext& ctx) {
     if (sceneDepth_)      { vmaDestroyImage(ctx.allocator(), sceneDepth_, sceneDepthAlloc_); sceneDepth_ = VK_NULL_HANDLE; sceneDepthAlloc_ = VK_NULL_HANDLE; }
 }
 
+bool VkPostProcess::createViewportTarget(VkContext& ctx) {
+    // --- Viewport color image (colorFormat_, COLOR_ATTACHMENT | SAMPLED) ---
+    // Uses the same format as the swapchain color so pipelines built against
+    // the swapchain render pass are format-compatible with viewportPass_.
+    {
+        VkImageCreateInfo iInfo{};
+        iInfo.sType         = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
+        iInfo.imageType     = VK_IMAGE_TYPE_2D;
+        iInfo.format        = colorFormat_;
+        iInfo.extent        = {viewportExtent_.width, viewportExtent_.height, 1};
+        iInfo.mipLevels     = 1;
+        iInfo.arrayLayers   = 1;
+        iInfo.samples       = VK_SAMPLE_COUNT_1_BIT;
+        iInfo.tiling        = VK_IMAGE_TILING_OPTIMAL;
+        iInfo.usage         = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT |
+                              VK_IMAGE_USAGE_SAMPLED_BIT;
+        iInfo.sharingMode   = VK_SHARING_MODE_EXCLUSIVE;
+        iInfo.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+
+        VmaAllocationCreateInfo aInfo{};
+        aInfo.usage = VMA_MEMORY_USAGE_AUTO;
+        VK_CHECK(vmaCreateImage(ctx.allocator(), &iInfo, &aInfo,
+                                &viewportColor_, &viewportColorAlloc_, nullptr));
+
+        VkImageViewCreateInfo vInfo{};
+        vInfo.sType                           = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+        vInfo.image                           = viewportColor_;
+        vInfo.viewType                        = VK_IMAGE_VIEW_TYPE_2D;
+        vInfo.format                          = colorFormat_;
+        vInfo.subresourceRange.aspectMask     = VK_IMAGE_ASPECT_COLOR_BIT;
+        vInfo.subresourceRange.levelCount     = 1;
+        vInfo.subresourceRange.layerCount     = 1;
+        VK_CHECK(vkCreateImageView(ctx.device(), &vInfo, nullptr, &viewportColorView_));
+    }
+
+    // --- Viewport depth image (depthFormat_, DEPTH_STENCIL_ATTACHMENT only) ---
+    // No SAMPLED_BIT — nothing samples viewport depth; the attachment is
+    // present only for depth-tested draws (debug lines, HUD) recording into this pass.
+    {
+        VkImageCreateInfo iInfo{};
+        iInfo.sType         = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
+        iInfo.imageType     = VK_IMAGE_TYPE_2D;
+        iInfo.format        = depthFormat_;
+        iInfo.extent        = {viewportExtent_.width, viewportExtent_.height, 1};
+        iInfo.mipLevels     = 1;
+        iInfo.arrayLayers   = 1;
+        iInfo.samples       = VK_SAMPLE_COUNT_1_BIT;
+        iInfo.tiling        = VK_IMAGE_TILING_OPTIMAL;
+        iInfo.usage         = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT;
+        iInfo.sharingMode   = VK_SHARING_MODE_EXCLUSIVE;
+        iInfo.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+
+        VmaAllocationCreateInfo aInfo{};
+        aInfo.usage = VMA_MEMORY_USAGE_AUTO;
+        VK_CHECK(vmaCreateImage(ctx.allocator(), &iInfo, &aInfo,
+                                &viewportDepth_, &viewportDepthAlloc_, nullptr));
+
+        VkImageViewCreateInfo vInfo{};
+        vInfo.sType                           = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+        vInfo.image                           = viewportDepth_;
+        vInfo.viewType                        = VK_IMAGE_VIEW_TYPE_2D;
+        vInfo.format                          = depthFormat_;
+        vInfo.subresourceRange.aspectMask     = VK_IMAGE_ASPECT_DEPTH_BIT;
+        vInfo.subresourceRange.levelCount     = 1;
+        vInfo.subresourceRange.layerCount     = 1;
+        VK_CHECK(vkCreateImageView(ctx.device(), &vInfo, nullptr, &viewportDepthView_));
+    }
+
+    // --- Viewport render pass: color + depth, format-compatible with swapchain ---
+    // Color finalLayout = SHADER_READ_ONLY_OPTIMAL so the swapchain blit pass
+    // (Task 2) can sample it as a texture. Depth is DONT_CARE on store since
+    // nothing samples viewport depth.
+    // Two subpass dependencies (entry + color exit), mirroring the scene pass's
+    // first two deps (the scene pass adds a third for sampleable depth — not
+    // needed here since viewport depth is not sampled).
+    {
+        VkAttachmentDescription attachments[2]{};
+        // Color attachment: swapchain color format, cleared + stored, transitions
+        // to SHADER_READ_ONLY_OPTIMAL so the blit pipeline can sample it.
+        attachments[0].format         = colorFormat_;
+        attachments[0].samples        = VK_SAMPLE_COUNT_1_BIT;
+        attachments[0].loadOp         = VK_ATTACHMENT_LOAD_OP_CLEAR;
+        attachments[0].storeOp        = VK_ATTACHMENT_STORE_OP_STORE;
+        attachments[0].stencilLoadOp  = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+        attachments[0].stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+        attachments[0].initialLayout  = VK_IMAGE_LAYOUT_UNDEFINED;
+        attachments[0].finalLayout    = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        // Depth attachment: swapchain depth format, cleared, not stored (not sampled).
+        attachments[1].format         = depthFormat_;
+        attachments[1].samples        = VK_SAMPLE_COUNT_1_BIT;
+        attachments[1].loadOp         = VK_ATTACHMENT_LOAD_OP_CLEAR;
+        attachments[1].storeOp        = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+        attachments[1].stencilLoadOp  = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+        attachments[1].stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+        attachments[1].initialLayout  = VK_IMAGE_LAYOUT_UNDEFINED;
+        attachments[1].finalLayout    = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+
+        VkAttachmentReference colorRef{0, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL};
+        VkAttachmentReference depthRef{1, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL};
+
+        VkSubpassDescription subpass{};
+        subpass.pipelineBindPoint       = VK_PIPELINE_BIND_POINT_GRAPHICS;
+        subpass.colorAttachmentCount    = 1;
+        subpass.pColorAttachments       = &colorRef;
+        subpass.pDepthStencilAttachment = &depthRef;
+
+        VkSubpassDependency deps[2]{};
+        // Entry: wait for prior frame's sampling to finish before writing color + depth.
+        deps[0].srcSubpass    = VK_SUBPASS_EXTERNAL;
+        deps[0].dstSubpass    = 0;
+        deps[0].srcStageMask  = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
+        deps[0].dstStageMask  = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT |
+                                VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT |
+                                VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT;
+        deps[0].srcAccessMask = VK_ACCESS_SHADER_READ_BIT;
+        deps[0].dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT |
+                                VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+        // Exit (color): blit/sample pass can read color after color writes complete.
+        deps[1].srcSubpass    = 0;
+        deps[1].dstSubpass    = VK_SUBPASS_EXTERNAL;
+        deps[1].srcStageMask  = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+        deps[1].dstStageMask  = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
+        deps[1].srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+        deps[1].dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+
+        VkRenderPassCreateInfo rpInfo{};
+        rpInfo.sType           = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO;
+        rpInfo.attachmentCount = 2;
+        rpInfo.pAttachments    = attachments;
+        rpInfo.subpassCount    = 1;
+        rpInfo.pSubpasses      = &subpass;
+        rpInfo.dependencyCount = 2;
+        rpInfo.pDependencies   = deps;
+        VK_CHECK(vkCreateRenderPass(ctx.device(), &rpInfo, nullptr, &viewportPass_));
+
+        // --- Viewport framebuffer ---
+        VkImageView views[2] = {viewportColorView_, viewportDepthView_};
+        VkFramebufferCreateInfo fbInfo{};
+        fbInfo.sType           = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO;
+        fbInfo.renderPass      = viewportPass_;
+        fbInfo.attachmentCount = 2;
+        fbInfo.pAttachments    = views;
+        fbInfo.width           = viewportExtent_.width;
+        fbInfo.height          = viewportExtent_.height;
+        fbInfo.layers          = 1;
+        VK_CHECK(vkCreateFramebuffer(ctx.device(), &fbInfo, nullptr, &viewportFb_));
+    }
+
+    return true;
+}
+
+void VkPostProcess::destroyViewportTarget(VkContext& ctx) {
+    if (viewportFb_)         { vkDestroyFramebuffer(ctx.device(), viewportFb_, nullptr); viewportFb_ = VK_NULL_HANDLE; }
+    if (viewportPass_)       { vkDestroyRenderPass(ctx.device(), viewportPass_, nullptr); viewportPass_ = VK_NULL_HANDLE; }
+    if (viewportColorView_)  { vkDestroyImageView(ctx.device(), viewportColorView_, nullptr); viewportColorView_ = VK_NULL_HANDLE; }
+    if (viewportDepthView_)  { vkDestroyImageView(ctx.device(), viewportDepthView_, nullptr); viewportDepthView_ = VK_NULL_HANDLE; }
+    if (viewportColor_)      { vmaDestroyImage(ctx.allocator(), viewportColor_, viewportColorAlloc_); viewportColor_ = VK_NULL_HANDLE; viewportColorAlloc_ = VK_NULL_HANDLE; }
+    if (viewportDepth_)      { vmaDestroyImage(ctx.allocator(), viewportDepth_, viewportDepthAlloc_); viewportDepth_ = VK_NULL_HANDLE; viewportDepthAlloc_ = VK_NULL_HANDLE; }
+}
+
+bool VkPostProcess::resizeViewport(VkContext& ctx, VkExtent2D extent) {
+    if (extent.width == 0 || extent.height == 0) return true;
+    if (extent.width == viewportExtent_.width &&
+        extent.height == viewportExtent_.height) return true;
+    vkDeviceWaitIdle(ctx.device());
+    destroyViewportTarget(ctx);
+    viewportExtent_ = extent;
+    if (!createViewportTarget(ctx)) return false;
+
+    // Re-point the blit descriptor at the new viewport image.
+    if (blitDescSet_ != VK_NULL_HANDLE) {
+        VkDescriptorImageInfo imgInfo{};
+        imgInfo.sampler     = sampler_;
+        imgInfo.imageView   = viewportColorView_;
+        imgInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        VkWriteDescriptorSet write{};
+        write.sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        write.dstSet          = blitDescSet_;
+        write.dstBinding      = 0;
+        write.descriptorType  = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        write.descriptorCount = 1;
+        write.pImageInfo      = &imgInfo;
+        vkUpdateDescriptorSets(ctx.device(), 1, &write, 0, nullptr);
+    }
+    return true;
+}
+
 bool VkPostProcess::createCopyPipeline(VkContext& ctx, VkRenderPass swapchainPass) {
     // Compile shaders.
     auto vspv = compileGlsl(VK_SHADER_STAGE_VERTEX_BIT,   kFullscreenVert);
@@ -1029,21 +1272,22 @@ bool VkPostProcess::createCopyPipeline(VkContext& ctx, VkRenderPass swapchainPas
     vkDestroyShaderModule(ctx.device(), fsm, nullptr);
     VK_CHECK(copyPipeResult);
 
-    // Descriptor pool: 6 sets total, 12 combined-image-sampler descriptors.
+    // Descriptor pool: 7 sets total, 13 combined-image-sampler descriptors.
     //   set 0: copy         — 1 sampler  (scene color)
-    //   set 1: outline      — 2 samplers (scene color + mask)
-    //   set 2: glowBlurH    — 1 sampler  (mask)
-    //   set 3: glowBlurV    — 1 sampler  (scratch[0])
-    //   set 4: glowComposite — 3 samplers (scene color + scratch[1] + mask)
-    //   set 5: xray         — 4 samplers (scene color + mask id + mask depth + scene depth)
-    // Total: 6 sets, 12 combined-image-samplers.
+    //   set 1: blit         — 1 sampler  (viewport color)
+    //   set 2: outline      — 2 samplers (scene color + mask)
+    //   set 3: glowBlurH    — 1 sampler  (mask)
+    //   set 4: glowBlurV    — 1 sampler  (scratch[0])
+    //   set 5: glowComposite — 3 samplers (scene color + scratch[1] + mask)
+    //   set 6: xray         — 4 samplers (scene color + mask id + mask depth + scene depth)
+    // Total: 7 sets, 13 combined-image-samplers.
     VkDescriptorPoolSize poolSize{};
     poolSize.type            = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-    poolSize.descriptorCount = 12;
+    poolSize.descriptorCount = 13;
 
     VkDescriptorPoolCreateInfo dpInfo{};
     dpInfo.sType         = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
-    dpInfo.maxSets       = 6;
+    dpInfo.maxSets       = 7;
     dpInfo.poolSizeCount = 1;
     dpInfo.pPoolSizes    = &poolSize;
     VK_CHECK(vkCreateDescriptorPool(ctx.device(), &dpInfo, nullptr, &descPool_));
@@ -1064,6 +1308,150 @@ bool VkPostProcess::createCopyPipeline(VkContext& ctx, VkRenderPass swapchainPas
     VkWriteDescriptorSet write{};
     write.sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
     write.dstSet          = copyDescSet_;
+    write.dstBinding      = 0;
+    write.descriptorType  = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    write.descriptorCount = 1;
+    write.pImageInfo      = &imgInfo;
+    vkUpdateDescriptorSets(ctx.device(), 1, &write, 0, nullptr);
+
+    return true;
+}
+
+bool VkPostProcess::createBlitPipeline(VkContext& ctx, VkRenderPass swapchainPass) {
+    // Compile shaders (same kFullscreenVert + kCopyFrag as the copy pipeline).
+    auto vspv = compileGlsl(VK_SHADER_STAGE_VERTEX_BIT,   kFullscreenVert);
+    auto fspv = compileGlsl(VK_SHADER_STAGE_FRAGMENT_BIT, kCopyFrag);
+    if (vspv.empty() || fspv.empty()) {
+        Log::error("VkPostProcess: blit shader compile failed");
+        return false;
+    }
+
+    VkShaderModule vsm = VK_NULL_HANDLE, fsm = VK_NULL_HANDLE;
+    VkShaderModuleCreateInfo smInfo{};
+    smInfo.sType    = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
+    smInfo.codeSize = vspv.size() * sizeof(std::uint32_t);
+    smInfo.pCode    = vspv.data();
+    VK_CHECK(vkCreateShaderModule(ctx.device(), &smInfo, nullptr, &vsm));
+    smInfo.codeSize = fspv.size() * sizeof(std::uint32_t);
+    smInfo.pCode    = fspv.data();
+    if (vkCreateShaderModule(ctx.device(), &smInfo, nullptr, &fsm) != VK_SUCCESS) {
+        vkDestroyShaderModule(ctx.device(), vsm, nullptr);
+        Log::error("VkPostProcess: blit fragment shader module creation failed");
+        return false;
+    }
+
+    // Descriptor set layout: binding 0 = combined image sampler (FS).
+    VkDescriptorSetLayoutBinding binding{};
+    binding.binding         = 0;
+    binding.descriptorType  = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    binding.descriptorCount = 1;
+    binding.stageFlags      = VK_SHADER_STAGE_FRAGMENT_BIT;
+
+    VkDescriptorSetLayoutCreateInfo dslInfo{};
+    dslInfo.sType        = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+    dslInfo.bindingCount = 1;
+    dslInfo.pBindings    = &binding;
+    VK_CHECK(vkCreateDescriptorSetLayout(ctx.device(), &dslInfo, nullptr, &blitSetLayout_));
+
+    VkPipelineLayoutCreateInfo plInfo{};
+    plInfo.sType          = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+    plInfo.setLayoutCount = 1;
+    plInfo.pSetLayouts    = &blitSetLayout_;
+    VK_CHECK(vkCreatePipelineLayout(ctx.device(), &plInfo, nullptr, &blitPipeLayout_));
+
+    // Pipeline — full-screen triangle, no vertex input, depth test off.
+    VkPipelineShaderStageCreateInfo stages[2]{};
+    stages[0].sType  = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+    stages[0].stage  = VK_SHADER_STAGE_VERTEX_BIT;
+    stages[0].module = vsm;
+    stages[0].pName  = "main";
+    stages[1].sType  = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+    stages[1].stage  = VK_SHADER_STAGE_FRAGMENT_BIT;
+    stages[1].module = fsm;
+    stages[1].pName  = "main";
+
+    VkPipelineVertexInputStateCreateInfo vi{};
+    vi.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
+    // No vertex bindings or attributes — positions come from gl_VertexIndex.
+
+    VkPipelineInputAssemblyStateCreateInfo ia{};
+    ia.sType    = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO;
+    ia.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+
+    VkPipelineViewportStateCreateInfo vp{};
+    vp.sType         = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO;
+    vp.viewportCount = 1;
+    vp.scissorCount  = 1;
+
+    VkPipelineRasterizationStateCreateInfo rs{};
+    rs.sType       = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO;
+    rs.polygonMode = VK_POLYGON_MODE_FILL;
+    rs.cullMode    = VK_CULL_MODE_NONE;
+    rs.frontFace   = VK_FRONT_FACE_COUNTER_CLOCKWISE;
+    rs.lineWidth   = 1.0f;
+
+    VkPipelineMultisampleStateCreateInfo ms{};
+    ms.sType                = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO;
+    ms.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
+
+    VkPipelineDepthStencilStateCreateInfo ds{};
+    ds.sType            = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO;
+    ds.depthTestEnable  = VK_FALSE;
+    ds.depthWriteEnable = VK_FALSE;
+
+    VkPipelineColorBlendAttachmentState att{};
+    att.colorWriteMask = 0xF;
+    att.blendEnable    = VK_FALSE;
+
+    VkPipelineColorBlendStateCreateInfo cb{};
+    cb.sType           = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO;
+    cb.attachmentCount = 1;
+    cb.pAttachments    = &att;
+
+    VkDynamicState dynStates[] = {VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR};
+    VkPipelineDynamicStateCreateInfo dyn{};
+    dyn.sType             = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO;
+    dyn.dynamicStateCount = 2;
+    dyn.pDynamicStates    = dynStates;
+
+    VkGraphicsPipelineCreateInfo pInfo{};
+    pInfo.sType               = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
+    pInfo.stageCount          = 2;
+    pInfo.pStages             = stages;
+    pInfo.pVertexInputState   = &vi;
+    pInfo.pInputAssemblyState = &ia;
+    pInfo.pViewportState      = &vp;
+    pInfo.pRasterizationState = &rs;
+    pInfo.pMultisampleState   = &ms;
+    pInfo.pDepthStencilState  = &ds;
+    pInfo.pColorBlendState    = &cb;
+    pInfo.pDynamicState       = &dyn;
+    pInfo.layout              = blitPipeLayout_;
+    pInfo.renderPass          = swapchainPass;
+    pInfo.subpass             = 0;
+    // Capture result so shader modules are destroyed even if pipeline creation fails.
+    VkResult blitPipeResult = vkCreateGraphicsPipelines(ctx.device(), VK_NULL_HANDLE, 1,
+                                                        &pInfo, nullptr, &blitPipeline_);
+    vkDestroyShaderModule(ctx.device(), vsm, nullptr);
+    vkDestroyShaderModule(ctx.device(), fsm, nullptr);
+    VK_CHECK(blitPipeResult);
+
+    // Allocate and write the blit descriptor set (from the shared descPool_).
+    VkDescriptorSetAllocateInfo dsAlloc{};
+    dsAlloc.sType              = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+    dsAlloc.descriptorPool     = descPool_;
+    dsAlloc.descriptorSetCount = 1;
+    dsAlloc.pSetLayouts        = &blitSetLayout_;
+    VK_CHECK(vkAllocateDescriptorSets(ctx.device(), &dsAlloc, &blitDescSet_));
+
+    VkDescriptorImageInfo imgInfo{};
+    imgInfo.sampler     = sampler_;
+    imgInfo.imageView   = viewportColorView_;
+    imgInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+
+    VkWriteDescriptorSet write{};
+    write.sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    write.dstSet          = blitDescSet_;
     write.dstBinding      = 0;
     write.descriptorType  = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
     write.descriptorCount = 1;
@@ -1603,7 +1991,8 @@ bool VkPostProcess::createGlowPipelines(VkContext& ctx, VkRenderPass swapchainPa
     }
 
     // -----------------------------------------------------------------
-    // GlowComposite pipeline: reads scene + scratch[1] + mask; writes swapchain.
+    // GlowComposite pipeline: reads scene + scratch[1] + mask; writes viewport pass
+    // (M43a). Built against swapchainPass for render-pass compatibility.
     // Descriptor set layout: binding 0 = sampler2D uScene,
     //                        binding 1 = sampler2D uBlur,
     //                        binding 2 = usampler2D uMask.
@@ -1655,10 +2044,10 @@ bool VkPostProcess::createGlowPipelines(VkContext& ctx, VkRenderPass swapchainPa
         pInfo.pRasterizationState = &rs;
         pInfo.pMultisampleState   = &ms;
         pInfo.pDepthStencilState  = &ds;
-        pInfo.pColorBlendState    = &blend;  // 4-channel RGBA for swapchain
+        pInfo.pColorBlendState    = &blend;  // 4-channel RGBA for swapchain-compatible format
         pInfo.pDynamicState       = &dyn;
         pInfo.layout              = glowCompositePipeLayout_;
-        pInfo.renderPass          = swapchainPass;  // writes to swapchain
+        pInfo.renderPass          = swapchainPass;  // built against swapchain pass; records into compatible viewport pass (M43a)
         pInfo.subpass             = 0;
         VkResult r = vkCreateGraphicsPipelines(ctx.device(), VK_NULL_HANDLE, 1, &pInfo, nullptr, &glowCompositePipeline_);
         vkDestroyShaderModule(ctx.device(), vsm, nullptr);
@@ -1781,8 +2170,8 @@ void VkPostProcess::runChain(VkCommandBuffer cb,
 
             case PostPass::GlowComposite: {
                 // GlowBlurH and GlowBlurV ran in runChainOffscreenPasses (before
-                // the swapchain pass). Here we composite the blurred coverage over
-                // the scene, writing to the swapchain (which the caller has begun).
+                // beginViewportPass). Here we composite the blurred coverage over
+                // the scene, writing into the viewport pass (which the caller has begun).
                 const EffectStyle* gs = nullptr;
                 for (int id = 1; id < EffectTable::kMaxIds; ++id) {
                     if (effects.style(static_cast<uint8_t>(id)).kind == EffectKind::GlowOutline) {
@@ -1815,7 +2204,7 @@ void VkPostProcess::runChain(VkCommandBuffer cb,
             }
 
             case PostPass::XRay: {
-                // V1 note: each in-swapchain pass independently samples sceneColor
+                // V1 note: each in-viewport-pass draw independently samples sceneColor
                 // and writes the full screen. If multiple effect kinds were active,
                 // later passes would overwrite earlier ones. In practice, a single
                 // effect kind is active per frame (one selected object, one kind).
@@ -1957,7 +2346,7 @@ void VkPostProcess::runChainOffscreenPasses(VkCommandBuffer cb,
             }
 
             // All other passes (Copy, Outline, GlowComposite, XRay) run in runChain
-            // inside the swapchain pass — nothing to do here.
+            // inside the viewport pass — nothing to do here.
             default:
                 break;
         }
@@ -2088,7 +2477,7 @@ bool VkPostProcess::createXRayPipeline(VkContext& ctx, VkRenderPass swapchainPas
     pInfo.pColorBlendState    = &cb;
     pInfo.pDynamicState       = &dyn;
     pInfo.layout              = xrayPipeLayout_;
-    pInfo.renderPass          = swapchainPass;  // writes to swapchain like Outline
+    pInfo.renderPass          = swapchainPass;  // built against swapchain pass; records into compatible viewport pass (M43a)
     pInfo.subpass             = 0;
     // Capture result so shader modules are destroyed even if pipeline creation fails.
     VkResult xrayPipeResult = vkCreateGraphicsPipelines(ctx.device(), VK_NULL_HANDLE, 1,

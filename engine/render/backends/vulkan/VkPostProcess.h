@@ -45,9 +45,24 @@ public:
     void beginScenePass(VkCommandBuffer cb, const float clearColor[4]) const;
     void endScenePass(VkCommandBuffer cb) const;
     void recordComposite(VkCommandBuffer cb) const;
+    // Full-screen blit of viewportColor into the (already-begun) swapchain pass.
+    void blitToSwapchain(VkCommandBuffer cb) const;
 
-    // Run the post-process chain for this frame into the (already-begun) swapchain
-    // pass. `passes` from planPostChain(); `effects` supplies per-id styles.
+    VkImageView   viewportColorView() const { return viewportColorView_; }
+    VkSampler     viewportSampler()   const { return sampler_; }
+    VkExtent2D    viewportExtent()     const { return viewportExtent_; }
+
+    // Begin/end the offscreen viewport pass (color cleared to clearColor,
+    // depth cleared to 1.0). Composite + debug-lines + HUD record between these.
+    void beginViewportPass(VkCommandBuffer cb, const float clearColor[4]) const;
+    void endViewportPass(VkCommandBuffer cb) const;
+
+    // Resize ONLY the viewport target (scene/mask/glow targets unchanged).
+    // No-op on unchanged/zero extent. Calls vkDeviceWaitIdle internally.
+    bool resizeViewport(VkContext& ctx, VkExtent2D extent);
+
+    // Run the post-process chain for this frame into the (already-begun) viewport
+    // pass (M43a). `passes` from planPostChain(); `effects` supplies per-id styles.
     void runChain(VkCommandBuffer cb,
                   const std::vector<PostPass>& passes,
                   const EffectTable& effects,
@@ -109,9 +124,9 @@ public:
     };
 
     // Run the offscreen pre-passes (GlowBlurH, GlowBlurV) that must execute
-    // OUTSIDE the swapchain render pass. Called by VulkanRenderer::endFrame
-    // BEFORE vkCmdBeginRenderPass(swapchain). For Copy/Outline/XRay this is
-    // a no-op; for GlowOutline it runs the two blur passes into glowFb_[0/1].
+    // OUTSIDE any render pass. Called by VulkanRenderer::endFrame
+    // BEFORE beginViewportPass. For Copy/Outline/XRay this is a no-op;
+    // for GlowOutline it runs the two blur passes into glowFb_[0/1].
     void runChainOffscreenPasses(VkCommandBuffer cb,
                                  const std::vector<PostPass>& passes,
                                  const EffectTable& effects,
@@ -124,6 +139,20 @@ private:
     VkExtent2D extent_{};
     VkFormat   colorFormat_ = VK_FORMAT_UNDEFINED;
     VkFormat   depthFormat_ = VK_FORMAT_UNDEFINED;
+
+    // --- M43a: final composited "viewport" target (color + depth). Sized
+    // independently of the swapchain (defaults to swapchain extent). The
+    // composite + debug-line + HUD overlays render here; the swapchain pass
+    // then blits this image (and, later, ImGui samples it directly). ---
+    VkExtent2D    viewportExtent_{};
+    VkImage       viewportColor_      = VK_NULL_HANDLE;
+    VmaAllocation viewportColorAlloc_ = VK_NULL_HANDLE;
+    VkImageView   viewportColorView_  = VK_NULL_HANDLE;
+    VkImage       viewportDepth_      = VK_NULL_HANDLE;
+    VmaAllocation viewportDepthAlloc_ = VK_NULL_HANDLE;
+    VkImageView   viewportDepthView_  = VK_NULL_HANDLE;
+    VkRenderPass  viewportPass_       = VK_NULL_HANDLE;
+    VkFramebuffer viewportFb_         = VK_NULL_HANDLE;
 
     // --- Scene offscreen target ---
     VkImage       sceneColor_      = VK_NULL_HANDLE;
@@ -151,6 +180,13 @@ private:
     ::VkPipeline          copyPipeline_   = VK_NULL_HANDLE;
     VkDescriptorPool      descPool_       = VK_NULL_HANDLE;
     VkDescriptorSet       copyDescSet_    = VK_NULL_HANDLE;
+
+    // --- M43a: viewport→swapchain blit (own copy pipeline + descriptor set,
+    // built against the swapchain pass, sampling viewportColorView_). ---
+    VkDescriptorSetLayout blitSetLayout_  = VK_NULL_HANDLE;
+    VkPipelineLayout      blitPipeLayout_ = VK_NULL_HANDLE;
+    ::VkPipeline          blitPipeline_   = VK_NULL_HANDLE;
+    VkDescriptorSet       blitDescSet_    = VK_NULL_HANDLE;
 
     // --- Outline pipeline ---
     VkDescriptorSetLayout outlineSetLayout_  = VK_NULL_HANDLE;
@@ -196,7 +232,10 @@ private:
 
     bool createTargets(VkContext& ctx);
     void destroyTargets(VkContext& ctx);
+    bool createViewportTarget(VkContext& ctx);
+    void destroyViewportTarget(VkContext& ctx);
     bool createCopyPipeline(VkContext& ctx, VkRenderPass swapchainPass);
+    bool createBlitPipeline(VkContext& ctx, VkRenderPass swapchainPass);
     bool createOutlinePipeline(VkContext& ctx, VkRenderPass swapchainPass);
     bool createMaskPipeline(VkContext& ctx);
     bool createGlowPipelines(VkContext& ctx, VkRenderPass swapchainPass);
