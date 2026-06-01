@@ -44,6 +44,7 @@ bool ImGuiLayer::init(Window& window, Renderer& renderer) {
 
     IMGUI_CHECKVERSION();
     ImGui::CreateContext();
+    ImGui::GetIO().ConfigFlags |= ImGuiConfigFlags_DockingEnable;
     ImGui::StyleColorsDark();
 
     // install_callbacks=true is safe: iron::Input is poll-based (it never
