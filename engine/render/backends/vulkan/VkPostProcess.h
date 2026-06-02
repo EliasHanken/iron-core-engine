@@ -103,7 +103,7 @@ public:
         float color[4];   // rgb outline color, a unused
         float texel[2];   // 1/width, 1/height (of the mask/screen)
         float width;      // outline thickness in pixels
-        float _pad;
+        float exposure;   // M44: tonemap exposure (was _pad)
     };
 
     // Push constants for the glow blur pipelines (H and V — direction is
@@ -118,14 +118,16 @@ public:
     struct GlowCompositePush {
         float color[4];      // rgb halo color + padding
         float intensity;     // halo strength (style.intensity)
-        float _pad[3];
+        float exposure;      // M44: tonemap exposure (was _pad[0])
+        float _pad[2];
     };
 
     // Push constants for the x-ray pipeline.
     struct XRayPush {
         float color[4];      // rgb tint color + padding
         float intensity;     // tint strength
-        float _pad[3];
+        float exposure;      // M44: tonemap exposure (was _pad[0])
+        float _pad[2];
     };
 
     // Push constants for the copy/composite (tonemap) pipeline.

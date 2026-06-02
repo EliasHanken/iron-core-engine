@@ -64,8 +64,12 @@ layout(push_constant) uniform Push {
     vec4  color;
     vec2  texel;
     float width;
-    float _pad;
+    float exposure;
 } pc;
+vec3 aces(vec3 x) {
+    const float a = 2.51, b = 0.03, c = 2.43, d = 0.59, e = 0.14;
+    return clamp((x * (a * x + b)) / (x * (c * x + d) + e), 0.0, 1.0);
+}
 void main() {
     vec3 scene = texture(uScene, vUV).rgb;
     uint here = texture(uMask, vUV).r;
@@ -77,7 +81,7 @@ void main() {
         uint n = texture(uMask, vUV + o).r;
         if (n != here) edge = 1.0;
     }
-    outColor = vec4(mix(scene, pc.color.rgb, edge), 1.0);
+    outColor = vec4(aces(mix(scene, pc.color.rgb, edge) * pc.exposure), 1.0);
 }
 )";
 
@@ -130,13 +134,17 @@ layout(location = 0) out vec4 outColor;
 layout(set = 0, binding = 0) uniform sampler2D uScene;
 layout(set = 0, binding = 1) uniform sampler2D uBlur;
 layout(set = 0, binding = 2) uniform usampler2D uMask;
-layout(push_constant) uniform Push { vec4 color; float intensity; } pc;
+layout(push_constant) uniform Push { vec4 color; float intensity; float exposure; } pc;
+vec3 aces(vec3 x) {
+    const float a = 2.51, b = 0.03, c = 2.43, d = 0.59, e = 0.14;
+    return clamp((x * (a * x + b)) / (x * (c * x + d) + e), 0.0, 1.0);
+}
 void main() {
     vec3 scene = texture(uScene, vUV).rgb;
     float blur  = texture(uBlur, vUV).r;
     float solid = texture(uMask, vUV).r > 0u ? 1.0 : 0.0;
     float halo  = max(blur - solid, 0.0) * pc.intensity;
-    outColor = vec4(scene + pc.color.rgb * halo, 1.0);
+    outColor = vec4(aces((scene + pc.color.rgb * halo) * pc.exposure), 1.0);
 }
 )";
 
@@ -155,16 +163,20 @@ layout(set = 0, binding = 0) uniform sampler2D uScene;
 layout(set = 0, binding = 1) uniform usampler2D uMask;
 layout(set = 0, binding = 2) uniform sampler2D uMaskDepth;
 layout(set = 0, binding = 3) uniform sampler2D uSceneDepth;
-layout(push_constant) uniform Push { vec4 color; float intensity; } pc;
+layout(push_constant) uniform Push { vec4 color; float intensity; float exposure; } pc;
+vec3 aces(vec3 x) {
+    const float a = 2.51, b = 0.03, c = 2.43, d = 0.59, e = 0.14;
+    return clamp((x * (a * x + b)) / (x * (c * x + d) + e), 0.0, 1.0);
+}
 void main() {
     vec3 scene = texture(uScene, vUV).rgb;
     uint id = texture(uMask, vUV).r;
-    if (id == 0u) { outColor = vec4(scene, 1.0); return; }
+    if (id == 0u) { outColor = vec4(aces(scene * pc.exposure), 1.0); return; }
     float md = texture(uMaskDepth, vUV).r;   // tagged object depth
     float sd = texture(uSceneDepth, vUV).r;  // nearest scene depth
     // Occluded when something is in front of the object (smaller depth = nearer).
     float occluded = (sd < md - 1e-4) ? 1.0 : 0.0;
-    outColor = vec4(mix(scene, pc.color.rgb, occluded * pc.intensity), 1.0);
+    outColor = vec4(aces(mix(scene, pc.color.rgb, occluded * pc.intensity) * pc.exposure), 1.0);
 }
 )";
 
@@ -2194,7 +2206,7 @@ void VkPostProcess::runChain(VkCommandBuffer cb,
                 }
                 pc.texel[0] = (swapExtent.width  > 0) ? 1.0f / static_cast<float>(swapExtent.width)  : 0.0f;
                 pc.texel[1] = (swapExtent.height > 0) ? 1.0f / static_cast<float>(swapExtent.height) : 0.0f;
-                pc._pad     = 0.0f;
+                pc.exposure = exposure;
 
                 vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, outlinePipeline_);
                 vkCmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_GRAPHICS,
@@ -2230,6 +2242,7 @@ void VkPostProcess::runChain(VkCommandBuffer cb,
                     pc.color[0] = 1.0f; pc.color[1] = 0.6f; pc.color[2] = 0.1f; pc.color[3] = 1.0f;
                     pc.intensity = 1.0f;
                 }
+                pc.exposure = exposure;
 
                 vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, glowCompositePipeline_);
                 vkCmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_GRAPHICS,
@@ -2266,6 +2279,7 @@ void VkPostProcess::runChain(VkCommandBuffer cb,
                     pc.color[0] = 1.0f; pc.color[1] = 0.6f; pc.color[2] = 0.1f; pc.color[3] = 1.0f;
                     pc.intensity = 0.5f;
                 }
+                pc.exposure = exposure;
 
                 vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, xrayPipeline_);
                 vkCmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_GRAPHICS,
