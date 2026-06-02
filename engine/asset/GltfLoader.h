@@ -18,8 +18,8 @@ struct GltfMaterialPaths {
     std::string albedo;          // pbrMetallicRoughness.baseColorTexture
     std::string normal;          // normalTexture
     std::string metalRoughness;  // pbrMetallicRoughness.metallicRoughnessTexture
-                                  // (engine treats G channel as roughness →
-                                  // inverted to spec via loadRoughnessAsSpec)
+                                  // (glTF layout: .g = roughness, .b = metallic;
+                                  // consumed directly as the PBR MR map since M45b)
 };
 
 struct GltfModel {

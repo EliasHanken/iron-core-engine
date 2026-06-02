@@ -91,9 +91,10 @@ public:
     // set normalMap, so the shader's TBN sample returns the geometric normal
     // unchanged.
     virtual TextureHandle flatNormalTexture() const = 0;
-    // A built-in 1x1 "no specular" texture (RGB 0,0,0). Bound when a draw's
-    // material doesn't set specularMap, so the shader's spec contribution
-    // is zero.
+    // A built-in 1x1 "no specular" texture (RGB 0,0,0). Legacy from the
+    // Blinn-Phong era; the PBR path (M45b) defaults missing metallic-roughness
+    // and AO maps to whiteTexture() instead. Retained for the frozen OpenGL
+    // backend's interface.
     virtual TextureHandle noSpecularTexture() const = 0;
     // Compiles + links a shader from GLSL source. Returns kInvalidHandle on
     // failure.
