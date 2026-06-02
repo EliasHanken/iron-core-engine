@@ -43,7 +43,6 @@
 #include "scene/Mesh.h"
 #include "ui/BuiltinFont.h"
 #include "ui/Hud.h"
-#include "util/FileWatcher.h"
 
 #include <GLFW/glfw3.h>
 
@@ -53,11 +52,9 @@
 #include <cmath>
 #include <cstdio>
 #include <deque>
-#include <fstream>
 #include <functional>
 #include <memory>
 #include <span>
-#include <sstream>
 #include <string>
 #include <string_view>
 #include <unordered_map>
@@ -69,12 +66,9 @@ constexpr int kScreenWidth  = 1280;
 constexpr int kScreenHeight = 720;
 
 #ifdef IRON_RENDER_BACKEND_VULKAN
-
-// M28 Task 4: Vulkan shaders moved to assets/shaders/*.glsl and read
-// from disk at runtime (see readTextFile below). This enables hot-reload
-// (M28 Task 5). The OpenGL #version 330 literals stay inline (OpenGL is
-// frozen).
-
+// Vulkan path uses engine standard lit shader factory (createStandardLitShader /
+// createStandardSkinnedLitShader). The OpenGL #version 330 literals stay inline
+// (OpenGL is frozen).
 #else  // IRON_RENDER_BACKEND_OPENGL
 
 // ---------------------------------------------------------------------------
@@ -222,19 +216,6 @@ void main() {
 
 #endif  // IRON_RENDER_BACKEND_VULKAN / IRON_RENDER_BACKEND_OPENGL
 
-// M28 Task 4: read a UTF-8/ASCII text file fully into a string.
-// Used to load GLSL shader sources from disk (Vulkan path).
-std::string readTextFile(const std::string& path) {
-    std::ifstream f(path, std::ios::binary);
-    if (!f) {
-        iron::Log::error("net-shooter: cannot open '%s'", path.c_str());
-        return {};
-    }
-    std::ostringstream ss;
-    ss << f.rdbuf();
-    return ss.str();
-}
-
 // ---------------------------------------------------------------------------
 // Procedural sunset cubemap — same as net-tag
 // ---------------------------------------------------------------------------
@@ -356,17 +337,7 @@ int main(int argc, char** argv) {
     renderer.setViewport(kScreenWidth, kScreenHeight);
 
 #ifdef IRON_RENDER_BACKEND_VULKAN
-    // M28 Task 4: load Vulkan GLSL from disk. Path strings live at render-loop
-    // scope so the M28 Task 5 hot-reload watcher can re-read them on change.
-    const std::string shaderDir       = NETSHOOTER_SHADER_SRC_DIR;
-    const std::string litVertPath     = shaderDir + "/lit.vert.glsl";
-    const std::string litFragPath     = shaderDir + "/lit.frag.glsl";
-    const std::string skinnedVertPath = shaderDir + "/lit-skinned.vert.glsl";
-    const std::string litVertSrc      = readTextFile(litVertPath);
-    const std::string litFragSrc      = readTextFile(litFragPath);
-    const std::string skinnedVertSrc  = readTextFile(skinnedVertPath);
-    const iron::ShaderHandle litShader =
-        renderer.createShader(litVertSrc, litFragSrc);
+    const iron::ShaderHandle litShader = renderer.createStandardLitShader();
 #else
     const iron::ShaderHandle litShader =
         renderer.createShader(kVertexShader, kFragmentShader);
@@ -439,10 +410,14 @@ int main(int argc, char** argv) {
         (foxModel && foxModel->skinnedMesh)
             ? renderer.createSkinnedMesh(*foxModel->skinnedMesh)
             : iron::kInvalidSkinnedMesh;
+#ifdef IRON_RENDER_BACKEND_VULKAN
     const iron::ShaderHandle foxShader =
         (foxMesh != iron::kInvalidSkinnedMesh)
-            ? renderer.createSkinnedShader(skinnedVertSrc, litFragSrc)
+            ? renderer.createStandardSkinnedLitShader()
             : iron::kInvalidHandle;
+#else  // IRON_RENDER_BACKEND_OPENGL — no skinned standard shader on the frozen backend
+    const iron::ShaderHandle foxShader = iron::kInvalidHandle;
+#endif
 
     const iron::AnimationClip* foxIdleClip =
         foxModel ? foxModel->findClip("Survey") : nullptr;
@@ -1356,33 +1331,6 @@ int main(int argc, char** argv) {
     bool prevKey2  = false;
     bool prevLMB   = false;
 
-    // --- M28 — asset hot-reload ------------------------------------------
-    // Watch the GLSL source files; on change, re-read + reload the affected
-    // shader(s). reloadShader keeps the last-good program on failure, so a
-    // typo while editing won't crash the running game. Declared here (main()
-    // scope) so it outlives the render loop — its callbacks capture [&].
-    iron::FileWatcher watcher;
-
-    auto reloadLit = [&](const std::string&) {
-        const std::string v = readTextFile(litVertPath);
-        const std::string f = readTextFile(litFragPath);
-        if (!renderer.reloadShader(litShader, v, f)) {
-            iron::Log::warn("net-shooter: lit shader reload failed (kept last-good)");
-        }
-    };
-    auto reloadSkinned = [&](const std::string&) {
-        if (foxShader == iron::kInvalidHandle) return;  // fox asset failed to load
-        const std::string v = readTextFile(skinnedVertPath);
-        const std::string f = readTextFile(litFragPath);  // shares the fragment shader
-        if (!renderer.reloadShader(foxShader, v, f)) {
-            iron::Log::warn("net-shooter: skinned shader reload failed (kept last-good)");
-        }
-    };
-
-    watcher.watch(litVertPath,     reloadLit);
-    watcher.watch(litFragPath,     [&](const std::string& p) { reloadLit(p); reloadSkinned(p); });
-    watcher.watch(skinnedVertPath, reloadSkinned);
-
     // -----------------------------------------------------------------------
     // Main loop
     // -----------------------------------------------------------------------
@@ -2081,10 +2029,6 @@ int main(int argc, char** argv) {
         // M26 — listener follows the rendering camera each frame.
         audio.setListener(eye, aimDir(), iron::Vec3{0.0f, 1.0f, 0.0f});
 
-        // M28 — asset hot-reload polls. Must run BEFORE beginFrame: a shader
-        // reload does vkDeviceWaitIdle, which is unsafe mid-command-buffer
-        // recording. Running here also lets a reload apply to this same frame.
-        watcher.poll();
         audio.pollHotReload();
 
         renderer.beginFrame(iron::Vec3{0.5f, 0.6f, 0.8f},
