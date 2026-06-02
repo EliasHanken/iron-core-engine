@@ -29,8 +29,10 @@ public:
 
     TextureHandle createFromRgba(VkContext& ctx,
                                  int width, int height,
-                                 const unsigned char* rgba);
-    TextureHandle loadFromFile(VkContext& ctx, const std::string& path);
+                                 const unsigned char* rgba,
+                                 bool srgb = true);
+    TextureHandle loadFromFile(VkContext& ctx, const std::string& path,
+                               bool srgb = true);
 
     TextureHandle whiteTexture()        const { return white_; }
     TextureHandle flatNormalTexture()   const { return flatNormal_; }
@@ -46,7 +48,8 @@ public:
 
 private:
     void uploadRgba(VkContext& ctx, VkTextureResource& tex,
-                    int width, int height, const unsigned char* rgba);
+                    int width, int height, const unsigned char* rgba,
+                    bool srgb = true);
 
     std::unordered_map<TextureHandle, VkTextureResource> textures_;
     TextureHandle nextHandle_ = 1;

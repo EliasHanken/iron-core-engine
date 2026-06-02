@@ -140,7 +140,8 @@ void OpenGLRenderer::updateMesh(MeshHandle mesh, const MeshData& data) {
 }
 
 TextureHandle OpenGLRenderer::createTexture(int width, int height,
-                                            const unsigned char* rgba) {
+                                            const unsigned char* rgba,
+                                            bool /*srgb*/) {
     auto tex = std::make_unique<GLTexture>(width, height, rgba);
     if (!tex->isValid()) {
         Log::warn("OpenGLRenderer: createTexture produced an invalid texture");
@@ -161,7 +162,8 @@ TextureHandle OpenGLRenderer::noSpecularTexture() const {
     return noSpecularTexture_;
 }
 
-TextureHandle OpenGLRenderer::loadTexture(const std::string& path) {
+TextureHandle OpenGLRenderer::loadTexture(const std::string& path,
+                                          bool /*srgb*/) {
     auto tex = std::make_unique<GLTexture>(path);
     if (!tex->isValid()) {
         Log::warn("OpenGLRenderer: '%s' failed to load; using fallback",

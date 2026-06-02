@@ -75,11 +75,15 @@ public:
     // Replace the geometry of an existing mesh (for meshes rebuilt per frame).
     virtual void updateMesh(MeshHandle mesh, const MeshData& data) = 0;
     // RGBA8 pixels, `width * height * 4` bytes, row-major from top-left.
+    // Pass srgb=false for non-color data (normal maps, metallic-roughness, AO)
+    // so the hardware samples linear values instead of applying sRGB decode.
     virtual TextureHandle createTexture(int width, int height,
-                                        const unsigned char* rgba) = 0;
+                                        const unsigned char* rgba,
+                                        bool srgb = true) = 0;
     // Loads an image file (PNG/JPG) into a texture. Returns kInvalidHandle on
-    // failure.
-    virtual TextureHandle loadTexture(const std::string& path) = 0;
+    // failure. Pass srgb=false for non-color data (normal/MR/AO maps).
+    virtual TextureHandle loadTexture(const std::string& path,
+                                      bool srgb = true) = 0;
     // A built-in 1x1 opaque-white texture, handy for solid-colour quads.
     virtual TextureHandle whiteTexture() const = 0;
     // A built-in 1x1 "flat normal" texture (RGB 128,128,255 = +Z in tangent

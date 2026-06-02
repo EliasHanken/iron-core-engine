@@ -24,8 +24,8 @@ public:
     // Resource creation — return invalid handles; tests don't exercise these.
     MeshHandle createMesh(const MeshData&) override { return kInvalidHandle; }
     void updateMesh(MeshHandle, const MeshData&) override {}
-    TextureHandle createTexture(int, int, const unsigned char*) override { return kInvalidHandle; }
-    TextureHandle loadTexture(const std::string&) override { return kInvalidHandle; }
+    TextureHandle createTexture(int, int, const unsigned char*, bool = true) override { return kInvalidHandle; }
+    TextureHandle loadTexture(const std::string&, bool = true) override { return kInvalidHandle; }
     TextureHandle whiteTexture() const override { return kInvalidHandle; }
     TextureHandle flatNormalTexture() const override { return kInvalidHandle; }
     TextureHandle noSpecularTexture() const override { return kInvalidHandle; }

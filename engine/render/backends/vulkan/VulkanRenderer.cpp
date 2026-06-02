@@ -174,11 +174,13 @@ void VulkanRenderer::updateMesh(MeshHandle h, const MeshData& data) {
     meshes_.update(context_, h, data);
 }
 TextureHandle VulkanRenderer::createTexture(int width, int height,
-                                             const unsigned char* rgba) {
-    return textures_.createFromRgba(context_, width, height, rgba);
+                                             const unsigned char* rgba,
+                                             bool srgb) {
+    return textures_.createFromRgba(context_, width, height, rgba, srgb);
 }
-TextureHandle VulkanRenderer::loadTexture(const std::string& path) {
-    return textures_.loadFromFile(context_, path);
+TextureHandle VulkanRenderer::loadTexture(const std::string& path,
+                                          bool srgb) {
+    return textures_.loadFromFile(context_, path, srgb);
 }
 TextureHandle VulkanRenderer::whiteTexture()      const { return textures_.whiteTexture();      }
 TextureHandle VulkanRenderer::flatNormalTexture() const { return textures_.flatNormalTexture(); }
