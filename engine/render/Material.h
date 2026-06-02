@@ -10,14 +10,17 @@ namespace iron {
 // defaults (texture invalid, no glow, matte, no planar reflection, no
 // UV tiling change).
 struct Material {
-    TextureHandle texture = kInvalidHandle;
+    TextureHandle texture = kInvalidHandle;       // albedo (sRGB)
     Vec3 emissive{0.0f, 0.0f, 0.0f};
     float reflectivity = 0.0f;
     bool useReflectionPlane = false;
     float uvScale = 1.0f;  // multiplies sampled UV; >1 = tile more times
-    TextureHandle normalMap = kInvalidHandle;
-    TextureHandle specularMap = kInvalidHandle;
-    float specPower = 32.0f;
+    TextureHandle normalMap = kInvalidHandle;     // linear
+    TextureHandle metallicRoughnessMap = kInvalidHandle;  // .g = roughness, .b = metallic (linear, glTF)
+    TextureHandle aoMap = kInvalidHandle;                 // .r = ambient occlusion (linear)
+    float metallic  = 0.0f;
+    float roughness = 0.5f;
+    float ao        = 1.0f;
 };
 
 } // namespace iron

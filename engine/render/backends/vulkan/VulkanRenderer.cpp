@@ -287,9 +287,9 @@ void VulkanRenderer::drawHud(const HudBatch& batch, int fbW, int fbH) {
 
 namespace {
 
-// M12+M13+M14+M15+M17 — per-draw UBO uploaded by submit. std140 layout:
+// M12+M13+M14+M15+M17+M45b — per-draw UBO uploaded by submit. std140 layout:
 // all members are mat4 (64-byte aligned) or vec4 (16-byte aligned), so no
-// straddling. Total 928 bytes (M17 added reflectionViewProj + reflectionParams + clipPlane).
+// straddling. Total 944 bytes (M45b added materialParams2 after materialParams).
 struct LitUbo {
     Mat4 mvp;                 // 64
     Mat4 model;               // 64
@@ -299,7 +299,8 @@ struct LitUbo {
     Vec4 ambient;             // 16
     Vec4 emissive;            // 16
     Vec4 cameraPos;           // 16
-    Vec4 materialParams;      // 16  x=uvScale, y=specPower, z=reflectivity, w=shadowBias
+    Vec4 materialParams;      // 16  x=uvScale, y=roughness, z=reflectivity, w=shadowBias
+    Vec4 materialParams2;     // 16  M45b — x=metallic, y=ao, z/w spare
     Vec4 fogColor;            // 16  M15 — xyz=color, w=density
     Vec4 lightCounts;         // 16  M15 — x=pointLightCount (as float), y/z/w padding
     Vec4 pointPositions[16];  // 256 M15 — xyz=position, w=intensity
@@ -308,7 +309,7 @@ struct LitUbo {
     Vec4 reflectionParams;    // 16  M17 — x=useReflectionPlane (0/1), y=screenW, z=screenH, w=0
     Vec4 clipPlane;           // 16  M17 — (normal.xyz, -d) for reflection pass; ignored in scene
 };
-static_assert(sizeof(LitUbo) == 928, "LitUbo std140 layout (M17)");
+static_assert(sizeof(LitUbo) == 944, "LitUbo std140 layout (M45b)");
 
 // Extracts the camera's world-space position from a view matrix.
 // Assumes view is a pure rigid transform [R | t; 0 0 0 1] (rotation +
@@ -369,7 +370,7 @@ layout(location = 1) in vec3 aNormal;
 layout(location = 2) in vec2 aUV;
 layout(location = 3) in vec3 aTangent;
 
-// Full LitUbo std140 layout (928 bytes after M17). We reference only
+// Full LitUbo std140 layout (944 bytes after M45b). We reference only
 // `model`, `reflectionViewProj`, and `clipPlane`.
 layout(set = 0, binding = 0) uniform LitUbo {
     mat4 mvp;
@@ -381,6 +382,7 @@ layout(set = 0, binding = 0) uniform LitUbo {
     vec4 emissive;
     vec4 cameraPos;
     vec4 materialParams;
+    vec4 materialParams2;  // M45b
     vec4 fogColor;
     vec4 lightCounts;
     vec4 pointPositions[16];
@@ -549,10 +551,11 @@ void VulkanRenderer::recordSceneDraw(VkCommandBuffer cb, const DrawCall& call) {
                          0.0f};
     ubo.materialParams = Vec4{
         call.material.uvScale,
-        call.material.specPower,
+        call.material.roughness,
         call.material.reflectivity,
         pendingShadowBias_,
     };
+    ubo.materialParams2 = Vec4{call.material.metallic, call.material.ao, 0.0f, 0.0f};
     ubo.fogColor = Vec4{
         pendingFog_.color.x, pendingFog_.color.y, pendingFog_.color.z,
         pendingFog_.density,
@@ -608,7 +611,8 @@ void VulkanRenderer::recordSceneDraw(VkCommandBuffer cb, const DrawCall& call) {
     bufInfo.offset = uboOffset;
     bufInfo.range  = sizeof(ubo);
 
-    // M13 — write 4 descriptors per draw: UBO + diffuse + normal + spec.
+    // M13/M45b — write descriptors per draw: UBO + diffuse + normal +
+    // metallic-roughness + shadow + sky + reflection + AO.
     // Fallback textures used for invalid handles.
     const auto& diffuse = textures_.has(call.material.texture)
         ? textures_.get(call.material.texture)
@@ -616,9 +620,12 @@ void VulkanRenderer::recordSceneDraw(VkCommandBuffer cb, const DrawCall& call) {
     const auto& normal = textures_.has(call.material.normalMap)
         ? textures_.get(call.material.normalMap)
         : textures_.get(textures_.flatNormalTexture());
-    const auto& spec = textures_.has(call.material.specularMap)
-        ? textures_.get(call.material.specularMap)
-        : textures_.get(textures_.noSpecularTexture());
+    const auto& mr = textures_.has(call.material.metallicRoughnessMap)
+        ? textures_.get(call.material.metallicRoughnessMap)
+        : textures_.get(textures_.whiteTexture());
+    const auto& aoTex = textures_.has(call.material.aoMap)
+        ? textures_.get(call.material.aoMap)
+        : textures_.get(textures_.whiteTexture());
 
     // M16 — also bind the active skybox (or black fallback) at binding 5.
     const CubemapHandle skyHandle = cubemaps_.has(pendingSkybox_)
@@ -626,15 +633,15 @@ void VulkanRenderer::recordSceneDraw(VkCommandBuffer cb, const DrawCall& call) {
         : cubemaps_.blackCubemap();
     const auto& skyTex = cubemaps_.get(skyHandle);
 
-    VkDescriptorImageInfo imgInfos[6]{};
+    VkDescriptorImageInfo imgInfos[7]{};
     imgInfos[0].sampler     = diffuse.sampler;
     imgInfos[0].imageView   = diffuse.view;
     imgInfos[0].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
     imgInfos[1].sampler     = normal.sampler;
     imgInfos[1].imageView   = normal.view;
     imgInfos[1].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-    imgInfos[2].sampler     = spec.sampler;
-    imgInfos[2].imageView   = spec.view;
+    imgInfos[2].sampler     = mr.sampler;
+    imgInfos[2].imageView   = mr.view;
     imgInfos[2].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
     imgInfos[3].sampler     = shadowMap_.sampler();
     imgInfos[3].imageView   = shadowMap_.depthView();
@@ -645,15 +652,19 @@ void VulkanRenderer::recordSceneDraw(VkCommandBuffer cb, const DrawCall& call) {
     // M17 — binding 6: planar reflection RTT (or a stale/empty texture
     // when no plane is active — shader guards via reflectionParams.x).
     imgInfos[5] = reflection_.descriptorImageInfo();
+    // M45b — binding 7: ambient occlusion (white fallback = no occlusion).
+    imgInfos[6].sampler     = aoTex.sampler;
+    imgInfos[6].imageView   = aoTex.view;
+    imgInfos[6].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 
-    VkWriteDescriptorSet writes[7]{};
+    VkWriteDescriptorSet writes[8]{};
     writes[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
     writes[0].dstSet = set;
     writes[0].dstBinding = 0;
     writes[0].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
     writes[0].descriptorCount = 1;
     writes[0].pBufferInfo = &bufInfo;
-    for (int i = 0; i < 6; ++i) {
+    for (int i = 0; i < 7; ++i) {
         writes[i + 1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
         writes[i + 1].dstSet = set;
         writes[i + 1].dstBinding = i + 1;
@@ -661,7 +672,7 @@ void VulkanRenderer::recordSceneDraw(VkCommandBuffer cb, const DrawCall& call) {
         writes[i + 1].descriptorCount = 1;
         writes[i + 1].pImageInfo = &imgInfos[i];
     }
-    vkUpdateDescriptorSets(context_.device(), 7, writes, 0, nullptr);
+    vkUpdateDescriptorSets(context_.device(), 8, writes, 0, nullptr);
 
     vkCmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_GRAPHICS,
                             sh.pipelineLayout, 0, 1, &set, 0, nullptr);
@@ -702,10 +713,11 @@ void VulkanRenderer::recordSkinnedDraw(VkCommandBuffer cb,
                          0.0f};
     ubo.materialParams = Vec4{
         call.material.uvScale,
-        call.material.specPower,
+        call.material.roughness,
         call.material.reflectivity,
         pendingShadowBias_,
     };
+    ubo.materialParams2 = Vec4{call.material.metallic, call.material.ao, 0.0f, 0.0f};
     ubo.fogColor = Vec4{
         pendingFog_.color.x, pendingFog_.color.y, pendingFog_.color.z,
         pendingFog_.density,
@@ -767,31 +779,34 @@ void VulkanRenderer::recordSkinnedDraw(VkCommandBuffer cb,
     bufInfo.offset = uboOffset;
     bufInfo.range  = sizeof(ubo);
 
-    // --- 4. Resolve textures (same fallbacks as scene path) ---
+    // --- 4. Resolve textures (same fallbacks as scene path, M45b: MR + AO) ---
     const auto& diffuse = textures_.has(call.material.texture)
         ? textures_.get(call.material.texture)
         : textures_.get(textures_.whiteTexture());
     const auto& normal = textures_.has(call.material.normalMap)
         ? textures_.get(call.material.normalMap)
         : textures_.get(textures_.flatNormalTexture());
-    const auto& spec = textures_.has(call.material.specularMap)
-        ? textures_.get(call.material.specularMap)
-        : textures_.get(textures_.noSpecularTexture());
+    const auto& mr = textures_.has(call.material.metallicRoughnessMap)
+        ? textures_.get(call.material.metallicRoughnessMap)
+        : textures_.get(textures_.whiteTexture());
+    const auto& aoTex = textures_.has(call.material.aoMap)
+        ? textures_.get(call.material.aoMap)
+        : textures_.get(textures_.whiteTexture());
 
     const CubemapHandle skyHandle = cubemaps_.has(pendingSkybox_)
         ? pendingSkybox_
         : cubemaps_.blackCubemap();
     const auto& skyTex = cubemaps_.get(skyHandle);
 
-    VkDescriptorImageInfo imgInfos[6]{};
+    VkDescriptorImageInfo imgInfos[7]{};
     imgInfos[0].sampler     = diffuse.sampler;
     imgInfos[0].imageView   = diffuse.view;
     imgInfos[0].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
     imgInfos[1].sampler     = normal.sampler;
     imgInfos[1].imageView   = normal.view;
     imgInfos[1].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-    imgInfos[2].sampler     = spec.sampler;
-    imgInfos[2].imageView   = spec.view;
+    imgInfos[2].sampler     = mr.sampler;
+    imgInfos[2].imageView   = mr.view;
     imgInfos[2].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
     imgInfos[3].sampler     = shadowMap_.sampler();
     imgInfos[3].imageView   = shadowMap_.depthView();
@@ -800,20 +815,24 @@ void VulkanRenderer::recordSkinnedDraw(VkCommandBuffer cb,
     imgInfos[4].imageView   = skyTex.view;
     imgInfos[4].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
     imgInfos[5] = reflection_.descriptorImageInfo();
+    // M45b — binding 7: ambient occlusion (white fallback = no occlusion).
+    imgInfos[6].sampler     = aoTex.sampler;
+    imgInfos[6].imageView   = aoTex.view;
+    imgInfos[6].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 
     VkDescriptorBufferInfo bonesInfo{};
     bonesInfo.buffer = f.uboBuffer;
     bonesInfo.offset = bonesOffset;
     bonesInfo.range  = sizeof(Mat4) * kMaxBonesPerSkinnedMesh;
 
-    VkWriteDescriptorSet writes[8]{};
+    VkWriteDescriptorSet writes[9]{};
     writes[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
     writes[0].dstSet = set;
     writes[0].dstBinding = 0;
     writes[0].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
     writes[0].descriptorCount = 1;
     writes[0].pBufferInfo = &bufInfo;
-    for (int i = 0; i < 6; ++i) {
+    for (int i = 0; i < 7; ++i) {
         writes[i + 1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
         writes[i + 1].dstSet = set;
         writes[i + 1].dstBinding = i + 1;
@@ -821,13 +840,14 @@ void VulkanRenderer::recordSkinnedDraw(VkCommandBuffer cb,
         writes[i + 1].descriptorCount = 1;
         writes[i + 1].pImageInfo = &imgInfos[i];
     }
-    writes[7].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-    writes[7].dstSet = set;
-    writes[7].dstBinding = 7;
-    writes[7].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-    writes[7].descriptorCount = 1;
-    writes[7].pBufferInfo = &bonesInfo;
-    vkUpdateDescriptorSets(context_.device(), 8, writes, 0, nullptr);
+    // M23/M45b — bones UBO moved to binding 8 (binding 7 now = AO sampler).
+    writes[8].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    writes[8].dstSet = set;
+    writes[8].dstBinding = 8;
+    writes[8].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+    writes[8].descriptorCount = 1;
+    writes[8].pBufferInfo = &bonesInfo;
+    vkUpdateDescriptorSets(context_.device(), 9, writes, 0, nullptr);
 
     vkCmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_GRAPHICS,
                             sh.pipelineLayout, 0, 1, &set, 0, nullptr);

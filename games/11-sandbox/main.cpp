@@ -239,14 +239,7 @@ int main() {
             out.material.normalMap = gltfModel->materialPaths.normal.empty()
                 ? renderer.flatNormalTexture()
                 : renderer.loadTexture(gltfModel->materialPaths.normal);
-            out.material.specularMap = renderer.noSpecularTexture();
-            if (!gltfModel->materialPaths.metalRoughness.empty()) {
-                int w = 0, h = 0;
-                auto specBytes = iron::loadRoughnessAsSpec(
-                    gltfModel->materialPaths.metalRoughness, w, h);
-                if (!specBytes.empty())
-                    out.material.specularMap = renderer.createTexture(w, h, specBytes.data());
-            }
+            // M45b: specularMap removed; metallicRoughnessMap wired in T6.
 
         } else {
             iron::Log::warn("sandbox: entity '%s' has no mesh", e.name.c_str());
@@ -258,8 +251,7 @@ int main() {
             out.material.texture = resolveTexture(e.material.albedoPath, renderer.whiteTexture());
         if (out.material.normalMap == iron::kInvalidHandle)
             out.material.normalMap = resolveTexture(e.material.normalPath, renderer.flatNormalTexture());
-        if (out.material.specularMap == iron::kInvalidHandle)
-            out.material.specularMap = resolveTexture(e.material.specularPath, renderer.noSpecularTexture());
+        // M45b: specularMap removed; specularPath resolve skipped until T6 wires metallicRoughnessMap.
         out.material.emissive     = e.material.emissive;
         out.material.uvScale      = e.material.uvScale;
         out.material.reflectivity = e.material.reflectivity;
@@ -268,15 +260,14 @@ int main() {
     };
 
     // Pack a resolved entity's GPU handles into the new RenderHandles
-    // component shape (M37). Field names differ between the legacy
-    // iron::Material (texture/normalMap/specularMap) and the new
-    // RenderHandles (albedo/normal/specular).
+    // component shape (M37). M45b: specularMap removed from Material;
+    // specular field left as kInvalidHandle until T6 wires metallicRoughnessMap.
     auto toRenderHandles = [](const ResolvedEntity& re) -> iron::RenderHandles {
         iron::RenderHandles rh{};
         rh.mesh     = re.mesh;
         rh.albedo   = re.material.texture;
         rh.normal   = re.material.normalMap;
-        rh.specular = re.material.specularMap;
+        rh.specular = iron::kInvalidHandle;  // M45b: wired in T6
         return rh;
     };
 
@@ -993,7 +984,7 @@ int main() {
                                        * iron::scaling(t.scale);
             call.material.texture      = rh->albedo;
             call.material.normalMap    = rh->normal;
-            call.material.specularMap  = rh->specular;
+            // M45b: specularMap removed; metallicRoughnessMap wired in T6.
             call.material.emissive     = mat->emissive;
             call.material.uvScale      = mat->uvScale;
             call.material.reflectivity = mat->reflectivity;

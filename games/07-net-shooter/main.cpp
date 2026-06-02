@@ -369,22 +369,12 @@ int main(int argc, char** argv) {
     const std::string assetRoot = iron::executableDir() + "/assets/cc0/ground";
     const iron::TextureHandle groundDiff   = renderer.loadTexture(assetRoot + "/diffuse.png");
     const iron::TextureHandle groundNormal = renderer.loadTexture(assetRoot + "/normal.png");
-    int gw = 0, gh = 0;
-    auto specBytes = iron::loadRoughnessAsSpec(assetRoot + "/roughness.png", gw, gh);
-    const iron::TextureHandle groundSpec = specBytes.empty()
-        ? renderer.noSpecularTexture()
-        : renderer.createTexture(gw, gh, specBytes.data());
+    // groundSpec/wallSpec removed in M45b (PBR replaces Blinn-Phong spec map).
 
-    // Wall textures — CC0 brick. M13 fixup: wire diffuse + normal + spec so
-    // walls actually show normal/spec detail on both backends.
+    // Wall textures — CC0 brick.
     const std::string brickRoot = iron::executableDir() + "/assets/cc0/brick";
     const iron::TextureHandle wallDiff   = renderer.loadTexture(brickRoot + "/diffuse.png");
     const iron::TextureHandle wallNormal = renderer.loadTexture(brickRoot + "/normal.png");
-    int bw = 0, bh = 0;
-    auto wallSpecBytes = iron::loadRoughnessAsSpec(brickRoot + "/roughness.png", bw, bh);
-    const iron::TextureHandle wallSpec = wallSpecBytes.empty()
-        ? renderer.noSpecularTexture()
-        : renderer.createTexture(bw, bh, wallSpecBytes.data());
 
     // Ground mesh (large flat quad)
     iron::MeshData groundData;
@@ -2047,7 +2037,6 @@ int main(int argc, char** argv) {
             call.model = iron::translation(iron::Vec3{0, 0, 0});
             call.material.texture     = groundDiff;
             call.material.normalMap   = groundNormal;
-            call.material.specularMap = groundSpec;
             renderer.submit(call);
         }
 
@@ -2067,7 +2056,6 @@ int main(int argc, char** argv) {
             call.model = iron::translation(center) * iron::scaling(size);
             call.material.texture     = wallDiff;
             call.material.normalMap   = wallNormal;
-            call.material.specularMap = wallSpec;
             call.material.uvScale     = 0.5f;
             call.material.emissive    = iron::Vec3{0.0f, 0.0f, 0.0f};
             renderer.submit(call);
@@ -2083,7 +2071,7 @@ int main(int argc, char** argv) {
                        * iron::scaling(iron::Vec3{halfE.x*2, halfE.y*2, halfE.z*2});
             call.material.texture     = renderer.whiteTexture();
             call.material.normalMap   = renderer.flatNormalTexture();
-            call.material.specularMap = renderer.noSpecularTexture();
+            // M45b: specularMap removed (PBR).
             call.material.emissive    = colorForPeer(pid) * 0.5f;
             renderer.submit(call);
         };
@@ -2139,7 +2127,7 @@ int main(int argc, char** argv) {
                               * iron::scaling(iron::Vec3{kFoxScale, kFoxScale, kFoxScale});
             call.material.texture     = renderer.whiteTexture();
             call.material.normalMap   = renderer.flatNormalTexture();
-            call.material.specularMap = renderer.noSpecularTexture();
+            // M45b: specularMap removed (PBR).
             call.material.emissive    = colorForPeer(pid) * 0.3f;
             call.boneMatrices = std::span<const iron::Mat4>(bones.data(),
                                                             std::min(n, bones.size()));
@@ -2304,7 +2292,7 @@ int main(int argc, char** argv) {
                     he.x * 2.0f, he.y * 2.0f, he.z * 2.0f});
                 call.material.texture     = renderer.whiteTexture();
                 call.material.normalMap   = renderer.flatNormalTexture();
-                call.material.specularMap = renderer.noSpecularTexture();
+                // M45b: specularMap removed (PBR).
                 call.material.emissive    = color * 0.6f;
                 renderer.submit(call);
             }
@@ -2347,7 +2335,7 @@ int main(int argc, char** argv) {
                        * iron::scaling(iron::Vec3{0.2f, 0.2f, 0.2f});
             call.material.texture     = renderer.whiteTexture();
             call.material.normalMap   = renderer.flatNormalTexture();
-            call.material.specularMap = renderer.noSpecularTexture();
+            // M45b: specularMap removed (PBR).
             call.material.emissive    = iron::Vec3{2.0f, 0.5f, 0.0f};
             renderer.submit(call);
         }
@@ -2382,7 +2370,7 @@ int main(int argc, char** argv) {
                                 * iron::scaling(iron::Vec3{0.06f, 0.06f, 0.06f});
                     call.material.texture     = renderer.whiteTexture();
                     call.material.normalMap   = renderer.flatNormalTexture();
-                    call.material.specularMap = renderer.noSpecularTexture();
+                    // M45b: specularMap removed (PBR).
                     call.material.emissive    = iron::Vec3{
                         fade * 4.0f, fade * 3.0f, fade * 0.4f};
                     renderer.submit(call);
@@ -2413,7 +2401,7 @@ int main(int argc, char** argv) {
                            * iron::scaling(iron::Vec3{scale, scale, scale});
                 call.material.texture     = renderer.whiteTexture();
                 call.material.normalMap   = renderer.flatNormalTexture();
-                call.material.specularMap = renderer.noSpecularTexture();
+                // M45b: specularMap removed (PBR).
                 call.material.emissive    = iron::Vec3{
                     intensity * 1.0f,
                     intensity * 0.45f,

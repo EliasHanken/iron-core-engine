@@ -417,15 +417,14 @@ int main() {
                          iron::Vec3 emissive       = {0.0f, 0.0f, 0.0f},
                          float reflectivity        = 0.0f,
                          bool  useReflectionPlane  = false,
-                         float specPower           = 32.0f) {
+                         float /*specPower*/       = 0.5f) {  // M45b: specPower replaced by roughness
         iron::DrawCall call;
         call.mesh  = mesh;
         call.shader = litShader;
         call.model  = iron::translation(pos);
         call.material.texture          = pack.diffuse;
         call.material.normalMap        = pack.normal;
-        call.material.specularMap      = pack.spec;
-        call.material.specPower        = specPower;
+        // M45b: specularMap removed; metallicRoughnessMap wired in T6.
         call.material.emissive         = emissive;
         call.material.reflectivity     = reflectivity;
         call.material.useReflectionPlane = useReflectionPlane;

@@ -3,11 +3,11 @@
 namespace iron {
 
 // Canonical Vulkan (GLSL 450) "standard lit" shader — shadow PCF + normal map +
-// Blinn-Phong spec + point lights + planar/cubemap reflection + fog + emissive.
+// Cook-Torrance GGX PBR + point lights + planar/cubemap reflection + fog + emissive.
 // Single source of truth; games obtain handles via Renderer::createStandardLitShader().
-// Consumes the shared LitUbo (set=0, binding=0) + bindings 1..6 (diffuse, normal,
-// spec, shadow, skyCubemap, reflection). Keep in lockstep with VulkanRenderer's
-// descriptor-set layout.
+// Consumes the shared LitUbo (set=0, binding=0) + bindings 1..7 (diffuse, normal,
+// metallicRoughness, shadow, skyCubemap, reflection, AO). Keep in lockstep with
+// VulkanRenderer's descriptor-set layout and engine/render/Pbr.h BRDF formulas.
 
 inline const char* standardLitVertSource() {
     return R"GLSL(#version 450
@@ -25,7 +25,8 @@ layout(set = 0, binding = 0) uniform LitUbo {
     vec4 ambient;
     vec4 emissive;
     vec4 cameraPos;
-    vec4 materialParams;
+    vec4 materialParams;   // x=uvScale, y=roughness, z=reflectivity, w=shadowBias
+    vec4 materialParams2;  // M45b — x=metallic, y=ao, z/w spare
     vec4 fogColor;
     vec4 lightCounts;
     vec4 pointPositions[16];
@@ -71,7 +72,8 @@ layout(set = 0, binding = 0) uniform LitUbo {
     vec4 ambient;
     vec4 emissive;
     vec4 cameraPos;
-    vec4 materialParams;
+    vec4 materialParams;   // x=uvScale, y=roughness, z=reflectivity, w=shadowBias
+    vec4 materialParams2;  // M45b — x=metallic, y=ao, z/w spare
     vec4 fogColor;
     vec4 lightCounts;
     vec4 pointPositions[16];
@@ -81,7 +83,7 @@ layout(set = 0, binding = 0) uniform LitUbo {
     vec4 clipPlane;           // M17 — used only by reflection-pass shader
 } u;
 
-layout(set = 0, binding = 7) uniform BoneUbo {
+layout(set = 0, binding = 8) uniform BoneUbo {
     mat4 bones[128];
 } bones;
 
@@ -128,7 +130,8 @@ layout(set = 0, binding = 0) uniform LitUbo {
     vec4 ambient;
     vec4 emissive;
     vec4 cameraPos;
-    vec4 materialParams;
+    vec4 materialParams;   // x=uvScale, y=roughness, z=reflectivity, w=shadowBias
+    vec4 materialParams2;  // M45b — x=metallic, y=ao, z/w spare
     vec4 fogColor;
     vec4 lightCounts;
     vec4 pointPositions[16];
@@ -140,10 +143,11 @@ layout(set = 0, binding = 0) uniform LitUbo {
 
 layout(set = 0, binding = 1) uniform sampler2D uDiffuse;
 layout(set = 0, binding = 2) uniform sampler2D uNormalMap;
-layout(set = 0, binding = 3) uniform sampler2D uSpecularMap;
+layout(set = 0, binding = 3) uniform sampler2D uMetallicRoughnessMap;
 layout(set = 0, binding = 4) uniform sampler2D uShadowMap;
 layout(set = 0, binding = 5) uniform samplerCube uSkyCubemap;
 layout(set = 0, binding = 6) uniform sampler2D uReflection;
+layout(set = 0, binding = 7) uniform sampler2D uAoMap;
 
 float shadowFactor(vec4 lightSpacePos, float bias) {
     vec3 proj = lightSpacePos.xyz / lightSpacePos.w;
@@ -161,10 +165,36 @@ float shadowFactor(vec4 lightSpacePos, float bias) {
     return sum / 9.0;
 }
 
+// Cook-Torrance GGX PBR helpers — lockstep with engine/render/Pbr.h.
+const float PI = 3.14159265359;
+vec3 fresnelSchlick(float cosT, vec3 F0) { return F0 + (1.0 - F0) * pow(clamp(1.0 - cosT, 0.0, 1.0), 5.0); }
+float distributionGGX(float nDotH, float rough) {
+    float a = rough*rough; float a2 = a*a;
+    float d = (nDotH*nDotH) * (a2 - 1.0) + 1.0;
+    return a2 / (PI * d * d);
+}
+float geometrySmith(float nDotV, float nDotL, float rough) {
+    float r = rough + 1.0; float k = (r*r) / 8.0;
+    float gv = nDotV / (nDotV * (1.0 - k) + k);
+    float gl = nDotL / (nDotL * (1.0 - k) + k);
+    return gv * gl;
+}
+vec3 pbrContrib(vec3 N, vec3 V, vec3 L, vec3 albedo, float metallic, float rough, vec3 F0, vec3 radiance) {
+    vec3 H = normalize(V + L);
+    float nDotV = max(dot(N, V), 1e-4);
+    float nDotL = max(dot(N, L), 0.0);
+    float nDotH = max(dot(N, H), 0.0);
+    float D = distributionGGX(nDotH, rough);
+    float G = geometrySmith(nDotV, nDotL, rough);
+    vec3  F = fresnelSchlick(max(dot(H, V), 0.0), F0);
+    vec3 spec = (D * G) * F / (4.0 * nDotV * nDotL + 1e-4);
+    vec3 kd = (vec3(1.0) - F) * (1.0 - metallic);
+    return (kd * albedo / PI + spec) * radiance * nDotL;
+}
+
 void main() {
-    float uvScale   = u.materialParams.x;
-    float specPower = u.materialParams.y;
-    float bias      = u.materialParams.w;
+    float uvScale = u.materialParams.x;
+    float bias    = u.materialParams.w;
     vec2 uv = vUV * uvScale;
 
     vec3 N = normalize(vNormal);
@@ -174,17 +204,20 @@ void main() {
     vec3 tangentNormal = texture(uNormalMap, uv).rgb * 2.0 - 1.0;
     vec3 perturbedN = normalize(TBN * tangentNormal);
 
-    vec3 L = -normalize(u.sunDir.xyz);
-    vec3 V = normalize(u.cameraPos.xyz - vWorldPos);
-    vec3 H = normalize(L + V);
+    // PBR material parameters.
+    vec3  albedo    = texture(uDiffuse, uv).rgb;
+    float roughness = clamp(u.materialParams.y * texture(uMetallicRoughnessMap, uv).g, 0.04, 1.0);
+    float metallic  = clamp(u.materialParams2.x * texture(uMetallicRoughnessMap, uv).b, 0.0, 1.0);
+    float ao        = u.materialParams2.y * texture(uAoMap, uv).r;
+    vec3  F0        = mix(vec3(0.04), albedo, metallic);
+    vec3  V         = normalize(u.cameraPos.xyz - vWorldPos);
+    vec3  N_        = perturbedN;
 
-    float diffuse  = max(dot(perturbedN, L), 0.0);
-    float spec     = pow(max(dot(perturbedN, H), 0.0), specPower);
-    float specMask = texture(uSpecularMap, uv).r;
-    float shadow   = shadowFactor(vLightSpacePos, bias);
+    float shadow = shadowFactor(vLightSpacePos, bias);
 
-    vec3 lighting = u.sunColor.xyz * (diffuse * shadow + spec * specMask * shadow)
-                  + u.ambient.xyz;
+    // Directional light (sun).
+    vec3 Lo = pbrContrib(N_, V, -normalize(u.sunDir.xyz), albedo, metallic, roughness, F0,
+                         u.sunColor.xyz) * shadow;
 
     // Point lights (M15).
     int plCount = int(u.lightCounts.x);
@@ -196,33 +229,30 @@ void main() {
         vec3 Lp = toLight / dist;
         float falloff   = 1.0 - smoothstep(0.0, range, dist);
         float intensity = u.pointPositions[i].w;
-        float diffusePL = max(dot(perturbedN, Lp), 0.0);
-        vec3  Hp        = normalize(Lp + V);
-        float specPL    = pow(max(dot(perturbedN, Hp), 0.0), specPower);
-        lighting += u.pointColors[i].xyz * intensity * falloff
-                  * (diffusePL + specPL * specMask);
+        vec3 radiance = u.pointColors[i].xyz * intensity * falloff;
+        Lo += pbrContrib(N_, V, Lp, albedo, metallic, roughness, F0, radiance);
     }
 
-    vec3 diff = texture(uDiffuse, uv).rgb;
-    vec3 lit = diff * lighting + u.emissive.xyz;
+    vec3 ambient = u.ambient.xyz * albedo * ao;
+    vec3 color = ambient + Lo + u.emissive.xyz;
 
     // M17 — planar reflection (preferred when active) with M16 cubemap fallback.
     float reflectivity = u.materialParams.z;
     if (u.reflectionParams.x > 0.5) {
         vec2 ndc = gl_FragCoord.xy / u.reflectionParams.yz;
         vec3 reflectColor = texture(uReflection, ndc).rgb;
-        lit = mix(lit, reflectColor, reflectivity);
+        color = mix(color, reflectColor, reflectivity);
     } else if (reflectivity > 0.0) {
         vec3 viewDir = normalize(vWorldPos - u.cameraPos.xyz);
         vec3 reflectDir = reflect(viewDir, perturbedN);
         vec3 reflectColor = texture(uSkyCubemap, reflectDir).rgb;
-        lit = mix(lit, reflectColor, reflectivity);
+        color = mix(color, reflectColor, reflectivity);
     }
 
     // Fog (M15).
     float distFromCamera = length(u.cameraPos.xyz - vWorldPos);
     float fogFactor = 1.0 - exp(-u.fogColor.w * distFromCamera);
-    vec3 finalColor = mix(lit, u.fogColor.xyz, clamp(fogFactor, 0.0, 1.0));
+    vec3 finalColor = mix(color, u.fogColor.xyz, clamp(fogFactor, 0.0, 1.0));
     outColor = vec4(finalColor, 1.0);
 }
 )GLSL";

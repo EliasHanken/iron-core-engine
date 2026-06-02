@@ -318,11 +318,7 @@ int main(int argc, char** argv) {
     const std::string assetRoot = iron::executableDir() + "/assets/cc0/ground";
     const iron::TextureHandle groundDiff   = renderer.loadTexture(assetRoot + "/diffuse.png");
     const iron::TextureHandle groundNormal = renderer.loadTexture(assetRoot + "/normal.png");
-    int gw = 0, gh = 0;
-    auto specBytes = iron::loadRoughnessAsSpec(assetRoot + "/roughness.png", gw, gh);
-    const iron::TextureHandle groundSpec = specBytes.empty()
-        ? renderer.noSpecularTexture()
-        : renderer.createTexture(gw, gh, specBytes.data());
+    // groundSpec removed in M45b (PBR replaces Blinn-Phong spec map).
 
     iron::MeshData groundData;
     iron::appendQuad(groundData, iron::Vec3{0, 0, 0}, iron::Vec2{40, 40},
@@ -596,7 +592,6 @@ int main(int argc, char** argv) {
             call.model = iron::translation(iron::Vec3{0, 0, 0});
             call.material.texture     = groundDiff;
             call.material.normalMap   = groundNormal;
-            call.material.specularMap = groundSpec;
             renderer.submit(call);
         }
 
@@ -609,7 +604,6 @@ int main(int argc, char** argv) {
             localCall.model = iron::translation(player.position);
             localCall.material.texture     = renderer.whiteTexture();
             localCall.material.normalMap   = renderer.flatNormalTexture();
-            localCall.material.specularMap = renderer.noSpecularTexture();
             localCall.material.emissive    = colorForPeer(myId) * 0.4f;
             renderer.submit(localCall);
         }
@@ -624,7 +618,6 @@ int main(int argc, char** argv) {
             call.model = iron::translation(*pos);
             call.material.texture     = renderer.whiteTexture();
             call.material.normalMap   = renderer.flatNormalTexture();
-            call.material.specularMap = renderer.noSpecularTexture();
             call.material.emissive    = colorForPeer(peerId) * 0.4f;
             renderer.submit(call);
         }

@@ -138,15 +138,7 @@ int main(int argc, char** argv) {
         ? renderer.flatNormalTexture()
         : renderer.loadTexture(model->materialPaths.normal);
 
-    iron::TextureHandle spec = renderer.noSpecularTexture();
-    if (!model->materialPaths.metalRoughness.empty()) {
-        int w = 0, h = 0;
-        auto specBytes = iron::loadRoughnessAsSpec(
-            model->materialPaths.metalRoughness, w, h);
-        if (!specBytes.empty()) {
-            spec = renderer.createTexture(w, h, specBytes.data());
-        }
-    }
+    // M45b: spec/loadRoughnessAsSpec removed; metallicRoughnessMap wired in T6.
     if ((isSkinned && (skinnedMesh == iron::kInvalidSkinnedMesh)) ||
         (!isSkinned && (staticMesh == iron::kInvalidHandle)) ||
         shader == iron::kInvalidHandle) {
@@ -254,7 +246,7 @@ int main(int argc, char** argv) {
             call.model       = iron::Mat4::identity();
             call.material.texture     = albedo;
             call.material.normalMap   = normalMap;
-            call.material.specularMap = spec;
+            // M45b: specularMap removed (PBR).
             call.material.emissive    = iron::Vec3{0.05f, 0.05f, 0.05f};
             call.boneMatrices = std::span<const iron::Mat4>{
                 bonesPose.data(), std::min(boneCount, bonesPose.size())};
@@ -266,7 +258,7 @@ int main(int argc, char** argv) {
             call.model  = iron::Mat4::identity();
             call.material.texture     = albedo;
             call.material.normalMap   = normalMap;
-            call.material.specularMap = spec;
+            // M45b: specularMap removed (PBR).
             call.material.emissive    = iron::Vec3{0.05f, 0.05f, 0.05f};
             renderer.submit(call);
         }

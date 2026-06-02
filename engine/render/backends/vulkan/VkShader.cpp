@@ -92,8 +92,9 @@ ShaderHandle VkShaderStore::create(VkContext& ctx,
         return kInvalidHandle;
     }
 
-    // M17 — descriptor set layout: UBO + 6 samplers (diffuse, normal, spec, shadow, sky cubemap, planar reflection).
-    VkDescriptorSetLayoutBinding bindings[7]{};
+    // M17/M45b — descriptor set layout: UBO + 7 samplers (diffuse, normal,
+    // metallic-roughness, shadow, sky cubemap, planar reflection, ambient occlusion).
+    VkDescriptorSetLayoutBinding bindings[8]{};
     bindings[0].binding = 0;
     bindings[0].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
     bindings[0].descriptorCount = 1;
@@ -106,7 +107,7 @@ ShaderHandle VkShaderStore::create(VkContext& ctx,
     bindings[2].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
     bindings[2].descriptorCount = 1;
     bindings[2].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
-    bindings[3].binding = 3;  // spec
+    bindings[3].binding = 3;  // metallic-roughness
     bindings[3].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
     bindings[3].descriptorCount = 1;
     bindings[3].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
@@ -122,10 +123,14 @@ ShaderHandle VkShaderStore::create(VkContext& ctx,
     bindings[6].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
     bindings[6].descriptorCount = 1;
     bindings[6].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+    bindings[7].binding = 7;  // ambient occlusion (M45b)
+    bindings[7].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    bindings[7].descriptorCount = 1;
+    bindings[7].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
 
     VkDescriptorSetLayoutCreateInfo dslInfo{};
     dslInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-    dslInfo.bindingCount = 7;
+    dslInfo.bindingCount = 8;
     dslInfo.pBindings = bindings;
     VK_CHECK(vkCreateDescriptorSetLayout(ctx.device(), &dslInfo, nullptr, &s.setLayout));
 
@@ -171,28 +176,29 @@ ShaderHandle VkShaderStore::createSkinned(VkContext& ctx,
         return kInvalidHandle;
     }
 
-    // M23 — 8 bindings: same 7 as the scene path + binding 7 = bone-matrices
-    // UBO (vertex stage). Allows the skinned vertex shader to read up to
-    // kMaxBonesPerSkinnedMesh mat4 transforms per draw.
-    VkDescriptorSetLayoutBinding bindings[8]{};
+    // M23/M45b — 9 bindings: same 8 as the lit path (0=scene UBO, 1-7=samplers
+    // including AO at 7) + binding 8 = bone-matrices UBO (vertex stage).
+    // Bones moved from 7→8 so binding 7 stays consistent with the shared
+    // fragment shader (uAoMap at binding 7).
+    VkDescriptorSetLayoutBinding bindings[9]{};
     bindings[0].binding = 0;
     bindings[0].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
     bindings[0].descriptorCount = 1;
     bindings[0].stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
-    for (int i = 1; i < 7; ++i) {
+    for (int i = 1; i < 8; ++i) {
         bindings[i].binding = static_cast<std::uint32_t>(i);
         bindings[i].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
         bindings[i].descriptorCount = 1;
         bindings[i].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
     }
-    bindings[7].binding = 7;  // bone matrices (M23)
-    bindings[7].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-    bindings[7].descriptorCount = 1;
-    bindings[7].stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
+    bindings[8].binding = 8;  // bone matrices (M23, moved from 7 to free binding 7 for AO)
+    bindings[8].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+    bindings[8].descriptorCount = 1;
+    bindings[8].stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
 
     VkDescriptorSetLayoutCreateInfo dslInfo{};
     dslInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-    dslInfo.bindingCount = 8;
+    dslInfo.bindingCount = 9;
     dslInfo.pBindings = bindings;
     VK_CHECK(vkCreateDescriptorSetLayout(ctx.device(), &dslInfo, nullptr, &s.setLayout));
 

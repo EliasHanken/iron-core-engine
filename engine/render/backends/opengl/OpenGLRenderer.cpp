@@ -407,22 +407,14 @@ void OpenGLRenderer::endFrame() {
             reflectionTarget_.bindColorTexture(3);
         }
 
-        // Normal + specular maps + spec power.
+        // Normal map (GL backend is frozen; no PBR on GL path).
         shader.setInt("uNormalMap", 4);
-        shader.setInt("uSpecularMap", 5);
-        shader.setFloat("uSpecPower", call.material.specPower);
 
         const TextureHandle nmHandle = (call.material.normalMap != kInvalidHandle)
                                          ? call.material.normalMap
                                          : flatNormalTexture_;
-        const TextureHandle spHandle = (call.material.specularMap != kInvalidHandle)
-                                         ? call.material.specularMap
-                                         : noSpecularTexture_;
         if (nmHandle != kInvalidHandle && nmHandle <= textures_.size()) {
             textures_[nmHandle - 1]->bind(4);
-        }
-        if (spHandle != kInvalidHandle && spHandle <= textures_.size()) {
-            textures_[spHandle - 1]->bind(5);
         }
 
         TextureHandle tex = call.material.texture;
