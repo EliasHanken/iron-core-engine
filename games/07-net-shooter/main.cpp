@@ -410,10 +410,14 @@ int main(int argc, char** argv) {
         (foxModel && foxModel->skinnedMesh)
             ? renderer.createSkinnedMesh(*foxModel->skinnedMesh)
             : iron::kInvalidSkinnedMesh;
+#ifdef IRON_RENDER_BACKEND_VULKAN
     const iron::ShaderHandle foxShader =
         (foxMesh != iron::kInvalidSkinnedMesh)
             ? renderer.createStandardSkinnedLitShader()
             : iron::kInvalidHandle;
+#else  // IRON_RENDER_BACKEND_OPENGL — no skinned standard shader on the frozen backend
+    const iron::ShaderHandle foxShader = iron::kInvalidHandle;
+#endif
 
     const iron::AnimationClip* foxIdleClip =
         foxModel ? foxModel->findClip("Survey") : nullptr;

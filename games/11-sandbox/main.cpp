@@ -22,7 +22,6 @@
 #include "render/RenderHandles.h"
 #include "render/Renderer.h"
 #include "render/RendererFactory.h"
-#include "render/StandardLitShader.h"
 #include "render/TextureLoader.h"
 #include "reflection/RegisterCoreTypes.h"
 #include "reflection/Reflection.h"

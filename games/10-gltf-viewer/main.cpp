@@ -19,7 +19,6 @@
 #include "render/Material.h"
 #include "render/Renderer.h"
 #include "render/RendererFactory.h"
-#include "render/StandardLitShader.h"
 #include "render/TextureLoader.h"
 #include "scene/FreeFlyCamera.h"
 #include "scene/Mesh.h"
