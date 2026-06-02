@@ -5,8 +5,8 @@ namespace iron {
 // Canonical Vulkan (GLSL 450) "standard lit" shader — shadow PCF + normal map +
 // Cook-Torrance GGX PBR + point lights + planar/cubemap reflection + fog + emissive.
 // Single source of truth; games obtain handles via Renderer::createStandardLitShader().
-// Consumes the shared LitUbo (set=0, binding=0) + bindings 1..7 (diffuse, normal,
-// metallicRoughness, shadow, skyCubemap, reflection, AO). Keep in lockstep with
+// Consumes the shared LitUbo (set=0, binding=0) + bindings 1..8 (diffuse, normal,
+// metallicRoughness, shadow, skyCubemap, reflection, AO, emissive). Keep in lockstep with
 // VulkanRenderer's descriptor-set layout and engine/render/Pbr.h BRDF formulas.
 
 inline const char* standardLitVertSource() {
@@ -27,6 +27,7 @@ layout(set = 0, binding = 0) uniform LitUbo {
     vec4 cameraPos;
     vec4 materialParams;   // x=uvScale, y=roughness, z=reflectivity, w=shadowBias
     vec4 materialParams2;  // M45b — x=metallic, y=ao, z/w spare
+    vec4 baseColorFactor;  // M45c — xyz=albedo tint, w unused
     vec4 fogColor;
     vec4 lightCounts;
     vec4 pointPositions[16];
@@ -74,6 +75,7 @@ layout(set = 0, binding = 0) uniform LitUbo {
     vec4 cameraPos;
     vec4 materialParams;   // x=uvScale, y=roughness, z=reflectivity, w=shadowBias
     vec4 materialParams2;  // M45b — x=metallic, y=ao, z/w spare
+    vec4 baseColorFactor;  // M45c — xyz=albedo tint, w unused
     vec4 fogColor;
     vec4 lightCounts;
     vec4 pointPositions[16];
@@ -83,7 +85,7 @@ layout(set = 0, binding = 0) uniform LitUbo {
     vec4 clipPlane;           // M17 — used only by reflection-pass shader
 } u;
 
-layout(set = 0, binding = 8) uniform BoneUbo {
+layout(set = 0, binding = 9) uniform BoneUbo {
     mat4 bones[128];
 } bones;
 
@@ -132,6 +134,7 @@ layout(set = 0, binding = 0) uniform LitUbo {
     vec4 cameraPos;
     vec4 materialParams;   // x=uvScale, y=roughness, z=reflectivity, w=shadowBias
     vec4 materialParams2;  // M45b — x=metallic, y=ao, z/w spare
+    vec4 baseColorFactor;  // M45c — xyz=albedo tint, w unused
     vec4 fogColor;
     vec4 lightCounts;
     vec4 pointPositions[16];
@@ -148,6 +151,7 @@ layout(set = 0, binding = 4) uniform sampler2D uShadowMap;
 layout(set = 0, binding = 5) uniform samplerCube uSkyCubemap;
 layout(set = 0, binding = 6) uniform sampler2D uReflection;
 layout(set = 0, binding = 7) uniform sampler2D uAoMap;
+layout(set = 0, binding = 8) uniform sampler2D uEmissiveMap;
 
 float shadowFactor(vec4 lightSpacePos, float bias) {
     vec3 proj = lightSpacePos.xyz / lightSpacePos.w;
@@ -205,7 +209,7 @@ void main() {
     vec3 perturbedN = normalize(TBN * tangentNormal);
 
     // PBR material parameters.
-    vec3  albedo    = texture(uDiffuse, uv).rgb;
+    vec3  albedo    = texture(uDiffuse, uv).rgb * u.baseColorFactor.xyz;
     float roughness = clamp(u.materialParams.y * texture(uMetallicRoughnessMap, uv).g, 0.04, 1.0);
     float metallic  = clamp(u.materialParams2.x * texture(uMetallicRoughnessMap, uv).b, 0.0, 1.0);
     float ao        = u.materialParams2.y * texture(uAoMap, uv).r;
@@ -234,7 +238,8 @@ void main() {
     }
 
     vec3 ambient = u.ambient.xyz * albedo * ao;
-    vec3 color = ambient + Lo + u.emissive.xyz;
+    vec3 emissive = u.emissive.xyz * texture(uEmissiveMap, uv).rgb;
+    vec3 color = ambient + Lo + emissive;
 
     // M17 — planar reflection (preferred when active) with M16 cubemap fallback.
     float reflectivity = u.materialParams.z;

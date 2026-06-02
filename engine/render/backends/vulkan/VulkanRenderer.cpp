@@ -287,9 +287,9 @@ void VulkanRenderer::drawHud(const HudBatch& batch, int fbW, int fbH) {
 
 namespace {
 
-// M12+M13+M14+M15+M17+M45b — per-draw UBO uploaded by submit. std140 layout:
+// M12+M13+M14+M15+M17+M45b+M45c — per-draw UBO uploaded by submit. std140 layout:
 // all members are mat4 (64-byte aligned) or vec4 (16-byte aligned), so no
-// straddling. Total 944 bytes (M45b added materialParams2 after materialParams).
+// straddling. Total 960 bytes (M45c added baseColorFactor after materialParams2).
 struct LitUbo {
     Mat4 mvp;                 // 64
     Mat4 model;               // 64
@@ -301,6 +301,7 @@ struct LitUbo {
     Vec4 cameraPos;           // 16
     Vec4 materialParams;      // 16  x=uvScale, y=roughness, z=reflectivity, w=shadowBias
     Vec4 materialParams2;     // 16  M45b — x=metallic, y=ao, z/w spare
+    Vec4 baseColorFactor;     // 16  M45c — xyz = albedo tint, w unused
     Vec4 fogColor;            // 16  M15 — xyz=color, w=density
     Vec4 lightCounts;         // 16  M15 — x=pointLightCount (as float), y/z/w padding
     Vec4 pointPositions[16];  // 256 M15 — xyz=position, w=intensity
@@ -309,7 +310,7 @@ struct LitUbo {
     Vec4 reflectionParams;    // 16  M17 — x=useReflectionPlane (0/1), y=screenW, z=screenH, w=0
     Vec4 clipPlane;           // 16  M17 — (normal.xyz, -d) for reflection pass; ignored in scene
 };
-static_assert(sizeof(LitUbo) == 944, "LitUbo std140 layout (M45b)");
+static_assert(sizeof(LitUbo) == 960, "LitUbo std140 layout (M45c)");
 
 // Extracts the camera's world-space position from a view matrix.
 // Assumes view is a pure rigid transform [R | t; 0 0 0 1] (rotation +
@@ -370,7 +371,7 @@ layout(location = 1) in vec3 aNormal;
 layout(location = 2) in vec2 aUV;
 layout(location = 3) in vec3 aTangent;
 
-// Full LitUbo std140 layout (944 bytes after M45b). We reference only
+// Full LitUbo std140 layout (960 bytes after M45c). We reference only
 // `model`, `reflectionViewProj`, and `clipPlane`.
 layout(set = 0, binding = 0) uniform LitUbo {
     mat4 mvp;
@@ -383,6 +384,7 @@ layout(set = 0, binding = 0) uniform LitUbo {
     vec4 cameraPos;
     vec4 materialParams;
     vec4 materialParams2;  // M45b
+    vec4 baseColorFactor;  // M45c
     vec4 fogColor;
     vec4 lightCounts;
     vec4 pointPositions[16];
@@ -556,6 +558,8 @@ void VulkanRenderer::recordSceneDraw(VkCommandBuffer cb, const DrawCall& call) {
         pendingShadowBias_,
     };
     ubo.materialParams2 = Vec4{call.material.metallic, call.material.ao, 0.0f, 0.0f};
+    ubo.baseColorFactor = Vec4{call.material.baseColorFactor.x, call.material.baseColorFactor.y,
+                               call.material.baseColorFactor.z, 0.0f};
     ubo.fogColor = Vec4{
         pendingFog_.color.x, pendingFog_.color.y, pendingFog_.color.z,
         pendingFog_.density,
@@ -611,8 +615,8 @@ void VulkanRenderer::recordSceneDraw(VkCommandBuffer cb, const DrawCall& call) {
     bufInfo.offset = uboOffset;
     bufInfo.range  = sizeof(ubo);
 
-    // M13/M45b — write descriptors per draw: UBO + diffuse + normal +
-    // metallic-roughness + shadow + sky + reflection + AO.
+    // M13/M45b/M45c — write descriptors per draw: UBO + diffuse + normal +
+    // metallic-roughness + shadow + sky + reflection + AO + emissive.
     // Fallback textures used for invalid handles.
     const auto& diffuse = textures_.has(call.material.texture)
         ? textures_.get(call.material.texture)
@@ -626,6 +630,10 @@ void VulkanRenderer::recordSceneDraw(VkCommandBuffer cb, const DrawCall& call) {
     const auto& aoTex = textures_.has(call.material.aoMap)
         ? textures_.get(call.material.aoMap)
         : textures_.get(textures_.whiteTexture());
+    // M45c — binding 8: emissive map (white fallback = emissive × 1 = factor only).
+    const auto& emis = textures_.has(call.material.emissiveMap)
+        ? textures_.get(call.material.emissiveMap)
+        : textures_.get(textures_.whiteTexture());
 
     // M16 — also bind the active skybox (or black fallback) at binding 5.
     const CubemapHandle skyHandle = cubemaps_.has(pendingSkybox_)
@@ -633,7 +641,7 @@ void VulkanRenderer::recordSceneDraw(VkCommandBuffer cb, const DrawCall& call) {
         : cubemaps_.blackCubemap();
     const auto& skyTex = cubemaps_.get(skyHandle);
 
-    VkDescriptorImageInfo imgInfos[7]{};
+    VkDescriptorImageInfo imgInfos[8]{};
     imgInfos[0].sampler     = diffuse.sampler;
     imgInfos[0].imageView   = diffuse.view;
     imgInfos[0].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
@@ -656,15 +664,19 @@ void VulkanRenderer::recordSceneDraw(VkCommandBuffer cb, const DrawCall& call) {
     imgInfos[6].sampler     = aoTex.sampler;
     imgInfos[6].imageView   = aoTex.view;
     imgInfos[6].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    // M45c — binding 8: emissive map.
+    imgInfos[7].sampler     = emis.sampler;
+    imgInfos[7].imageView   = emis.view;
+    imgInfos[7].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 
-    VkWriteDescriptorSet writes[8]{};
+    VkWriteDescriptorSet writes[9]{};
     writes[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
     writes[0].dstSet = set;
     writes[0].dstBinding = 0;
     writes[0].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
     writes[0].descriptorCount = 1;
     writes[0].pBufferInfo = &bufInfo;
-    for (int i = 0; i < 7; ++i) {
+    for (int i = 0; i < 8; ++i) {
         writes[i + 1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
         writes[i + 1].dstSet = set;
         writes[i + 1].dstBinding = i + 1;
@@ -672,7 +684,7 @@ void VulkanRenderer::recordSceneDraw(VkCommandBuffer cb, const DrawCall& call) {
         writes[i + 1].descriptorCount = 1;
         writes[i + 1].pImageInfo = &imgInfos[i];
     }
-    vkUpdateDescriptorSets(context_.device(), 8, writes, 0, nullptr);
+    vkUpdateDescriptorSets(context_.device(), 9, writes, 0, nullptr);
 
     vkCmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_GRAPHICS,
                             sh.pipelineLayout, 0, 1, &set, 0, nullptr);
@@ -718,6 +730,8 @@ void VulkanRenderer::recordSkinnedDraw(VkCommandBuffer cb,
         pendingShadowBias_,
     };
     ubo.materialParams2 = Vec4{call.material.metallic, call.material.ao, 0.0f, 0.0f};
+    ubo.baseColorFactor = Vec4{call.material.baseColorFactor.x, call.material.baseColorFactor.y,
+                               call.material.baseColorFactor.z, 0.0f};
     ubo.fogColor = Vec4{
         pendingFog_.color.x, pendingFog_.color.y, pendingFog_.color.z,
         pendingFog_.density,
@@ -779,7 +793,7 @@ void VulkanRenderer::recordSkinnedDraw(VkCommandBuffer cb,
     bufInfo.offset = uboOffset;
     bufInfo.range  = sizeof(ubo);
 
-    // --- 4. Resolve textures (same fallbacks as scene path, M45b: MR + AO) ---
+    // --- 4. Resolve textures (same fallbacks as scene path, M45b/M45c: MR + AO + emissive) ---
     const auto& diffuse = textures_.has(call.material.texture)
         ? textures_.get(call.material.texture)
         : textures_.get(textures_.whiteTexture());
@@ -792,13 +806,17 @@ void VulkanRenderer::recordSkinnedDraw(VkCommandBuffer cb,
     const auto& aoTex = textures_.has(call.material.aoMap)
         ? textures_.get(call.material.aoMap)
         : textures_.get(textures_.whiteTexture());
+    // M45c — binding 8: emissive map (white fallback = emissive × 1 = factor only).
+    const auto& emis = textures_.has(call.material.emissiveMap)
+        ? textures_.get(call.material.emissiveMap)
+        : textures_.get(textures_.whiteTexture());
 
     const CubemapHandle skyHandle = cubemaps_.has(pendingSkybox_)
         ? pendingSkybox_
         : cubemaps_.blackCubemap();
     const auto& skyTex = cubemaps_.get(skyHandle);
 
-    VkDescriptorImageInfo imgInfos[7]{};
+    VkDescriptorImageInfo imgInfos[8]{};
     imgInfos[0].sampler     = diffuse.sampler;
     imgInfos[0].imageView   = diffuse.view;
     imgInfos[0].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
@@ -819,20 +837,24 @@ void VulkanRenderer::recordSkinnedDraw(VkCommandBuffer cb,
     imgInfos[6].sampler     = aoTex.sampler;
     imgInfos[6].imageView   = aoTex.view;
     imgInfos[6].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    // M45c — binding 8: emissive map.
+    imgInfos[7].sampler     = emis.sampler;
+    imgInfos[7].imageView   = emis.view;
+    imgInfos[7].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 
     VkDescriptorBufferInfo bonesInfo{};
     bonesInfo.buffer = f.uboBuffer;
     bonesInfo.offset = bonesOffset;
     bonesInfo.range  = sizeof(Mat4) * kMaxBonesPerSkinnedMesh;
 
-    VkWriteDescriptorSet writes[9]{};
+    VkWriteDescriptorSet writes[10]{};
     writes[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
     writes[0].dstSet = set;
     writes[0].dstBinding = 0;
     writes[0].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
     writes[0].descriptorCount = 1;
     writes[0].pBufferInfo = &bufInfo;
-    for (int i = 0; i < 7; ++i) {
+    for (int i = 0; i < 8; ++i) {
         writes[i + 1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
         writes[i + 1].dstSet = set;
         writes[i + 1].dstBinding = i + 1;
@@ -840,14 +862,14 @@ void VulkanRenderer::recordSkinnedDraw(VkCommandBuffer cb,
         writes[i + 1].descriptorCount = 1;
         writes[i + 1].pImageInfo = &imgInfos[i];
     }
-    // M23/M45b — bones UBO moved to binding 8 (binding 7 now = AO sampler).
-    writes[8].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-    writes[8].dstSet = set;
-    writes[8].dstBinding = 8;
-    writes[8].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-    writes[8].descriptorCount = 1;
-    writes[8].pBufferInfo = &bonesInfo;
-    vkUpdateDescriptorSets(context_.device(), 9, writes, 0, nullptr);
+    // M23/M45b/M45c — bones UBO moved to binding 9 (binding 8 now = emissive sampler).
+    writes[9].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    writes[9].dstSet = set;
+    writes[9].dstBinding = 9;
+    writes[9].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+    writes[9].descriptorCount = 1;
+    writes[9].pBufferInfo = &bonesInfo;
+    vkUpdateDescriptorSets(context_.device(), 10, writes, 0, nullptr);
 
     vkCmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_GRAPHICS,
                             sh.pipelineLayout, 0, 1, &set, 0, nullptr);
