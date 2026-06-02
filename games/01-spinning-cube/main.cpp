@@ -97,8 +97,12 @@ int main() {
     renderer.setShadowBounds(iron::Vec3{0.0f, 0.0f, 0.0f}, 5.0f);
 
     const iron::MeshHandle cube = renderer.createMesh(iron::makeCube());
+#ifdef IRON_RENDER_BACKEND_VULKAN
+    const iron::ShaderHandle shader = renderer.createStandardLitShader();
+#else  // IRON_RENDER_BACKEND_OPENGL — frozen; keeps its inline GLSL 330 shader
     const iron::ShaderHandle shader =
-        renderer.createStandardLitShader();
+        renderer.createShader(kVertexShader, kFragmentShader);
+#endif
     // Resolve the asset next to the executable, so the game runs the same
     // regardless of the working directory it was launched from.
     const iron::TextureHandle texture =

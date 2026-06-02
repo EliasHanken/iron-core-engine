@@ -273,8 +273,12 @@ int main() {
     // -----------------------------------------------------------------------
     // Lit shader
     // -----------------------------------------------------------------------
+#ifdef IRON_RENDER_BACKEND_VULKAN
+    const iron::ShaderHandle litShader = renderer.createStandardLitShader();
+#else  // IRON_RENDER_BACKEND_OPENGL — frozen; keeps its inline GLSL 330 shader
     const iron::ShaderHandle litShader =
-        renderer.createStandardLitShader();
+        renderer.createShader(kVertexShader, kFragmentShader);
+#endif
     if (litShader == iron::kInvalidHandle) {
         iron::Log::error("showcase: lit shader failed to compile");
         return 1;
