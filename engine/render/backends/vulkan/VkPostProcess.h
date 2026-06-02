@@ -48,7 +48,7 @@ public:
 
     void beginScenePass(VkCommandBuffer cb, const float clearColor[4]) const;
     void endScenePass(VkCommandBuffer cb) const;
-    void recordComposite(VkCommandBuffer cb) const;
+    void recordComposite(VkCommandBuffer cb, float exposure) const;
     // Full-screen blit of viewportColor into the (already-begun) swapchain pass.
     void blitToSwapchain(VkCommandBuffer cb) const;
 
@@ -70,7 +70,8 @@ public:
     void runChain(VkCommandBuffer cb,
                   const std::vector<PostPass>& passes,
                   const EffectTable& effects,
-                  VkExtent2D swapExtent);
+                  VkExtent2D swapExtent,
+                  float exposure);
 
     // --- Mask pass API (Phase C) ---
     VkRenderPass maskPass() const { return maskPass_; }
@@ -102,7 +103,7 @@ public:
         float color[4];   // rgb outline color, a unused
         float texel[2];   // 1/width, 1/height (of the mask/screen)
         float width;      // outline thickness in pixels
-        float _pad;
+        float exposure;   // M44: tonemap exposure (was _pad)
     };
 
     // Push constants for the glow blur pipelines (H and V — direction is
@@ -117,13 +118,21 @@ public:
     struct GlowCompositePush {
         float color[4];      // rgb halo color + padding
         float intensity;     // halo strength (style.intensity)
-        float _pad[3];
+        float exposure;      // M44: tonemap exposure (was _pad[0])
+        float _pad[2];
     };
 
     // Push constants for the x-ray pipeline.
     struct XRayPush {
         float color[4];      // rgb tint color + padding
         float intensity;     // tint strength
+        float exposure;      // M44: tonemap exposure (was _pad[0])
+        float _pad[2];
+    };
+
+    // Push constants for the copy/composite (tonemap) pipeline.
+    struct CopyPush {
+        float exposure;   // linear exposure multiply applied before ACES
         float _pad[3];
     };
 
@@ -143,6 +152,11 @@ private:
     VkExtent2D extent_{};
     VkFormat   colorFormat_ = VK_FORMAT_UNDEFINED;
     VkFormat   depthFormat_ = VK_FORMAT_UNDEFINED;
+    // HDR linear-radiance format for the scene target (M44). Scene geometry +
+    // skybox + particles render here; the composite step tone-maps it down to
+    // the LDR `colorFormat_` viewportColor_. R16G16B16A16_SFLOAT is renderable,
+    // blendable, and sampleable on all target GPUs (no feature flag needed).
+    VkFormat   hdrFormat_   = VK_FORMAT_R16G16B16A16_SFLOAT;
 
     // --- M43a: final composited "viewport" target (color + depth). Sized
     // independently of the swapchain (defaults to swapchain extent). The

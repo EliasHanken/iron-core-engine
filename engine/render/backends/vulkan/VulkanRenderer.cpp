@@ -1030,7 +1030,8 @@ void VulkanRenderer::endFrame() {
         // plain positive-height viewport set by beginViewportPass is correct.
         {
             const std::vector<PostPass> passes = planPostChain(activeKindsThisFrame);
-            postProcess_.runChain(cb, passes, effects_, postProcess_.viewportExtent());
+            postProcess_.runChain(cb, passes, effects_, postProcess_.viewportExtent(),
+                                  pendingExposure_);
         }
 
         // Debug-line + HUD overlays now render into the viewport target (they

@@ -23,7 +23,15 @@ const char* kCopyFrag = R"(#version 450
 layout(location = 0) in vec2 vUV;
 layout(location = 0) out vec4 outColor;
 layout(set = 0, binding = 0) uniform sampler2D uScene;
-void main() { outColor = texture(uScene, vUV); }
+layout(push_constant) uniform Push { float exposure; } pc;
+vec3 aces(vec3 x) {
+    const float a = 2.51, b = 0.03, c = 2.43, d = 0.59, e = 0.14;
+    return clamp((x * (a * x + b)) / (x * (c * x + d) + e), 0.0, 1.0);
+}
+void main() {
+    vec3 hdr = texture(uScene, vUV).rgb * pc.exposure;
+    outColor = vec4(aces(hdr), 1.0);
+}
 )";
 
 // --- Mask pass shaders ---
@@ -56,8 +64,12 @@ layout(push_constant) uniform Push {
     vec4  color;
     vec2  texel;
     float width;
-    float _pad;
+    float exposure;
 } pc;
+vec3 aces(vec3 x) {
+    const float a = 2.51, b = 0.03, c = 2.43, d = 0.59, e = 0.14;
+    return clamp((x * (a * x + b)) / (x * (c * x + d) + e), 0.0, 1.0);
+}
 void main() {
     vec3 scene = texture(uScene, vUV).rgb;
     uint here = texture(uMask, vUV).r;
@@ -69,7 +81,7 @@ void main() {
         uint n = texture(uMask, vUV + o).r;
         if (n != here) edge = 1.0;
     }
-    outColor = vec4(mix(scene, pc.color.rgb, edge), 1.0);
+    outColor = vec4(aces(mix(scene, pc.color.rgb, edge) * pc.exposure), 1.0);
 }
 )";
 
@@ -122,13 +134,17 @@ layout(location = 0) out vec4 outColor;
 layout(set = 0, binding = 0) uniform sampler2D uScene;
 layout(set = 0, binding = 1) uniform sampler2D uBlur;
 layout(set = 0, binding = 2) uniform usampler2D uMask;
-layout(push_constant) uniform Push { vec4 color; float intensity; } pc;
+layout(push_constant) uniform Push { vec4 color; float intensity; float exposure; } pc;
+vec3 aces(vec3 x) {
+    const float a = 2.51, b = 0.03, c = 2.43, d = 0.59, e = 0.14;
+    return clamp((x * (a * x + b)) / (x * (c * x + d) + e), 0.0, 1.0);
+}
 void main() {
     vec3 scene = texture(uScene, vUV).rgb;
     float blur  = texture(uBlur, vUV).r;
     float solid = texture(uMask, vUV).r > 0u ? 1.0 : 0.0;
     float halo  = max(blur - solid, 0.0) * pc.intensity;
-    outColor = vec4(scene + pc.color.rgb * halo, 1.0);
+    outColor = vec4(aces((scene + pc.color.rgb * halo) * pc.exposure), 1.0);
 }
 )";
 
@@ -147,16 +163,20 @@ layout(set = 0, binding = 0) uniform sampler2D uScene;
 layout(set = 0, binding = 1) uniform usampler2D uMask;
 layout(set = 0, binding = 2) uniform sampler2D uMaskDepth;
 layout(set = 0, binding = 3) uniform sampler2D uSceneDepth;
-layout(push_constant) uniform Push { vec4 color; float intensity; } pc;
+layout(push_constant) uniform Push { vec4 color; float intensity; float exposure; } pc;
+vec3 aces(vec3 x) {
+    const float a = 2.51, b = 0.03, c = 2.43, d = 0.59, e = 0.14;
+    return clamp((x * (a * x + b)) / (x * (c * x + d) + e), 0.0, 1.0);
+}
 void main() {
     vec3 scene = texture(uScene, vUV).rgb;
     uint id = texture(uMask, vUV).r;
-    if (id == 0u) { outColor = vec4(scene, 1.0); return; }
+    if (id == 0u) { outColor = vec4(aces(scene * pc.exposure), 1.0); return; }
     float md = texture(uMaskDepth, vUV).r;   // tagged object depth
     float sd = texture(uSceneDepth, vUV).r;  // nearest scene depth
     // Occluded when something is in front of the object (smaller depth = nearer).
     float occluded = (sd < md - 1e-4) ? 1.0 : 0.0;
-    outColor = vec4(mix(scene, pc.color.rgb, occluded * pc.intensity), 1.0);
+    outColor = vec4(aces(mix(scene, pc.color.rgb, occluded * pc.intensity) * pc.exposure), 1.0);
 }
 )";
 
@@ -474,10 +494,14 @@ void VkPostProcess::endViewportPass(VkCommandBuffer cb) const {
     vkCmdEndRenderPass(cb);
 }
 
-void VkPostProcess::recordComposite(VkCommandBuffer cb) const {
+void VkPostProcess::recordComposite(VkCommandBuffer cb, float exposure) const {
     vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, copyPipeline_);
     vkCmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_GRAPHICS,
                             copyPipeLayout_, 0, 1, &copyDescSet_, 0, nullptr);
+    CopyPush pc{};
+    pc.exposure = exposure;
+    vkCmdPushConstants(cb, copyPipeLayout_, VK_SHADER_STAGE_FRAGMENT_BIT,
+                       0, sizeof(CopyPush), &pc);
     vkCmdDraw(cb, 3, 1, 0, 0);
 }
 
@@ -534,12 +558,12 @@ void VkPostProcess::bindMaskPipeline(VkCommandBuffer cb) const {
 // ---------------------------------------------------------------------------
 
 bool VkPostProcess::createTargets(VkContext& ctx) {
-    // --- Scene color image (colorFormat_, COLOR_ATTACHMENT | SAMPLED) ---
+    // --- Scene color image (hdrFormat_, COLOR_ATTACHMENT | SAMPLED) ---
     {
         VkImageCreateInfo iInfo{};
         iInfo.sType         = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
         iInfo.imageType     = VK_IMAGE_TYPE_2D;
-        iInfo.format        = colorFormat_;
+        iInfo.format        = hdrFormat_;
         iInfo.extent        = {extent_.width, extent_.height, 1};
         iInfo.mipLevels     = 1;
         iInfo.arrayLayers   = 1;
@@ -559,7 +583,7 @@ bool VkPostProcess::createTargets(VkContext& ctx) {
         vInfo.sType                           = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
         vInfo.image                           = sceneColor_;
         vInfo.viewType                        = VK_IMAGE_VIEW_TYPE_2D;
-        vInfo.format                          = colorFormat_;
+        vInfo.format                          = hdrFormat_;
         vInfo.subresourceRange.aspectMask     = VK_IMAGE_ASPECT_COLOR_BIT;
         vInfo.subresourceRange.levelCount     = 1;
         vInfo.subresourceRange.layerCount     = 1;
@@ -608,7 +632,7 @@ bool VkPostProcess::createTargets(VkContext& ctx) {
     // Exit dep: COLOR_ATTACHMENT_OUTPUT -> FRAGMENT_SHADER lets the composite
     // pass sample safely.
     VkAttachmentDescription attachments[2]{};
-    attachments[0].format         = colorFormat_;
+    attachments[0].format         = hdrFormat_;  // was colorFormat_ (scenePass_ color attachment)
     attachments[0].samples        = VK_SAMPLE_COUNT_1_BIT;
     attachments[0].loadOp         = VK_ATTACHMENT_LOAD_OP_CLEAR;
     attachments[0].storeOp        = VK_ATTACHMENT_STORE_OP_STORE;
@@ -1207,10 +1231,17 @@ bool VkPostProcess::createCopyPipeline(VkContext& ctx) {
     dslInfo.pBindings    = &binding;
     VK_CHECK(vkCreateDescriptorSetLayout(ctx.device(), &dslInfo, nullptr, &copySetLayout_));
 
+    VkPushConstantRange pcRange{};
+    pcRange.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+    pcRange.offset     = 0;
+    pcRange.size       = sizeof(CopyPush);
+
     VkPipelineLayoutCreateInfo plInfo{};
-    plInfo.sType          = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
-    plInfo.setLayoutCount = 1;
-    plInfo.pSetLayouts    = &copySetLayout_;
+    plInfo.sType                  = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+    plInfo.setLayoutCount         = 1;
+    plInfo.pSetLayouts            = &copySetLayout_;
+    plInfo.pushConstantRangeCount = 1;
+    plInfo.pPushConstantRanges    = &pcRange;
     VK_CHECK(vkCreatePipelineLayout(ctx.device(), &plInfo, nullptr, &copyPipeLayout_));
 
     // Pipeline — full-screen triangle, no vertex input, depth test off.
@@ -2143,11 +2174,12 @@ bool VkPostProcess::createGlowPipelines(VkContext& ctx) {
 void VkPostProcess::runChain(VkCommandBuffer cb,
                              const std::vector<PostPass>& passes,
                              const EffectTable& effects,
-                             VkExtent2D swapExtent) {
+                             VkExtent2D swapExtent,
+                             float exposure) {
     for (const PostPass pass : passes) {
         switch (pass) {
             case PostPass::Copy:
-                recordComposite(cb);
+                recordComposite(cb, exposure);
                 break;
 
             case PostPass::Outline: {
@@ -2174,7 +2206,7 @@ void VkPostProcess::runChain(VkCommandBuffer cb,
                 }
                 pc.texel[0] = (swapExtent.width  > 0) ? 1.0f / static_cast<float>(swapExtent.width)  : 0.0f;
                 pc.texel[1] = (swapExtent.height > 0) ? 1.0f / static_cast<float>(swapExtent.height) : 0.0f;
-                pc._pad     = 0.0f;
+                pc.exposure = exposure;
 
                 vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, outlinePipeline_);
                 vkCmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_GRAPHICS,
@@ -2210,6 +2242,7 @@ void VkPostProcess::runChain(VkCommandBuffer cb,
                     pc.color[0] = 1.0f; pc.color[1] = 0.6f; pc.color[2] = 0.1f; pc.color[3] = 1.0f;
                     pc.intensity = 1.0f;
                 }
+                pc.exposure = exposure;
 
                 vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, glowCompositePipeline_);
                 vkCmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_GRAPHICS,
@@ -2246,6 +2279,7 @@ void VkPostProcess::runChain(VkCommandBuffer cb,
                     pc.color[0] = 1.0f; pc.color[1] = 0.6f; pc.color[2] = 0.1f; pc.color[3] = 1.0f;
                     pc.intensity = 0.5f;
                 }
+                pc.exposure = exposure;
 
                 vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, xrayPipeline_);
                 vkCmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_GRAPHICS,
