@@ -300,7 +300,7 @@ struct LitUbo {
     Vec4 emissive;            // 16
     Vec4 cameraPos;           // 16
     Vec4 materialParams;      // 16  x=uvScale, y=roughness, z=reflectivity, w=shadowBias
-    Vec4 materialParams2;     // 16  M45b — x=metallic, y=ao, z/w spare
+    Vec4 materialParams2;     // 16  M45b — x=metallic, y=ao, z=normalScale, w spare
     Vec4 baseColorFactor;     // 16  M45c — xyz = albedo tint, w unused
     Vec4 fogColor;            // 16  M15 — xyz=color, w=density
     Vec4 lightCounts;         // 16  M15 — x=pointLightCount (as float), y/z/w padding
@@ -557,7 +557,7 @@ void VulkanRenderer::recordSceneDraw(VkCommandBuffer cb, const DrawCall& call) {
         call.material.reflectivity,
         pendingShadowBias_,
     };
-    ubo.materialParams2 = Vec4{call.material.metallic, call.material.ao, 0.0f, 0.0f};
+    ubo.materialParams2 = Vec4{call.material.metallic, call.material.ao, call.material.normalScale, 0.0f};
     ubo.baseColorFactor = Vec4{call.material.baseColorFactor.x, call.material.baseColorFactor.y,
                                call.material.baseColorFactor.z, 0.0f};
     ubo.fogColor = Vec4{
@@ -729,7 +729,7 @@ void VulkanRenderer::recordSkinnedDraw(VkCommandBuffer cb,
         call.material.reflectivity,
         pendingShadowBias_,
     };
-    ubo.materialParams2 = Vec4{call.material.metallic, call.material.ao, 0.0f, 0.0f};
+    ubo.materialParams2 = Vec4{call.material.metallic, call.material.ao, call.material.normalScale, 0.0f};
     ubo.baseColorFactor = Vec4{call.material.baseColorFactor.x, call.material.baseColorFactor.y,
                                call.material.baseColorFactor.z, 0.0f};
     ubo.fogColor = Vec4{

@@ -474,6 +474,7 @@ std::optional<GltfModel> loadGltfModel(const std::string& path) {
     float matRoughnessFactor = 1.0f;
     Vec3  matBaseColorFactor{1.0f, 1.0f, 1.0f};
     Vec3  matEmissiveFactor{0.0f, 0.0f, 0.0f};
+    float matNormalScale     = 1.0f;
     if (prim.material >= 0 &&
         prim.material < static_cast<int>(model.materials.size())) {
         const auto& mat = model.materials[prim.material];
@@ -516,6 +517,7 @@ std::optional<GltfModel> loadGltfModel(const std::string& path) {
             matEmissiveFactor = {static_cast<float>(ef[0]),
                                  static_cast<float>(ef[1]),
                                  static_cast<float>(ef[2])};
+        matNormalScale = static_cast<float>(mat.normalTexture.scale);
     }
 
     // M23 - skinned mesh data. Populated only if the primitive has
@@ -761,6 +763,7 @@ std::optional<GltfModel> loadGltfModel(const std::string& path) {
     result.roughnessFactor = matRoughnessFactor;
     result.baseColorFactor = matBaseColorFactor;
     result.emissiveFactor  = matEmissiveFactor;
+    result.normalScale     = matNormalScale;
 
     Log::info("GltfLoader: loaded %s - %zu verts, %zu indices%s (%zu anim%s)",
               path.c_str(), result.mesh.vertices.size(), result.mesh.indices.size(),

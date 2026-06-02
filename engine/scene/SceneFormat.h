@@ -31,6 +31,7 @@ struct MeshRef {
 struct MaterialDef {
     std::string albedoPath;
     std::string normalPath;
+    float       normalScale  = 1.0f;               // glTF normalTexture.scale
     std::string metallicRoughnessPath;
     std::string aoPath;
     std::string emissivePath;                       // emissive map (sRGB)

@@ -36,6 +36,7 @@ struct GltfModel {
     float roughnessFactor = 1.0f;
     Vec3  baseColorFactor{1.0f, 1.0f, 1.0f};
     Vec3  emissiveFactor{0.0f, 0.0f, 0.0f};
+    float normalScale     = 1.0f;  // glTF normalTexture.scale (0=flat, >1=exaggerated)
 
     // Returns a pointer to the first clip whose name matches `name`,
     // or nullptr if no match. Linear scan; clip counts are tiny in v1.

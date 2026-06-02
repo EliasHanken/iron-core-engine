@@ -26,7 +26,7 @@ layout(set = 0, binding = 0) uniform LitUbo {
     vec4 emissive;
     vec4 cameraPos;
     vec4 materialParams;   // x=uvScale, y=roughness, z=reflectivity, w=shadowBias
-    vec4 materialParams2;  // M45b — x=metallic, y=ao, z/w spare
+    vec4 materialParams2;  // M45b — x=metallic, y=ao, z=normalScale, w spare
     vec4 baseColorFactor;  // M45c — xyz=albedo tint, w unused
     vec4 fogColor;
     vec4 lightCounts;
@@ -74,7 +74,7 @@ layout(set = 0, binding = 0) uniform LitUbo {
     vec4 emissive;
     vec4 cameraPos;
     vec4 materialParams;   // x=uvScale, y=roughness, z=reflectivity, w=shadowBias
-    vec4 materialParams2;  // M45b — x=metallic, y=ao, z/w spare
+    vec4 materialParams2;  // M45b — x=metallic, y=ao, z=normalScale, w spare
     vec4 baseColorFactor;  // M45c — xyz=albedo tint, w unused
     vec4 fogColor;
     vec4 lightCounts;
@@ -133,7 +133,7 @@ layout(set = 0, binding = 0) uniform LitUbo {
     vec4 emissive;
     vec4 cameraPos;
     vec4 materialParams;   // x=uvScale, y=roughness, z=reflectivity, w=shadowBias
-    vec4 materialParams2;  // M45b — x=metallic, y=ao, z/w spare
+    vec4 materialParams2;  // M45b — x=metallic, y=ao, z=normalScale, w spare
     vec4 baseColorFactor;  // M45c — xyz=albedo tint, w unused
     vec4 fogColor;
     vec4 lightCounts;
@@ -205,7 +205,9 @@ void main() {
     vec3 T = normalize(vTangent);
     vec3 B = cross(N, T);
     mat3 TBN = mat3(T, B, N);
+    float normalScale = u.materialParams2.z;
     vec3 tangentNormal = texture(uNormalMap, uv).rgb * 2.0 - 1.0;
+    tangentNormal.xy *= normalScale;   // glTF normalTexture.scale (0=flat, >1=exaggerated)
     vec3 perturbedN = normalize(TBN * tangentNormal);
 
     // PBR material parameters.
