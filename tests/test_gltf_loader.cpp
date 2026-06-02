@@ -191,5 +191,20 @@ int main() {
         CHECK(!data.has_value());
     }
 
+    // --- M45c: loader extracts occlusion + emissive texture paths and PBR factors.
+    //     BoxTextured has no occlusion/emissive textures so those paths stay empty;
+    //     the factor checks verify the fields exist and hold sane defaults.
+    {
+        auto model = loadGltfModel(base + "/BoxTextured.gltf");
+        CHECK(model.has_value());
+        CHECK(model->metallicFactor  >= 0.0f && model->metallicFactor  <= 1.0f);
+        CHECK(model->roughnessFactor >= 0.0f && model->roughnessFactor <= 1.0f);
+        CHECK(model->baseColorFactor.x >= 0.0f);
+        CHECK(model->emissiveFactor.x  >= 0.0f);
+        // BoxTextured has no occlusion or emissive texture — paths should be empty.
+        CHECK(model->materialPaths.occlusion.empty());
+        CHECK(model->materialPaths.emissive.empty());
+    }
+
     return iron_test_result();
 }

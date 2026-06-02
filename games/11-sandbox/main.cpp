@@ -212,7 +212,9 @@ int main() {
     // Resolve one SceneEntity into a ResolvedEntity (mesh handle + material +
     // bounds + model). Returns false if the entity can't be drawn (a glTF that
     // fails to load, or no mesh). Reused for the initial scene + runtime adds.
-    auto resolveEntity = [&](const iron::SceneEntity& e, int entityIndex,
+    // Takes a mutable SceneEntity& so the glTF branch can seed the entity's
+    // MaterialDef ONCE (non-clobbering) for Inspector visibility + live editing.
+    auto resolveEntity = [&](iron::SceneEntity& e, int entityIndex,
                               ResolvedEntity& out) -> bool {
         out = ResolvedEntity{};
         out.entityIndex = entityIndex;
@@ -234,35 +236,56 @@ int main() {
             }
             out.mesh = renderer.createMesh(gltfModel->mesh);
             out.localBounds = iron::meshBounds(gltfModel->mesh);
-            out.material.texture   = gltfModel->materialPaths.albedo.empty()
-                ? renderer.whiteTexture()
-                : renderer.loadTexture(gltfModel->materialPaths.albedo);
-            out.material.normalMap = gltfModel->materialPaths.normal.empty()
-                ? renderer.flatNormalTexture()
-                : renderer.loadTexture(gltfModel->materialPaths.normal, /*srgb=*/false);
-            out.material.metallicRoughnessMap = gltfModel->materialPaths.metalRoughness.empty()
-                ? iron::kInvalidHandle
-                : renderer.loadTexture(gltfModel->materialPaths.metalRoughness, /*srgb=*/false);
+
+            // Import the glTF material into the editable MaterialDef ONCE (only fills
+            // fields the user/scene hasn't set), so the Inspector shows what was
+            // imported and every field stays live-editable.
+            if (e.material.albedoPath.empty())
+                e.material.albedoPath            = gltfModel->materialPaths.albedo;
+            if (e.material.normalPath.empty())
+                e.material.normalPath            = gltfModel->materialPaths.normal;
+            if (e.material.metallicRoughnessPath.empty())
+                e.material.metallicRoughnessPath = gltfModel->materialPaths.metalRoughness;
+            if (e.material.aoPath.empty())
+                e.material.aoPath                = gltfModel->materialPaths.occlusion;
+            if (e.material.emissivePath.empty())
+                e.material.emissivePath          = gltfModel->materialPaths.emissive;
+            // Factors: seed when at the MaterialDef defaults (metallic 0, roughness 0.5,
+            // baseColor {1,1,1}, emissive {0,0,0}). Mirrors the existing override sentinels.
+            if (e.material.metallic == 0.0f && e.material.roughness == 0.5f) {
+                e.material.metallic  = gltfModel->metallicFactor;
+                e.material.roughness = gltfModel->roughnessFactor;
+            }
+            if (e.material.baseColorFactor.x == 1.0f && e.material.baseColorFactor.y == 1.0f &&
+                e.material.baseColorFactor.z == 1.0f)
+                e.material.baseColorFactor = gltfModel->baseColorFactor;
+            if (iron::dot(e.material.emissive, e.material.emissive) == 0.0f)
+                e.material.emissive = gltfModel->emissiveFactor;
+            if (e.material.normalScale == 1.0f)
+                e.material.normalScale = gltfModel->normalScale;
 
         } else {
             iron::Log::warn("sandbox: entity '%s' has no mesh", e.name.c_str());
             return false;
         }
 
-        // Scene-file material overrides (textures fill still-invalid slots).
-        if (out.material.texture == iron::kInvalidHandle)
-            out.material.texture = resolveTexture(e.material.albedoPath, renderer.whiteTexture());
-        if (out.material.normalMap == iron::kInvalidHandle)
-            out.material.normalMap = resolveTexture(e.material.normalPath, renderer.flatNormalTexture(), /*srgb=*/false);
-        if (out.material.metallicRoughnessMap == iron::kInvalidHandle)
-            out.material.metallicRoughnessMap = resolveTexture(e.material.metallicRoughnessPath, iron::kInvalidHandle, /*srgb=*/false);
-        out.material.aoMap = resolveTexture(e.material.aoPath, iron::kInvalidHandle, /*srgb=*/false);
-        out.material.metallic  = e.material.metallic;
-        out.material.roughness = e.material.roughness;
-        out.material.ao        = e.material.ao;
-        out.material.emissive     = e.material.emissive;
-        out.material.uvScale      = e.material.uvScale;
-        out.material.reflectivity = e.material.reflectivity;
+        // Resolve all texture maps from the MaterialDef (which was seeded from
+        // the glTF above for gltfPath entities, or authored directly for primitives).
+        // Color spaces: albedo + emissive sRGB; normal / MR / AO linear.
+        out.material.texture              = resolveTexture(e.material.albedoPath,            renderer.whiteTexture());
+        out.material.normalMap            = resolveTexture(e.material.normalPath,            renderer.flatNormalTexture(), /*srgb=*/false);
+        out.material.metallicRoughnessMap = resolveTexture(e.material.metallicRoughnessPath, iron::kInvalidHandle,         /*srgb=*/false);
+        out.material.aoMap                = resolveTexture(e.material.aoPath,                iron::kInvalidHandle,         /*srgb=*/false);
+        out.material.emissiveMap          = resolveTexture(e.material.emissivePath,          iron::kInvalidHandle,         /*srgb=*/true);
+        // Scalars/factors: always read from the MaterialDef (source of truth).
+        out.material.metallic        = e.material.metallic;
+        out.material.roughness       = e.material.roughness;
+        out.material.ao              = e.material.ao;
+        out.material.emissive        = e.material.emissive;
+        out.material.baseColorFactor = e.material.baseColorFactor;
+        out.material.uvScale         = e.material.uvScale;
+        out.material.reflectivity    = e.material.reflectivity;
+        out.material.normalScale     = e.material.normalScale;
         out.model = iron::translation(e.transform.position) * e.transform.rotation.toMat4() * iron::scaling(e.transform.scale);
         return true;
     };
@@ -999,16 +1022,22 @@ int main() {
             call.material.texture      = rh->albedo;
             call.material.normalMap    = rh->normal;
             if (sceneIdx >= 0 && sceneIdx < static_cast<int>(resolved.size())) {
-                const iron::Material& rm          = resolved[sceneIdx].material;
+                // Map handles come from the resolved snapshot (cached by path, stable).
+                const iron::Material& rm           = resolved[sceneIdx].material;
                 call.material.metallicRoughnessMap = rm.metallicRoughnessMap;
-                call.material.aoMap               = rm.aoMap;
+                call.material.aoMap                = rm.aoMap;
+                call.material.emissiveMap          = rm.emissiveMap;
             }
-            call.material.metallic     = mat->metallic;
-            call.material.roughness    = mat->roughness;
-            call.material.ao           = mat->ao;
-            call.material.emissive     = mat->emissive;
-            call.material.uvScale      = mat->uvScale;
-            call.material.reflectivity = mat->reflectivity;
+            // Scalars/factors LIVE from the MaterialDef so Inspector edits take effect
+            // immediately for ALL entity types (glTF and primitive alike).
+            call.material.metallic        = mat->metallic;
+            call.material.roughness       = mat->roughness;
+            call.material.baseColorFactor = mat->baseColorFactor;
+            call.material.emissive        = mat->emissive;
+            call.material.ao              = mat->ao;
+            call.material.uvScale         = mat->uvScale;
+            call.material.reflectivity    = mat->reflectivity;
+            call.material.normalScale     = mat->normalScale;
             call.effectId              = (sceneIdx == selectedIndex) ? 1 : 0;
             renderer.submit(call);
         }

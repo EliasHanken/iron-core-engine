@@ -20,6 +20,8 @@ struct GltfMaterialPaths {
     std::string metalRoughness;  // pbrMetallicRoughness.metallicRoughnessTexture
                                   // (glTF layout: .g = roughness, .b = metallic;
                                   // consumed directly as the PBR MR map since M45b)
+    std::string occlusion;       // occlusionTexture (.r = AO; linear)
+    std::string emissive;        // emissiveTexture (sRGB)
 };
 
 struct GltfModel {
@@ -27,6 +29,14 @@ struct GltfModel {
     GltfMaterialPaths              materialPaths;
     std::optional<SkinnedMeshData> skinnedMesh;  // populated if glTF has a skin
     std::vector<AnimationClip>     animations;   // empty if file has no animations
+
+    // PBR scalar factors (glTF defaults: metallic/roughness 1, baseColor {1,1,1},
+    // emissive {0,0,0}). Multiply the corresponding maps.
+    float metallicFactor  = 1.0f;
+    float roughnessFactor = 1.0f;
+    Vec3  baseColorFactor{1.0f, 1.0f, 1.0f};
+    Vec3  emissiveFactor{0.0f, 0.0f, 0.0f};
+    float normalScale     = 1.0f;  // glTF normalTexture.scale (0=flat, >1=exaggerated)
 
     // Returns a pointer to the first clip whose name matches `name`,
     // or nullptr if no match. Linear scan; clip counts are tiny in v1.

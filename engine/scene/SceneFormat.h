@@ -31,12 +31,15 @@ struct MeshRef {
 struct MaterialDef {
     std::string albedoPath;
     std::string normalPath;
+    float       normalScale  = 1.0f;               // glTF normalTexture.scale
     std::string metallicRoughnessPath;
     std::string aoPath;
+    std::string emissivePath;                       // emissive map (sRGB)
     float       metallic     = 0.0f;
     float       roughness    = 0.5f;
     float       ao           = 1.0f;
     Vec3        emissive     = {0.0f, 0.0f, 0.0f};
+    Vec3        baseColorFactor{1.0f, 1.0f, 1.0f}; // albedo tint (glTF baseColorFactor)
     float       uvScale      = 1.0f;
     float       reflectivity = 0.0f;
 };
