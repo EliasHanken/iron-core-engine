@@ -188,9 +188,11 @@ MeshData makeUVSphere(float radius, int segments) {
             const std::uint32_t i1 = i0 + 1;
             const std::uint32_t i2 = i0 + static_cast<std::uint32_t>(stride);
             const std::uint32_t i3 = i2 + 1;
-            // CCW winding seen from outside (matches appendBox/appendTube convention).
-            // i0=top-left, i1=top-right, i2=bottom-left, i3=bottom-right.
-            out.indices.insert(out.indices.end(), {i0, i2, i1, i1, i2, i3});
+            // CCW-from-outside winding for the CULL_BACK + FRONT_FACE_CCW
+            // pipeline (the transposed order renders the sphere inside-out
+            // and back-face culls it to nothing). i0=(y,x) i1=(y,x+1)
+            // i2=(y+1,x) i3=(y+1,x+1).
+            out.indices.insert(out.indices.end(), {i0, i1, i2, i1, i3, i2});
         }
     }
     return out;

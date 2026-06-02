@@ -57,6 +57,26 @@ int main() {
             assert(approx(nl, 1.0f, 1e-3f));            // unit normal
         }
         assert(m.indices.size() % 3 == 0);              // triangle list
+        // Winding: every triangle must face OUTWARD (front-face CCW under the
+        // CULL_BACK pipeline). For a sphere centered at origin, the face normal
+        // cross(e1,e2) must point the same way as the triangle centroid.
+        for (std::size_t t = 0; t + 2 < m.indices.size(); t += 3) {
+            const auto& a = m.vertices[m.indices[t]].position;
+            const auto& b = m.vertices[m.indices[t + 1]].position;
+            const auto& c = m.vertices[m.indices[t + 2]].position;
+            Vec3 e1{b.x - a.x, b.y - a.y, b.z - a.z};
+            Vec3 e2{c.x - a.x, c.y - a.y, c.z - a.z};
+            Vec3 nrm{e1.y * e2.z - e1.z * e2.y,
+                     e1.z * e2.x - e1.x * e2.z,
+                     e1.x * e2.y - e1.y * e2.x};
+            float area2 = std::sqrt(nrm.x * nrm.x + nrm.y * nrm.y + nrm.z * nrm.z);
+            if (area2 < 1e-5f) continue;                // skip degenerate pole tris
+            Vec3 centroid{(a.x + b.x + c.x) / 3.0f,
+                          (a.y + b.y + c.y) / 3.0f,
+                          (a.z + b.z + c.z) / 3.0f};
+            float facing = nrm.x * centroid.x + nrm.y * centroid.y + nrm.z * centroid.z;
+            assert(facing > 0.0f);                      // outward-facing (CCW from outside)
+        }
     }
     std::puts("test_pbr: all passed");
     return 0;
