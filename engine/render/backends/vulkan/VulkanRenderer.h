@@ -144,6 +144,10 @@ public:
     //                     the swapchain pass carries only ImGui.
     void setBlitViewportToSwapchain(bool blit) { blitViewportToSwapchain_ = blit; }
 
+    // Linear exposure multiply applied before the ACES tonemap in the composite
+    // step (M44). Default 1.0. Auto-exposure is deferred.
+    void setExposure(float exposure) { pendingExposure_ = exposure; }
+
     // Engine-internal: external Vulkan subsystems register a deferred
     // render callback. Fires inside the scene render pass during endFrame,
     // after the geometry replay and before debug-lines + HUD.
@@ -280,6 +284,7 @@ private:
     // Default true: blit the viewport image to the swapchain (games). The
     // editor sets false and composites the image via ImGui::Image instead.
     bool       blitViewportToSwapchain_ = true;
+    float      pendingExposure_ = 1.0f;
 };
 
 }  // namespace iron

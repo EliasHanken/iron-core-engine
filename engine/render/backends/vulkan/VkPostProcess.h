@@ -48,7 +48,7 @@ public:
 
     void beginScenePass(VkCommandBuffer cb, const float clearColor[4]) const;
     void endScenePass(VkCommandBuffer cb) const;
-    void recordComposite(VkCommandBuffer cb) const;
+    void recordComposite(VkCommandBuffer cb, float exposure) const;
     // Full-screen blit of viewportColor into the (already-begun) swapchain pass.
     void blitToSwapchain(VkCommandBuffer cb) const;
 
@@ -70,7 +70,8 @@ public:
     void runChain(VkCommandBuffer cb,
                   const std::vector<PostPass>& passes,
                   const EffectTable& effects,
-                  VkExtent2D swapExtent);
+                  VkExtent2D swapExtent,
+                  float exposure);
 
     // --- Mask pass API (Phase C) ---
     VkRenderPass maskPass() const { return maskPass_; }
@@ -124,6 +125,12 @@ public:
     struct XRayPush {
         float color[4];      // rgb tint color + padding
         float intensity;     // tint strength
+        float _pad[3];
+    };
+
+    // Push constants for the copy/composite (tonemap) pipeline.
+    struct CopyPush {
+        float exposure;   // linear exposure multiply applied before ACES
         float _pad[3];
     };
 

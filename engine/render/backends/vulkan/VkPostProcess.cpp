@@ -23,7 +23,15 @@ const char* kCopyFrag = R"(#version 450
 layout(location = 0) in vec2 vUV;
 layout(location = 0) out vec4 outColor;
 layout(set = 0, binding = 0) uniform sampler2D uScene;
-void main() { outColor = texture(uScene, vUV); }
+layout(push_constant) uniform Push { float exposure; } pc;
+vec3 aces(vec3 x) {
+    const float a = 2.51, b = 0.03, c = 2.43, d = 0.59, e = 0.14;
+    return clamp((x * (a * x + b)) / (x * (c * x + d) + e), 0.0, 1.0);
+}
+void main() {
+    vec3 hdr = texture(uScene, vUV).rgb * pc.exposure;
+    outColor = vec4(aces(hdr), 1.0);
+}
 )";
 
 // --- Mask pass shaders ---
@@ -474,10 +482,14 @@ void VkPostProcess::endViewportPass(VkCommandBuffer cb) const {
     vkCmdEndRenderPass(cb);
 }
 
-void VkPostProcess::recordComposite(VkCommandBuffer cb) const {
+void VkPostProcess::recordComposite(VkCommandBuffer cb, float exposure) const {
     vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, copyPipeline_);
     vkCmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_GRAPHICS,
                             copyPipeLayout_, 0, 1, &copyDescSet_, 0, nullptr);
+    CopyPush pc{};
+    pc.exposure = exposure;
+    vkCmdPushConstants(cb, copyPipeLayout_, VK_SHADER_STAGE_FRAGMENT_BIT,
+                       0, sizeof(CopyPush), &pc);
     vkCmdDraw(cb, 3, 1, 0, 0);
 }
 
@@ -1207,10 +1219,17 @@ bool VkPostProcess::createCopyPipeline(VkContext& ctx) {
     dslInfo.pBindings    = &binding;
     VK_CHECK(vkCreateDescriptorSetLayout(ctx.device(), &dslInfo, nullptr, &copySetLayout_));
 
+    VkPushConstantRange pcRange{};
+    pcRange.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+    pcRange.offset     = 0;
+    pcRange.size       = sizeof(CopyPush);
+
     VkPipelineLayoutCreateInfo plInfo{};
-    plInfo.sType          = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
-    plInfo.setLayoutCount = 1;
-    plInfo.pSetLayouts    = &copySetLayout_;
+    plInfo.sType                  = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+    plInfo.setLayoutCount         = 1;
+    plInfo.pSetLayouts            = &copySetLayout_;
+    plInfo.pushConstantRangeCount = 1;
+    plInfo.pPushConstantRanges    = &pcRange;
     VK_CHECK(vkCreatePipelineLayout(ctx.device(), &plInfo, nullptr, &copyPipeLayout_));
 
     // Pipeline — full-screen triangle, no vertex input, depth test off.
@@ -2143,11 +2162,12 @@ bool VkPostProcess::createGlowPipelines(VkContext& ctx) {
 void VkPostProcess::runChain(VkCommandBuffer cb,
                              const std::vector<PostPass>& passes,
                              const EffectTable& effects,
-                             VkExtent2D swapExtent) {
+                             VkExtent2D swapExtent,
+                             float exposure) {
     for (const PostPass pass : passes) {
         switch (pass) {
             case PostPass::Copy:
-                recordComposite(cb);
+                recordComposite(cb, exposure);
                 break;
 
             case PostPass::Outline: {
