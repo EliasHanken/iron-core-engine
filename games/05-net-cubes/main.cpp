@@ -317,7 +317,7 @@ int main(int argc, char** argv) {
     // --- ground (CC0 textures from M7) ---
     const std::string assetRoot = iron::executableDir() + "/assets/cc0/ground";
     const iron::TextureHandle groundDiff   = renderer.loadTexture(assetRoot + "/diffuse.png");
-    const iron::TextureHandle groundNormal = renderer.loadTexture(assetRoot + "/normal.png");
+    const iron::TextureHandle groundNormal = renderer.loadTexture(assetRoot + "/normal.png", /*srgb=*/false);
     // groundSpec removed in M45b (PBR replaces Blinn-Phong spec map).
 
     iron::MeshData groundData;

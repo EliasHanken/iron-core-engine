@@ -29,6 +29,7 @@ inline Vec3 fresnelSchlick(float cosTheta, Vec3 f0) {
 
 // Trowbridge-Reitz GGX normal distribution.
 inline float distributionGGX(float nDotH, float roughness) {
+    roughness = std::max(roughness, 1e-3f);  // guard 0/0 (the GLSL pre-clamps to >=0.04)
     float a  = roughness * roughness;
     float a2 = a * a;
     float d  = (nDotH * nDotH) * (a2 - 1.0f) + 1.0f;

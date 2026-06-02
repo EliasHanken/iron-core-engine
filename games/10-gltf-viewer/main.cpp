@@ -136,9 +136,10 @@ int main(int argc, char** argv) {
         : renderer.loadTexture(model->materialPaths.albedo);
     const iron::TextureHandle normalMap = model->materialPaths.normal.empty()
         ? renderer.flatNormalTexture()
-        : renderer.loadTexture(model->materialPaths.normal);
+        : renderer.loadTexture(model->materialPaths.normal, /*srgb=*/false);
 
-    // M45b: spec/loadRoughnessAsSpec removed; metallicRoughnessMap wired in T6.
+    // M45b: Blinn-Phong spec removed. glTF metallic-roughness/occlusion texture
+    // extraction is deferred to M45c; models render with scalar PBR defaults.
     if ((isSkinned && (skinnedMesh == iron::kInvalidSkinnedMesh)) ||
         (!isSkinned && (staticMesh == iron::kInvalidHandle)) ||
         shader == iron::kInvalidHandle) {

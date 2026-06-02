@@ -368,13 +368,13 @@ int main(int argc, char** argv) {
     // Ground texture (from cc0 assets)
     const std::string assetRoot = iron::executableDir() + "/assets/cc0/ground";
     const iron::TextureHandle groundDiff   = renderer.loadTexture(assetRoot + "/diffuse.png");
-    const iron::TextureHandle groundNormal = renderer.loadTexture(assetRoot + "/normal.png");
+    const iron::TextureHandle groundNormal = renderer.loadTexture(assetRoot + "/normal.png", /*srgb=*/false);
     // groundSpec/wallSpec removed in M45b (PBR replaces Blinn-Phong spec map).
 
     // Wall textures — CC0 brick.
     const std::string brickRoot = iron::executableDir() + "/assets/cc0/brick";
     const iron::TextureHandle wallDiff   = renderer.loadTexture(brickRoot + "/diffuse.png");
-    const iron::TextureHandle wallNormal = renderer.loadTexture(brickRoot + "/normal.png");
+    const iron::TextureHandle wallNormal = renderer.loadTexture(brickRoot + "/normal.png", /*srgb=*/false);
 
     // Ground mesh (large flat quad)
     iron::MeshData groundData;
