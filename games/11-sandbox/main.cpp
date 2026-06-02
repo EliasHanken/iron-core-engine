@@ -243,6 +243,18 @@ int main() {
             out.material.metallicRoughnessMap = gltfModel->materialPaths.metalRoughness.empty()
                 ? iron::kInvalidHandle
                 : renderer.loadTexture(gltfModel->materialPaths.metalRoughness, /*srgb=*/false);
+            // AO/emissive maps + PBR factors from the glTF asset (base layer).
+            // MaterialDef overrides applied below only when explicitly authored.
+            out.material.aoMap = gltfModel->materialPaths.occlusion.empty()
+                ? iron::kInvalidHandle
+                : renderer.loadTexture(gltfModel->materialPaths.occlusion, /*srgb=*/false);
+            out.material.emissiveMap = gltfModel->materialPaths.emissive.empty()
+                ? iron::kInvalidHandle
+                : renderer.loadTexture(gltfModel->materialPaths.emissive, /*srgb=*/true);
+            out.material.metallic        = gltfModel->metallicFactor;
+            out.material.roughness       = gltfModel->roughnessFactor;
+            out.material.baseColorFactor = gltfModel->baseColorFactor;
+            out.material.emissive        = gltfModel->emissiveFactor;
 
         } else {
             iron::Log::warn("sandbox: entity '%s' has no mesh", e.name.c_str());
@@ -256,11 +268,23 @@ int main() {
             out.material.normalMap = resolveTexture(e.material.normalPath, renderer.flatNormalTexture(), /*srgb=*/false);
         if (out.material.metallicRoughnessMap == iron::kInvalidHandle)
             out.material.metallicRoughnessMap = resolveTexture(e.material.metallicRoughnessPath, iron::kInvalidHandle, /*srgb=*/false);
-        out.material.aoMap = resolveTexture(e.material.aoPath, iron::kInvalidHandle, /*srgb=*/false);
-        out.material.metallic  = e.material.metallic;
-        out.material.roughness = e.material.roughness;
+        // Precedence: glTF-derived values are the base (already set above for gltfPath entities).
+        // MaterialDef overrides win only when explicitly authored (non-empty path / non-zero value).
+        // This prevents a default-valued MaterialDef from clobbering glTF-authored AO/emissive/factors.
+        if (!e.material.aoPath.empty())
+            out.material.aoMap = resolveTexture(e.material.aoPath, iron::kInvalidHandle, /*srgb=*/false);
+        if (e.mesh.gltfPath.empty()) {
+            // Primitive-mesh entities have no glTF base; MaterialDef is the only source.
+            out.material.metallic  = e.material.metallic;
+            out.material.roughness = e.material.roughness;
+        } else if (e.material.metallic != 0.0f || e.material.roughness != 0.5f) {
+            // glTF entity with explicitly-modified MaterialDef scalars: override wins.
+            out.material.metallic  = e.material.metallic;
+            out.material.roughness = e.material.roughness;
+        }
         out.material.ao        = e.material.ao;
-        out.material.emissive     = e.material.emissive;
+        out.material.emissive     = iron::dot(e.material.emissive, e.material.emissive) > 0.0f
+            ? e.material.emissive : out.material.emissive;
         out.material.uvScale      = e.material.uvScale;
         out.material.reflectivity = e.material.reflectivity;
         out.model = iron::translation(e.transform.position) * e.transform.rotation.toMat4() * iron::scaling(e.transform.scale);
@@ -999,14 +1023,24 @@ int main() {
             call.material.texture      = rh->albedo;
             call.material.normalMap    = rh->normal;
             if (sceneIdx >= 0 && sceneIdx < static_cast<int>(resolved.size())) {
-                const iron::Material& rm          = resolved[sceneIdx].material;
+                // Pull all PBR fields from the resolved material; precedence
+                // (glTF-derived base vs. MaterialDef override) was already settled
+                // at load time in resolveEntity.
+                const iron::Material& rm           = resolved[sceneIdx].material;
                 call.material.metallicRoughnessMap = rm.metallicRoughnessMap;
-                call.material.aoMap               = rm.aoMap;
+                call.material.aoMap                = rm.aoMap;
+                call.material.emissiveMap          = rm.emissiveMap;
+                call.material.baseColorFactor      = rm.baseColorFactor;
+                call.material.metallic             = rm.metallic;
+                call.material.roughness            = rm.roughness;
+                call.material.emissive             = rm.emissive;
+            } else {
+                // Primitive-mesh entity (no resolved entry): use MaterialDef directly.
+                call.material.metallic  = mat->metallic;
+                call.material.roughness = mat->roughness;
+                call.material.emissive  = mat->emissive;
             }
-            call.material.metallic     = mat->metallic;
-            call.material.roughness    = mat->roughness;
             call.material.ao           = mat->ao;
-            call.material.emissive     = mat->emissive;
             call.material.uvScale      = mat->uvScale;
             call.material.reflectivity = mat->reflectivity;
             call.effectId              = (sceneIdx == selectedIndex) ? 1 : 0;
