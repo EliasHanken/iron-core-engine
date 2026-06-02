@@ -39,8 +39,16 @@ public:
     VkRenderPass  renderPass()                    const { return renderPass_; }
     VkFramebuffer framebuffer(std::uint32_t i)    const { return framebuffers_[i]; }
 
+    // Scene geometry records into VkPostProcess's scenePass_ (sampleable
+    // offscreen target, dependencyCount=3) since M36 — NOT the swapchain
+    // pass. Scene/skinned pipelines must be built against it for render-pass
+    // compatibility (VUID-02684). Set once after post-process init, before
+    // the first draw. renderPass_ stays the swapchain pass (framebuffers + UI).
+    void setScenePass(VkRenderPass pass) { scenePass_ = pass; }
+
 private:
     VkRenderPass               renderPass_   = VK_NULL_HANDLE;
+    VkRenderPass               scenePass_    = VK_NULL_HANDLE;
     std::vector<VkFramebuffer> framebuffers_;
     // One pipeline per (shader pointer) value.
     std::vector<std::pair<const VkShader*, ::VkPipeline>> pipelines_;

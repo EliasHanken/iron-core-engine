@@ -39,6 +39,10 @@ public:
     bool resize(VkContext& ctx, VkExtent2D extent);
 
     VkRenderPass  scenePass()        const { return scenePass_; }
+    // Pass that composite + debug + HUD overlays record into (M43a). Pipelines
+    // recorded here must be built against it, not the swapchain pass — their
+    // dependencyCount differs and that breaks render-pass compatibility.
+    VkRenderPass  viewportPass()     const { return viewportPass_; }
     VkFramebuffer sceneFramebuffer() const { return sceneFb_; }
     VkExtent2D    extent()           const { return extent_; }
 
@@ -234,12 +238,13 @@ private:
     void destroyTargets(VkContext& ctx);
     bool createViewportTarget(VkContext& ctx);
     void destroyViewportTarget(VkContext& ctx);
-    bool createCopyPipeline(VkContext& ctx, VkRenderPass swapchainPass);
+    // Composite pipelines record into viewportPass_ — no swapchain pass needed.
+    bool createCopyPipeline(VkContext& ctx);
     bool createBlitPipeline(VkContext& ctx, VkRenderPass swapchainPass);
-    bool createOutlinePipeline(VkContext& ctx, VkRenderPass swapchainPass);
+    bool createOutlinePipeline(VkContext& ctx);
     bool createMaskPipeline(VkContext& ctx);
-    bool createGlowPipelines(VkContext& ctx, VkRenderPass swapchainPass);
-    bool createXRayPipeline(VkContext& ctx, VkRenderPass swapchainPass);
+    bool createGlowPipelines(VkContext& ctx);
+    bool createXRayPipeline(VkContext& ctx);
 };
 
 }  // namespace iron

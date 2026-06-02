@@ -40,7 +40,6 @@ bool VkFrameRing::initFrame(VkContext& ctx, Frame& f) {
     VkSemaphoreCreateInfo semInfo{};
     semInfo.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
     VK_CHECK(vkCreateSemaphore(ctx.device(), &semInfo, nullptr, &f.imageAvailable));
-    VK_CHECK(vkCreateSemaphore(ctx.device(), &semInfo, nullptr, &f.renderFinished));
 
     VkFenceCreateInfo fenceInfo{};
     fenceInfo.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
@@ -106,7 +105,6 @@ void VkFrameRing::destroyFrame(VkContext& ctx, Frame& f) {
     if (f.uboBuffer)      { vmaDestroyBuffer(ctx.allocator(), f.uboBuffer, f.uboAlloc); f.uboBuffer = VK_NULL_HANDLE; }
     if (f.descriptorPool) { vkDestroyDescriptorPool(ctx.device(), f.descriptorPool, nullptr); f.descriptorPool = VK_NULL_HANDLE; }
     if (f.inFlight)       { vkDestroyFence(ctx.device(), f.inFlight, nullptr); f.inFlight = VK_NULL_HANDLE; }
-    if (f.renderFinished) { vkDestroySemaphore(ctx.device(), f.renderFinished, nullptr); f.renderFinished = VK_NULL_HANDLE; }
     if (f.imageAvailable) { vkDestroySemaphore(ctx.device(), f.imageAvailable, nullptr); f.imageAvailable = VK_NULL_HANDLE; }
     if (f.commandPool)    { vkDestroyCommandPool(ctx.device(), f.commandPool, nullptr); f.commandPool = VK_NULL_HANDLE; }
     f.commandBuffer = VK_NULL_HANDLE;

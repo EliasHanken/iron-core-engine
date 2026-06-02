@@ -275,6 +275,9 @@ int main() {
     // downcast is always valid.
     iron::VulkanRenderer& vkRenderer = static_cast<iron::VulkanRenderer&>(renderer);
     renderer.setViewport(app.window().width(), app.window().height());
+    // The editor composites the viewport image itself via ImGui::Image, so the
+    // renderer must NOT blit it to the swapchain (that path is for games).
+    vkRenderer.setBlitViewportToSwapchain(false);
 
     // Skybox: procedural sunset cubemap (also what the helmet's reflection
     // samples). Falls back to clear color if creation fails.

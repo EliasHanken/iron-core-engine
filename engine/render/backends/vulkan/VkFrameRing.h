@@ -20,7 +20,8 @@ public:
         VkCommandPool     commandPool   = VK_NULL_HANDLE;
         VkCommandBuffer   commandBuffer = VK_NULL_HANDLE;
         VkSemaphore       imageAvailable = VK_NULL_HANDLE;
-        VkSemaphore       renderFinished = VK_NULL_HANDLE;
+        // NOTE: render-finished is per-swapchain-image, owned by
+        // VulkanRenderer (imageRenderFinished_), NOT per frame-in-flight.
         VkFence           inFlight       = VK_NULL_HANDLE;
         VkDescriptorPool  descriptorPool = VK_NULL_HANDLE;
         VkBuffer          uboBuffer      = VK_NULL_HANDLE;

@@ -257,7 +257,9 @@ bool VkPipeline::recreateFramebuffers(VkContext& ctx, VkSwapchain& swap) {
     for (const auto& [s, p] : pipelines_) {
         if (s == &sh) return p;
     }
-    auto p = createGraphicsPipeline(ctx, swap, renderPass_, sh);
+    // Built against scenePass_ — scene geometry records there, not the
+    // swapchain pass (see setScenePass / VUID-02684).
+    auto p = createGraphicsPipeline(ctx, swap, scenePass_, sh);
     pipelines_.emplace_back(&sh, p);
     return p;
 }
@@ -267,7 +269,7 @@ bool VkPipeline::recreateFramebuffers(VkContext& ctx, VkSwapchain& swap) {
     for (const auto& [s, p] : skinnedPipelines_) {
         if (s == &sh) return p;
     }
-    auto p = createSkinnedGraphicsPipeline(ctx, swap, renderPass_, sh);
+    auto p = createSkinnedGraphicsPipeline(ctx, swap, scenePass_, sh);
     skinnedPipelines_.emplace_back(&sh, p);
     return p;
 }
