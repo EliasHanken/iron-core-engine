@@ -143,6 +143,11 @@ private:
     VkExtent2D extent_{};
     VkFormat   colorFormat_ = VK_FORMAT_UNDEFINED;
     VkFormat   depthFormat_ = VK_FORMAT_UNDEFINED;
+    // HDR linear-radiance format for the scene target (M44). Scene geometry +
+    // skybox + particles render here; the composite step tone-maps it down to
+    // the LDR `colorFormat_` viewportColor_. R16G16B16A16_SFLOAT is renderable,
+    // blendable, and sampleable on all target GPUs (no feature flag needed).
+    VkFormat   hdrFormat_   = VK_FORMAT_R16G16B16A16_SFLOAT;
 
     // --- M43a: final composited "viewport" target (color + depth). Sized
     // independently of the swapchain (defaults to swapchain extent). The

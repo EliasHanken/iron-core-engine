@@ -534,12 +534,12 @@ void VkPostProcess::bindMaskPipeline(VkCommandBuffer cb) const {
 // ---------------------------------------------------------------------------
 
 bool VkPostProcess::createTargets(VkContext& ctx) {
-    // --- Scene color image (colorFormat_, COLOR_ATTACHMENT | SAMPLED) ---
+    // --- Scene color image (hdrFormat_, COLOR_ATTACHMENT | SAMPLED) ---
     {
         VkImageCreateInfo iInfo{};
         iInfo.sType         = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
         iInfo.imageType     = VK_IMAGE_TYPE_2D;
-        iInfo.format        = colorFormat_;
+        iInfo.format        = hdrFormat_;
         iInfo.extent        = {extent_.width, extent_.height, 1};
         iInfo.mipLevels     = 1;
         iInfo.arrayLayers   = 1;
@@ -559,7 +559,7 @@ bool VkPostProcess::createTargets(VkContext& ctx) {
         vInfo.sType                           = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
         vInfo.image                           = sceneColor_;
         vInfo.viewType                        = VK_IMAGE_VIEW_TYPE_2D;
-        vInfo.format                          = colorFormat_;
+        vInfo.format                          = hdrFormat_;
         vInfo.subresourceRange.aspectMask     = VK_IMAGE_ASPECT_COLOR_BIT;
         vInfo.subresourceRange.levelCount     = 1;
         vInfo.subresourceRange.layerCount     = 1;
@@ -608,7 +608,7 @@ bool VkPostProcess::createTargets(VkContext& ctx) {
     // Exit dep: COLOR_ATTACHMENT_OUTPUT -> FRAGMENT_SHADER lets the composite
     // pass sample safely.
     VkAttachmentDescription attachments[2]{};
-    attachments[0].format         = colorFormat_;
+    attachments[0].format         = hdrFormat_;  // was colorFormat_ (scenePass_ color attachment)
     attachments[0].samples        = VK_SAMPLE_COUNT_1_BIT;
     attachments[0].loadOp         = VK_ATTACHMENT_LOAD_OP_CLEAR;
     attachments[0].storeOp        = VK_ATTACHMENT_STORE_OP_STORE;
