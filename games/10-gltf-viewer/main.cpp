@@ -138,8 +138,16 @@ int main(int argc, char** argv) {
         ? renderer.flatNormalTexture()
         : renderer.loadTexture(model->materialPaths.normal, /*srgb=*/false);
 
-    // M45b: Blinn-Phong spec removed. glTF metallic-roughness/occlusion texture
-    // extraction is deferred to M45c; models render with scalar PBR defaults.
+    // M45c: load PBR maps — MR/AO are linear data; emissive is sRGB color.
+    const iron::TextureHandle mrMap = model->materialPaths.metalRoughness.empty()
+        ? iron::kInvalidHandle
+        : renderer.loadTexture(model->materialPaths.metalRoughness, /*srgb=*/false);
+    const iron::TextureHandle aoMap = model->materialPaths.occlusion.empty()
+        ? iron::kInvalidHandle
+        : renderer.loadTexture(model->materialPaths.occlusion, /*srgb=*/false);
+    const iron::TextureHandle emissiveMap = model->materialPaths.emissive.empty()
+        ? iron::kInvalidHandle
+        : renderer.loadTexture(model->materialPaths.emissive, /*srgb=*/true);
     if ((isSkinned && (skinnedMesh == iron::kInvalidSkinnedMesh)) ||
         (!isSkinned && (staticMesh == iron::kInvalidHandle)) ||
         shader == iron::kInvalidHandle) {
@@ -245,10 +253,15 @@ int main(int argc, char** argv) {
             call.skinnedMesh = skinnedMesh;
             call.shader      = shader;
             call.model       = iron::Mat4::identity();
-            call.material.texture     = albedo;
-            call.material.normalMap   = normalMap;
-            // M45b: specularMap removed (PBR).
-            call.material.emissive    = iron::Vec3{0.05f, 0.05f, 0.05f};
+            call.material.texture               = albedo;
+            call.material.normalMap             = normalMap;
+            call.material.metallicRoughnessMap  = mrMap;
+            call.material.aoMap                 = aoMap;
+            call.material.emissiveMap           = emissiveMap;
+            call.material.metallic              = model->metallicFactor;
+            call.material.roughness             = model->roughnessFactor;
+            call.material.baseColorFactor       = model->baseColorFactor;
+            call.material.emissive              = model->emissiveFactor;
             call.boneMatrices = std::span<const iron::Mat4>{
                 bonesPose.data(), std::min(boneCount, bonesPose.size())};
             renderer.submitSkinnedDraw(call);
@@ -257,10 +270,15 @@ int main(int argc, char** argv) {
             call.mesh   = staticMesh;
             call.shader = shader;
             call.model  = iron::Mat4::identity();
-            call.material.texture     = albedo;
-            call.material.normalMap   = normalMap;
-            // M45b: specularMap removed (PBR).
-            call.material.emissive    = iron::Vec3{0.05f, 0.05f, 0.05f};
+            call.material.texture               = albedo;
+            call.material.normalMap             = normalMap;
+            call.material.metallicRoughnessMap  = mrMap;
+            call.material.aoMap                 = aoMap;
+            call.material.emissiveMap           = emissiveMap;
+            call.material.metallic              = model->metallicFactor;
+            call.material.roughness             = model->roughnessFactor;
+            call.material.baseColorFactor       = model->baseColorFactor;
+            call.material.emissive              = model->emissiveFactor;
             renderer.submit(call);
         }
 
