@@ -466,7 +466,14 @@ std::optional<GltfModel> loadGltfModel(const std::string& path) {
 
     // M22.5 — material texture paths. Empty if the primitive lacks a
     // material or the material lacks the corresponding texture.
+    // M45c — PBR scalar factors; defaults match glTF spec (metallic/roughness=1,
+    // baseColor={1,1,1}, emissive={0,0,0}) and are only overridden when a
+    // material is present.
     GltfMaterialPaths matPaths;
+    float matMetallicFactor  = 1.0f;
+    float matRoughnessFactor = 1.0f;
+    Vec3  matBaseColorFactor{1.0f, 1.0f, 1.0f};
+    Vec3  matEmissiveFactor{0.0f, 0.0f, 0.0f};
     if (prim.material >= 0 &&
         prim.material < static_cast<int>(model.materials.size())) {
         const auto& mat = model.materials[prim.material];
@@ -494,6 +501,21 @@ std::optional<GltfModel> loadGltfModel(const std::string& path) {
         matPaths.albedo         = resolve(mat.pbrMetallicRoughness.baseColorTexture.index);
         matPaths.normal         = resolve(mat.normalTexture.index);
         matPaths.metalRoughness = resolve(mat.pbrMetallicRoughness.metallicRoughnessTexture.index);
+        matPaths.occlusion      = resolve(mat.occlusionTexture.index);
+        matPaths.emissive       = resolve(mat.emissiveTexture.index);
+
+        matMetallicFactor  = static_cast<float>(mat.pbrMetallicRoughness.metallicFactor);
+        matRoughnessFactor = static_cast<float>(mat.pbrMetallicRoughness.roughnessFactor);
+        const auto& bcf = mat.pbrMetallicRoughness.baseColorFactor;  // size 4, default {1,1,1,1}
+        if (bcf.size() >= 3)
+            matBaseColorFactor = {static_cast<float>(bcf[0]),
+                                  static_cast<float>(bcf[1]),
+                                  static_cast<float>(bcf[2])};
+        const auto& ef = mat.emissiveFactor;                         // size 3, default {0,0,0}
+        if (ef.size() >= 3)
+            matEmissiveFactor = {static_cast<float>(ef[0]),
+                                 static_cast<float>(ef[1]),
+                                 static_cast<float>(ef[2])};
     }
 
     // M23 - skinned mesh data. Populated only if the primitive has
@@ -732,9 +754,13 @@ std::optional<GltfModel> loadGltfModel(const std::string& path) {
 
     GltfModel result;
     result.mesh = std::move(out);
-    result.materialPaths = std::move(matPaths);
-    result.skinnedMesh = std::move(skinnedMesh);
-    result.animations = std::move(animations);
+    result.materialPaths  = std::move(matPaths);
+    result.skinnedMesh    = std::move(skinnedMesh);
+    result.animations     = std::move(animations);
+    result.metallicFactor  = matMetallicFactor;
+    result.roughnessFactor = matRoughnessFactor;
+    result.baseColorFactor = matBaseColorFactor;
+    result.emissiveFactor  = matEmissiveFactor;
 
     Log::info("GltfLoader: loaded %s - %zu verts, %zu indices%s (%zu anim%s)",
               path.c_str(), result.mesh.vertices.size(), result.mesh.indices.size(),
