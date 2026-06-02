@@ -74,19 +74,27 @@ static void test_mesh_ref_roundtrip_primitive_none_omits_key() {
 static void test_material_def_roundtrip_full() {
     iron::Reflection r = makeReg();
     iron::MaterialDef m;
-    m.albedoPath   = "a.png";
-    m.normalPath   = "n.png";
-    m.specularPath = "s.png";
-    m.emissive     = {0.4f, 0.5f, 0.6f};
-    m.uvScale      = 2.0f;
-    m.reflectivity = 0.7f;
+    m.albedoPath            = "a.png";
+    m.normalPath            = "n.png";
+    m.metallicRoughnessPath = "mr.png";
+    m.aoPath                = "ao.png";
+    m.metallic              = 1.0f;
+    m.roughness             = 0.3f;
+    m.ao                    = 0.8f;
+    m.emissive              = {0.4f, 0.5f, 0.6f};
+    m.uvScale               = 2.0f;
+    m.reflectivity          = 0.7f;
     json j = iron::componentToJson(r, m);
 
     iron::MaterialDef back;
     iron::componentFromJson(r, back, j);
-    CHECK(back.albedoPath   == "a.png");
-    CHECK(back.normalPath   == "n.png");
-    CHECK(back.specularPath == "s.png");
+    CHECK(back.albedoPath            == "a.png");
+    CHECK(back.normalPath            == "n.png");
+    CHECK(back.metallicRoughnessPath == "mr.png");
+    CHECK(back.aoPath                == "ao.png");
+    CHECK(back.metallic             == 1.0f);
+    CHECK(back.roughness            == 0.3f);
+    CHECK(back.ao                   == 0.8f);
     CHECK(back.emissive.x   == 0.4f);
     CHECK(back.uvScale      == 2.0f);
     CHECK(back.reflectivity == 0.7f);
@@ -99,7 +107,8 @@ static void test_material_def_empty_strings_omitted() {
     json j = iron::componentToJson(r, m);
     CHECK(!j.contains("albedoPath"));
     CHECK(!j.contains("normalPath"));
-    CHECK(!j.contains("specularPath"));
+    CHECK(!j.contains("metallicRoughnessPath"));
+    CHECK(!j.contains("aoPath"));
     CHECK(j["emissive"].is_array());
 }
 
