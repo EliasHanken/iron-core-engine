@@ -202,9 +202,10 @@ int main() {
     };
 
     auto resolveTexture = [&](const std::string& path,
-                               iron::TextureHandle fallback) -> iron::TextureHandle {
+                               iron::TextureHandle fallback,
+                               bool srgb = true) -> iron::TextureHandle {
         if (path.empty()) return fallback;
-        iron::TextureHandle t = renderer.loadTexture(path);
+        iron::TextureHandle t = renderer.loadTexture(path, srgb);
         return (t == iron::kInvalidHandle) ? fallback : t;
     };
 
@@ -238,8 +239,10 @@ int main() {
                 : renderer.loadTexture(gltfModel->materialPaths.albedo);
             out.material.normalMap = gltfModel->materialPaths.normal.empty()
                 ? renderer.flatNormalTexture()
-                : renderer.loadTexture(gltfModel->materialPaths.normal);
-            // M45b: specularMap removed; metallicRoughnessMap wired in T6.
+                : renderer.loadTexture(gltfModel->materialPaths.normal, /*srgb=*/false);
+            out.material.metallicRoughnessMap = gltfModel->materialPaths.metalRoughness.empty()
+                ? iron::kInvalidHandle
+                : renderer.loadTexture(gltfModel->materialPaths.metalRoughness, /*srgb=*/false);
 
         } else {
             iron::Log::warn("sandbox: entity '%s' has no mesh", e.name.c_str());
@@ -250,8 +253,13 @@ int main() {
         if (out.material.texture == iron::kInvalidHandle)
             out.material.texture = resolveTexture(e.material.albedoPath, renderer.whiteTexture());
         if (out.material.normalMap == iron::kInvalidHandle)
-            out.material.normalMap = resolveTexture(e.material.normalPath, renderer.flatNormalTexture());
-        // M45b: specularMap removed; specularPath resolve skipped until T6 wires metallicRoughnessMap.
+            out.material.normalMap = resolveTexture(e.material.normalPath, renderer.flatNormalTexture(), /*srgb=*/false);
+        if (out.material.metallicRoughnessMap == iron::kInvalidHandle)
+            out.material.metallicRoughnessMap = resolveTexture(e.material.metallicRoughnessPath, iron::kInvalidHandle, /*srgb=*/false);
+        out.material.aoMap = resolveTexture(e.material.aoPath, iron::kInvalidHandle, /*srgb=*/false);
+        out.material.metallic  = e.material.metallic;
+        out.material.roughness = e.material.roughness;
+        out.material.ao        = e.material.ao;
         out.material.emissive     = e.material.emissive;
         out.material.uvScale      = e.material.uvScale;
         out.material.reflectivity = e.material.reflectivity;
@@ -260,14 +268,12 @@ int main() {
     };
 
     // Pack a resolved entity's GPU handles into the new RenderHandles
-    // component shape (M37). M45b: specularMap removed from Material;
-    // specular field left as kInvalidHandle until T6 wires metallicRoughnessMap.
+    // component shape (M37).
     auto toRenderHandles = [](const ResolvedEntity& re) -> iron::RenderHandles {
         iron::RenderHandles rh{};
-        rh.mesh     = re.mesh;
-        rh.albedo   = re.material.texture;
-        rh.normal   = re.material.normalMap;
-        rh.specular = iron::kInvalidHandle;  // M45b: wired in T6
+        rh.mesh   = re.mesh;
+        rh.albedo = re.material.texture;
+        rh.normal = re.material.normalMap;
         return rh;
     };
 
@@ -984,7 +990,14 @@ int main() {
                                        * iron::scaling(t.scale);
             call.material.texture      = rh->albedo;
             call.material.normalMap    = rh->normal;
-            // M45b: specularMap removed; metallicRoughnessMap wired in T6.
+            if (sceneIdx >= 0 && sceneIdx < static_cast<int>(resolved.size())) {
+                const iron::Material& rm          = resolved[sceneIdx].material;
+                call.material.metallicRoughnessMap = rm.metallicRoughnessMap;
+                call.material.aoMap               = rm.aoMap;
+            }
+            call.material.metallic     = mat->metallic;
+            call.material.roughness    = mat->roughness;
+            call.material.ao           = mat->ao;
             call.material.emissive     = mat->emissive;
             call.material.uvScale      = mat->uvScale;
             call.material.reflectivity = mat->reflectivity;

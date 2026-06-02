@@ -31,7 +31,11 @@ struct MeshRef {
 struct MaterialDef {
     std::string albedoPath;
     std::string normalPath;
-    std::string specularPath;
+    std::string metallicRoughnessPath;
+    std::string aoPath;
+    float       metallic     = 0.0f;
+    float       roughness    = 0.5f;
+    float       ao           = 1.0f;
     Vec3        emissive     = {0.0f, 0.0f, 0.0f};
     float       uvScale      = 1.0f;
     float       reflectivity = 0.0f;
