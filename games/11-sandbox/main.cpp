@@ -295,6 +295,14 @@ int main() {
     iron::Log::info("sandbox: resolved %zu / %zu entities from scene",
                     resolved.size(), scene.entities.size());
 
+    // --- M45b: PBR sphere grid (runtime only, not serialized) ---
+    // 6x6 grid of unit spheres sweeping metallic (X) x roughness (Z).
+    // Placed at Z=-8 so it sits clearly behind the authored demo scene content.
+    const iron::MeshHandle pbrSphereMesh = renderer.createMesh(iron::makeUVSphere(0.5f, 32));
+    constexpr int kPbrGrid = 6;
+    const iron::Vec3 kPbrGridOrigin{-3.25f, 2.0f, -8.0f};  // centered on X, elevated, behind scene
+    const float kPbrGridSpacing = 1.3f;
+
     // --- Camera ---
     iron::FreeFlyCamera cam;
     cam.position = {0.0f, 2.0f, 6.0f};
@@ -1004,6 +1012,31 @@ int main() {
             call.effectId              = (sceneIdx == selectedIndex) ? 1 : 0;
             renderer.submit(call);
         }
+
+        // --- M45b: PBR tuning matrix — metallic x roughness sphere grid ---
+        // Submitted every frame (Edit + Play), never serialized into the scene.
+        // Metallic increases along X (left=dielectric, right=metal).
+        // Roughness increases along Z (front=glossy, back=rough).
+        for (int gx = 0; gx < kPbrGrid; ++gx) {
+            for (int gz = 0; gz < kPbrGrid; ++gz) {
+                iron::Material m{};
+                m.texture   = renderer.whiteTexture();   // neutral albedo
+                m.metallic  = static_cast<float>(gx) / static_cast<float>(kPbrGrid - 1);
+                m.roughness = std::clamp(static_cast<float>(gz) / static_cast<float>(kPbrGrid - 1), 0.05f, 1.0f);
+                const iron::Vec3 pos{
+                    kPbrGridOrigin.x + static_cast<float>(gx) * kPbrGridSpacing,
+                    kPbrGridOrigin.y,
+                    kPbrGridOrigin.z + static_cast<float>(gz) * kPbrGridSpacing
+                };
+                iron::DrawCall dc{};
+                dc.mesh     = pbrSphereMesh;
+                dc.shader   = litShader;
+                dc.model    = iron::translation(pos);
+                dc.material = m;
+                renderer.submit(dc);
+            }
+        }
+
         if (selectedIndex >= 0 && selectedIndex < static_cast<int>(scene.entities.size()))
             gizmo.draw(renderer, gizmoOriginFor(selectedIndex),
                        scene.entities[selectedIndex].transform.rotation, cam.position,
