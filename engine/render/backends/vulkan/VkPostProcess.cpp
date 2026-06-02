@@ -679,16 +679,18 @@ bool VkPostProcess::createTargets(VkContext& ctx) {
         VK_CHECK(vkCreateRenderPass(ctx.device(), &rpInfo, nullptr, &scenePass_));
 
     // --- Scene framebuffer ---
-    VkImageView views[2] = {sceneColorView_, sceneDepthView_};
-    VkFramebufferCreateInfo fbInfo{};
-    fbInfo.sType           = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO;
-    fbInfo.renderPass      = scenePass_;
-    fbInfo.attachmentCount = 2;
-    fbInfo.pAttachments    = views;
-    fbInfo.width           = extent_.width;
-    fbInfo.height          = extent_.height;
-    fbInfo.layers          = 1;
-    VK_CHECK(vkCreateFramebuffer(ctx.device(), &fbInfo, nullptr, &sceneFb_));
+    {
+        VkImageView views[2] = {sceneColorView_, sceneDepthView_};
+        VkFramebufferCreateInfo fbInfo{};
+        fbInfo.sType           = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO;
+        fbInfo.renderPass      = scenePass_;
+        fbInfo.attachmentCount = 2;
+        fbInfo.pAttachments    = views;
+        fbInfo.width           = extent_.width;
+        fbInfo.height          = extent_.height;
+        fbInfo.layers          = 1;
+        VK_CHECK(vkCreateFramebuffer(ctx.device(), &fbInfo, nullptr, &sceneFb_));
+    }
 
     // -----------------------------------------------------------------------
     // Mask target: R8_UINT color + D32_SFLOAT depth.
