@@ -9,6 +9,7 @@
 #include "render/Material.h"
 #include "render/PostEffect.h"
 #include "render/ReflectionPlane.h"
+#include "render/StandardLitShader.h"
 #include "scene/Mesh.h"
 #include "asset/Skeleton.h"
 #include "scene/SkinnedMesh.h"
@@ -106,6 +107,16 @@ public:
     // descriptor set binding 7 (a uniform buffer of mat4[kMaxBonesPerSkinnedMesh]).
     virtual ShaderHandle createSkinnedShader(const std::string& vertexSrc,
                                               const std::string& fragmentSrc) = 0;
+
+    // Convenience: create the engine's canonical standard lit shader (M45a).
+    // Concrete — delegates to the backend's createShader with engine-owned GLSL.
+    // Vulkan-only sources; the frozen OpenGL backend's games keep inline GLSL 330.
+    ShaderHandle createStandardLitShader() {
+        return createShader(standardLitVertSource(), standardLitFragSource());
+    }
+    ShaderHandle createStandardSkinnedLitShader() {
+        return createSkinnedShader(standardSkinnedLitVertSource(), standardLitFragSource());
+    }
 
     // M28 — hot-reload: replace the GLSL behind an existing shader handle.
     // Recompiles to SPIR-V, recreates the shader modules (keeping the same
