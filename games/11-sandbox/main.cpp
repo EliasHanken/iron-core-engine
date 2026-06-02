@@ -38,6 +38,8 @@
 #include "editor/SceneInspector.h"
 #include "editor/SceneOutliner.h"
 #include "editor/ViewGizmo.h"
+#include "editor/ViewportInput.h"
+#include "render/backends/vulkan/VulkanRenderer.h"
 #include "math/Aabb.h"
 #include "audio/AudioEmitter.h"
 #include "audio/AudioEngine.h"
@@ -47,6 +49,7 @@
 
 #include <GLFW/glfw3.h>
 #include <imgui.h>
+#include <imgui_internal.h>  // DockBuilder* APIs
 
 #include <algorithm>
 #include <array>
@@ -266,7 +269,15 @@ int main() {
         return 1;
     }
     iron::Renderer& renderer = *renderer_ptr;
+    // M43b: Vulkan-specific viewport API (resizeViewport / viewportColorView /
+    // viewportSampler) lives on VulkanRenderer, not the abstract base. This
+    // translation unit is already guarded by IRON_RENDER_BACKEND_VULKAN, so the
+    // downcast is always valid.
+    iron::VulkanRenderer& vkRenderer = static_cast<iron::VulkanRenderer&>(renderer);
     renderer.setViewport(app.window().width(), app.window().height());
+    // The editor composites the viewport image itself via ImGui::Image, so the
+    // renderer must NOT blit it to the swapchain (that path is for games).
+    vkRenderer.setBlitViewportToSwapchain(false);
 
     // Skybox: procedural sunset cubemap (also what the helmet's reflection
     // samples). Falls back to clear color if creation fails.
@@ -551,13 +562,34 @@ int main() {
         }
     };
 
+    // M43b: per-frame state of the 3D Viewport panel, captured during setRender,
+    // read by setUpdate's camera/picking gates (1-frame lag — fine for IMGUI).
+    struct ViewportState {
+        iron::Vec2 rectMin{0.0f, 0.0f};   // window-space top-left of the scene image
+        iron::Vec2 size{0.0f, 0.0f};      // image size in pixels
+        bool hovered = false;
+        bool focused = false;
+        iron::Vec2 mousePx{0.0f, 0.0f};   // window-space mouse pos (captured in setRender)
+        bool mouseValid = false;          // was the mouse pos valid this frame
+    };
+    ViewportState viewport;
+
+    // Pivot the view-gizmo / camera orbit around: selected entity, else origin.
+    auto viewPivotFor = [&](int sel) -> iron::Vec3 {
+        return (sel >= 0 && sel < static_cast<int>(scene.entities.size()))
+                   ? scene.entities[sel].transform.position
+                   : iron::Vec3{0.0f, 0.0f, 0.0f};
+    };
+
     // M37.5: projection rebuilds on resize; lambda captures FOV/near/far closures.
     auto computeProj = [&]() {
-        const float aspect = static_cast<float>(app.window().width())
-                           / static_cast<float>(app.window().height());
-        return iron::perspective(
-            cam.fovDeg * (std::numbers::pi_v<float> / 180.0f),
-            aspect, 0.1f, 200.0f);
+        const float w = viewport.size.x > 0.0f ? viewport.size.x
+                        : static_cast<float>(app.window().width());
+        const float h = viewport.size.y > 0.0f ? viewport.size.y
+                        : static_cast<float>(app.window().height());
+        const float aspect = w / h;
+        return iron::perspective(cam.fovDeg * (std::numbers::pi_v<float> / 180.0f),
+                                 aspect, 0.1f, 200.0f);
     };
     iron::Mat4 proj = computeProj();   // not const — Task B2 will reassign this
 
@@ -769,7 +801,7 @@ int main() {
         // else world origin). Reads from g_scrollAccum (filled by our GLFW
         // scroll callback above) so the value is always current regardless of
         // ImGui's frame timing. Consume + reset each frame.
-        if (g_scrollAccum != 0.0 && !imgui.wantsMouse()) {
+        if (g_scrollAccum != 0.0 && viewport.hovered) {
             const float wheel = static_cast<float>(g_scrollAccum);
             const iron::Vec3 zoomPivot =
                 (selectedIndex >= 0 && selectedIndex < static_cast<int>(scene.entities.size()))
@@ -786,14 +818,14 @@ int main() {
             }
         }
         // Always reset the accumulator at the bottom of this frame's read
-        // (even if wantsMouse was true — we don't want the value to leak
+        // (even if the viewport wasn't hovered — we don't want the value to leak
         // into the next frame after the panel is dismissed).
         g_scrollAccum = 0.0;
 
         // M40: middle-mouse-button drag → orbit camera around the same
         // pivot as wheel-zoom (selection or world origin). No cursor capture
         // — keep cursor visible while dragging.
-        if (input.mouseButtonDown(GLFW_MOUSE_BUTTON_MIDDLE) && !imgui.wantsMouse()) {
+        if (input.mouseButtonDown(GLFW_MOUSE_BUTTON_MIDDLE) && viewport.hovered) {
             const float mmdx = static_cast<float>(input.mouseDeltaX());
             const float mmdy = static_cast<float>(input.mouseDeltaY());
             if (mmdx != 0.0f || mmdy != 0.0f) {
@@ -808,9 +840,11 @@ int main() {
             }
         }
 
-        // Look + fly only while RIGHT mouse is held and ImGui isn't using it.
+        // Start an RMB-look only when hovering the viewport; keep an ongoing look
+        // alive while the panel stays focused (RMB captures + recenters the cursor,
+        // so `hovered` can drop out during the drag).
         const bool look = input.mouseButtonDown(GLFW_MOUSE_BUTTON_RIGHT)
-                          && !imgui.wantsMouse();
+                          && (viewport.hovered || (prevLook && viewport.focused));
         app.window().setCursorCaptured(look);
 
         const float mdx = static_cast<float>(input.mouseDeltaX());
@@ -853,15 +887,24 @@ int main() {
                     wantDuplicateShortcut = true;
             }
 
-            const bool uiBusy = imgui.wantsMouse();
-            if (!uiBusy || gizmo.dragging()) {
+            // Unclamped window->viewport-local mouse. Used for the pick/gizmo ray so
+            // an in-progress gizmo drag that travels past the panel edge keeps a
+            // correct ray direction (the cursor isn't captured during gizmo drags).
+            const iron::Vec2 vpLocal{viewport.mousePx.x - viewport.rectMin.x,
+                                     viewport.mousePx.y - viewport.rectMin.y};
+            // Bounded check: a fresh click-pick only fires when the cursor is actually
+            // inside the scene image (not over the panel's title bar / a side panel).
+            iron::Vec2 pickLocalUnused{};
+            const bool mouseInViewport =
+                viewport.mouseValid &&
+                iron::viewportLocalMouse(viewport.mousePx, viewport.rectMin, viewport.size, pickLocalUnused);
+
+            if (viewport.hovered || gizmo.dragging()) {
                 const iron::Mat4 view = cam.viewMatrix();
                 const iron::Ray ray = iron::screenPointToRay(
                     view, proj,
-                    iron::Vec2{static_cast<float>(input.mouseX()),
-                               static_cast<float>(input.mouseY())},
-                    iron::Vec2{static_cast<float>(app.window().width()),
-                               static_cast<float>(app.window().height())},
+                    vpLocal,
+                    viewport.size,
                     cam.position);
 
                 const bool lmbPressed = input.mouseButtonPressed(GLFW_MOUSE_BUTTON_LEFT);
@@ -875,7 +918,7 @@ int main() {
                                             cam.fovDeg);
 
                 // A fresh click that didn't grab a handle re-selects (or clears).
-                if (lmbPressed && !consumed && !uiBusy) {
+                if (lmbPressed && !consumed && mouseInViewport) {
                     std::vector<iron::Aabb> worldAabbs(resolved.size());
                     for (std::size_t i = 0; i < resolved.size(); ++i) {
                         const iron::SceneEntity& e = scene.entities[resolved[i].entityIndex];
@@ -901,6 +944,28 @@ int main() {
 
         // --- editor UI ---
         imgui.beginFrame();
+        imgui.beginDockspace();
+
+        // M43b: one-time default dock layout. DockBuilderGetNode == nullptr means
+        // no layout exists yet (fresh — no imgui.ini), so a stale imgui.ini wins.
+        static bool dockLayoutBuilt = false;
+        if (!dockLayoutBuilt) {
+            dockLayoutBuilt = true;
+            const ImGuiID dockId = ImGui::GetID("##DockSpace");
+            if (ImGui::DockBuilderGetNode(dockId) == nullptr) {
+                ImGui::DockBuilderRemoveNode(dockId);
+                ImGui::DockBuilderAddNode(dockId, ImGuiDockNodeFlags_DockSpace);
+                ImGui::DockBuilderSetNodeSize(dockId, ImGui::GetMainViewport()->WorkSize);
+                ImGuiID center = dockId;
+                ImGuiID left  = ImGui::DockBuilderSplitNode(center, ImGuiDir_Left,  0.18f, nullptr, &center);
+                ImGuiID right = ImGui::DockBuilderSplitNode(center, ImGuiDir_Right, 0.24f, nullptr, &center);
+                ImGui::DockBuilderDockWindow("Viewport",       center);
+                ImGui::DockBuilderDockWindow("Scene Outliner", left);
+                ImGui::DockBuilderDockWindow("Environment",    left);
+                ImGui::DockBuilderDockWindow("Inspector",      right);
+                ImGui::DockBuilderFinish(dockId);
+            }
+        }
 
         // M41: Play/Stop toolbar. Top-center small ImGui window.
         {
@@ -915,7 +980,7 @@ int main() {
                 ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove |
                 ImGuiWindowFlags_NoSavedSettings |
                 ImGuiWindowFlags_NoFocusOnAppearing |
-                ImGuiWindowFlags_NoNav;
+                ImGuiWindowFlags_NoNav | ImGuiWindowFlags_NoDocking;
             ImGui::Begin("##play_toolbar", nullptr, kToolbarFlags);
             const char* label = editor.isPlaying() ? "[#] Stop" : "[>] Play";
             if (ImGui::Button(label, ImVec2(-FLT_MIN, 0.0f))) {
@@ -1138,13 +1203,41 @@ int main() {
             for (const auto& e : scene.entities) drawColliderWireframe(e);
         }
         renderer.flushDebugLines(view, proj);
-        // M40: gizmo + Iso orbit around the selected entity (or world origin
-        // if nothing is selected).
-        const iron::Vec3 viewPivot =
-            (selectedIndex >= 0 && selectedIndex < static_cast<int>(scene.entities.size()))
-                ? scene.entities[selectedIndex].transform.position
-                : iron::Vec3{0.0f, 0.0f, 0.0f};
-        iron::drawViewGizmo(cam, viewPivot);
+        // M43b: the 3D scene as a dockable panel. Resize the offscreen target to
+        // the panel content size, then show it via ImGui::Image.
+        ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0, 0));
+        ImGui::Begin("Viewport");
+        ImGui::PopStyleVar();
+        {
+            const ImVec2 avail  = ImGui::GetContentRegionAvail();
+            const ImVec2 imgPos = ImGui::GetCursorScreenPos();
+            const uint32_t vpW = static_cast<uint32_t>(avail.x > 1.0f ? avail.x : 1.0f);
+            const uint32_t vpH = static_cast<uint32_t>(avail.y > 1.0f ? avail.y : 1.0f);
+            // Safe to resize (vkDeviceWaitIdle) here mid-setRender: submit()
+            // only queues draws and renderer.endFrame() records all render
+            // passes, so the open command buffer doesn't yet reference the
+            // viewport image when this recreates it. viewportTexture() below
+            // rebinds the ImGui descriptor to the new image view.
+            vkRenderer.resizeViewport(vpW, vpH);  // no-op unless changed
+            void* texId = imgui.viewportTexture(vkRenderer.viewportColorView(),
+                                                vkRenderer.viewportSampler());
+            if (texId) {
+                ImGui::Image(reinterpret_cast<ImTextureID>(texId),
+                             ImVec2(static_cast<float>(vpW), static_cast<float>(vpH)));
+            }
+            viewport.rectMin = iron::Vec2{imgPos.x, imgPos.y};
+            viewport.size    = iron::Vec2{static_cast<float>(vpW), static_cast<float>(vpH)};
+            viewport.hovered = ImGui::IsWindowHovered();
+            viewport.focused = ImGui::IsWindowFocused();
+            const ImVec2 mp  = ImGui::GetMousePos();
+            viewport.mousePx = iron::Vec2{mp.x, mp.y};
+            viewport.mouseValid = true;
+            // M40 view-gizmo: anchored to THIS panel's rect (top-right of the image).
+            drawViewGizmo(cam, viewPivotFor(selectedIndex), 150.0f, 20.0f,
+                          viewport.rectMin, viewport.size);
+        }
+        ImGui::End();
+        imgui.endDockspace();
         imgui.render();   // enqueues the UI overlay into the scene pass tail
         renderer.endFrame();
         app.window().swapBuffers();

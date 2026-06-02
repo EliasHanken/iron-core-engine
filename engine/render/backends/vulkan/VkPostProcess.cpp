@@ -194,12 +194,12 @@ bool VkPostProcess::init(VkContext& ctx, VkFormat colorFormat, VkFormat depthFor
 
     if (!createTargets(ctx))                       { destroy(ctx); return false; }
     if (!createViewportTarget(ctx))                { destroy(ctx); return false; }
-    if (!createCopyPipeline(ctx, swapchainPass))   { destroy(ctx); return false; }
+    if (!createCopyPipeline(ctx))                  { destroy(ctx); return false; }
     if (!createBlitPipeline(ctx, swapchainPass))   { destroy(ctx); return false; }
-    if (!createOutlinePipeline(ctx, swapchainPass)){ destroy(ctx); return false; }
+    if (!createOutlinePipeline(ctx))               { destroy(ctx); return false; }
     if (!createMaskPipeline(ctx))                  { destroy(ctx); return false; }
-    if (!createGlowPipelines(ctx, swapchainPass))  { destroy(ctx); return false; }
-    if (!createXRayPipeline(ctx, swapchainPass))   { destroy(ctx); return false; }
+    if (!createGlowPipelines(ctx))                 { destroy(ctx); return false; }
+    if (!createXRayPipeline(ctx))                  { destroy(ctx); return false; }
     return true;
 }
 
@@ -252,9 +252,15 @@ void VkPostProcess::destroy(VkContext& ctx) {
     // NEAREST sampler for integer mask texture.
     if (maskSampler_)    { vkDestroySampler(ctx.device(), maskSampler_, nullptr); maskSampler_ = VK_NULL_HANDLE; }
 
-    // Render target objects (including glow scratch targets + glowPass_/glowFb_).
+    // Render target objects (images + framebuffers). The render passes are
+    // persistent across resize, so they are NOT freed by these helpers —
+    // destroy them here, at full teardown.
     destroyViewportTarget(ctx);
     destroyTargets(ctx);
+    if (viewportPass_) { vkDestroyRenderPass(ctx.device(), viewportPass_, nullptr); viewportPass_ = VK_NULL_HANDLE; }
+    if (glowPass_)     { vkDestroyRenderPass(ctx.device(), glowPass_, nullptr);     glowPass_ = VK_NULL_HANDLE; }
+    if (maskPass_)     { vkDestroyRenderPass(ctx.device(), maskPass_, nullptr);     maskPass_ = VK_NULL_HANDLE; }
+    if (scenePass_)    { vkDestroyRenderPass(ctx.device(), scenePass_, nullptr);    scenePass_ = VK_NULL_HANDLE; }
 }
 
 bool VkPostProcess::resize(VkContext& ctx, VkExtent2D extent) {
@@ -665,19 +671,26 @@ bool VkPostProcess::createTargets(VkContext& ctx) {
     rpInfo.pSubpasses      = &subpass;
     rpInfo.dependencyCount = 3;
     rpInfo.pDependencies   = deps;
-    VK_CHECK(vkCreateRenderPass(ctx.device(), &rpInfo, nullptr, &scenePass_));
+    // Render passes depend only on formats, not extent — create once and keep
+    // across resize. Pipelines are built against this handle; recreating it on
+    // resize would invalidate them (VUID-02684 / DEVICE_LOST). Destroyed in
+    // destroy(), not destroyTargets().
+    if (scenePass_ == VK_NULL_HANDLE)
+        VK_CHECK(vkCreateRenderPass(ctx.device(), &rpInfo, nullptr, &scenePass_));
 
     // --- Scene framebuffer ---
-    VkImageView views[2] = {sceneColorView_, sceneDepthView_};
-    VkFramebufferCreateInfo fbInfo{};
-    fbInfo.sType           = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO;
-    fbInfo.renderPass      = scenePass_;
-    fbInfo.attachmentCount = 2;
-    fbInfo.pAttachments    = views;
-    fbInfo.width           = extent_.width;
-    fbInfo.height          = extent_.height;
-    fbInfo.layers          = 1;
-    VK_CHECK(vkCreateFramebuffer(ctx.device(), &fbInfo, nullptr, &sceneFb_));
+    {
+        VkImageView views[2] = {sceneColorView_, sceneDepthView_};
+        VkFramebufferCreateInfo fbInfo{};
+        fbInfo.sType           = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO;
+        fbInfo.renderPass      = scenePass_;
+        fbInfo.attachmentCount = 2;
+        fbInfo.pAttachments    = views;
+        fbInfo.width           = extent_.width;
+        fbInfo.height          = extent_.height;
+        fbInfo.layers          = 1;
+        VK_CHECK(vkCreateFramebuffer(ctx.device(), &fbInfo, nullptr, &sceneFb_));
+    }
 
     // -----------------------------------------------------------------------
     // Mask target: R8_UINT color + D32_SFLOAT depth.
@@ -817,7 +830,8 @@ bool VkPostProcess::createTargets(VkContext& ctx) {
         maskRpInfo.pSubpasses      = &maskSubpass;
         maskRpInfo.dependencyCount = 2;
         maskRpInfo.pDependencies   = maskDeps;
-        VK_CHECK(vkCreateRenderPass(ctx.device(), &maskRpInfo, nullptr, &maskPass_));
+        if (maskPass_ == VK_NULL_HANDLE)  // persist across resize (see scenePass_)
+            VK_CHECK(vkCreateRenderPass(ctx.device(), &maskRpInfo, nullptr, &maskPass_));
 
         // --- Mask framebuffer ---
         VkImageView maskViews[2] = {maskColorView_, maskDepthView_};
@@ -918,7 +932,8 @@ bool VkPostProcess::createTargets(VkContext& ctx) {
         glowRpInfo.pSubpasses      = &glowSubpass;
         glowRpInfo.dependencyCount = 2;
         glowRpInfo.pDependencies   = glowDeps;
-        VK_CHECK(vkCreateRenderPass(ctx.device(), &glowRpInfo, nullptr, &glowPass_));
+        if (glowPass_ == VK_NULL_HANDLE)  // persist across resize (see scenePass_)
+            VK_CHECK(vkCreateRenderPass(ctx.device(), &glowRpInfo, nullptr, &glowPass_));
 
         // Two framebuffers — one per scratch image — both use the same glowPass_.
         for (int i = 0; i < 2; ++i) {
@@ -939,10 +954,12 @@ bool VkPostProcess::createTargets(VkContext& ctx) {
 
 void VkPostProcess::destroyTargets(VkContext& ctx) {
     // Glow scratch targets (destroy in reverse creation order).
+    // NOTE: glowPass_/maskPass_/scenePass_ are NOT destroyed here — render
+    // passes are extent-independent and must persist across resize so the
+    // pipelines built against them stay valid. They are torn down in destroy().
     for (int i = 1; i >= 0; --i) {
         if (glowFb_[i])          { vkDestroyFramebuffer(ctx.device(), glowFb_[i], nullptr); glowFb_[i] = VK_NULL_HANDLE; }
     }
-    if (glowPass_)               { vkDestroyRenderPass(ctx.device(), glowPass_, nullptr); glowPass_ = VK_NULL_HANDLE; }
     for (int i = 1; i >= 0; --i) {
         if (glowScratchView_[i]) { vkDestroyImageView(ctx.device(), glowScratchView_[i], nullptr); glowScratchView_[i] = VK_NULL_HANDLE; }
         if (glowScratch_[i])     { vmaDestroyImage(ctx.allocator(), glowScratch_[i], glowScratchAlloc_[i]); glowScratch_[i] = VK_NULL_HANDLE; glowScratchAlloc_[i] = VK_NULL_HANDLE; }
@@ -951,7 +968,6 @@ void VkPostProcess::destroyTargets(VkContext& ctx) {
     // Mask target (destroy before scene target — order doesn't matter to Vulkan,
     // but mirrors creation order in reverse for clarity).
     if (maskFb_)          { vkDestroyFramebuffer(ctx.device(), maskFb_, nullptr); maskFb_ = VK_NULL_HANDLE; }
-    if (maskPass_)        { vkDestroyRenderPass(ctx.device(), maskPass_, nullptr); maskPass_ = VK_NULL_HANDLE; }
     if (maskColorView_)   { vkDestroyImageView(ctx.device(), maskColorView_, nullptr); maskColorView_ = VK_NULL_HANDLE; }
     if (maskDepthView_)   { vkDestroyImageView(ctx.device(), maskDepthView_, nullptr); maskDepthView_ = VK_NULL_HANDLE; }
     if (maskColor_)       { vmaDestroyImage(ctx.allocator(), maskColor_, maskColorAlloc_); maskColor_ = VK_NULL_HANDLE; maskColorAlloc_ = VK_NULL_HANDLE; }
@@ -959,7 +975,6 @@ void VkPostProcess::destroyTargets(VkContext& ctx) {
 
     // Scene offscreen target.
     if (sceneFb_)         { vkDestroyFramebuffer(ctx.device(), sceneFb_, nullptr); sceneFb_ = VK_NULL_HANDLE; }
-    if (scenePass_)       { vkDestroyRenderPass(ctx.device(), scenePass_, nullptr); scenePass_ = VK_NULL_HANDLE; }
     if (sceneColorView_)  { vkDestroyImageView(ctx.device(), sceneColorView_, nullptr); sceneColorView_ = VK_NULL_HANDLE; }
     if (sceneDepthView_)  { vkDestroyImageView(ctx.device(), sceneDepthView_, nullptr); sceneDepthView_ = VK_NULL_HANDLE; }
     if (sceneColor_)      { vmaDestroyImage(ctx.allocator(), sceneColor_, sceneColorAlloc_); sceneColor_ = VK_NULL_HANDLE; sceneColorAlloc_ = VK_NULL_HANDLE; }
@@ -1099,7 +1114,8 @@ bool VkPostProcess::createViewportTarget(VkContext& ctx) {
         rpInfo.pSubpasses      = &subpass;
         rpInfo.dependencyCount = 2;
         rpInfo.pDependencies   = deps;
-        VK_CHECK(vkCreateRenderPass(ctx.device(), &rpInfo, nullptr, &viewportPass_));
+        if (viewportPass_ == VK_NULL_HANDLE)  // persist across resize (see scenePass_)
+            VK_CHECK(vkCreateRenderPass(ctx.device(), &rpInfo, nullptr, &viewportPass_));
 
         // --- Viewport framebuffer ---
         VkImageView views[2] = {viewportColorView_, viewportDepthView_};
@@ -1118,8 +1134,10 @@ bool VkPostProcess::createViewportTarget(VkContext& ctx) {
 }
 
 void VkPostProcess::destroyViewportTarget(VkContext& ctx) {
+    // viewportPass_ is NOT destroyed here — it persists across resize so the
+    // composite/debug/HUD pipelines built against it stay valid (torn down in
+    // destroy()).
     if (viewportFb_)         { vkDestroyFramebuffer(ctx.device(), viewportFb_, nullptr); viewportFb_ = VK_NULL_HANDLE; }
-    if (viewportPass_)       { vkDestroyRenderPass(ctx.device(), viewportPass_, nullptr); viewportPass_ = VK_NULL_HANDLE; }
     if (viewportColorView_)  { vkDestroyImageView(ctx.device(), viewportColorView_, nullptr); viewportColorView_ = VK_NULL_HANDLE; }
     if (viewportDepthView_)  { vkDestroyImageView(ctx.device(), viewportDepthView_, nullptr); viewportDepthView_ = VK_NULL_HANDLE; }
     if (viewportColor_)      { vmaDestroyImage(ctx.allocator(), viewportColor_, viewportColorAlloc_); viewportColor_ = VK_NULL_HANDLE; viewportColorAlloc_ = VK_NULL_HANDLE; }
@@ -1153,7 +1171,7 @@ bool VkPostProcess::resizeViewport(VkContext& ctx, VkExtent2D extent) {
     return true;
 }
 
-bool VkPostProcess::createCopyPipeline(VkContext& ctx, VkRenderPass swapchainPass) {
+bool VkPostProcess::createCopyPipeline(VkContext& ctx) {
     // Compile shaders.
     auto vspv = compileGlsl(VK_SHADER_STAGE_VERTEX_BIT,   kFullscreenVert);
     auto fspv = compileGlsl(VK_SHADER_STAGE_FRAGMENT_BIT, kCopyFrag);
@@ -1263,7 +1281,7 @@ bool VkPostProcess::createCopyPipeline(VkContext& ctx, VkRenderPass swapchainPas
     pInfo.pColorBlendState    = &cb;
     pInfo.pDynamicState       = &dyn;
     pInfo.layout              = copyPipeLayout_;
-    pInfo.renderPass          = swapchainPass;
+    pInfo.renderPass          = viewportPass_;  // composite records into viewportPass_
     pInfo.subpass             = 0;
     // Capture result so shader modules are destroyed even if pipeline creation fails.
     VkResult copyPipeResult = vkCreateGraphicsPipelines(ctx.device(), VK_NULL_HANDLE, 1,
@@ -1598,7 +1616,7 @@ bool VkPostProcess::createMaskPipeline(VkContext& ctx) {
     return true;
 }
 
-bool VkPostProcess::createOutlinePipeline(VkContext& ctx, VkRenderPass swapchainPass) {
+bool VkPostProcess::createOutlinePipeline(VkContext& ctx) {
     // Compile shaders (reuse kFullscreenVert from the copy pipeline).
     auto vspv = compileGlsl(VK_SHADER_STAGE_VERTEX_BIT,   kFullscreenVert);
     auto fspv = compileGlsl(VK_SHADER_STAGE_FRAGMENT_BIT, kOutlineFrag);
@@ -1721,7 +1739,7 @@ bool VkPostProcess::createOutlinePipeline(VkContext& ctx, VkRenderPass swapchain
     pInfo.pColorBlendState    = &cb;
     pInfo.pDynamicState       = &dyn;
     pInfo.layout              = outlinePipeLayout_;
-    pInfo.renderPass          = swapchainPass;
+    pInfo.renderPass          = viewportPass_;  // composite records into viewportPass_
     pInfo.subpass             = 0;
     // Capture result so shader modules are destroyed even if pipeline creation fails.
     VkResult outlinePipeResult = vkCreateGraphicsPipelines(ctx.device(), VK_NULL_HANDLE,
@@ -1768,7 +1786,7 @@ bool VkPostProcess::createOutlinePipeline(VkContext& ctx, VkRenderPass swapchain
     return true;
 }
 
-bool VkPostProcess::createGlowPipelines(VkContext& ctx, VkRenderPass swapchainPass) {
+bool VkPostProcess::createGlowPipelines(VkContext& ctx) {
     // Compile the vertex shader (shared kFullscreenVert) once; reuse for all three passes.
     auto vspv = compileGlsl(VK_SHADER_STAGE_VERTEX_BIT, kFullscreenVert);
     if (vspv.empty()) {
@@ -2047,7 +2065,7 @@ bool VkPostProcess::createGlowPipelines(VkContext& ctx, VkRenderPass swapchainPa
         pInfo.pColorBlendState    = &blend;  // 4-channel RGBA for swapchain-compatible format
         pInfo.pDynamicState       = &dyn;
         pInfo.layout              = glowCompositePipeLayout_;
-        pInfo.renderPass          = swapchainPass;  // built against swapchain pass; records into compatible viewport pass (M43a)
+        pInfo.renderPass          = viewportPass_;  // composite records into viewportPass_ (must match its dependencyCount)
         pInfo.subpass             = 0;
         VkResult r = vkCreateGraphicsPipelines(ctx.device(), VK_NULL_HANDLE, 1, &pInfo, nullptr, &glowCompositePipeline_);
         vkDestroyShaderModule(ctx.device(), vsm, nullptr);
@@ -2353,7 +2371,7 @@ void VkPostProcess::runChainOffscreenPasses(VkCommandBuffer cb,
     }
 }
 
-bool VkPostProcess::createXRayPipeline(VkContext& ctx, VkRenderPass swapchainPass) {
+bool VkPostProcess::createXRayPipeline(VkContext& ctx) {
     // Compile shaders (reuse kFullscreenVert from the copy pipeline).
     auto vspv = compileGlsl(VK_SHADER_STAGE_VERTEX_BIT,   kFullscreenVert);
     auto fspv = compileGlsl(VK_SHADER_STAGE_FRAGMENT_BIT, kXrayFrag);
@@ -2477,7 +2495,7 @@ bool VkPostProcess::createXRayPipeline(VkContext& ctx, VkRenderPass swapchainPas
     pInfo.pColorBlendState    = &cb;
     pInfo.pDynamicState       = &dyn;
     pInfo.layout              = xrayPipeLayout_;
-    pInfo.renderPass          = swapchainPass;  // built against swapchain pass; records into compatible viewport pass (M43a)
+    pInfo.renderPass          = viewportPass_;  // composite records into viewportPass_ (must match its dependencyCount)
     pInfo.subpass             = 0;
     // Capture result so shader modules are destroyed even if pipeline creation fails.
     VkResult xrayPipeResult = vkCreateGraphicsPipelines(ctx.device(), VK_NULL_HANDLE, 1,

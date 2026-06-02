@@ -268,7 +268,8 @@ CameraPose computeIsoPose(const FreeFlyCamera& cam, Vec3 pivot) {
 
 }  // namespace
 
-bool drawViewGizmo(FreeFlyCamera& cam, Vec3 pivot, float size, float margin) {
+bool drawViewGizmo(FreeFlyCamera& cam, Vec3 pivot, float size, float margin,
+                   Vec2 rectMin, Vec2 rectSize) {
     // Persistent state — we own this, no library involved.
     static bool       dragActive = false;
     static int        dragButton = -1;
@@ -290,8 +291,16 @@ bool drawViewGizmo(FreeFlyCamera& cam, Vec3 pivot, float size, float margin) {
         changed = true;
     }
 
-    const ImVec2 viewportSize = ImGui::GetMainViewport()->Size;
-    const ImVec2 viewportPos  = ImGui::GetMainViewport()->Pos;
+    // Determine anchor rect: panel-provided rect or main viewport work area.
+    const bool useRect = (rectSize.x > 0.0f && rectSize.y > 0.0f);
+    ImVec2 anchorPos, anchorSize;
+    if (useRect) {
+        anchorPos  = {rectMin.x,  rectMin.y};
+        anchorSize = {rectSize.x, rectSize.y};
+    } else {
+        anchorPos  = ImGui::GetMainViewport()->Pos;
+        anchorSize = ImGui::GetMainViewport()->Size;
+    }
 
     // Small overlay window — sized to JUST the gizmo + Iso button so WASD
     // stays free outside the corner.
@@ -299,8 +308,8 @@ bool drawViewGizmo(FreeFlyCamera& cam, Vec3 pivot, float size, float margin) {
     constexpr float kPad          = 6.0f;
     const float windowW = size + kPad * 2.0f;
     const float windowH = size + kPad * 2.0f + kButtonHeight + 4.0f;
-    ImGui::SetNextWindowPos({viewportPos.x + viewportSize.x - windowW - margin,
-                             viewportPos.y + margin});
+    ImGui::SetNextWindowPos({anchorPos.x + anchorSize.x - windowW - margin,
+                             anchorPos.y + margin});
     ImGui::SetNextWindowSize({windowW, windowH});
     ImGui::SetNextWindowBgAlpha(0.0f);
     constexpr ImGuiWindowFlags kOverlayFlags =
@@ -399,7 +408,12 @@ bool drawViewGizmo(FreeFlyCamera& cam, Vec3 pivot, float size, float margin) {
     }
 
     // Render: connecting lines from center to each handle, then circles, then labels.
-    ImDrawList* dl = ImGui::GetWindowDrawList();
+    // When anchored to a panel rect, draw into the gizmo overlay window's draw list
+    // (the overlay window is positioned within the panel rect via SetNextWindowPos,
+    // so it appears in the panel's corner). Otherwise use the foreground draw list
+    // (legacy fullscreen overlay).
+    ImDrawList* dl = useRect ? ImGui::GetWindowDrawList()
+                             : ImGui::GetForegroundDrawList();
     // Center dot.
     dl->AddCircleFilled(gizmoCenter, 3.0f, IM_COL32(220, 220, 220, 200));
     // Pre-pass: lines for the FRONT 3 handles (depth < 0). Back lines are noisy.

@@ -38,6 +38,9 @@ VulkanRenderer::~VulkanRenderer() {
         reflection_.destroy(context_);
         pipelines_.destroy(context_);
         frames_.destroy(context_);
+        for (VkSemaphore s : imageRenderFinished_)
+            if (s) vkDestroySemaphore(context_.device(), s, nullptr);
+        imageRenderFinished_.clear();
         swapchain_.destroy(context_);
     }
     context_.shutdown();
@@ -56,6 +59,10 @@ bool VulkanRenderer::init(Window& window) {
         Log::error("VulkanRenderer: VkFrameRing init failed");
         return false;
     }
+    if (!recreateImageSemaphores()) {
+        Log::error("VulkanRenderer: render-finished semaphore creation failed");
+        return false;
+    }
     if (!pipelines_.init(context_, swapchain_)) {
         Log::error("VulkanRenderer: VkPipeline init failed");
         return false;
@@ -69,24 +76,29 @@ bool VulkanRenderer::init(Window& window) {
         return false;
     }
     // M36 — offscreen scene-color target + copy pipeline. Must be init before
-    // skybox_ because scenePass() now returns its render pass. debugLines_ and
-    // hud_ use swapchainPass() (pipelines_.renderPass()), so order vs. them is
-    // already guaranteed by pipelines_.init() above.
+    // skybox_ because scenePass() now returns its render pass, and before
+    // debugLines_/hud_ which build against viewportPass().
     if (!postProcess_.init(context_, swapchain_.colorFormat(), swapchain_.depthFormat(),
                            swapchain_.extent(), textures_.sampler(),
                            pipelines_.renderPass())) {
         Log::error("VulkanRenderer: post-process init failed");
         return false;
     }
+    // Scene/skinned mesh pipelines record into scenePass_ — build them against
+    // it (not the swapchain pass) for render-pass compatibility (VUID-02684).
+    pipelines_.setScenePass(postProcess_.scenePass());
     if (!shadowMap_.init(context_)) {
         Log::error("VulkanRenderer: VkShadowMap init failed");
         return false;
     }
-    if (!debugLines_.init(context_, swapchainPass())) {
+    // Debug lines + HUD record into the viewport pass (M43a), so their
+    // pipelines must be built against it — not the swapchain pass — or they
+    // trip VUID-02684 (dependencyCount mismatch) when recorded.
+    if (!debugLines_.init(context_, postProcess_.viewportPass())) {
         Log::error("VulkanRenderer: VkDebugLines init failed");
         return false;
     }
-    if (!hud_.init(context_, swapchainPass())) {
+    if (!hud_.init(context_, postProcess_.viewportPass())) {
         Log::error("VulkanRenderer: VkHud init failed");
         return false;
     }
@@ -407,6 +419,26 @@ void main() {
 )";
 }  // namespace
 
+bool VulkanRenderer::recreateImageSemaphores() {
+    // Must be idle: a destroyed semaphore may still be referenced by an
+    // in-flight present. Callers on the recreate path already wait idle;
+    // init() runs before any submit. Belt-and-suspenders here is cheap.
+    vkDeviceWaitIdle(context_.device());
+    for (VkSemaphore s : imageRenderFinished_)
+        if (s) vkDestroySemaphore(context_.device(), s, nullptr);
+    imageRenderFinished_.assign(swapchain_.imageCount(), VK_NULL_HANDLE);
+
+    VkSemaphoreCreateInfo semInfo{};
+    semInfo.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
+    for (VkSemaphore& s : imageRenderFinished_) {
+        if (vkCreateSemaphore(context_.device(), &semInfo, nullptr, &s) != VK_SUCCESS) {
+            Log::error("VulkanRenderer: vkCreateSemaphore (render-finished) failed");
+            return false;
+        }
+    }
+    return true;
+}
+
 void VulkanRenderer::beginFrame(Vec3 clearColor, const DirectionalLight& light,
                                  std::span<const PointLight> pointLights,
                                  const Fog& fog, const Mat4& view,
@@ -434,6 +466,14 @@ void VulkanRenderer::beginFrame(Vec3 clearColor, const DirectionalLight& light,
         vkDeviceWaitIdle(context_.device());
         swapchain_.recreate(context_, pendingResizeWidth_, pendingResizeHeight_);
         pipelines_.recreateFramebuffers(context_, swapchain_);
+        // Image count may change on recreate — rebuild per-image semaphores.
+        // On failure the vector would hold null handles that endFrame would
+        // signal/wait on, so skip this frame's render rather than submit them.
+        if (!recreateImageSemaphores()) {
+            Log::error("VulkanRenderer: render-finished semaphore recreate failed");
+            skipFrame_ = true;
+            return;
+        }
         // M36: recreate the offscreen target to match the new swapchain size.
         // Guard against 0x0 extent (window minimized) — the zero-size guard in
         // swapchain_.recreate already handles that, but be explicit.
@@ -1030,7 +1070,7 @@ void VulkanRenderer::endFrame() {
         rpBegin.pClearValues = clears;
         vkCmdBeginRenderPass(cb, &rpBegin, VK_SUBPASS_CONTENTS_INLINE);
 
-        // Plain positive-height viewport covering the swapchain (UV-space blit).
+        // Plain positive-height viewport covering the swapchain (ImGui pass).
         {
             VkViewport vp{};
             vp.x = 0.0f; vp.y = 0.0f;
@@ -1042,8 +1082,13 @@ void VulkanRenderer::endFrame() {
             vkCmdSetScissor(cb, 0, 1, &scissor);
         }
 
-        // Blit the composited viewport image to the backbuffer.
-        postProcess_.blitToSwapchain(cb);
+        // Present the composited viewport image. Games blit it full-screen
+        // here; the editor skips this and composites it via ImGui::Image
+        // (setBlitViewportToSwapchain(false)), so its swapchain pass carries
+        // only ImGui. The blit pipeline is built against this (swapchain) pass.
+        if (blitViewportToSwapchain_) {
+            postProcess_.blitToSwapchain(cb);
+        }
 
         // UI/overlays (ImGui) on top — unchanged.
         for (auto& fn : deferredUiPass_) {
@@ -1066,13 +1111,16 @@ void VulkanRenderer::endFrame() {
     submit.commandBufferCount = 1;
     submit.pCommandBuffers = &cb;
     submit.signalSemaphoreCount = 1;
-    submit.pSignalSemaphores = &f.renderFinished;
+    // Per-IMAGE render-finished semaphore (indexed by the acquired image),
+    // not the per-frame one — see imageRenderFinished_ in the header.
+    VkSemaphore renderFinished = imageRenderFinished_[currentImageIndex_];
+    submit.pSignalSemaphores = &renderFinished;
     VK_CHECK(vkQueueSubmit(context_.graphicsQueue(), 1, &submit, f.inFlight));
 
     VkPresentInfoKHR present{};
     present.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR;
     present.waitSemaphoreCount = 1;
-    present.pWaitSemaphores = &f.renderFinished;
+    present.pWaitSemaphores = &renderFinished;
     present.swapchainCount = 1;
     VkSwapchainKHR sc = swapchain_.handle();
     present.pSwapchains = &sc;

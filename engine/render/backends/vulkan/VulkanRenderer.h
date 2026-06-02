@@ -136,6 +136,14 @@ public:
     // unchanged/zero extent. Calls vkDeviceWaitIdle internally.
     void resizeViewport(uint32_t width, uint32_t height);
 
+    // How the composited viewport image reaches the swapchain:
+    //   true  (default) — blit it full-screen in the swapchain pass. Games
+    //                     present their scene this way (no editor UI).
+    //   false           — the host composites it itself (the editor draws it
+    //                     via ImGui::Image), so endFrame skips the blit and
+    //                     the swapchain pass carries only ImGui.
+    void setBlitViewportToSwapchain(bool blit) { blitViewportToSwapchain_ = blit; }
+
     // Engine-internal: external Vulkan subsystems register a deferred
     // render callback. Fires inside the scene render pass during endFrame,
     // after the geometry replay and before debug-lines + HUD.
@@ -158,6 +166,10 @@ public:
 private:
     void warnOnce(const char* feature);
     bool recreateSwapchainAndFramebuffers(int width, int height);
+    // (Re)creates imageRenderFinished_ to match swapchain_.imageCount().
+    // Destroys any existing semaphores first; call after every swapchain
+    // (re)creation. Returns false on semaphore creation failure.
+    bool recreateImageSemaphores();
     void recordSceneDraw(VkCommandBuffer cb, const DrawCall& call);
     void recordSkinnedDraw(VkCommandBuffer cb, const SkinnedDrawCall& call,
                            const std::vector<Mat4>& bones);
@@ -253,10 +265,21 @@ private:
 
     // Swapchain image index acquired in beginFrame, used in endFrame.
     std::uint32_t currentImageIndex_ = 0;
+
+    // Render-finished semaphores, one PER SWAPCHAIN IMAGE (not per
+    // frame-in-flight). The submit signals and present waits on the
+    // semaphore for the acquired image index. A per-frame semaphore is
+    // unsafe here: with N images and 2 frames in flight, frame slot reuse
+    // can recycle a semaphore an image is still presenting against, which
+    // trips VUID-vkQueueSubmit-pSignalSemaphores-00067 and can DEVICE_LOST.
+    std::vector<VkSemaphore> imageRenderFinished_;
     bool       pendingResize_  = false;
     int        pendingResizeWidth_ = 0;
     int        pendingResizeHeight_ = 0;
     bool       skipFrame_ = false;  // set when acquire fails this frame
+    // Default true: blit the viewport image to the swapchain (games). The
+    // editor sets false and composites the image via ImGui::Image instead.
+    bool       blitViewportToSwapchain_ = true;
 };
 
 }  // namespace iron
