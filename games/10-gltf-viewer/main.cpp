@@ -262,6 +262,7 @@ int main(int argc, char** argv) {
             call.material.roughness             = model->roughnessFactor;
             call.material.baseColorFactor       = model->baseColorFactor;
             call.material.emissive              = model->emissiveFactor;
+            call.material.normalScale           = model->normalScale;
             call.boneMatrices = std::span<const iron::Mat4>{
                 bonesPose.data(), std::min(boneCount, bonesPose.size())};
             renderer.submitSkinnedDraw(call);
@@ -279,6 +280,7 @@ int main(int argc, char** argv) {
             call.material.roughness             = model->roughnessFactor;
             call.material.baseColorFactor       = model->baseColorFactor;
             call.material.emissive              = model->emissiveFactor;
+            call.material.normalScale           = model->normalScale;
             renderer.submit(call);
         }
 

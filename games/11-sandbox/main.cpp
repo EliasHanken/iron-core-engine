@@ -261,6 +261,8 @@ int main() {
                 e.material.baseColorFactor = gltfModel->baseColorFactor;
             if (iron::dot(e.material.emissive, e.material.emissive) == 0.0f)
                 e.material.emissive = gltfModel->emissiveFactor;
+            if (e.material.normalScale == 1.0f)
+                e.material.normalScale = gltfModel->normalScale;
 
         } else {
             iron::Log::warn("sandbox: entity '%s' has no mesh", e.name.c_str());
@@ -283,6 +285,7 @@ int main() {
         out.material.baseColorFactor = e.material.baseColorFactor;
         out.material.uvScale         = e.material.uvScale;
         out.material.reflectivity    = e.material.reflectivity;
+        out.material.normalScale     = e.material.normalScale;
         out.model = iron::translation(e.transform.position) * e.transform.rotation.toMat4() * iron::scaling(e.transform.scale);
         return true;
     };
@@ -1034,6 +1037,7 @@ int main() {
             call.material.ao              = mat->ao;
             call.material.uvScale         = mat->uvScale;
             call.material.reflectivity    = mat->reflectivity;
+            call.material.normalScale     = mat->normalScale;
             call.effectId              = (sceneIdx == selectedIndex) ? 1 : 0;
             renderer.submit(call);
         }
