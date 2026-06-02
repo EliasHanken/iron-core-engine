@@ -61,7 +61,7 @@ bool VkTextureStore::init(VkContext& ctx) {
     const unsigned char flatNormal[4] = {128, 128, 255, 255};
     const unsigned char noSpec[4]     = {0,   0,   0,   255};
     white_      = createFromRgba(ctx, 1, 1, white);
-    flatNormal_ = createFromRgba(ctx, 1, 1, flatNormal);
+    flatNormal_ = createFromRgba(ctx, 1, 1, flatNormal, /*srgb=*/false);
     noSpec_     = createFromRgba(ctx, 1, 1, noSpec);
     return white_ != kInvalidHandle && flatNormal_ != kInvalidHandle && noSpec_ != kInvalidHandle;
 }
@@ -79,7 +79,9 @@ void VkTextureStore::destroyAll(VkContext& ctx) {
 }
 
 void VkTextureStore::uploadRgba(VkContext& ctx, VkTextureResource& tex,
-                                int width, int height, const unsigned char* rgba) {
+                                int width, int height, const unsigned char* rgba,
+                                bool srgb) {
+    const VkFormat fmt = srgb ? VK_FORMAT_R8G8B8A8_SRGB : VK_FORMAT_R8G8B8A8_UNORM;
     const VkDeviceSize size = static_cast<VkDeviceSize>(width) * height * 4;
 
     VmaAllocation stagingAlloc = VK_NULL_HANDLE;
@@ -90,7 +92,7 @@ void VkTextureStore::uploadRgba(VkContext& ctx, VkTextureResource& tex,
     VkImageCreateInfo imgInfo{};
     imgInfo.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
     imgInfo.imageType = VK_IMAGE_TYPE_2D;
-    imgInfo.format = VK_FORMAT_R8G8B8A8_SRGB;
+    imgInfo.format = fmt;
     imgInfo.extent = {static_cast<std::uint32_t>(width), static_cast<std::uint32_t>(height), 1};
     imgInfo.mipLevels = 1;
     imgInfo.arrayLayers = 1;
@@ -171,7 +173,7 @@ void VkTextureStore::uploadRgba(VkContext& ctx, VkTextureResource& tex,
     viewInfo.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
     viewInfo.image = tex.image;
     viewInfo.viewType = VK_IMAGE_VIEW_TYPE_2D;
-    viewInfo.format = VK_FORMAT_R8G8B8A8_SRGB;
+    viewInfo.format = fmt;
     viewInfo.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
     VK_CHECK(vkCreateImageView(ctx.device(), &viewInfo, nullptr, &tex.view));
     tex.sampler = sharedSampler_;
@@ -181,22 +183,24 @@ void VkTextureStore::uploadRgba(VkContext& ctx, VkTextureResource& tex,
 
 TextureHandle VkTextureStore::createFromRgba(VkContext& ctx,
                                              int width, int height,
-                                             const unsigned char* rgba) {
+                                             const unsigned char* rgba,
+                                             bool srgb) {
     VkTextureResource tex{};
-    uploadRgba(ctx, tex, width, height, rgba);
+    uploadRgba(ctx, tex, width, height, rgba, srgb);
     const TextureHandle h = nextHandle_++;
     textures_[h] = tex;
     return h;
 }
 
-TextureHandle VkTextureStore::loadFromFile(VkContext& ctx, const std::string& path) {
+TextureHandle VkTextureStore::loadFromFile(VkContext& ctx, const std::string& path,
+                                           bool srgb) {
     int w = 0, h = 0, ch = 0;
     unsigned char* pixels = stbi_load(path.c_str(), &w, &h, &ch, STBI_rgb_alpha);
     if (!pixels) {
         Log::error("VkTextureStore: stbi_load failed for %s", path.c_str());
         return kInvalidHandle;
     }
-    const TextureHandle handle = createFromRgba(ctx, w, h, pixels);
+    const TextureHandle handle = createFromRgba(ctx, w, h, pixels, srgb);
     stbi_image_free(pixels);
     return handle;
 }

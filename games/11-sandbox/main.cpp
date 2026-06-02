@@ -202,9 +202,10 @@ int main() {
     };
 
     auto resolveTexture = [&](const std::string& path,
-                               iron::TextureHandle fallback) -> iron::TextureHandle {
+                               iron::TextureHandle fallback,
+                               bool srgb = true) -> iron::TextureHandle {
         if (path.empty()) return fallback;
-        iron::TextureHandle t = renderer.loadTexture(path);
+        iron::TextureHandle t = renderer.loadTexture(path, srgb);
         return (t == iron::kInvalidHandle) ? fallback : t;
     };
 
@@ -238,15 +239,10 @@ int main() {
                 : renderer.loadTexture(gltfModel->materialPaths.albedo);
             out.material.normalMap = gltfModel->materialPaths.normal.empty()
                 ? renderer.flatNormalTexture()
-                : renderer.loadTexture(gltfModel->materialPaths.normal);
-            out.material.specularMap = renderer.noSpecularTexture();
-            if (!gltfModel->materialPaths.metalRoughness.empty()) {
-                int w = 0, h = 0;
-                auto specBytes = iron::loadRoughnessAsSpec(
-                    gltfModel->materialPaths.metalRoughness, w, h);
-                if (!specBytes.empty())
-                    out.material.specularMap = renderer.createTexture(w, h, specBytes.data());
-            }
+                : renderer.loadTexture(gltfModel->materialPaths.normal, /*srgb=*/false);
+            out.material.metallicRoughnessMap = gltfModel->materialPaths.metalRoughness.empty()
+                ? iron::kInvalidHandle
+                : renderer.loadTexture(gltfModel->materialPaths.metalRoughness, /*srgb=*/false);
 
         } else {
             iron::Log::warn("sandbox: entity '%s' has no mesh", e.name.c_str());
@@ -257,9 +253,13 @@ int main() {
         if (out.material.texture == iron::kInvalidHandle)
             out.material.texture = resolveTexture(e.material.albedoPath, renderer.whiteTexture());
         if (out.material.normalMap == iron::kInvalidHandle)
-            out.material.normalMap = resolveTexture(e.material.normalPath, renderer.flatNormalTexture());
-        if (out.material.specularMap == iron::kInvalidHandle)
-            out.material.specularMap = resolveTexture(e.material.specularPath, renderer.noSpecularTexture());
+            out.material.normalMap = resolveTexture(e.material.normalPath, renderer.flatNormalTexture(), /*srgb=*/false);
+        if (out.material.metallicRoughnessMap == iron::kInvalidHandle)
+            out.material.metallicRoughnessMap = resolveTexture(e.material.metallicRoughnessPath, iron::kInvalidHandle, /*srgb=*/false);
+        out.material.aoMap = resolveTexture(e.material.aoPath, iron::kInvalidHandle, /*srgb=*/false);
+        out.material.metallic  = e.material.metallic;
+        out.material.roughness = e.material.roughness;
+        out.material.ao        = e.material.ao;
         out.material.emissive     = e.material.emissive;
         out.material.uvScale      = e.material.uvScale;
         out.material.reflectivity = e.material.reflectivity;
@@ -268,15 +268,12 @@ int main() {
     };
 
     // Pack a resolved entity's GPU handles into the new RenderHandles
-    // component shape (M37). Field names differ between the legacy
-    // iron::Material (texture/normalMap/specularMap) and the new
-    // RenderHandles (albedo/normal/specular).
+    // component shape (M37).
     auto toRenderHandles = [](const ResolvedEntity& re) -> iron::RenderHandles {
         iron::RenderHandles rh{};
-        rh.mesh     = re.mesh;
-        rh.albedo   = re.material.texture;
-        rh.normal   = re.material.normalMap;
-        rh.specular = re.material.specularMap;
+        rh.mesh   = re.mesh;
+        rh.albedo = re.material.texture;
+        rh.normal = re.material.normalMap;
         return rh;
     };
 
@@ -297,6 +294,14 @@ int main() {
 
     iron::Log::info("sandbox: resolved %zu / %zu entities from scene",
                     resolved.size(), scene.entities.size());
+
+    // --- M45b: PBR sphere grid (runtime only, not serialized) ---
+    // 6x6 grid of unit spheres sweeping metallic (X) x roughness (Z).
+    // Placed at Z=-8 so it sits clearly behind the authored demo scene content.
+    const iron::MeshHandle pbrSphereMesh = renderer.createMesh(iron::makeUVSphere(0.5f, 32));
+    constexpr int kPbrGrid = 6;
+    const iron::Vec3 kPbrGridOrigin{-3.25f, 2.0f, -8.0f};  // centered on X, elevated, behind scene
+    const float kPbrGridSpacing = 1.3f;
 
     // --- Camera ---
     iron::FreeFlyCamera cam;
@@ -993,13 +998,45 @@ int main() {
                                        * iron::scaling(t.scale);
             call.material.texture      = rh->albedo;
             call.material.normalMap    = rh->normal;
-            call.material.specularMap  = rh->specular;
+            if (sceneIdx >= 0 && sceneIdx < static_cast<int>(resolved.size())) {
+                const iron::Material& rm          = resolved[sceneIdx].material;
+                call.material.metallicRoughnessMap = rm.metallicRoughnessMap;
+                call.material.aoMap               = rm.aoMap;
+            }
+            call.material.metallic     = mat->metallic;
+            call.material.roughness    = mat->roughness;
+            call.material.ao           = mat->ao;
             call.material.emissive     = mat->emissive;
             call.material.uvScale      = mat->uvScale;
             call.material.reflectivity = mat->reflectivity;
             call.effectId              = (sceneIdx == selectedIndex) ? 1 : 0;
             renderer.submit(call);
         }
+
+        // --- M45b: PBR tuning matrix — metallic x roughness sphere grid ---
+        // Submitted every frame (Edit + Play), never serialized into the scene.
+        // Metallic increases along X (left=dielectric, right=metal).
+        // Roughness increases along Z (front=glossy, back=rough).
+        for (int gx = 0; gx < kPbrGrid; ++gx) {
+            for (int gz = 0; gz < kPbrGrid; ++gz) {
+                iron::Material m{};
+                m.texture   = renderer.whiteTexture();   // neutral albedo
+                m.metallic  = static_cast<float>(gx) / static_cast<float>(kPbrGrid - 1);
+                m.roughness = std::clamp(static_cast<float>(gz) / static_cast<float>(kPbrGrid - 1), 0.05f, 1.0f);
+                const iron::Vec3 pos{
+                    kPbrGridOrigin.x + static_cast<float>(gx) * kPbrGridSpacing,
+                    kPbrGridOrigin.y,
+                    kPbrGridOrigin.z + static_cast<float>(gz) * kPbrGridSpacing
+                };
+                iron::DrawCall dc{};
+                dc.mesh     = pbrSphereMesh;
+                dc.shader   = litShader;
+                dc.model    = iron::translation(pos);
+                dc.material = m;
+                renderer.submit(dc);
+            }
+        }
+
         if (selectedIndex >= 0 && selectedIndex < static_cast<int>(scene.entities.size()))
             gizmo.draw(renderer, gizmoOriginFor(selectedIndex),
                        scene.entities[selectedIndex].transform.rotation, cam.position,

@@ -50,8 +50,10 @@ public:
     MeshHandle createMesh(const MeshData& data) override;
     void updateMesh(MeshHandle mesh, const MeshData& data) override;
     TextureHandle createTexture(int width, int height,
-                                const unsigned char* rgba) override;
-    TextureHandle loadTexture(const std::string& path) override;
+                                const unsigned char* rgba,
+                                bool srgb = true) override;
+    TextureHandle loadTexture(const std::string& path,
+                              bool srgb = true) override;
     TextureHandle whiteTexture() const override;
     TextureHandle flatNormalTexture() const override;
     TextureHandle noSpecularTexture() const override;

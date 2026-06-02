@@ -306,26 +306,38 @@ int main() {
     struct PbrPack {
         iron::TextureHandle diffuse;
         iron::TextureHandle normal;
-        iron::TextureHandle spec;
+        iron::TextureHandle metallicRoughness;
+        float metallic  = 0.0f;  // scalar factor (map carries per-texel detail)
+        float roughness = 1.0f;
     };
 
-    auto loadPack = [&](const std::string& dir) -> PbrPack {
+    // Dielectric packs (wood/brick/ground): metallicConstant=0.
+    auto loadDielectricPack = [&](const std::string& dir) -> PbrPack {
         PbrPack p;
-        p.diffuse = renderer.loadTexture(dir + "/diffuse.png");
-        p.normal  = renderer.loadTexture(dir + "/normal.png");
-        int w = 0, h = 0;
-        const auto specBytes = iron::loadRoughnessAsSpec(dir + "/roughness.png", w, h);
-        p.spec = specBytes.empty()
-            ? renderer.noSpecularTexture()
-            : renderer.createTexture(w, h, specBytes.data());
+        p.diffuse           = renderer.loadTexture(dir + "/diffuse.png");
+        p.normal            = renderer.loadTexture(dir + "/normal.png", /*srgb=*/false);
+        p.metallicRoughness = iron::loadMetallicRoughness(renderer, dir + "/roughness.png", 0.0f);
+        p.metallic          = 0.0f;
+        p.roughness         = 1.0f;
+        return p;
+    };
+
+    // Metal pack: metallicConstant=1.
+    auto loadMetalPack = [&](const std::string& dir) -> PbrPack {
+        PbrPack p;
+        p.diffuse           = renderer.loadTexture(dir + "/diffuse.png");
+        p.normal            = renderer.loadTexture(dir + "/normal.png", /*srgb=*/false);
+        p.metallicRoughness = iron::loadMetallicRoughness(renderer, dir + "/roughness.png", 1.0f);
+        p.metallic          = 1.0f;
+        p.roughness         = 1.0f;
         return p;
     };
 
     const std::string assetsRoot = iron::executableDir() + "/assets/cc0";
-    const PbrPack wood   = loadPack(assetsRoot + "/wood");
-    const PbrPack metal  = loadPack(assetsRoot + "/metal");
-    const PbrPack brick  = loadPack(assetsRoot + "/brick");
-    const PbrPack ground = loadPack(assetsRoot + "/ground");
+    const PbrPack wood   = loadDielectricPack(assetsRoot + "/wood");
+    const PbrPack metal  = loadMetalPack     (assetsRoot + "/metal");
+    const PbrPack brick  = loadDielectricPack(assetsRoot + "/brick");
+    const PbrPack ground = loadDielectricPack(assetsRoot + "/ground");
 
     // -----------------------------------------------------------------------
     // Meshes
@@ -416,19 +428,19 @@ int main() {
                          const PbrPack& pack,
                          iron::Vec3 emissive       = {0.0f, 0.0f, 0.0f},
                          float reflectivity        = 0.0f,
-                         bool  useReflectionPlane  = false,
-                         float specPower           = 32.0f) {
+                         bool  useReflectionPlane  = false) {
         iron::DrawCall call;
         call.mesh  = mesh;
         call.shader = litShader;
         call.model  = iron::translation(pos);
-        call.material.texture          = pack.diffuse;
-        call.material.normalMap        = pack.normal;
-        call.material.specularMap      = pack.spec;
-        call.material.specPower        = specPower;
-        call.material.emissive         = emissive;
-        call.material.reflectivity     = reflectivity;
-        call.material.useReflectionPlane = useReflectionPlane;
+        call.material.texture                = pack.diffuse;
+        call.material.normalMap              = pack.normal;
+        call.material.metallicRoughnessMap   = pack.metallicRoughness;
+        call.material.metallic               = pack.metallic;
+        call.material.roughness              = pack.roughness;
+        call.material.emissive               = emissive;
+        call.material.reflectivity           = reflectivity;
+        call.material.useReflectionPlane     = useReflectionPlane;
         renderer.submit(call);
     };
 
@@ -494,15 +506,16 @@ int main() {
         submitObj(cylinderMesh, iron::Vec3{0.0f, 0.0f, 0.0f}, metal,
                   /*emissive*/{0.0f, 0.0f, 0.0f},
                   /*reflectivity*/0.6f,
-                  /*useReflectionPlane*/false,
-                  /*specPower*/64.0f);
+                  /*useReflectionPlane*/false);
 
         // Emissive box — plain white surface, strong emissive tint
         {
             PbrPack white{};
-            white.diffuse = renderer.whiteTexture();
-            white.normal  = renderer.flatNormalTexture();
-            white.spec    = renderer.noSpecularTexture();
+            white.diffuse           = renderer.whiteTexture();
+            white.normal            = renderer.flatNormalTexture();
+            white.metallicRoughness = renderer.whiteTexture();  // R=1, G=1(rough), B=1; neutral MR
+            white.metallic          = 0.0f;
+            white.roughness         = 1.0f;
             submitObj(emissiveMesh, iron::Vec3{2.0f, 5.0f, 0.0f}, white,
                       /*emissive*/{2.0f, 2.0f, 2.0f});
         }

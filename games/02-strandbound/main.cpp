@@ -361,9 +361,7 @@ int main() {
     const iron::TextureHandle woodNormalTex =
         renderer.createTexture(256, 256, woodNormalPixels.data());
 
-    const auto metalSpecPixels = iron::generateMetalSpecularMap(256);
-    const iron::TextureHandle metalSpecTex =
-        renderer.createTexture(256, 256, metalSpecPixels.data());
+    // metalSpecTex removed in M45b (PBR replaces Blinn-Phong spec map).
 
     // The solid geometry of the level: a home island, props, a far island,
     // and a pole. One BoxDef list builds both the render objects and the
@@ -691,11 +689,9 @@ int main() {
             call.material.useReflectionPlane = false;
             // Islands and props: wood normal map (plank groove detail).
             call.material.normalMap = woodNormalTex;
-            // Pole: additionally gets the metal spec map and a higher
-            // specPower for a polished-wood highlight.
+            // Pole: polished-wood highlight (PBR: roughness lowered in M45b+).
             if (i == kPoleIndex) {
-                call.material.specularMap = metalSpecTex;
-                call.material.specPower = 64.0f;
+                call.material.roughness = 0.2f;
             }
             renderer.submit(call);
         }
