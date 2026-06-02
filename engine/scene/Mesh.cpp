@@ -160,6 +160,42 @@ void appendTube(MeshData& out, const std::vector<Vec3>& points, float radius,
     }
 }
 
+MeshData makeUVSphere(float radius, int segments) {
+    const int seg   = segments < 3 ? 3 : segments;          // longitude divisions
+    const int rings = (seg / 2) < 2 ? 2 : (seg / 2);       // latitude divisions
+    MeshData out;
+    for (int y = 0; y <= rings; ++y) {
+        const float v     = static_cast<float>(y) / static_cast<float>(rings);
+        const float phi   = v * 3.14159265358979323846f;    // 0..pi (pole to pole)
+        const float sinP  = std::sin(phi), cosP = std::cos(phi);
+        for (int x = 0; x <= seg; ++x) {
+            const float u    = static_cast<float>(x) / static_cast<float>(seg);
+            const float th   = u * 2.0f * 3.14159265358979323846f;  // 0..2pi
+            const float sinT = std::sin(th), cosT = std::cos(th);
+            Vec3 n{sinP * cosT, cosP, sinP * sinT};         // outward unit normal
+            Vertex vert{};
+            vert.position = {n.x * radius, n.y * radius, n.z * radius};
+            vert.normal   = n;
+            vert.uv       = {u, v};
+            vert.tangent  = {-sinT, 0.0f, cosT};            // d/dtheta, unit
+            out.vertices.push_back(vert);
+        }
+    }
+    const int stride = seg + 1;
+    for (int y = 0; y < rings; ++y) {
+        for (int x = 0; x < seg; ++x) {
+            const std::uint32_t i0 = static_cast<std::uint32_t>(y * stride + x);
+            const std::uint32_t i1 = i0 + 1;
+            const std::uint32_t i2 = i0 + static_cast<std::uint32_t>(stride);
+            const std::uint32_t i3 = i2 + 1;
+            // CCW winding seen from outside (matches appendBox/appendTube convention).
+            // i0=top-left, i1=top-right, i2=bottom-left, i3=bottom-right.
+            out.indices.insert(out.indices.end(), {i0, i2, i1, i1, i2, i3});
+        }
+    }
+    return out;
+}
+
 // A unit cube centered at the origin (side length 1) — built from appendBox.
 MeshData makeCube() {
     MeshData data;

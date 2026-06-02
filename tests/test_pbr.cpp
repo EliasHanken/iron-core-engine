@@ -1,8 +1,10 @@
 // CPU port of the PBR BRDF helpers (kept in lockstep with the GLSL in
 // StandardLitShader.h). Verifies F0, Fresnel, GGX-D, and Smith-G properties.
 #include "render/Pbr.h"
+#include "scene/Mesh.h"
 
 #include <cassert>
+#include <cmath>
 #include <cstdio>
 
 using iron::Vec3;
@@ -43,6 +45,18 @@ int main() {
         assert(g >= 0.0f && g <= 1.0f);
         float gLow = iron::geometrySmith(0.2f, 0.2f, 0.5f);
         assert(g > gLow);
+    }
+    // makeUVSphere: vertex/index counts, unit normals, points on the sphere.
+    {
+        iron::MeshData m = iron::makeUVSphere(2.0f, 16);  // radius 2, 16 segments
+        assert(!m.vertices.empty() && !m.indices.empty());
+        for (const auto& v : m.vertices) {
+            float len = std::sqrt(v.position.x*v.position.x + v.position.y*v.position.y + v.position.z*v.position.z);
+            assert(approx(len, 2.0f, 1e-3f));           // on the sphere of radius 2
+            float nl = std::sqrt(v.normal.x*v.normal.x + v.normal.y*v.normal.y + v.normal.z*v.normal.z);
+            assert(approx(nl, 1.0f, 1e-3f));            // unit normal
+        }
+        assert(m.indices.size() % 3 == 0);              // triangle list
     }
     std::puts("test_pbr: all passed");
     return 0;

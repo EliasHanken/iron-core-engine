@@ -28,6 +28,11 @@ struct MeshData {
 // UVs so every face can be textured. 24 vertices (4 per face), 36 indices.
 MeshData makeCube();
 
+// UV sphere centered at the origin: `segments` longitudinal divisions and
+// `segments/2` latitudinal rings (min 3). Positions on the sphere of `radius`,
+// outward unit normals, tangents along +longitude, equirectangular UVs.
+MeshData makeUVSphere(float radius, int segments);
+
 // Axis-aligned bounds (min/max corner) over a mesh's vertex positions. Returns
 // a zero box for an empty mesh. Used to build per-entity pick bounds.
 Aabb meshBounds(const MeshData& mesh);
