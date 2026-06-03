@@ -48,8 +48,10 @@ void main() {
     float v = 2.0 * (float(gid.y) + 0.5) / float(size.y) - 1.0;
     vec3 dir = faceDir(gid.z, u, v);
 
+    // v is flipped (0.5 - ...) because an equirect map stores the zenith in
+    // its top row, which the sampler reads at v = 0.
     vec2 uv = vec2(atan(dir.z, dir.x) / (2.0 * kPi) + 0.5,
-                   asin(clamp(dir.y, -1.0, 1.0)) / kPi + 0.5);
+                   0.5 - asin(clamp(dir.y, -1.0, 1.0)) / kPi);
 
     vec3 color = textureLod(uEquirect, uv, 0.0).rgb;
     imageStore(uOut, gid, vec4(color, 1.0));

@@ -56,10 +56,10 @@ int main() {
         assert(approx(uv.x, 0.5f) && approx(uv.y, 0.5f));
     }
 
-    // 4. Equirect UV: straight up (+Y) maps to v=1.0 (top of the image).
+    // 4. Equirect UV: straight up (+Y) maps to v=0.0 (top of the image).
     {
         auto uv = directionToEquirectUv(Vec3{0.0f, 1.0f, 0.0f});
-        assert(approx(uv.y, 1.0f));
+        assert(approx(uv.y, 0.0f));
     }
 
     // 5. Equirect u wraparound: -X (atan2(0,-1)=pi) -> u=1.0; -Z -> u=0.25.

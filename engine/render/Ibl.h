@@ -31,12 +31,13 @@ inline Vec3 cubeFaceDirection(int face, float u, float v) {
 
 // Maps a unit direction to equirectangular UV in [0, 1]. u wraps yaw
 // (atan2(z, x)); v maps pitch via asin(y) so the horizon sits at v = 0.5
-// and straight up at v = 1.0.
+// and straight up at v = 0.0 (an equirect map stores the zenith in its top
+// row, which the sampler reads at v = 0).
 inline Vec2 directionToEquirectUv(Vec3 dir) {
     const float len = std::sqrt(dir.x * dir.x + dir.y * dir.y + dir.z * dir.z);
     const Vec3 d{dir.x / len, dir.y / len, dir.z / len};
     const float u = std::atan2(d.z, d.x) / (2.0f * kIblPi) + 0.5f;
-    const float v = std::asin(std::clamp(d.y, -1.0f, 1.0f)) / kIblPi + 0.5f;
+    const float v = 0.5f - std::asin(std::clamp(d.y, -1.0f, 1.0f)) / kIblPi;
     return Vec2{u, v};
 }
 
