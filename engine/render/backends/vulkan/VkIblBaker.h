@@ -20,6 +20,10 @@ class VkCubemapStore;
 // Exposed for a compile-check unit test.
 const char* kEquirectToCubeComputeSrc();
 
+// Returns the embedded irradiance-convolution compute shader source.
+// Exposed for a compile-check unit test.
+const char* kIrradianceConvolveComputeSrc();
+
 // Owns the equirect->cube compute pipeline and the .hdr load path. This is
 // the shared IBL bake foundation; M46b/c add more compute passes alongside it.
 class VkIblBaker {
@@ -33,10 +37,19 @@ public:
     CubemapHandle equirectFileToCubemap(VkContext& ctx, VkCubemapStore& store,
                                         const std::string& hdrPath, int faceSize);
 
+    // Convolves a cosine-weighted irradiance cubemap from an environment cube
+    // already in `store` (e.g. the skybox). Output is an RGBA16F cube
+    // (faceSize x faceSize, 1 mip). Returns kInvalidHandle on failure.
+    CubemapHandle bakeIrradiance(VkContext& ctx, VkCubemapStore& store,
+                                 CubemapHandle envCube, int faceSize);
+
 private:
     VkDescriptorSetLayout setLayout_       = VK_NULL_HANDLE;
     VkSampler             equirectSampler_ = VK_NULL_HANDLE;
     VkComputePipeline     pipeline_;
+
+    VkDescriptorSetLayout irradianceSetLayout_ = VK_NULL_HANDLE;
+    VkComputePipeline     irradiancePipeline_;
 };
 
 }  // namespace iron

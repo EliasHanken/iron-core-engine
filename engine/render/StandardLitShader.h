@@ -26,7 +26,7 @@ layout(set = 0, binding = 0) uniform LitUbo {
     vec4 emissive;
     vec4 cameraPos;
     vec4 materialParams;   // x=uvScale, y=roughness, z=reflectivity, w=shadowBias
-    vec4 materialParams2;  // M45b — x=metallic, y=ao, z=normalScale, w spare
+    vec4 materialParams2;  // x=metallic, y=ao, z=normalScale, w=iblEnabled (M46b)
     vec4 baseColorFactor;  // M45c — xyz=albedo tint, w unused
     vec4 fogColor;
     vec4 lightCounts;
@@ -74,7 +74,7 @@ layout(set = 0, binding = 0) uniform LitUbo {
     vec4 emissive;
     vec4 cameraPos;
     vec4 materialParams;   // x=uvScale, y=roughness, z=reflectivity, w=shadowBias
-    vec4 materialParams2;  // M45b — x=metallic, y=ao, z=normalScale, w spare
+    vec4 materialParams2;  // x=metallic, y=ao, z=normalScale, w=iblEnabled (M46b)
     vec4 baseColorFactor;  // M45c — xyz=albedo tint, w unused
     vec4 fogColor;
     vec4 lightCounts;
@@ -133,7 +133,7 @@ layout(set = 0, binding = 0) uniform LitUbo {
     vec4 emissive;
     vec4 cameraPos;
     vec4 materialParams;   // x=uvScale, y=roughness, z=reflectivity, w=shadowBias
-    vec4 materialParams2;  // M45b — x=metallic, y=ao, z=normalScale, w spare
+    vec4 materialParams2;  // x=metallic, y=ao, z=normalScale, w=iblEnabled (M46b)
     vec4 baseColorFactor;  // M45c — xyz=albedo tint, w unused
     vec4 fogColor;
     vec4 lightCounts;
@@ -152,6 +152,7 @@ layout(set = 0, binding = 5) uniform samplerCube uSkyCubemap;
 layout(set = 0, binding = 6) uniform sampler2D uReflection;
 layout(set = 0, binding = 7) uniform sampler2D uAoMap;
 layout(set = 0, binding = 8) uniform sampler2D uEmissiveMap;
+layout(set = 0, binding = 10) uniform samplerCube uIrradianceCube;  // M46b diffuse IBL
 
 float shadowFactor(vec4 lightSpacePos, float bias) {
     vec3 proj = lightSpacePos.xyz / lightSpacePos.w;
@@ -239,7 +240,14 @@ void main() {
         Lo += pbrContrib(N_, V, Lp, albedo, metallic, roughness, F0, radiance);
     }
 
-    vec3 ambient = u.ambient.xyz * albedo * ao;
+    // M46b — diffuse IBL: when an irradiance map is bound (iblEnabled), use the
+    // environment irradiance; otherwise the legacy flat ambient.
+    vec3 ambient;
+    if (u.materialParams2.w > 0.5) {
+        ambient = texture(uIrradianceCube, N_).rgb * albedo * ao;
+    } else {
+        ambient = u.ambient.xyz * albedo * ao;
+    }
     vec3 emissive = u.emissive.xyz * texture(uEmissiveMap, uv).rgb;
     vec3 color = ambient + Lo + emissive;
 

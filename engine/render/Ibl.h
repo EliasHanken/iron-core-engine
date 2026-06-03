@@ -41,4 +41,21 @@ inline Vec2 directionToEquirectUv(Vec3 dir) {
     return Vec2{u, v};
 }
 
+// CPU port of the normalization in irradianceConvolve.comp. Runs the same
+// cosine-weighted hemisphere loop for a UNIFORM environment of radiance L;
+// the PI/nrSamples normalization makes the result == L (energy conservation).
+// Used to lock the GLSL normalization constant in tests.
+inline Vec3 convolveConstantIrradiance(Vec3 L, float sampleDelta = 0.025f) {
+    float sum = 0.0f;
+    float nrSamples = 0.0f;
+    for (float phi = 0.0f; phi < 2.0f * kIblPi; phi += sampleDelta) {
+        for (float theta = 0.0f; theta < 0.5f * kIblPi; theta += sampleDelta) {
+            sum += std::cos(theta) * std::sin(theta);
+            nrSamples += 1.0f;
+        }
+    }
+    const float scale = kIblPi * sum / nrSamples;  // ~= 1.0
+    return Vec3{L.x * scale, L.y * scale, L.z * scale};
+}
+
 }  // namespace iron
