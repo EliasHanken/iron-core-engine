@@ -243,6 +243,15 @@ CubemapHandle VulkanRenderer::createCubemap(int width, int height,
 
 void VulkanRenderer::setSkybox(CubemapHandle sky) {
     pendingSkybox_ = sky;
+    // M46b — bake diffuse irradiance once per distinct skybox (one-shot GPU
+    // submit inside bakeIrradiance; safe here — the device is initialized by
+    // the time games set a skybox).
+    if (sky != lastBakedSkybox_) {
+        pendingIrradiance_ = cubemaps_.has(sky)
+            ? iblBaker_.bakeIrradiance(context_, cubemaps_, sky, /*faceSize=*/32)
+            : kInvalidHandle;
+        lastBakedSkybox_ = sky;
+    }
 }
 CubemapHandle VulkanRenderer::loadHdrSkybox(const std::string& hdrPath, int faceSize) {
     return iblBaker_.equirectFileToCubemap(context_, cubemaps_, hdrPath, faceSize);
@@ -566,6 +575,7 @@ void VulkanRenderer::recordSceneDraw(VkCommandBuffer cb, const DrawCall& call) {
         pendingShadowBias_,
     };
     ubo.materialParams2 = Vec4{call.material.metallic, call.material.ao, call.material.normalScale, 0.0f};
+    ubo.materialParams2.w = cubemaps_.has(pendingIrradiance_) ? 1.0f : 0.0f;  // M46b iblEnabled
     ubo.baseColorFactor = Vec4{call.material.baseColorFactor.x, call.material.baseColorFactor.y,
                                call.material.baseColorFactor.z, 0.0f};
     ubo.fogColor = Vec4{
@@ -649,7 +659,7 @@ void VulkanRenderer::recordSceneDraw(VkCommandBuffer cb, const DrawCall& call) {
         : cubemaps_.blackCubemap();
     const auto& skyTex = cubemaps_.get(skyHandle);
 
-    VkDescriptorImageInfo imgInfos[8]{};
+    VkDescriptorImageInfo imgInfos[9]{};
     imgInfos[0].sampler     = diffuse.sampler;
     imgInfos[0].imageView   = diffuse.view;
     imgInfos[0].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
@@ -676,8 +686,17 @@ void VulkanRenderer::recordSceneDraw(VkCommandBuffer cb, const DrawCall& call) {
     imgInfos[7].sampler     = emis.sampler;
     imgInfos[7].imageView   = emis.view;
     imgInfos[7].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    // M46b — irradiance cubemap (binding 10). Black-cube fallback keeps the
+    // descriptor valid when no skybox is baked; the shader ignores it (iblEnabled=0).
+    const CubemapHandle irrHandle = cubemaps_.has(pendingIrradiance_)
+        ? pendingIrradiance_
+        : cubemaps_.blackCubemap();
+    const auto& irrTex = cubemaps_.get(irrHandle);
+    imgInfos[8].sampler     = irrTex.sampler;
+    imgInfos[8].imageView   = irrTex.view;
+    imgInfos[8].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 
-    VkWriteDescriptorSet writes[9]{};
+    VkWriteDescriptorSet writes[10]{};
     writes[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
     writes[0].dstSet = set;
     writes[0].dstBinding = 0;
@@ -692,7 +711,14 @@ void VulkanRenderer::recordSceneDraw(VkCommandBuffer cb, const DrawCall& call) {
         writes[i + 1].descriptorCount = 1;
         writes[i + 1].pImageInfo = &imgInfos[i];
     }
-    vkUpdateDescriptorSets(context_.device(), 9, writes, 0, nullptr);
+    // M46b — binding 10: irradiance cubemap.
+    writes[9].sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    writes[9].dstSet          = set;
+    writes[9].dstBinding      = 10;
+    writes[9].descriptorType  = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    writes[9].descriptorCount = 1;
+    writes[9].pImageInfo      = &imgInfos[8];
+    vkUpdateDescriptorSets(context_.device(), 10, writes, 0, nullptr);
 
     vkCmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_GRAPHICS,
                             sh.pipelineLayout, 0, 1, &set, 0, nullptr);
@@ -738,6 +764,7 @@ void VulkanRenderer::recordSkinnedDraw(VkCommandBuffer cb,
         pendingShadowBias_,
     };
     ubo.materialParams2 = Vec4{call.material.metallic, call.material.ao, call.material.normalScale, 0.0f};
+    ubo.materialParams2.w = cubemaps_.has(pendingIrradiance_) ? 1.0f : 0.0f;  // M46b iblEnabled
     ubo.baseColorFactor = Vec4{call.material.baseColorFactor.x, call.material.baseColorFactor.y,
                                call.material.baseColorFactor.z, 0.0f};
     ubo.fogColor = Vec4{
@@ -824,7 +851,7 @@ void VulkanRenderer::recordSkinnedDraw(VkCommandBuffer cb,
         : cubemaps_.blackCubemap();
     const auto& skyTex = cubemaps_.get(skyHandle);
 
-    VkDescriptorImageInfo imgInfos[8]{};
+    VkDescriptorImageInfo imgInfos[9]{};
     imgInfos[0].sampler     = diffuse.sampler;
     imgInfos[0].imageView   = diffuse.view;
     imgInfos[0].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
@@ -849,13 +876,22 @@ void VulkanRenderer::recordSkinnedDraw(VkCommandBuffer cb,
     imgInfos[7].sampler     = emis.sampler;
     imgInfos[7].imageView   = emis.view;
     imgInfos[7].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    // M46b — irradiance cubemap (binding 10). Black-cube fallback keeps the
+    // descriptor valid when no skybox is baked; the shader ignores it (iblEnabled=0).
+    const CubemapHandle irrHandle = cubemaps_.has(pendingIrradiance_)
+        ? pendingIrradiance_
+        : cubemaps_.blackCubemap();
+    const auto& irrTex = cubemaps_.get(irrHandle);
+    imgInfos[8].sampler     = irrTex.sampler;
+    imgInfos[8].imageView   = irrTex.view;
+    imgInfos[8].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 
     VkDescriptorBufferInfo bonesInfo{};
     bonesInfo.buffer = f.uboBuffer;
     bonesInfo.offset = bonesOffset;
     bonesInfo.range  = sizeof(Mat4) * kMaxBonesPerSkinnedMesh;
 
-    VkWriteDescriptorSet writes[10]{};
+    VkWriteDescriptorSet writes[11]{};
     writes[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
     writes[0].dstSet = set;
     writes[0].dstBinding = 0;
@@ -877,7 +913,14 @@ void VulkanRenderer::recordSkinnedDraw(VkCommandBuffer cb,
     writes[9].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
     writes[9].descriptorCount = 1;
     writes[9].pBufferInfo = &bonesInfo;
-    vkUpdateDescriptorSets(context_.device(), 10, writes, 0, nullptr);
+    // M46b — binding 10: irradiance cubemap.
+    writes[10].sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    writes[10].dstSet          = set;
+    writes[10].dstBinding      = 10;
+    writes[10].descriptorType  = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    writes[10].descriptorCount = 1;
+    writes[10].pImageInfo      = &imgInfos[8];
+    vkUpdateDescriptorSets(context_.device(), 11, writes, 0, nullptr);
 
     vkCmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_GRAPHICS,
                             sh.pipelineLayout, 0, 1, &set, 0, nullptr);
