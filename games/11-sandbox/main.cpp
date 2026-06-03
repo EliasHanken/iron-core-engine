@@ -117,10 +117,16 @@ int main() {
     // renderer must NOT blit it to the swapchain (that path is for games).
     vkRenderer.setBlitViewportToSwapchain(false);
 
-    // Skybox: procedural sunset cubemap (also what the helmet's reflection
-    // samples). Falls back to clear color if creation fails.
+    // Skybox: prefer a baked HDR environment (M46a); fall back to the
+    // procedural sunset cubemap if the .hdr is missing or the backend
+    // lacks IBL support.
     {
-        const iron::CubemapHandle sky = iron::createSunsetSkybox(renderer);
+        iron::CubemapHandle sky =
+            renderer.loadHdrSkybox("assets/hdri/symmetrical_garden_02_2k.hdr", 512);
+        if (sky == iron::kInvalidHandle) {
+            iron::Log::warn("sandbox: HDR skybox failed; using procedural sunset");
+            sky = iron::createSunsetSkybox(renderer);
+        }
         if (sky == iron::kInvalidHandle)
             iron::Log::warn("sandbox: sunset skybox failed; sky shows clear color");
         renderer.setSkybox(sky);
