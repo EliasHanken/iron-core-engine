@@ -2555,7 +2555,9 @@ bool VkPostProcess::createOutlinePipeline(VkContext& ctx) {
     att.dstAlphaBlendFactor = VK_BLEND_FACTOR_ZERO;
     att.alphaBlendOp        = VK_BLEND_OP_ADD;
     att.colorWriteMask      = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT |
-                              VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
+                              VK_COLOR_COMPONENT_B_BIT;  // RGB only: preserve the
+    // viewport alpha (Copy wrote a=1; the editor's ImGui::Image samples it, so
+    // zeroing alpha here would make the scene render transparent).
 
     VkPipelineColorBlendStateCreateInfo cb{};
     cb.sType           = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO;
@@ -2678,7 +2680,7 @@ bool VkPostProcess::createGlowPipelines(VkContext& ctx) {
     blendAtt.dstAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
     blendAtt.alphaBlendOp        = VK_BLEND_OP_ADD;
     blendAtt.colorWriteMask      = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT |
-                                   VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
+                                   VK_COLOR_COMPONENT_B_BIT;  // RGB only: preserve viewport alpha (Copy's a=1)
 
     VkPipelineColorBlendStateCreateInfo blend{};
     blend.sType           = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO;
@@ -3470,7 +3472,9 @@ bool VkPostProcess::createXRayPipeline(VkContext& ctx) {
     att.dstAlphaBlendFactor = VK_BLEND_FACTOR_ZERO;
     att.alphaBlendOp        = VK_BLEND_OP_ADD;
     att.colorWriteMask      = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT |
-                              VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
+                              VK_COLOR_COMPONENT_B_BIT;  // RGB only: preserve the
+    // viewport alpha (Copy wrote a=1; the editor's ImGui::Image samples it, so
+    // zeroing alpha here would make the scene render transparent).
 
     VkPipelineColorBlendStateCreateInfo cb{};
     cb.sType           = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO;
