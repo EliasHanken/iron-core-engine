@@ -148,25 +148,24 @@ void main() {
 }
 )";
 
-// kGlowCompositeFrag — adds a colored halo (blurred coverage minus solid
-// interior) over the scene. Runs inside the viewport pass (M43a).
+// kGlowCompositeFrag — overlay: emits a colored halo (blurred coverage minus
+// solid interior) and ADDITIVELY blends (ONE/ONE) over the Copy composite (which
+// carries the scene + bloom + SSAO + tonemap). Samples no scene color and does no
+// tonemap.
+// binding 0: sampler2D  uBlur — blurred coverage (GlowBlurV output, scratch[1])
+// binding 1: usampler2D uMask — tagged object id (0 = no object)
 const char* kGlowCompositeFrag = R"(#version 450
-layout(location = 0) in vec2 vUV;
+layout(location = 0) in  vec2 vUV;
 layout(location = 0) out vec4 outColor;
-layout(set = 0, binding = 0) uniform sampler2D uScene;
-layout(set = 0, binding = 1) uniform sampler2D uBlur;
-layout(set = 0, binding = 2) uniform usampler2D uMask;
-layout(push_constant) uniform Push { vec4 color; float intensity; float exposure; } pc;
-vec3 aces(vec3 x) {
-    const float a = 2.51, b = 0.03, c = 2.43, d = 0.59, e = 0.14;
-    return clamp((x * (a * x + b)) / (x * (c * x + d) + e), 0.0, 1.0);
-}
+layout(set = 0, binding = 0) uniform sampler2D  uBlur;
+layout(set = 0, binding = 1) uniform usampler2D uMask;
+layout(push_constant) uniform Push { vec4 color; float intensity; } pc;
+
 void main() {
-    vec3 scene = texture(uScene, vUV).rgb;
     float blur  = texture(uBlur, vUV).r;
     float solid = texture(uMask, vUV).r > 0u ? 1.0 : 0.0;
     float halo  = max(blur - solid, 0.0) * pc.intensity;
-    outColor = vec4(aces((scene + pc.color.rgb * halo) * pc.exposure), 1.0);
+    outColor = vec4(pc.color.rgb * halo, 1.0);   // additive blend (ONE/ONE) over the scene
 }
 )";
 
@@ -693,21 +692,19 @@ bool VkPostProcess::resize(VkContext& ctx, VkExtent2D extent) {
         write.pImageInfo      = &imgInfo;
         vkUpdateDescriptorSets(ctx.device(), 1, &write, 0, nullptr);
     }
-    // GlowComposite: binding 0 = sceneColorView_, binding 1 = glowScratchView_[1], binding 2 = maskColorView_.
+    // GlowComposite (overlay — no scene sampler): binding 0 = glowScratchView_[1]
+    //                                              (blur), binding 1 = maskColorView_.
     {
-        VkDescriptorImageInfo imgInfos[3]{};
+        VkDescriptorImageInfo imgInfos[2]{};
         imgInfos[0].sampler     = sampler_;
-        imgInfos[0].imageView   = sceneColorView_;
+        imgInfos[0].imageView   = glowScratchView_[1];
         imgInfos[0].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-        imgInfos[1].sampler     = sampler_;
-        imgInfos[1].imageView   = glowScratchView_[1];
+        imgInfos[1].sampler     = maskSampler_;
+        imgInfos[1].imageView   = maskColorView_;
         imgInfos[1].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-        imgInfos[2].sampler     = maskSampler_;
-        imgInfos[2].imageView   = maskColorView_;
-        imgInfos[2].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 
-        VkWriteDescriptorSet writes[3]{};
-        for (int i = 0; i < 3; ++i) {
+        VkWriteDescriptorSet writes[2]{};
+        for (int i = 0; i < 2; ++i) {
             writes[i].sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
             writes[i].dstSet          = glowCompositeDescSet_;
             writes[i].dstBinding      = static_cast<uint32_t>(i);
@@ -715,7 +712,7 @@ bool VkPostProcess::resize(VkContext& ctx, VkExtent2D extent) {
             writes[i].descriptorCount = 1;
             writes[i].pImageInfo      = &imgInfos[i];
         }
-        vkUpdateDescriptorSets(ctx.device(), 3, writes, 0, nullptr);
+        vkUpdateDescriptorSets(ctx.device(), 2, writes, 0, nullptr);
     }
 
     // XRay (overlay — no scene sampler): binding 0 = maskColorView_,
@@ -2104,18 +2101,18 @@ bool VkPostProcess::createCopyPipeline(VkContext& ctx) {
     vkDestroyShaderModule(ctx.device(), fsm, nullptr);
     VK_CHECK(copyPipeResult);
 
-    // Descriptor pool: 7 sets total, 14 combined-image-sampler descriptors.
+    // Descriptor pool: 7 sets total, 12 combined-image-sampler descriptors.
     //   set 0: copy/composite — 3 samplers (scene color + bloom mip0 + SSAO)  (M47/M48)
     //   set 1: blit         — 1 sampler  (viewport color)
     //   set 2: outline      — 1 sampler  (mask)  (overlay: scene from Copy base)
     //   set 3: glowBlurH    — 1 sampler  (mask)
     //   set 4: glowBlurV    — 1 sampler  (scratch[0])
-    //   set 5: glowComposite — 3 samplers (scene color + scratch[1] + mask)
+    //   set 5: glowComposite — 2 samplers (scratch[1] + mask)  (overlay: scene from Copy base)
     //   set 6: xray         — 3 samplers (mask id + mask depth + scene depth)  (overlay: scene from Copy base)
-    // Total: 7 sets, 13 combined-image-samplers.
+    // Total: 7 sets, 12 combined-image-samplers.
     VkDescriptorPoolSize poolSize{};
     poolSize.type            = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-    poolSize.descriptorCount = 13;
+    poolSize.descriptorCount = 12;
 
     VkDescriptorPoolCreateInfo dpInfo{};
     dpInfo.sType         = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
@@ -2665,9 +2662,19 @@ bool VkPostProcess::createGlowPipelines(VkContext& ctx) {
     ds.depthTestEnable  = VK_FALSE;
     ds.depthWriteEnable = VK_FALSE;
 
+    // ADDITIVE (ONE/ONE) blend — used ONLY by the GlowComposite pipeline (the
+    // blur pipelines use their own single-channel blend-OFF state). The halo adds
+    // on top of the Copy composite base.
     VkPipelineColorBlendAttachmentState blendAtt{};
-    blendAtt.colorWriteMask = 0xF;
-    blendAtt.blendEnable    = VK_FALSE;
+    blendAtt.blendEnable         = VK_TRUE;
+    blendAtt.srcColorBlendFactor = VK_BLEND_FACTOR_ONE;
+    blendAtt.dstColorBlendFactor = VK_BLEND_FACTOR_ONE;
+    blendAtt.colorBlendOp        = VK_BLEND_OP_ADD;
+    blendAtt.srcAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
+    blendAtt.dstAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
+    blendAtt.alphaBlendOp        = VK_BLEND_OP_ADD;
+    blendAtt.colorWriteMask      = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT |
+                                   VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
 
     VkPipelineColorBlendStateCreateInfo blend{};
     blend.sType           = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO;
@@ -2841,21 +2848,21 @@ bool VkPostProcess::createGlowPipelines(VkContext& ctx) {
     }
 
     // -----------------------------------------------------------------
-    // GlowComposite pipeline: reads scene + scratch[1] + mask; writes viewport pass
-    // (M43a). Built against swapchainPass for render-pass compatibility.
-    // Descriptor set layout: binding 0 = sampler2D uScene,
-    //                        binding 1 = sampler2D uBlur,
-    //                        binding 2 = usampler2D uMask.
+    // GlowComposite pipeline (overlay): reads scratch[1] + mask; writes viewport
+    // pass (M43a). Built against viewportPass_ for render-pass compatibility.
+    // The scene comes from the Copy base, so no scene sampler — the halo blends
+    // additively (ONE/ONE) on top.
+    // Descriptor set layout: binding 0 = sampler2D uBlur,
+    //                        binding 1 = usampler2D uMask.
     // -----------------------------------------------------------------
     {
-        VkDescriptorSetLayoutBinding bindings[3]{};
+        VkDescriptorSetLayoutBinding bindings[2]{};
         bindings[0].binding = 0; bindings[0].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER; bindings[0].descriptorCount = 1; bindings[0].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
         bindings[1].binding = 1; bindings[1].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER; bindings[1].descriptorCount = 1; bindings[1].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
-        bindings[2].binding = 2; bindings[2].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER; bindings[2].descriptorCount = 1; bindings[2].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
 
         VkDescriptorSetLayoutCreateInfo dslInfo{};
         dslInfo.sType        = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-        dslInfo.bindingCount = 3;
+        dslInfo.bindingCount = 2;
         dslInfo.pBindings    = bindings;
         VK_CHECK(vkCreateDescriptorSetLayout(ctx.device(), &dslInfo, nullptr, &glowCompositeSetLayout_));
 
@@ -2953,20 +2960,20 @@ bool VkPostProcess::createGlowPipelines(VkContext& ctx) {
         write.descriptorCount = 1; write.pImageInfo = &imgInfo;
         vkUpdateDescriptorSets(ctx.device(), 1, &write, 0, nullptr);
     }
-    // GlowComposite: binding 0 = sceneColorView_, binding 1 = scratch[1], binding 2 = maskColorView_.
+    // GlowComposite (overlay — no scene sampler): binding 0 = scratch[1] (blur),
+    //                                              binding 1 = maskColorView_.
     {
-        VkDescriptorImageInfo imgInfos[3]{};
-        imgInfos[0].sampler = sampler_;     imgInfos[0].imageView = sceneColorView_;    imgInfos[0].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-        imgInfos[1].sampler = sampler_;     imgInfos[1].imageView = glowScratchView_[1]; imgInfos[1].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-        imgInfos[2].sampler = maskSampler_; imgInfos[2].imageView = maskColorView_;     imgInfos[2].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-        VkWriteDescriptorSet writes[3]{};
-        for (int i = 0; i < 3; ++i) {
+        VkDescriptorImageInfo imgInfos[2]{};
+        imgInfos[0].sampler = sampler_;     imgInfos[0].imageView = glowScratchView_[1]; imgInfos[0].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        imgInfos[1].sampler = maskSampler_; imgInfos[1].imageView = maskColorView_;      imgInfos[1].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        VkWriteDescriptorSet writes[2]{};
+        for (int i = 0; i < 2; ++i) {
             writes[i].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
             writes[i].dstSet = glowCompositeDescSet_; writes[i].dstBinding = static_cast<uint32_t>(i);
             writes[i].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
             writes[i].descriptorCount = 1; writes[i].pImageInfo = &imgInfos[i];
         }
-        vkUpdateDescriptorSets(ctx.device(), 3, writes, 0, nullptr);
+        vkUpdateDescriptorSets(ctx.device(), 2, writes, 0, nullptr);
     }
 
     return true;
@@ -3044,7 +3051,6 @@ void VkPostProcess::runChain(VkCommandBuffer cb,
                     pc.color[0] = 1.0f; pc.color[1] = 0.6f; pc.color[2] = 0.1f; pc.color[3] = 1.0f;
                     pc.intensity = 1.0f;
                 }
-                pc.exposure = exposure;
 
                 vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, glowCompositePipeline_);
                 vkCmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_GRAPHICS,

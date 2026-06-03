@@ -133,8 +133,7 @@ public:
     struct GlowCompositePush {
         float color[4];      // rgb halo color + padding
         float intensity;     // halo strength (style.intensity)
-        float exposure;      // M44: tonemap exposure (was _pad[0])
-        float _pad[2];
+        float _pad[3];       // overlay: no exposure (Copy base already tonemapped)
     };
 
     // Push constants for the x-ray pipeline.
