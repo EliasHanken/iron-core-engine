@@ -357,7 +357,19 @@ void main() {
     float depth = texture(uDepth, vUV).r;
     if (depth >= 1.0) { outColor = vec4(1.0); return; }   // background: unoccluded
     vec3 P = reconstructViewPos(vUV, depth);
-    vec3 N = normalize(cross(dFdx(P), dFdy(P)));
+    // Robust view-space normal from depth: pick the nearer horizontal/vertical
+    // neighbor on each axis (Drobot) to avoid the spikes at depth discontinuities
+    // that naive cross(dFdx,dFdy) produces (dark silhouette halos). Then force the
+    // normal to face the camera (origin in view space, looking down -z).
+    vec2 texel = 1.0 / vec2(textureSize(uDepth, 0));
+    vec3 Pr = reconstructViewPos(vUV + vec2(texel.x, 0.0), texture(uDepth, vUV + vec2(texel.x, 0.0)).r);
+    vec3 Pl = reconstructViewPos(vUV - vec2(texel.x, 0.0), texture(uDepth, vUV - vec2(texel.x, 0.0)).r);
+    vec3 Pu = reconstructViewPos(vUV + vec2(0.0, texel.y), texture(uDepth, vUV + vec2(0.0, texel.y)).r);
+    vec3 Pd = reconstructViewPos(vUV - vec2(0.0, texel.y), texture(uDepth, vUV - vec2(0.0, texel.y)).r);
+    vec3 ddxP = (abs(Pr.z - P.z) < abs(P.z - Pl.z)) ? (Pr - P) : (P - Pl);
+    vec3 ddyP = (abs(Pu.z - P.z) < abs(P.z - Pd.z)) ? (Pu - P) : (P - Pd);
+    vec3 N = normalize(cross(ddxP, ddyP));
+    if (dot(N, P) > 0.0) N = -N;   // face the camera
     vec3 rnd = texture(uNoise, vUV * u.noiseScale.xy).xyz;
     vec3 T = normalize(rnd - N * dot(rnd, N));   // Gram-Schmidt
     vec3 B = cross(N, T);
