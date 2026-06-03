@@ -142,6 +142,11 @@ public:
         float _pad[3];
     };
 
+    // M47 — bloom push constants (fragment stage). srcTexel = 1/srcWidth, 1/srcHeight.
+    struct BloomBrightPush { float threshold; float knee; float srcTexel[2]; };
+    struct BloomDownPush   { float srcTexel[2]; };
+    struct BloomUpPush     { float srcTexel[2]; float scatter; };
+
     // Run the offscreen pre-passes (GlowBlurH, GlowBlurV) that must execute
     // OUTSIDE any render pass. Called by VulkanRenderer::endFrame
     // BEFORE beginViewportPass. For Copy/Outline/XRay this is a no-op;
@@ -232,6 +237,23 @@ private:
     VkRenderPass  glowPass_            = VK_NULL_HANDLE;
     VkFramebuffer glowFb_[2]           = {VK_NULL_HANDLE, VK_NULL_HANDLE};
 
+    // --- M47: bloom HDR mip chain (RGBA16F). mip0 = half scene res, halving down. ---
+    static constexpr std::uint32_t kBloomMaxMips = 7;
+    VkImage        bloomChain_      = VK_NULL_HANDLE;
+    VmaAllocation  bloomChainAlloc_ = VK_NULL_HANDLE;
+    VkImageView    bloomMipViews_[kBloomMaxMips] {};   // one view per mip
+    VkFramebuffer  bloomMipFbs_[kBloomMaxMips]   {};   // one fb per mip
+    VkExtent2D     bloomMipExtents_[kBloomMaxMips] {};
+    std::uint32_t  bloomMipCount_   = 0;
+    VkRenderPass   bloomPass_       = VK_NULL_HANDLE;
+    ::VkPipeline     bloomBrightDownPipeline_ = VK_NULL_HANDLE;
+    ::VkPipeline     bloomDownPipeline_       = VK_NULL_HANDLE;
+    ::VkPipeline     bloomUpPipeline_         = VK_NULL_HANDLE;
+    VkPipelineLayout bloomBrightDownLayout_   = VK_NULL_HANDLE;
+    VkPipelineLayout bloomDownLayout_         = VK_NULL_HANDLE;
+    VkPipelineLayout bloomUpLayout_           = VK_NULL_HANDLE;
+    VkDescriptorSetLayout bloomSetLayout_     = VK_NULL_HANDLE;  // 1 binding: sampler2D
+
     // --- Glow pipelines ---
     VkDescriptorSetLayout glowBlurHSetLayout_     = VK_NULL_HANDLE;
     VkPipelineLayout      glowBlurHPipeLayout_    = VK_NULL_HANDLE;
@@ -265,6 +287,12 @@ private:
     bool createMaskPipeline(VkContext& ctx);
     bool createGlowPipelines(VkContext& ctx);
     bool createXRayPipeline(VkContext& ctx);
+
+    // M47 bloom helpers.
+    void createBloomTargets(VkExtent2D extent);   // image + per-mip views/fbs + pass
+    void destroyBloomTargets();
+    bool createBloomPipelines();                  // 3 pipelines (call once in init)
+    static std::uint32_t computeBloomMipCount(VkExtent2D extent);
 };
 
 }  // namespace iron
