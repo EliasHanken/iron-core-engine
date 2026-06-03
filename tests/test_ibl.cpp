@@ -26,6 +26,10 @@ int main() {
         assert(approx(ny.x, 0.0f) && approx(ny.y, -1.0f) && approx(ny.z, 0.0f));
         Vec3 pz = cubeFaceDirection(4, 0.0f, 0.0f);  // +Z
         assert(approx(pz.x, 0.0f) && approx(pz.y, 0.0f) && approx(pz.z, 1.0f));
+        Vec3 nx = cubeFaceDirection(1, 0.0f, 0.0f);  // -X
+        assert(approx(nx.x, -1.0f) && approx(nx.y, 0.0f) && approx(nx.z, 0.0f));
+        Vec3 nz = cubeFaceDirection(5, 0.0f, 0.0f);  // -Z
+        assert(approx(nz.x, 0.0f) && approx(nz.y, 0.0f) && approx(nz.z, -1.0f));
     }
 
     // 2. All returned directions are unit length.
@@ -51,6 +55,14 @@ int main() {
     {
         auto uv = directionToEquirectUv(Vec3{0.0f, 1.0f, 0.0f});
         assert(approx(uv.y, 1.0f));
+    }
+
+    // 5. Equirect u wraparound: -X (atan2(0,-1)=pi) -> u=1.0; -Z -> u=0.25.
+    {
+        auto uvNegX = directionToEquirectUv(Vec3{-1.0f, 0.0f, 0.0f});
+        assert(approx(uvNegX.x, 1.0f));
+        auto uvNegZ = directionToEquirectUv(Vec3{0.0f, 0.0f, -1.0f});
+        assert(approx(uvNegZ.x, 0.25f));
     }
 
     std::puts("test_ibl: OK");
