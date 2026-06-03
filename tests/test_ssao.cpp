@@ -57,6 +57,17 @@ int main() {
         assert(far >= 0.0f && far < occ);
     }
 
+#ifdef IRON_RENDER_BACKEND_VULKAN
+    {  // SSAO + blur shaders compile to SPIR-V.
+        const char* srcs[] = { iron::kSsaoSrc(), iron::kSsaoBlurSrc() };
+        for (const char* src : srcs) {
+            const auto spv = iron::compileGlsl(VK_SHADER_STAGE_FRAGMENT_BIT, src);
+            assert(!spv.empty());
+            assert(spv.front() == 0x07230203u);
+        }
+    }
+#endif
+
     std::puts("test_ssao: OK");
     return 0;
 }

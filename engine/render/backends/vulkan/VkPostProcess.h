@@ -23,6 +23,11 @@ const char* kBloomPrefilterDownSrc();  // sceneColor -> mip0 (threshold+knee+Kar
 const char* kBloomDownsampleSrc();     // mip[i] -> mip[i+1] (13-tap)
 const char* kBloomUpsampleSrc();       // mip[i+1] -> mip[i] (3x3 tent, additive)
 
+// SSAO fragment shader sources (M48; exposed for compile-check tests; reuse the
+// existing kFullscreenVert for the vertex stage).
+const char* kSsaoSrc();      // scene depth -> AO (R8)
+const char* kSsaoBlurSrc();  // 4x4 box blur of the AO
+
 // Owns the offscreen render targets and full-screen passes for the M36
 // post-process chain. Phase A: a single offscreen scene-color target (+ depth)
 // matching the swapchain, and a "copy" pipeline that blits it to the swapchain

@@ -323,6 +323,81 @@ void main() {
 }
 
 // ---------------------------------------------------------------------------
+// SSAO fragment shaders (M48). Public (declared in the header) so test_ssao
+// can compile-check them to SPIR-V. Reuse the anonymous-namespace
+// kFullscreenVert for the vertex stage when building the actual pipelines.
+// ---------------------------------------------------------------------------
+
+const char* kSsaoSrc() {
+    return R"(#version 450
+layout(location = 0) in  vec2 vUV;
+layout(location = 0) out vec4 outColor;   // R8: write .r
+layout(binding = 0) uniform sampler2D uDepth;
+layout(binding = 1) uniform sampler2D uNoise;
+layout(binding = 2, std140) uniform SsaoUbo {
+    mat4 projection;
+    mat4 invProjection;
+    vec4 kernel[32];     // .xyz = view-space hemisphere sample
+    vec4 params;         // x=radius, y=bias, z=power, w=sampleCount
+    vec4 noiseScale;     // xy = extent / 4
+} u;
+
+vec3 reconstructViewPos(vec2 uv, float depth) {
+    vec4 clip = vec4(uv * 2.0 - 1.0, depth, 1.0);  // Vulkan clip z is [0,1]
+    vec4 v = u.invProjection * clip;
+    return v.xyz / v.w;
+}
+
+void main() {
+    float depth = texture(uDepth, vUV).r;
+    if (depth >= 1.0) { outColor = vec4(1.0); return; }   // background: unoccluded
+    vec3 P = reconstructViewPos(vUV, depth);
+    vec3 N = normalize(cross(dFdx(P), dFdy(P)));
+    vec3 rnd = texture(uNoise, vUV * u.noiseScale.xy).xyz;
+    vec3 T = normalize(rnd - N * dot(rnd, N));   // Gram-Schmidt
+    vec3 B = cross(N, T);
+    mat3 TBN = mat3(T, B, N);
+
+    float radius = u.params.x;
+    float bias   = u.params.y;
+    int   count  = int(u.params.w);
+    float occlusion = 0.0;
+    for (int i = 0; i < count; ++i) {
+        vec3 samplePos = P + TBN * u.kernel[i].xyz * radius;   // view space
+        vec4 off = u.projection * vec4(samplePos, 1.0);
+        off.xyz /= off.w;
+        vec2 sampleUv = off.xy * 0.5 + 0.5;
+        float sd = texture(uDepth, sampleUv).r;
+        vec3 surface = reconstructViewPos(sampleUv, sd);
+        float rangeCheck = smoothstep(0.0, 1.0, radius / max(abs(P.z - surface.z), 1e-4));
+        occlusion += (surface.z >= samplePos.z + bias ? 1.0 : 0.0) * rangeCheck;
+    }
+    float ao = 1.0 - occlusion / float(count);
+    ao = pow(clamp(ao, 0.0, 1.0), u.params.z);
+    outColor = vec4(ao, ao, ao, 1.0);
+}
+)";
+}
+
+const char* kSsaoBlurSrc() {
+    return R"(#version 450
+layout(location = 0) in  vec2 vUV;
+layout(location = 0) out vec4 outColor;
+layout(binding = 0) uniform sampler2D uSsao;
+layout(push_constant) uniform PC { vec2 texel; } pc;   // 1 / extent
+
+void main() {
+    float sum = 0.0;
+    for (int x = -2; x < 2; ++x)
+        for (int y = -2; y < 2; ++y)
+            sum += texture(uSsao, vUV + vec2(float(x), float(y)) * pc.texel).r;
+    float ao = sum / 16.0;
+    outColor = vec4(ao, ao, ao, 1.0);
+}
+)";
+}
+
+// ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------
 
