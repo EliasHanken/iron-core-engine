@@ -60,7 +60,8 @@ public:
     void beginScenePass(VkCommandBuffer cb, const float clearColor[4]) const;
     void endScenePass(VkCommandBuffer cb) const;
     void recordComposite(VkCommandBuffer cb, float exposure,
-                         float bloomIntensity = 0.0f) const;
+                         float bloomIntensity = 0.0f,
+                         float aoStrength = 0.0f) const;
     // Full-screen blit of viewportColor into the (already-begun) swapchain pass.
     void blitToSwapchain(VkCommandBuffer cb) const;
 
@@ -84,7 +85,8 @@ public:
                   const EffectTable& effects,
                   VkExtent2D swapExtent,
                   float exposure,
-                  float bloomIntensity = 0.0f);
+                  float bloomIntensity = 0.0f,
+                  float aoStrength = 0.0f);
 
     // --- Mask pass API (Phase C) ---
     VkRenderPass maskPass() const { return maskPass_; }
@@ -147,7 +149,8 @@ public:
     struct CopyPush {
         float exposure;        // linear exposure multiply applied before ACES
         float bloomIntensity;  // M47: bloom mip0 contribution added before ACES
-        float _pad[2];
+        float aoStrength;      // M48: SSAO multiply strength (mix(1, ao, strength))
+        float _pad;
     };
 
     // M47 — bloom push constants (fragment stage). srcTexel = 1/srcWidth, 1/srcHeight.

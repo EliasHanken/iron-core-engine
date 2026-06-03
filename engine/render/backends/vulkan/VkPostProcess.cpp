@@ -43,13 +43,15 @@ void main() {
 // keeps the binding-0-only kCopyFrag). Adds bloom mip0 (binding 1) before the
 // ACES curve. The aces() body and the exposure/output are byte-identical to
 // kCopyFrag; the only additions are the uBloom binding, the bloomIntensity push
-// field, and the `scene + bloom * intensity` add. (M47)
+// field, and the `scene + bloom * intensity` add. (M47) M48 adds the uSsao
+// binding (2), the aoStrength push field, and the `scene * ao` multiply.
 const char* kCompositeFrag = R"(#version 450
 layout(location = 0) in vec2 vUV;
 layout(location = 0) out vec4 outColor;
 layout(set = 0, binding = 0) uniform sampler2D uScene;
 layout(set = 0, binding = 1) uniform sampler2D uBloom;
-layout(push_constant) uniform Push { float exposure; float bloomIntensity; } pc;
+layout(set = 0, binding = 2) uniform sampler2D uSsao;   // M48 — blurred AO
+layout(push_constant) uniform Push { float exposure; float bloomIntensity; float aoStrength; } pc;
 vec3 aces(vec3 x) {
     const float a = 2.51, b = 0.03, c = 2.43, d = 0.59, e = 0.14;
     return clamp((x * (a * x + b)) / (x * (c * x + d) + e), 0.0, 1.0);
@@ -57,7 +59,8 @@ vec3 aces(vec3 x) {
 void main() {
     vec3 scene = texture(uScene, vUV).rgb;
     vec3 bloom = texture(uBloom, vUV).rgb;
-    vec3 hdr   = (scene + bloom * pc.bloomIntensity) * pc.exposure;
+    float ao   = mix(1.0, texture(uSsao, vUV).r, pc.aoStrength);   // M48
+    vec3 hdr   = (scene * ao + bloom * pc.bloomIntensity) * pc.exposure;  // AO darkens scene, not bloom
     outColor = vec4(aces(hdr), 1.0);
 }
 )";
@@ -603,18 +606,22 @@ bool VkPostProcess::resize(VkContext& ctx, VkExtent2D extent) {
     if (!createTargets(ctx)) return false;
 
     // Re-write the copy/composite descriptor set: binding 0 = new sceneColorView_,
-    // binding 1 = new bloom mip0 (createTargets above rebuilt the bloom targets, so
-    // bloomMipViews_[0] is the freshly-created view). (M47)
+    // binding 1 = new bloom mip0, binding 2 = new blurred SSAO (createTargets above
+    // rebuilt the bloom + SSAO targets, so bloomMipViews_[0] and ssaoBlurView_ are
+    // the freshly-created views). ssaoBlurView_ uses bloomSampler_ (LINEAR+CLAMP). (M47/M48)
     {
-        VkDescriptorImageInfo imgInfos[2]{};
+        VkDescriptorImageInfo imgInfos[3]{};
         imgInfos[0].sampler     = sampler_;
         imgInfos[0].imageView   = sceneColorView_;
         imgInfos[0].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
         imgInfos[1].sampler     = bloomSampler_;
         imgInfos[1].imageView   = bloomMipViews_[0];
         imgInfos[1].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        imgInfos[2].sampler     = bloomSampler_;
+        imgInfos[2].imageView   = ssaoBlurView_;
+        imgInfos[2].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 
-        VkWriteDescriptorSet writes[2]{};
+        VkWriteDescriptorSet writes[3]{};
         writes[0].sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
         writes[0].dstSet          = copyDescSet_;
         writes[0].dstBinding      = 0;
@@ -627,7 +634,13 @@ bool VkPostProcess::resize(VkContext& ctx, VkExtent2D extent) {
         writes[1].descriptorType  = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
         writes[1].descriptorCount = 1;
         writes[1].pImageInfo      = &imgInfos[1];
-        vkUpdateDescriptorSets(ctx.device(), 2, writes, 0, nullptr);
+        writes[2].sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        writes[2].dstSet          = copyDescSet_;
+        writes[2].dstBinding      = 2;
+        writes[2].descriptorType  = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        writes[2].descriptorCount = 1;
+        writes[2].pImageInfo      = &imgInfos[2];
+        vkUpdateDescriptorSets(ctx.device(), 3, writes, 0, nullptr);
     }
 
     // Re-write the outline descriptor set to point at the new views.
@@ -820,13 +833,14 @@ void VkPostProcess::endViewportPass(VkCommandBuffer cb) const {
 }
 
 void VkPostProcess::recordComposite(VkCommandBuffer cb, float exposure,
-                                    float bloomIntensity) const {
+                                    float bloomIntensity, float aoStrength) const {
     vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, copyPipeline_);
     vkCmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_GRAPHICS,
                             copyPipeLayout_, 0, 1, &copyDescSet_, 0, nullptr);
     CopyPush pc{};
     pc.exposure       = exposure;
     pc.bloomIntensity = bloomIntensity;
+    pc.aoStrength     = aoStrength;
     vkCmdPushConstants(cb, copyPipeLayout_, VK_SHADER_STAGE_FRAGMENT_BIT,
                        0, sizeof(CopyPush), &pc);
     vkCmdDraw(cb, 3, 1, 0, 0);
@@ -1990,9 +2004,9 @@ bool VkPostProcess::createCopyPipeline(VkContext& ctx) {
         return false;
     }
 
-    // Descriptor set layout: binding 0 = scene color, binding 1 = bloom mip0
-    // (both combined image samplers, FS). (M47)
-    VkDescriptorSetLayoutBinding bindings[2]{};
+    // Descriptor set layout: binding 0 = scene color, binding 1 = bloom mip0,
+    // binding 2 = blurred SSAO (all combined image samplers, FS). (M47/M48)
+    VkDescriptorSetLayoutBinding bindings[3]{};
     bindings[0].binding         = 0;
     bindings[0].descriptorType  = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
     bindings[0].descriptorCount = 1;
@@ -2001,10 +2015,14 @@ bool VkPostProcess::createCopyPipeline(VkContext& ctx) {
     bindings[1].descriptorType  = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
     bindings[1].descriptorCount = 1;
     bindings[1].stageFlags      = VK_SHADER_STAGE_FRAGMENT_BIT;
+    bindings[2].binding         = 2;
+    bindings[2].descriptorType  = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    bindings[2].descriptorCount = 1;
+    bindings[2].stageFlags      = VK_SHADER_STAGE_FRAGMENT_BIT;
 
     VkDescriptorSetLayoutCreateInfo dslInfo{};
     dslInfo.sType        = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-    dslInfo.bindingCount = 2;
+    dslInfo.bindingCount = 3;
     dslInfo.pBindings    = bindings;
     VK_CHECK(vkCreateDescriptorSetLayout(ctx.device(), &dslInfo, nullptr, &copySetLayout_));
 
@@ -2098,18 +2116,18 @@ bool VkPostProcess::createCopyPipeline(VkContext& ctx) {
     vkDestroyShaderModule(ctx.device(), fsm, nullptr);
     VK_CHECK(copyPipeResult);
 
-    // Descriptor pool: 7 sets total, 14 combined-image-sampler descriptors.
-    //   set 0: copy/composite — 2 samplers (scene color + bloom mip0)  (M47)
+    // Descriptor pool: 7 sets total, 15 combined-image-sampler descriptors.
+    //   set 0: copy/composite — 3 samplers (scene color + bloom mip0 + SSAO)  (M47/M48)
     //   set 1: blit         — 1 sampler  (viewport color)
     //   set 2: outline      — 2 samplers (scene color + mask)
     //   set 3: glowBlurH    — 1 sampler  (mask)
     //   set 4: glowBlurV    — 1 sampler  (scratch[0])
     //   set 5: glowComposite — 3 samplers (scene color + scratch[1] + mask)
     //   set 6: xray         — 4 samplers (scene color + mask id + mask depth + scene depth)
-    // Total: 7 sets, 14 combined-image-samplers.
+    // Total: 7 sets, 15 combined-image-samplers.
     VkDescriptorPoolSize poolSize{};
     poolSize.type            = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-    poolSize.descriptorCount = 14;
+    poolSize.descriptorCount = 15;
 
     VkDescriptorPoolCreateInfo dpInfo{};
     dpInfo.sType         = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
@@ -2126,18 +2144,22 @@ bool VkPostProcess::createCopyPipeline(VkContext& ctx) {
     dsAlloc.pSetLayouts        = &copySetLayout_;
     VK_CHECK(vkAllocateDescriptorSets(ctx.device(), &dsAlloc, &copyDescSet_));
 
-    // Binding 0 = scene color, binding 1 = bloom mip0. bloomMipViews_[0] is valid
-    // here: init() runs createTargets() (which calls createBloomTargets) BEFORE
-    // createCopyPipeline(). (M47)
-    VkDescriptorImageInfo imgInfos[2]{};
+    // Binding 0 = scene color, binding 1 = bloom mip0, binding 2 = blurred SSAO.
+    // bloomMipViews_[0] and ssaoBlurView_ are valid here: init() runs
+    // createTargets() (which calls createBloomTargets + createSsaoTargets) BEFORE
+    // createCopyPipeline(). ssaoBlurView_ uses bloomSampler_ (LINEAR + CLAMP). (M47/M48)
+    VkDescriptorImageInfo imgInfos[3]{};
     imgInfos[0].sampler     = sampler_;
     imgInfos[0].imageView   = sceneColorView_;
     imgInfos[0].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
     imgInfos[1].sampler     = bloomSampler_;
     imgInfos[1].imageView   = bloomMipViews_[0];
     imgInfos[1].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    imgInfos[2].sampler     = bloomSampler_;
+    imgInfos[2].imageView   = ssaoBlurView_;
+    imgInfos[2].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 
-    VkWriteDescriptorSet writes[2]{};
+    VkWriteDescriptorSet writes[3]{};
     writes[0].sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
     writes[0].dstSet          = copyDescSet_;
     writes[0].dstBinding      = 0;
@@ -2150,7 +2172,13 @@ bool VkPostProcess::createCopyPipeline(VkContext& ctx) {
     writes[1].descriptorType  = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
     writes[1].descriptorCount = 1;
     writes[1].pImageInfo      = &imgInfos[1];
-    vkUpdateDescriptorSets(ctx.device(), 2, writes, 0, nullptr);
+    writes[2].sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    writes[2].dstSet          = copyDescSet_;
+    writes[2].dstBinding      = 2;
+    writes[2].descriptorType  = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    writes[2].descriptorCount = 1;
+    writes[2].pImageInfo      = &imgInfos[2];
+    vkUpdateDescriptorSets(ctx.device(), 3, writes, 0, nullptr);
 
     return true;
 }
@@ -2965,11 +2993,12 @@ void VkPostProcess::runChain(VkCommandBuffer cb,
                              const EffectTable& effects,
                              VkExtent2D swapExtent,
                              float exposure,
-                             float bloomIntensity) {
+                             float bloomIntensity,
+                             float aoStrength) {
     for (const PostPass pass : passes) {
         switch (pass) {
             case PostPass::Copy:
-                recordComposite(cb, exposure, bloomIntensity);
+                recordComposite(cb, exposure, bloomIntensity, aoStrength);
                 break;
 
             case PostPass::Outline: {
