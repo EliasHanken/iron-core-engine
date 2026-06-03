@@ -90,6 +90,14 @@ int main() {
         assert(!spv.empty());
         assert(spv.front() == 0x07230203u);  // SPIR-V magic
     }
+
+    // 8. The embedded irradiance-convolution compute shader compiles to SPIR-V.
+    {
+        const auto spv = iron::compileGlsl(
+            VK_SHADER_STAGE_COMPUTE_BIT, iron::kIrradianceConvolveComputeSrc());
+        assert(!spv.empty());
+        assert(spv.front() == 0x07230203u);  // SPIR-V magic
+    }
 #endif
 
     std::puts("test_ibl: OK");

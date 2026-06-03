@@ -59,6 +59,63 @@ void main() {
 )";
 }
 
+const char* kIrradianceConvolveComputeSrc() {
+    return R"(#version 450
+layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
+
+layout(binding = 0) uniform samplerCube uEnv;
+layout(binding = 1, rgba16f) uniform writeonly image2DArray uOut;
+
+const float PI = 3.14159265358979323846;
+
+// Cube-face direction, matching ProceduralSky / Ibl.h / equirectToCube.
+vec3 faceDir(int face, float u, float v) {
+    vec3 d;
+    if      (face == 0) d = vec3( 1.0, -v,   -u);   // +X
+    else if (face == 1) d = vec3(-1.0, -v,    u);   // -X
+    else if (face == 2) d = vec3( u,    1.0,  v);   // +Y
+    else if (face == 3) d = vec3( u,   -1.0, -v);   // -Y
+    else if (face == 4) d = vec3( u,   -v,    1.0); // +Z
+    else                d = vec3(-u,   -v,   -1.0); // -Z
+    return normalize(d);
+}
+
+void main() {
+    ivec3 gid = ivec3(gl_GlobalInvocationID);
+    ivec2 size = imageSize(uOut).xy;
+    if (gid.x >= size.x || gid.y >= size.y) return;
+
+    float u = 2.0 * (float(gid.x) + 0.5) / float(size.x) - 1.0;
+    float v = 2.0 * (float(gid.y) + 0.5) / float(size.y) - 1.0;
+    vec3 N = faceDir(gid.z, u, v);
+
+    // Tangent basis around N.
+    vec3 up = abs(N.y) < 0.999 ? vec3(0.0, 1.0, 0.0) : vec3(1.0, 0.0, 0.0);
+    vec3 right = normalize(cross(up, N));
+    up = normalize(cross(N, right));
+
+    vec3 irradiance = vec3(0.0);
+    float sampleDelta = 0.025;
+    float nrSamples = 0.0;
+    for (float phi = 0.0; phi < 2.0 * PI; phi += sampleDelta) {
+        for (float theta = 0.0; theta < 0.5 * PI; theta += sampleDelta) {
+            vec3 tangentSample = vec3(sin(theta) * cos(phi),
+                                      sin(theta) * sin(phi),
+                                      cos(theta));
+            vec3 sampleVec = tangentSample.x * right
+                           + tangentSample.y * up
+                           + tangentSample.z * N;
+            irradiance += textureLod(uEnv, sampleVec, 0.0).rgb
+                        * cos(theta) * sin(theta);
+            nrSamples += 1.0;
+        }
+    }
+    irradiance = PI * irradiance / nrSamples;
+    imageStore(uOut, gid, vec4(irradiance, 1.0));
+}
+)";
+}
+
 bool VkIblBaker::init(VkContext& ctx) {
     // Descriptor layout: equirect sampler (0) + cube storage image (1).
     VkDescriptorSetLayoutBinding b[2]{};
@@ -95,10 +152,43 @@ bool VkIblBaker::init(VkContext& ctx) {
     sInfo.addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE; // pitch clamps
     sInfo.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
     VK_CHECK(vkCreateSampler(ctx.device(), &sInfo, nullptr, &equirectSampler_));
+
+    // M46b — irradiance convolution pipeline (env samplerCube -> irradiance cube).
+    {
+        VkDescriptorSetLayoutBinding b[2]{};
+        b[0].binding         = 0;
+        b[0].descriptorType  = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        b[0].descriptorCount = 1;
+        b[0].stageFlags      = VK_SHADER_STAGE_COMPUTE_BIT;
+        b[1].binding         = 1;
+        b[1].descriptorType  = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+        b[1].descriptorCount = 1;
+        b[1].stageFlags      = VK_SHADER_STAGE_COMPUTE_BIT;
+
+        VkDescriptorSetLayoutCreateInfo slInfo{};
+        slInfo.sType        = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+        slInfo.bindingCount = 2;
+        slInfo.pBindings    = b;
+        VK_CHECK(vkCreateDescriptorSetLayout(ctx.device(), &slInfo, nullptr,
+                                             &irradianceSetLayout_));
+
+        auto spirv = compileGlsl(VK_SHADER_STAGE_COMPUTE_BIT,
+                                 kIrradianceConvolveComputeSrc());
+        if (spirv.empty()) {
+            Log::error("VkIblBaker: irradiance compute compile failed");
+            return false;
+        }
+        if (!irradiancePipeline_.init(ctx, spirv, irradianceSetLayout_)) return false;
+    }
     return true;
 }
 
 void VkIblBaker::destroy(VkContext& ctx) {
+    irradiancePipeline_.destroy(ctx);
+    if (irradianceSetLayout_) {
+        vkDestroyDescriptorSetLayout(ctx.device(), irradianceSetLayout_, nullptr);
+        irradianceSetLayout_ = VK_NULL_HANDLE;
+    }
     pipeline_.destroy(ctx);
     if (equirectSampler_) {
         vkDestroySampler(ctx.device(), equirectSampler_, nullptr);
@@ -326,6 +416,128 @@ CubemapHandle VkIblBaker::equirectFileToCubemap(
     vmaDestroyBuffer(ctx.allocator(), staging, stagingAlloc);
 
     return handle;
+}
+
+CubemapHandle VkIblBaker::bakeIrradiance(VkContext& ctx, VkCubemapStore& store,
+                                         CubemapHandle envCube, int faceSize) {
+    if (!store.has(envCube)) return kInvalidHandle;
+
+    // Capture env view+sampler before createHdr (defensive; unordered_map refs
+    // are stable across insert, but be explicit).
+    const VkCubemapResource& env = store.get(envCube);
+    const VkImageView envView    = env.view;
+    const VkSampler   envSampler = env.sampler;
+
+    const CubemapHandle outHandle = store.createHdr(ctx, faceSize, /*mipLevels=*/1);
+    if (outHandle == kInvalidHandle) return kInvalidHandle;
+    const VkCubemapResource& out = store.get(outHandle);
+
+    VkCommandPool pool = VK_NULL_HANDLE;
+    VkCommandPoolCreateInfo pInfo{};
+    pInfo.sType            = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
+    pInfo.queueFamilyIndex = ctx.graphicsFamily();
+    pInfo.flags            = VK_COMMAND_POOL_CREATE_TRANSIENT_BIT;
+    VK_CHECK(vkCreateCommandPool(ctx.device(), &pInfo, nullptr, &pool));
+
+    VkCommandBuffer cb = VK_NULL_HANDLE;
+    VkCommandBufferAllocateInfo cbInfo{};
+    cbInfo.sType              = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
+    cbInfo.commandPool        = pool;
+    cbInfo.level              = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+    cbInfo.commandBufferCount = 1;
+    VK_CHECK(vkAllocateCommandBuffers(ctx.device(), &cbInfo, &cb));
+
+    VkCommandBufferBeginInfo begin{};
+    begin.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+    begin.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+    VK_CHECK(vkBeginCommandBuffer(cb, &begin));
+
+    auto barrier = [&](VkImage img, VkImageLayout oldL, VkImageLayout newL,
+                       VkAccessFlags srcA, VkAccessFlags dstA,
+                       VkPipelineStageFlags srcS, VkPipelineStageFlags dstS) {
+        VkImageMemoryBarrier mb{};
+        mb.sType               = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+        mb.oldLayout           = oldL;
+        mb.newLayout           = newL;
+        mb.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        mb.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        mb.image               = img;
+        mb.subresourceRange    = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 6};
+        mb.srcAccessMask       = srcA;
+        mb.dstAccessMask       = dstA;
+        vkCmdPipelineBarrier(cb, srcS, dstS, 0, 0, nullptr, 0, nullptr, 1, &mb);
+    };
+
+    barrier(out.image, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL,
+            0, VK_ACCESS_SHADER_WRITE_BIT,
+            VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
+
+    VkDescriptorPoolSize sizes[2]{};
+    sizes[0].type            = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    sizes[0].descriptorCount = 1;
+    sizes[1].type            = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+    sizes[1].descriptorCount = 1;
+    VkDescriptorPoolCreateInfo dpInfo{};
+    dpInfo.sType         = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
+    dpInfo.maxSets       = 1;
+    dpInfo.poolSizeCount = 2;
+    dpInfo.pPoolSizes    = sizes;
+    VkDescriptorPool dpool = VK_NULL_HANDLE;
+    VK_CHECK(vkCreateDescriptorPool(ctx.device(), &dpInfo, nullptr, &dpool));
+
+    VkDescriptorSetAllocateInfo dsInfo{};
+    dsInfo.sType              = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+    dsInfo.descriptorPool     = dpool;
+    dsInfo.descriptorSetCount = 1;
+    dsInfo.pSetLayouts        = &irradianceSetLayout_;
+    VkDescriptorSet set = VK_NULL_HANDLE;
+    VK_CHECK(vkAllocateDescriptorSets(ctx.device(), &dsInfo, &set));
+
+    VkDescriptorImageInfo envInfo{};
+    envInfo.sampler     = envSampler;
+    envInfo.imageView   = envView;
+    envInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    VkDescriptorImageInfo outInfo{};
+    outInfo.imageView   = out.storageViews[0];
+    outInfo.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
+
+    VkWriteDescriptorSet writes[2]{};
+    writes[0].sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    writes[0].dstSet          = set;
+    writes[0].dstBinding      = 0;
+    writes[0].descriptorType  = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    writes[0].descriptorCount = 1;
+    writes[0].pImageInfo      = &envInfo;
+    writes[1].sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    writes[1].dstSet          = set;
+    writes[1].dstBinding      = 1;
+    writes[1].descriptorType  = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+    writes[1].descriptorCount = 1;
+    writes[1].pImageInfo      = &outInfo;
+    vkUpdateDescriptorSets(ctx.device(), 2, writes, 0, nullptr);
+
+    vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_COMPUTE, irradiancePipeline_.pipeline());
+    vkCmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_COMPUTE,
+                            irradiancePipeline_.pipelineLayout(), 0, 1, &set, 0, nullptr);
+    const std::uint32_t groups = (static_cast<std::uint32_t>(faceSize) + 7u) / 8u;
+    vkCmdDispatch(cb, groups, groups, 6);
+
+    barrier(out.image, VK_IMAGE_LAYOUT_GENERAL,
+            VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+            VK_ACCESS_SHADER_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT,
+            VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT);
+
+    VK_CHECK(vkEndCommandBuffer(cb));
+    VkSubmitInfo submit{};
+    submit.sType              = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+    submit.commandBufferCount = 1;
+    submit.pCommandBuffers    = &cb;
+    VK_CHECK(vkQueueSubmit(ctx.graphicsQueue(), 1, &submit, VK_NULL_HANDLE));
+    VK_CHECK(vkQueueWaitIdle(ctx.graphicsQueue()));
+
+    vkDestroyDescriptorPool(ctx.device(), dpool, nullptr);
+    vkDestroyCommandPool(ctx.device(), pool, nullptr);
+    return outHandle;
 }
 
 }  // namespace iron
