@@ -1182,9 +1182,10 @@ void VulkanRenderer::endFrame() {
     // --- M48: SSAO pre-pass. Also records its own render passes, so it must run
     // OUTSIDE the viewport pass. Update the per-frame UBO (projection + kernel +
     // knobs) first, then record the SSAO + blur passes into ssaoBlurView_. ---
-    postProcess_.updateSsaoUbo(pendingProjection_, iron::inverse(pendingProjection_),
+    const int ssaoFrame = frames_.currentIndex();
+    postProcess_.updateSsaoUbo(ssaoFrame, pendingProjection_, iron::inverse(pendingProjection_),
                                pendingSsaoRadius_, pendingSsaoBias_, pendingSsaoPower_);
-    postProcess_.runSsaoPass(cb);
+    postProcess_.runSsaoPass(cb, ssaoFrame);
 
     // --- M43a Pass 4: viewport pass — composite scene + overlays into the
     // offscreen sampleable target (instead of straight to the swapchain). ---

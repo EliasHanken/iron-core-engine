@@ -479,14 +479,15 @@ bool VkPostProcess::init(VkContext& ctx, VkFormat colorFormat, VkFormat depthFor
         bli.bindingCount = 1; bli.pBindings = &bb;
         VK_CHECK(vkCreateDescriptorSetLayout(ctx.device(), &bli, nullptr, &ssaoBlurSetLayout_));
 
-        // Dedicated persistent pool: 2 sets; 3 combined-image-samplers
-        // (ssaoSet: depth+noise=2, blurSet: ssaoTex=1) + 1 uniform buffer.
+        // Dedicated persistent pool: 3 sets (2 per-frame ssao sets + 1 blur set);
+        // 5 combined-image-samplers (2 ssao sets * (depth+noise)=4, blurSet:
+        // ssaoTex=1) + 2 uniform buffers (1 per ssao set).
         VkDescriptorPoolSize ps[2]{};
-        ps[0].type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER; ps[0].descriptorCount = 3;
-        ps[1].type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;         ps[1].descriptorCount = 1;
+        ps[0].type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER; ps[0].descriptorCount = 5;
+        ps[1].type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;         ps[1].descriptorCount = 2;
         VkDescriptorPoolCreateInfo dp{};
         dp.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
-        dp.maxSets = 2; dp.poolSizeCount = 2; dp.pPoolSizes = ps;
+        dp.maxSets = 3; dp.poolSizeCount = 2; dp.pPoolSizes = ps;
         VK_CHECK(vkCreateDescriptorPool(ctx.device(), &dp, nullptr, &ssaoDescPool_));
     }
 
@@ -519,12 +520,15 @@ void VkPostProcess::destroy(VkContext& ctx) {
     if (ssaoLayout_)       { vkDestroyPipelineLayout(ctx.device(), ssaoLayout_, nullptr);     ssaoLayout_ = VK_NULL_HANDLE; }
     if (ssaoBlurSetLayout_){ vkDestroyDescriptorSetLayout(ctx.device(), ssaoBlurSetLayout_, nullptr); ssaoBlurSetLayout_ = VK_NULL_HANDLE; }
     if (ssaoSetLayout_)    { vkDestroyDescriptorSetLayout(ctx.device(), ssaoSetLayout_, nullptr);     ssaoSetLayout_ = VK_NULL_HANDLE; }
-    // The pool owns ssaoSet_/ssaoBlurSet_; destroying it frees them.
-    if (ssaoDescPool_)     { vkDestroyDescriptorPool(ctx.device(), ssaoDescPool_, nullptr); ssaoDescPool_ = VK_NULL_HANDLE; ssaoSet_ = VK_NULL_HANDLE; ssaoBlurSet_ = VK_NULL_HANDLE; }
+    // The pool owns ssaoSet_[0/1]/ssaoBlurSet_; destroying it frees them.
+    if (ssaoDescPool_)     { vkDestroyDescriptorPool(ctx.device(), ssaoDescPool_, nullptr); ssaoDescPool_ = VK_NULL_HANDLE; ssaoSet_[0] = VK_NULL_HANDLE; ssaoSet_[1] = VK_NULL_HANDLE; ssaoBlurSet_ = VK_NULL_HANDLE; }
     if (ssaoNoiseSampler_) { vkDestroySampler(ctx.device(), ssaoNoiseSampler_, nullptr); ssaoNoiseSampler_ = VK_NULL_HANDLE; }
     if (ssaoNoiseView_)    { vkDestroyImageView(ctx.device(), ssaoNoiseView_, nullptr); ssaoNoiseView_ = VK_NULL_HANDLE; }
     if (ssaoNoise_)        { vmaDestroyImage(ctx.allocator(), ssaoNoise_, ssaoNoiseAlloc_); ssaoNoise_ = VK_NULL_HANDLE; ssaoNoiseAlloc_ = VK_NULL_HANDLE; }
-    if (ssaoUboBuf_)       { vmaDestroyBuffer(ctx.allocator(), ssaoUboBuf_, ssaoUboAlloc_); ssaoUboBuf_ = VK_NULL_HANDLE; ssaoUboAlloc_ = VK_NULL_HANDLE; ssaoUboMapped_ = nullptr; }
+    for (int f = 0; f < 2; ++f) {
+        if (ssaoUboBuf_[f]) { vmaDestroyBuffer(ctx.allocator(), ssaoUboBuf_[f], ssaoUboAlloc_[f]); ssaoUboBuf_[f] = VK_NULL_HANDLE; ssaoUboAlloc_[f] = VK_NULL_HANDLE; }
+        ssaoUboMapped_[f] = nullptr;
+    }
 
     // M47 bloom pipelines/layouts/set-layout (persistent — not per-resize).
     if (bloomUpPipeline_)         { vkDestroyPipeline(ctx.device(), bloomUpPipeline_, nullptr);         bloomUpPipeline_ = VK_NULL_HANDLE; }
@@ -3289,7 +3293,7 @@ void VkPostProcess::runBloomOffscreenPasses(VkCommandBuffer cb, float threshold,
     }
 }
 
-void VkPostProcess::updateSsaoUbo(const Mat4& projection, const Mat4& invProjection,
+void VkPostProcess::updateSsaoUbo(int frame, const Mat4& projection, const Mat4& invProjection,
                                   float radius, float bias, float power) {
     SsaoUbo ubo{};
     ubo.projection    = projection;
@@ -3301,12 +3305,12 @@ void VkPostProcess::updateSsaoUbo(const Mat4& projection, const Mat4& invProject
     ubo.params     = {radius, bias, power, static_cast<float>(kSsaoKernelSize)};
     ubo.noiseScale = {ssaoExtent_.width / 4.0f, ssaoExtent_.height / 4.0f, 0.0f, 0.0f};
 
-    std::memcpy(ssaoUboMapped_, &ubo, sizeof(SsaoUbo));
+    std::memcpy(ssaoUboMapped_[frame], &ubo, sizeof(SsaoUbo));
     // Host-visible memory may be non-coherent — flush the per-frame write.
-    vmaFlushAllocation(ctx_->allocator(), ssaoUboAlloc_, 0, sizeof(SsaoUbo));
+    vmaFlushAllocation(ctx_->allocator(), ssaoUboAlloc_[frame], 0, sizeof(SsaoUbo));
 }
 
-void VkPostProcess::runSsaoPass(VkCommandBuffer cb) {
+void VkPostProcess::runSsaoPass(VkCommandBuffer cb, int frame) {
     // Degenerate extent (targets not created) — nothing to record.
     if (ssaoExtent_.width == 0 || ssaoExtent_.height == 0) return;
 
@@ -3349,7 +3353,7 @@ void VkPostProcess::runSsaoPass(VkCommandBuffer cb) {
     };
 
     // Pass 1: SSAO (scene depth + noise + UBO -> ssaoView_). No push constants.
-    recordSsaoPass(ssaoFb_, ssaoPipeline_, ssaoLayout_, ssaoSet_, nullptr, 0);
+    recordSsaoPass(ssaoFb_, ssaoPipeline_, ssaoLayout_, ssaoSet_[frame], nullptr, 0);
 
     // Pass 2: 4x4 box blur (ssaoView_ -> ssaoBlurView_). Texel = 1/extent.
     SsaoBlurPush push{
@@ -3694,8 +3698,10 @@ bool VkPostProcess::createSsaoNoiseAndUbo(VkContext& ctx) {
         VK_CHECK(vkCreateSampler(ctx.device(), &si, nullptr, &ssaoNoiseSampler_));
     }
 
-    // --- Persistent host-visible, persistently-mapped SSAO UBO ---
-    {
+    // --- Persistent host-visible, persistently-mapped SSAO UBO (one per
+    // frame-in-flight slot so the CPU write for this frame can't race the
+    // previous frame's GPU read). ---
+    for (int f = 0; f < 2; ++f) {
         VkBufferCreateInfo bi{};
         bi.sType       = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
         bi.size        = sizeof(SsaoUbo);
@@ -3706,8 +3712,8 @@ bool VkPostProcess::createSsaoNoiseAndUbo(VkContext& ctx) {
         ai.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT |
                    VMA_ALLOCATION_CREATE_MAPPED_BIT;
         VmaAllocationInfo aiOut{};
-        VK_CHECK(vmaCreateBuffer(ctx.allocator(), &bi, &ai, &ssaoUboBuf_, &ssaoUboAlloc_, &aiOut));
-        ssaoUboMapped_ = aiOut.pMappedData;
+        VK_CHECK(vmaCreateBuffer(ctx.allocator(), &bi, &ai, &ssaoUboBuf_[f], &ssaoUboAlloc_[f], &aiOut));
+        ssaoUboMapped_[f] = aiOut.pMappedData;
     }
 
     // Cache the kernel (generated once; uploaded per-frame in Task 4).
@@ -3811,19 +3817,21 @@ void VkPostProcess::createSsaoTargets(VkContext& ctx, VkExtent2D extent) {
     makeFb(ssaoView_,     ssaoFb_);
     makeFb(ssaoBlurView_, ssaoBlurFb_);
 
-    // Allocate + write the 2 descriptor sets from the persistent ssaoDescPool_.
-    // Reset the pool first so a resize re-allocates cleanly (the pool is sized
-    // for exactly these 2 sets). The set layouts + pool were created in init
-    // before createTargets ran — heeds the M47 null-layout lesson.
+    // Allocate + write the 3 descriptor sets from the persistent ssaoDescPool_
+    // (2 per-frame ssao sets + 1 blur set). Reset the pool first so a resize
+    // re-allocates cleanly (the pool is sized for exactly these 3 sets). The set
+    // layouts + pool were created in init before createTargets ran — heeds the
+    // M47 null-layout lesson.
     VK_CHECK(vkResetDescriptorPool(ctx.device(), ssaoDescPool_, 0));
-    {
+    for (int f = 0; f < 2; ++f) {
         VkDescriptorSetAllocateInfo a0{};
         a0.sType              = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
         a0.descriptorPool     = ssaoDescPool_;
         a0.descriptorSetCount = 1;
         a0.pSetLayouts        = &ssaoSetLayout_;
-        VK_CHECK(vkAllocateDescriptorSets(ctx.device(), &a0, &ssaoSet_));
-
+        VK_CHECK(vkAllocateDescriptorSets(ctx.device(), &a0, &ssaoSet_[f]));
+    }
+    {
         VkDescriptorSetAllocateInfo a1{};
         a1.sType              = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
         a1.descriptorPool     = ssaoDescPool_;
@@ -3832,9 +3840,9 @@ void VkPostProcess::createSsaoTargets(VkContext& ctx, VkExtent2D extent) {
         VK_CHECK(vkAllocateDescriptorSets(ctx.device(), &a1, &ssaoBlurSet_));
     }
 
-    // ssaoSet_: 0 = scene depth (maskSampler_ NEAREST + depth layout, like x-ray),
-    // 1 = noise (NEAREST/REPEAT), 2 = UBO (whole range).
-    {
+    // ssaoSet_[f]: 0 = scene depth (maskSampler_ NEAREST + depth layout, like
+    // x-ray), 1 = noise (NEAREST/REPEAT), 2 = frame f's UBO (whole range).
+    for (int f = 0; f < 2; ++f) {
         VkDescriptorImageInfo depthInfo{};
         depthInfo.sampler     = maskSampler_;
         depthInfo.imageView   = sceneDepthView_;
@@ -3846,25 +3854,25 @@ void VkPostProcess::createSsaoTargets(VkContext& ctx, VkExtent2D extent) {
         noiseInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 
         VkDescriptorBufferInfo uboInfo{};
-        uboInfo.buffer = ssaoUboBuf_;
+        uboInfo.buffer = ssaoUboBuf_[f];
         uboInfo.offset = 0;
         uboInfo.range  = VK_WHOLE_SIZE;
 
         VkWriteDescriptorSet w[3]{};
         w[0].sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-        w[0].dstSet          = ssaoSet_;
+        w[0].dstSet          = ssaoSet_[f];
         w[0].dstBinding      = 0;
         w[0].descriptorType  = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
         w[0].descriptorCount = 1;
         w[0].pImageInfo      = &depthInfo;
         w[1].sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-        w[1].dstSet          = ssaoSet_;
+        w[1].dstSet          = ssaoSet_[f];
         w[1].dstBinding      = 1;
         w[1].descriptorType  = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
         w[1].descriptorCount = 1;
         w[1].pImageInfo      = &noiseInfo;
         w[2].sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-        w[2].dstSet          = ssaoSet_;
+        w[2].dstSet          = ssaoSet_[f];
         w[2].dstBinding      = 2;
         w[2].descriptorType  = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
         w[2].descriptorCount = 1;
@@ -3896,7 +3904,8 @@ void VkPostProcess::destroySsaoTargets(VkContext& ctx) {
     // the next createSsaoTargets frees them, and destroy() frees the pool itself.
     if (ssaoDescPool_) {
         vkResetDescriptorPool(ctx.device(), ssaoDescPool_, 0);
-        ssaoSet_     = VK_NULL_HANDLE;
+        ssaoSet_[0]  = VK_NULL_HANDLE;
+        ssaoSet_[1]  = VK_NULL_HANDLE;
         ssaoBlurSet_ = VK_NULL_HANDLE;
     }
     if (ssaoBlurFb_)    { vkDestroyFramebuffer(ctx.device(), ssaoBlurFb_, nullptr); ssaoBlurFb_ = VK_NULL_HANDLE; }
