@@ -2428,7 +2428,7 @@ bool VkPostProcess::createOutlinePipeline(VkContext& ctx) {
     VK_CHECK(outlinePipeResult);
 
     // Allocate the outline descriptor set from the shared pool (allocated in
-    // createCopyPipeline with maxSets=6, descriptorCount=12).
+    // createCopyPipeline with maxSets=7, descriptorCount=14).
     VkDescriptorSetAllocateInfo dsAlloc{};
     dsAlloc.sType              = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
     dsAlloc.descriptorPool     = descPool_;
