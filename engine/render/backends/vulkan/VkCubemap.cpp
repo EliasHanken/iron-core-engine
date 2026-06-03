@@ -23,7 +23,7 @@ bool VkCubemapStore::init(VkContext& ctx) {
     sInfo.addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
     sInfo.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
     sInfo.minLod = 0.0f;
-    sInfo.maxLod = 0.0f;
+    sInfo.maxLod = VK_LOD_CLAMP_NONE;  // M46c — prefiltered specular cube has mips
     VK_CHECK(vkCreateSampler(ctx.device(), &sInfo, nullptr, &sharedSampler_));
 
     // 1x1x6 black fallback.
