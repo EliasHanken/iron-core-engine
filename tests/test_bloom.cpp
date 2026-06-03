@@ -53,6 +53,21 @@ int main() {
         assert(wBright > 0.0f && wBright < wDark);
     }
 
+#ifdef IRON_RENDER_BACKEND_VULKAN
+    {  // Bloom fragment shaders compile to SPIR-V.
+        const char* srcs[] = {
+            iron::kBloomPrefilterDownSrc(),
+            iron::kBloomDownsampleSrc(),
+            iron::kBloomUpsampleSrc(),
+        };
+        for (const char* src : srcs) {
+            const auto spv = iron::compileGlsl(VK_SHADER_STAGE_FRAGMENT_BIT, src);
+            assert(!spv.empty());
+            assert(spv.front() == 0x07230203u);
+        }
+    }
+#endif
+
     std::puts("test_bloom: OK");
     return 0;
 }

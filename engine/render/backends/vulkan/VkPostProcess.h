@@ -17,6 +17,12 @@ namespace iron {
 
 class VkContext;
 
+// Bloom fragment shader sources (exposed for compile-check tests; reuse the
+// existing kFullscreenVert for the vertex stage).
+const char* kBloomPrefilterDownSrc();  // sceneColor -> mip0 (threshold+knee+Karis)
+const char* kBloomDownsampleSrc();     // mip[i] -> mip[i+1] (13-tap)
+const char* kBloomUpsampleSrc();       // mip[i+1] -> mip[i] (3x3 tent, additive)
+
 // Owns the offscreen render targets and full-screen passes for the M36
 // post-process chain. Phase A: a single offscreen scene-color target (+ depth)
 // matching the swapchain, and a "copy" pipeline that blits it to the swapchain

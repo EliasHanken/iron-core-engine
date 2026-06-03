@@ -183,6 +183,120 @@ void main() {
 }  // namespace
 
 // ---------------------------------------------------------------------------
+// Bloom fragment shaders (M47). Public (declared in the header) so test_bloom
+// can compile-check them to SPIR-V. Reuse the anonymous-namespace kFullscreenVert
+// for the vertex stage when building the actual pipelines.
+// ---------------------------------------------------------------------------
+
+const char* kBloomPrefilterDownSrc() {
+    return R"(#version 450
+layout(location = 0) in  vec2 vUV;
+layout(location = 0) out vec4 outColor;
+layout(binding = 0) uniform sampler2D uSrc;
+layout(push_constant) uniform PC { float threshold; float knee; vec2 srcTexel; } pc;
+
+vec3 prefilter(vec3 c) {
+    float br = max(c.r, max(c.g, c.b));
+    float soft = br - pc.threshold + pc.knee;
+    soft = clamp(soft, 0.0, 2.0 * pc.knee);
+    soft = soft * soft / (4.0 * pc.knee + 1e-4);
+    float contrib = max(soft, br - pc.threshold);
+    contrib /= max(br, 1e-4);
+    return c * contrib;
+}
+float karis(vec3 c) { float l = dot(c, vec3(0.2126, 0.7152, 0.0722)); return 1.0 / (1.0 + l); }
+
+void main() {
+    vec2 t = pc.srcTexel; vec2 uv = vUV;
+    vec3 a = texture(uSrc, uv + t * vec2(-2.0,  2.0)).rgb;
+    vec3 b = texture(uSrc, uv + t * vec2( 0.0,  2.0)).rgb;
+    vec3 c = texture(uSrc, uv + t * vec2( 2.0,  2.0)).rgb;
+    vec3 d = texture(uSrc, uv + t * vec2(-2.0,  0.0)).rgb;
+    vec3 e = texture(uSrc, uv + t * vec2( 0.0,  0.0)).rgb;
+    vec3 f = texture(uSrc, uv + t * vec2( 2.0,  0.0)).rgb;
+    vec3 g = texture(uSrc, uv + t * vec2(-2.0, -2.0)).rgb;
+    vec3 h = texture(uSrc, uv + t * vec2( 0.0, -2.0)).rgb;
+    vec3 i = texture(uSrc, uv + t * vec2( 2.0, -2.0)).rgb;
+    vec3 j = texture(uSrc, uv + t * vec2(-1.0,  1.0)).rgb;
+    vec3 k = texture(uSrc, uv + t * vec2( 1.0,  1.0)).rgb;
+    vec3 l = texture(uSrc, uv + t * vec2(-1.0, -1.0)).rgb;
+    vec3 m = texture(uSrc, uv + t * vec2( 1.0, -1.0)).rgb;
+    vec3 box0 = (j + k + l + m) * 0.25;
+    vec3 box1 = (a + b + d + e) * 0.25;
+    vec3 box2 = (b + c + e + f) * 0.25;
+    vec3 box3 = (d + e + g + h) * 0.25;
+    vec3 box4 = (e + f + h + i) * 0.25;
+    box0 = prefilter(box0); box1 = prefilter(box1); box2 = prefilter(box2);
+    box3 = prefilter(box3); box4 = prefilter(box4);
+    float w0 = karis(box0) * 0.5;
+    float w1 = karis(box1) * 0.125;
+    float w2 = karis(box2) * 0.125;
+    float w3 = karis(box3) * 0.125;
+    float w4 = karis(box4) * 0.125;
+    vec3 sum = box0 * w0 + box1 * w1 + box2 * w2 + box3 * w3 + box4 * w4;
+    float wsum = w0 + w1 + w2 + w3 + w4;
+    outColor = vec4(sum / max(wsum, 1e-4), 1.0);
+}
+)";
+}
+
+const char* kBloomDownsampleSrc() {
+    return R"(#version 450
+layout(location = 0) in  vec2 vUV;
+layout(location = 0) out vec4 outColor;
+layout(binding = 0) uniform sampler2D uSrc;
+layout(push_constant) uniform PC { vec2 srcTexel; } pc;
+
+void main() {
+    vec2 t = pc.srcTexel; vec2 uv = vUV;
+    vec3 a = texture(uSrc, uv + t * vec2(-2.0,  2.0)).rgb;
+    vec3 b = texture(uSrc, uv + t * vec2( 0.0,  2.0)).rgb;
+    vec3 c = texture(uSrc, uv + t * vec2( 2.0,  2.0)).rgb;
+    vec3 d = texture(uSrc, uv + t * vec2(-2.0,  0.0)).rgb;
+    vec3 e = texture(uSrc, uv + t * vec2( 0.0,  0.0)).rgb;
+    vec3 f = texture(uSrc, uv + t * vec2( 2.0,  0.0)).rgb;
+    vec3 g = texture(uSrc, uv + t * vec2(-2.0, -2.0)).rgb;
+    vec3 h = texture(uSrc, uv + t * vec2( 0.0, -2.0)).rgb;
+    vec3 i = texture(uSrc, uv + t * vec2( 2.0, -2.0)).rgb;
+    vec3 j = texture(uSrc, uv + t * vec2(-1.0,  1.0)).rgb;
+    vec3 k = texture(uSrc, uv + t * vec2( 1.0,  1.0)).rgb;
+    vec3 l = texture(uSrc, uv + t * vec2(-1.0, -1.0)).rgb;
+    vec3 m = texture(uSrc, uv + t * vec2( 1.0, -1.0)).rgb;
+    vec3 r  = (j + k + l + m) * 0.5   * 0.25;
+    r      += (a + b + d + e) * 0.125 * 0.25;
+    r      += (b + c + e + f) * 0.125 * 0.25;
+    r      += (d + e + g + h) * 0.125 * 0.25;
+    r      += (e + f + h + i) * 0.125 * 0.25;
+    outColor = vec4(r, 1.0);
+}
+)";
+}
+
+const char* kBloomUpsampleSrc() {
+    return R"(#version 450
+layout(location = 0) in  vec2 vUV;
+layout(location = 0) out vec4 outColor;
+layout(binding = 0) uniform sampler2D uSrc;
+layout(push_constant) uniform PC { vec2 srcTexel; float scatter; } pc;
+
+void main() {
+    vec2 t = pc.srcTexel * pc.scatter; vec2 uv = vUV;
+    vec3 s = vec3(0.0);
+    s += texture(uSrc, uv + t * vec2(-1.0,  1.0)).rgb * 1.0;
+    s += texture(uSrc, uv + t * vec2( 0.0,  1.0)).rgb * 2.0;
+    s += texture(uSrc, uv + t * vec2( 1.0,  1.0)).rgb * 1.0;
+    s += texture(uSrc, uv + t * vec2(-1.0,  0.0)).rgb * 2.0;
+    s += texture(uSrc, uv + t * vec2( 0.0,  0.0)).rgb * 4.0;
+    s += texture(uSrc, uv + t * vec2( 1.0,  0.0)).rgb * 2.0;
+    s += texture(uSrc, uv + t * vec2(-1.0, -1.0)).rgb * 1.0;
+    s += texture(uSrc, uv + t * vec2( 0.0, -1.0)).rgb * 2.0;
+    s += texture(uSrc, uv + t * vec2( 1.0, -1.0)).rgb * 1.0;
+    outColor = vec4(s * (1.0 / 16.0), 1.0);
+}
+)";
+}
+
+// ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------
 
