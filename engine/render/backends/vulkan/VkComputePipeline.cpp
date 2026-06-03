@@ -8,7 +8,8 @@ namespace iron {
 
 bool VkComputePipeline::init(VkContext& ctx,
                              const std::vector<std::uint32_t>& spirv,
-                             VkDescriptorSetLayout setLayout) {
+                             VkDescriptorSetLayout setLayout,
+                             std::uint32_t pushConstantBytes) {
     VkShaderModuleCreateInfo modInfo{};
     modInfo.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
     modInfo.codeSize = spirv.size() * sizeof(std::uint32_t);
@@ -16,10 +17,17 @@ bool VkComputePipeline::init(VkContext& ctx,
     VK_CHECK(vkCreateShaderModule(ctx.device(), &modInfo, nullptr, &module_));
     if (module_ == VK_NULL_HANDLE) return false;
 
+    VkPushConstantRange pcRange{};
+    pcRange.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+    pcRange.offset     = 0;
+    pcRange.size       = pushConstantBytes;
+
     VkPipelineLayoutCreateInfo plInfo{};
     plInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
     plInfo.setLayoutCount = 1;
     plInfo.pSetLayouts = &setLayout;
+    plInfo.pushConstantRangeCount = pushConstantBytes > 0 ? 1u : 0u;
+    plInfo.pPushConstantRanges    = pushConstantBytes > 0 ? &pcRange : nullptr;
     VK_CHECK(vkCreatePipelineLayout(ctx.device(), &plInfo, nullptr, &layout_));
     if (layout_ == VK_NULL_HANDLE) return false;
 

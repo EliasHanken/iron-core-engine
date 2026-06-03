@@ -6,8 +6,9 @@ namespace iron {
 // Cook-Torrance GGX PBR + point lights + planar/cubemap reflection + fog + emissive.
 // Single source of truth; games obtain handles via Renderer::createStandardLitShader().
 // Consumes the shared LitUbo (set=0, binding=0) + bindings 1..8 (diffuse, normal,
-// metallicRoughness, shadow, skyCubemap, reflection, AO, emissive). Keep in lockstep with
-// VulkanRenderer's descriptor-set layout and engine/render/Pbr.h BRDF formulas.
+// metallicRoughness, shadow, skyCubemap, reflection, AO, emissive) + 10/11/12
+// (irradiance, prefiltered specular, BRDF LUT — M46b/c IBL); binding 9 = skinned bones.
+// Keep in lockstep with VulkanRenderer's descriptor-set layout and engine/render/Pbr.h BRDF formulas.
 
 inline const char* standardLitVertSource() {
     return R"GLSL(#version 450
@@ -153,6 +154,8 @@ layout(set = 0, binding = 6) uniform sampler2D uReflection;
 layout(set = 0, binding = 7) uniform sampler2D uAoMap;
 layout(set = 0, binding = 8) uniform sampler2D uEmissiveMap;
 layout(set = 0, binding = 10) uniform samplerCube uIrradianceCube;  // M46b diffuse IBL
+layout(set = 0, binding = 11) uniform samplerCube uPrefiltered;   // M46c specular IBL
+layout(set = 0, binding = 12) uniform sampler2D   uBrdfLut;       // M46c split-sum LUT
 
 float shadowFactor(vec4 lightSpacePos, float bias) {
     vec3 proj = lightSpacePos.xyz / lightSpacePos.w;
@@ -195,6 +198,9 @@ vec3 pbrContrib(vec3 N, vec3 V, vec3 L, vec3 albedo, float metallic, float rough
     vec3 spec = (D * G) * F / (4.0 * nDotV * nDotL + 1e-4);
     vec3 kd = (vec3(1.0) - F) * (1.0 - metallic);
     return (kd * albedo / PI + spec) * radiance * nDotL;
+}
+vec3 fresnelSchlickRoughness(float cosT, vec3 F0, float rough) {
+    return F0 + (max(vec3(1.0 - rough), F0) - F0) * pow(clamp(1.0 - cosT, 0.0, 1.0), 5.0);
 }
 
 void main() {
@@ -244,7 +250,17 @@ void main() {
     // environment irradiance; otherwise the legacy flat ambient.
     vec3 ambient;
     if (u.materialParams2.w > 0.5) {
-        ambient = texture(uIrradianceCube, N_).rgb * albedo * ao;
+        // M46c — split-sum IBL: diffuse irradiance + prefiltered specular.
+        float nDotV = max(dot(N_, V), 0.0);
+        vec3  F     = fresnelSchlickRoughness(nDotV, F0, roughness);
+        vec3  kD    = (vec3(1.0) - F) * (1.0 - metallic);
+        vec3  diffuseIBL  = texture(uIrradianceCube, N_).rgb * albedo;
+        vec3  R           = reflect(-V, N_);
+        float maxMip      = float(textureQueryLevels(uPrefiltered) - 1);
+        vec3  prefiltered = textureLod(uPrefiltered, R, roughness * maxMip).rgb;
+        vec2  brdf        = texture(uBrdfLut, vec2(nDotV, roughness)).rg;
+        vec3  specularIBL = prefiltered * (F * brdf.x + brdf.y);
+        ambient = (kD * diffuseIBL + specularIBL) * ao;
     } else {
         ambient = u.ambient.xyz * albedo * ao;
     }
@@ -257,7 +273,9 @@ void main() {
         vec2 ndc = gl_FragCoord.xy / u.reflectionParams.yz;
         vec3 reflectColor = texture(uReflection, ndc).rgb;
         color = mix(color, reflectColor, reflectivity);
-    } else if (reflectivity > 0.0) {
+    } else if (reflectivity > 0.0 && u.materialParams2.w < 0.5) {
+        // M16 crude sky-cube reflection — superseded by split-sum IBL specular when a
+        // skybox/IBL is present (iblEnabled); only runs as the legacy fallback (IBL off).
         vec3 viewDir = normalize(vWorldPos - u.cameraPos.xyz);
         vec3 reflectDir = reflect(viewDir, perturbedN);
         vec3 reflectColor = texture(uSkyCubemap, reflectDir).rgb;

@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdint>
 
 namespace iron {
 
@@ -56,6 +57,60 @@ inline Vec3 convolveConstantIrradiance(Vec3 L, float sampleDelta = 0.025f) {
     }
     const float scale = kIblPi * sum / nrSamples;  // ~= 1.0
     return Vec3{L.x * scale, L.y * scale, L.z * scale};
+}
+
+// --- M46c: split-sum BRDF integration (CPU port of brdfLut.comp) ---
+// Van der Corput radical inverse + Hammersley point set.
+inline Vec2 hammersley(std::uint32_t i, std::uint32_t n) {
+    std::uint32_t bits = i;
+    bits = (bits << 16) | (bits >> 16);
+    bits = ((bits & 0x55555555u) << 1) | ((bits & 0xAAAAAAAAu) >> 1);
+    bits = ((bits & 0x33333333u) << 2) | ((bits & 0xCCCCCCCCu) >> 2);
+    bits = ((bits & 0x0F0F0F0Fu) << 4) | ((bits & 0xF0F0F0F0u) >> 4);
+    bits = ((bits & 0x00FF00FFu) << 8) | ((bits & 0xFF00FF00u) >> 8);
+    const float rdi = static_cast<float>(bits) * 2.3283064365386963e-10f;  // / 2^32
+    return Vec2{static_cast<float>(i) / static_cast<float>(n), rdi};
+}
+
+// GGX importance-sampled half-vector in tangent space (N = +Z).
+inline Vec3 importanceSampleGGXLocal(Vec2 xi, float roughness) {
+    const float a = roughness * roughness;
+    const float phi = 2.0f * kIblPi * xi.x;
+    const float cosTheta = std::sqrt((1.0f - xi.y) / (1.0f + (a * a - 1.0f) * xi.y));
+    const float sinTheta = std::sqrt(1.0f - cosTheta * cosTheta);
+    return Vec3{std::cos(phi) * sinTheta, std::sin(phi) * sinTheta, cosTheta};
+}
+
+// Smith geometry (IBL k = a^2/2) — Schlick-GGX, one direction.
+inline float geometrySchlickGgx(float nDotX, float roughness) {
+    const float a = roughness;
+    const float k = (a * a) / 2.0f;
+    return nDotX / (nDotX * (1.0f - k) + k);
+}
+
+// Integrates the split-sum scale (.x) + bias (.y) for given NdotV + roughness.
+// V is in the tangent frame with N = +Z; everything stays in that frame.
+inline Vec2 integrateBrdf(float nDotV, float roughness, std::uint32_t samples) {
+    nDotV = std::max(nDotV, 1e-4f);
+    const Vec3 V{std::sqrt(1.0f - nDotV * nDotV), 0.0f, nDotV};  // sin, 0, cos
+    float A = 0.0f, B = 0.0f;
+    for (std::uint32_t i = 0; i < samples; ++i) {
+        const Vec2 xi = hammersley(i, samples);
+        const Vec3 H  = importanceSampleGGXLocal(xi, roughness);
+        const float vDotH = std::max(V.x * H.x + V.y * H.y + V.z * H.z, 0.0f);
+        // L = reflect(-V, H) = 2*(V.H)*H - V
+        const Vec3 L{2.0f * vDotH * H.x - V.x, 2.0f * vDotH * H.y - V.y, 2.0f * vDotH * H.z - V.z};
+        const float nDotL = std::max(L.z, 0.0f);
+        const float nDotH = std::max(H.z, 0.0f);
+        if (nDotL > 0.0f) {
+            const float g  = geometrySchlickGgx(nDotL, roughness) * geometrySchlickGgx(nDotV, roughness);
+            const float gv = (g * vDotH) / std::max(nDotH * nDotV, 1e-4f);
+            const float fc = std::pow(1.0f - vDotH, 5.0f);
+            A += (1.0f - fc) * gv;
+            B += fc * gv;
+        }
+    }
+    return Vec2{A / static_cast<float>(samples), B / static_cast<float>(samples)};
 }
 
 }  // namespace iron
