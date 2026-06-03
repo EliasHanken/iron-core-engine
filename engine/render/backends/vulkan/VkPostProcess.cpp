@@ -83,26 +83,17 @@ void main() { outId = pc.id; }
 )";
 
 // --- Outline pass shaders ---
-// Full-screen triangle (vertex = kFullscreenVert). Samples scene-color (binding 0)
-// and the R8_UINT mask id (binding 1). Edge-detects the mask with a 3x3 kernel
-// and composites the outline color over the scene.
+// Full-screen triangle (vertex = kFullscreenVert). Overlay: samples only the R8_UINT
+// mask id (binding 0), edge-detects it with a 3x3 kernel, and outputs the outline color
+// with alpha=edge so it alpha-blends over the Copy composite (which carries the scene +
+// bloom + SSAO + tonemap).
 const char* kOutlineFrag = R"(#version 450
-layout(location = 0) in vec2 vUV;
+layout(location = 0) in  vec2 vUV;
 layout(location = 0) out vec4 outColor;
-layout(set = 0, binding = 0) uniform sampler2D uScene;
-layout(set = 0, binding = 1) uniform usampler2D uMask;
-layout(push_constant) uniform Push {
-    vec4  color;
-    vec2  texel;
-    float width;
-    float exposure;
-} pc;
-vec3 aces(vec3 x) {
-    const float a = 2.51, b = 0.03, c = 2.43, d = 0.59, e = 0.14;
-    return clamp((x * (a * x + b)) / (x * (c * x + d) + e), 0.0, 1.0);
-}
+layout(set = 0, binding = 0) uniform usampler2D uMask;   // overlay: scene comes from the Copy base
+layout(push_constant) uniform Push { vec4 color; vec2 texel; float width; } pc;
+
 void main() {
-    vec3 scene = texture(uScene, vUV).rgb;
     uint here = texture(uMask, vUV).r;
     float edge = 0.0;
     for (int dx = -1; dx <= 1; ++dx)
@@ -112,7 +103,7 @@ void main() {
         uint n = texture(uMask, vUV + o).r;
         if (n != here) edge = 1.0;
     }
-    outColor = vec4(aces(mix(scene, pc.color.rgb, edge) * pc.exposure), 1.0);
+    outColor = vec4(pc.color.rgb, edge);   // alpha-blend over the composited scene
 }
 )";
 
@@ -656,29 +647,21 @@ bool VkPostProcess::resize(VkContext& ctx, VkExtent2D extent) {
     }
 
     // Re-write the outline descriptor set to point at the new views.
+    // Overlay: binding 0 = mask only (scene comes from the Copy base).
     {
-        VkDescriptorImageInfo imgInfos[2]{};
-        imgInfos[0].sampler     = sampler_;
-        imgInfos[0].imageView   = sceneColorView_;
-        imgInfos[0].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-        imgInfos[1].sampler     = maskSampler_;
-        imgInfos[1].imageView   = maskColorView_;
-        imgInfos[1].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        VkDescriptorImageInfo imgInfo{};
+        imgInfo.sampler     = maskSampler_;
+        imgInfo.imageView   = maskColorView_;
+        imgInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 
-        VkWriteDescriptorSet writes[2]{};
-        writes[0].sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-        writes[0].dstSet          = outlineDescSet_;
-        writes[0].dstBinding      = 0;
-        writes[0].descriptorType  = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-        writes[0].descriptorCount = 1;
-        writes[0].pImageInfo      = &imgInfos[0];
-        writes[1].sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-        writes[1].dstSet          = outlineDescSet_;
-        writes[1].dstBinding      = 1;
-        writes[1].descriptorType  = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-        writes[1].descriptorCount = 1;
-        writes[1].pImageInfo      = &imgInfos[1];
-        vkUpdateDescriptorSets(ctx.device(), 2, writes, 0, nullptr);
+        VkWriteDescriptorSet write{};
+        write.sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        write.dstSet          = outlineDescSet_;
+        write.dstBinding      = 0;
+        write.descriptorType  = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        write.descriptorCount = 1;
+        write.pImageInfo      = &imgInfo;
+        vkUpdateDescriptorSets(ctx.device(), 1, &write, 0, nullptr);
     }
 
     // Re-write glow descriptor sets to point at the new size-varying views.
@@ -2128,18 +2111,18 @@ bool VkPostProcess::createCopyPipeline(VkContext& ctx) {
     vkDestroyShaderModule(ctx.device(), fsm, nullptr);
     VK_CHECK(copyPipeResult);
 
-    // Descriptor pool: 7 sets total, 15 combined-image-sampler descriptors.
+    // Descriptor pool: 7 sets total, 14 combined-image-sampler descriptors.
     //   set 0: copy/composite — 3 samplers (scene color + bloom mip0 + SSAO)  (M47/M48)
     //   set 1: blit         — 1 sampler  (viewport color)
-    //   set 2: outline      — 2 samplers (scene color + mask)
+    //   set 2: outline      — 1 sampler  (mask)  (overlay: scene from Copy base)
     //   set 3: glowBlurH    — 1 sampler  (mask)
     //   set 4: glowBlurV    — 1 sampler  (scratch[0])
     //   set 5: glowComposite — 3 samplers (scene color + scratch[1] + mask)
     //   set 6: xray         — 4 samplers (scene color + mask id + mask depth + scene depth)
-    // Total: 7 sets, 15 combined-image-samplers.
+    // Total: 7 sets, 14 combined-image-samplers.
     VkDescriptorPoolSize poolSize{};
     poolSize.type            = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-    poolSize.descriptorCount = 15;
+    poolSize.descriptorCount = 14;
 
     VkDescriptorPoolCreateInfo dpInfo{};
     dpInfo.sType         = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
@@ -2499,21 +2482,18 @@ bool VkPostProcess::createOutlinePipeline(VkContext& ctx) {
         return false;
     }
 
-    // Descriptor set layout: binding 0 = sampler2D (scene color), binding 1 = usampler2D (mask id).
-    // Both are COMBINED_IMAGE_SAMPLER; the mask uses maskSampler_ (NEAREST) at runtime.
-    VkDescriptorSetLayoutBinding bindings[2]{};
+    // Descriptor set layout: binding 0 = usampler2D (mask id). Overlay — the scene
+    // comes from the Copy base, so no scene sampler. COMBINED_IMAGE_SAMPLER; the mask
+    // uses maskSampler_ (NEAREST) at runtime (integer texture cannot be linear-filtered).
+    VkDescriptorSetLayoutBinding bindings[1]{};
     bindings[0].binding         = 0;
     bindings[0].descriptorType  = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
     bindings[0].descriptorCount = 1;
     bindings[0].stageFlags      = VK_SHADER_STAGE_FRAGMENT_BIT;
-    bindings[1].binding         = 1;
-    bindings[1].descriptorType  = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-    bindings[1].descriptorCount = 1;
-    bindings[1].stageFlags      = VK_SHADER_STAGE_FRAGMENT_BIT;
 
     VkDescriptorSetLayoutCreateInfo dslInfo{};
     dslInfo.sType        = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-    dslInfo.bindingCount = 2;
+    dslInfo.bindingCount = 1;
     dslInfo.pBindings    = bindings;
     VK_CHECK(vkCreateDescriptorSetLayout(ctx.device(), &dslInfo, nullptr, &outlineSetLayout_));
 
@@ -2571,9 +2551,17 @@ bool VkPostProcess::createOutlinePipeline(VkContext& ctx) {
     ds.depthTestEnable  = VK_FALSE;
     ds.depthWriteEnable = VK_FALSE;
 
+    // Alpha-blend the outline color over the composited Copy base.
     VkPipelineColorBlendAttachmentState att{};
-    att.colorWriteMask = 0xF;
-    att.blendEnable    = VK_FALSE;
+    att.blendEnable         = VK_TRUE;
+    att.srcColorBlendFactor = VK_BLEND_FACTOR_SRC_ALPHA;
+    att.dstColorBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
+    att.colorBlendOp        = VK_BLEND_OP_ADD;
+    att.srcAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
+    att.dstAlphaBlendFactor = VK_BLEND_FACTOR_ZERO;
+    att.alphaBlendOp        = VK_BLEND_OP_ADD;
+    att.colorWriteMask      = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT |
+                              VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
 
     VkPipelineColorBlendStateCreateInfo cb{};
     cb.sType           = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO;
@@ -2618,30 +2606,21 @@ bool VkPostProcess::createOutlinePipeline(VkContext& ctx) {
     dsAlloc.pSetLayouts        = &outlineSetLayout_;
     VK_CHECK(vkAllocateDescriptorSets(ctx.device(), &dsAlloc, &outlineDescSet_));
 
-    // Write the outline descriptor set: binding 0 = scene color (linear sampler),
-    // binding 1 = mask id (NEAREST sampler — integer texture cannot be linear-filtered).
-    VkDescriptorImageInfo imgInfos[2]{};
-    imgInfos[0].sampler     = sampler_;
-    imgInfos[0].imageView   = sceneColorView_;
-    imgInfos[0].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-    imgInfos[1].sampler     = maskSampler_;
-    imgInfos[1].imageView   = maskColorView_;
-    imgInfos[1].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    // Write the outline descriptor set: binding 0 = mask id (NEAREST sampler —
+    // integer texture cannot be linear-filtered). Overlay: no scene sampler.
+    VkDescriptorImageInfo imgInfo{};
+    imgInfo.sampler     = maskSampler_;
+    imgInfo.imageView   = maskColorView_;
+    imgInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 
-    VkWriteDescriptorSet writes[2]{};
-    writes[0].sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-    writes[0].dstSet          = outlineDescSet_;
-    writes[0].dstBinding      = 0;
-    writes[0].descriptorType  = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-    writes[0].descriptorCount = 1;
-    writes[0].pImageInfo      = &imgInfos[0];
-    writes[1].sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-    writes[1].dstSet          = outlineDescSet_;
-    writes[1].dstBinding      = 1;
-    writes[1].descriptorType  = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-    writes[1].descriptorCount = 1;
-    writes[1].pImageInfo      = &imgInfos[1];
-    vkUpdateDescriptorSets(ctx.device(), 2, writes, 0, nullptr);
+    VkWriteDescriptorSet write{};
+    write.sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    write.dstSet          = outlineDescSet_;
+    write.dstBinding      = 0;
+    write.descriptorType  = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    write.descriptorCount = 1;
+    write.pImageInfo      = &imgInfo;
+    vkUpdateDescriptorSets(ctx.device(), 1, &write, 0, nullptr);
 
     return true;
 }
@@ -3037,7 +3016,6 @@ void VkPostProcess::runChain(VkCommandBuffer cb,
                 }
                 pc.texel[0] = (swapExtent.width  > 0) ? 1.0f / static_cast<float>(swapExtent.width)  : 0.0f;
                 pc.texel[1] = (swapExtent.height > 0) ? 1.0f / static_cast<float>(swapExtent.height) : 0.0f;
-                pc.exposure = exposure;
 
                 vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, outlinePipeline_);
                 vkCmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_GRAPHICS,

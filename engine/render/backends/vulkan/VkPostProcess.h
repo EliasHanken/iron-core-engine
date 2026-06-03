@@ -118,7 +118,7 @@ public:
         float color[4];   // rgb outline color, a unused
         float texel[2];   // 1/width, 1/height (of the mask/screen)
         float width;      // outline thickness in pixels
-        float exposure;   // M44: tonemap exposure (was _pad)
+        float _pad;       // overlay: no exposure (Copy base already tonemapped)
     };
 
     // Push constants for the glow blur pipelines (H and V — direction is
