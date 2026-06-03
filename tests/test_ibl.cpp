@@ -8,6 +8,11 @@
 #include <cmath>
 #include <cstdio>
 
+#ifdef IRON_RENDER_BACKEND_VULKAN
+#include "render/backends/vulkan/VkShader.h"
+#include "render/backends/vulkan/VkIblBaker.h"
+#endif
+
 using iron::Vec3;
 using iron::cubeFaceDirection;
 using iron::directionToEquirectUv;
@@ -64,6 +69,16 @@ int main() {
         auto uvNegZ = directionToEquirectUv(Vec3{0.0f, 0.0f, -1.0f});
         assert(approx(uvNegZ.x, 0.25f));
     }
+
+#ifdef IRON_RENDER_BACKEND_VULKAN
+    // 6. The embedded equirect->cube compute shader compiles to SPIR-V.
+    {
+        const auto spv = iron::compileGlsl(
+            VK_SHADER_STAGE_COMPUTE_BIT, iron::kEquirectToCubeComputeSrc());
+        assert(!spv.empty());
+        assert(spv.front() == 0x07230203u);  // SPIR-V magic
+    }
+#endif
 
     std::puts("test_ibl: OK");
     return 0;
