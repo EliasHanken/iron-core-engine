@@ -19,13 +19,13 @@ public:
               VkDescriptorSetLayout setLayout);
     void destroy(VkContext& ctx);
 
-    VkPipeline       pipeline()       const { return pipeline_; }
+    ::VkPipeline     pipeline()       const { return pipeline_; }
     VkPipelineLayout pipelineLayout() const { return layout_; }
 
 private:
     VkShaderModule   module_   = VK_NULL_HANDLE;
     VkPipelineLayout layout_   = VK_NULL_HANDLE;
-    VkPipeline       pipeline_ = VK_NULL_HANDLE;
+    ::VkPipeline     pipeline_ = VK_NULL_HANDLE;
 };
 
 }  // namespace iron

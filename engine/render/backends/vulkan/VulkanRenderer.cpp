@@ -23,6 +23,7 @@ VulkanRenderer::~VulkanRenderer() {
         meshes_.destroyAll(context_);
         skinnedMeshes_.destroyAll(context_);  // M23
         textures_.destroyAll(context_);
+        iblBaker_.destroy(context_);
         cubemaps_.destroyAll(context_);
         shaders_.destroyAll(context_);
         hud_.destroy(context_);
@@ -73,6 +74,10 @@ bool VulkanRenderer::init(Window& window) {
     }
     if (!cubemaps_.init(context_)) {
         Log::error("VulkanRenderer: VkCubemapStore init failed");
+        return false;
+    }
+    if (!iblBaker_.init(context_)) {
+        Log::error("VulkanRenderer: IBL baker init failed");
         return false;
     }
     // M36 — offscreen scene-color target + copy pipeline. Must be init before
@@ -238,6 +243,9 @@ CubemapHandle VulkanRenderer::createCubemap(int width, int height,
 
 void VulkanRenderer::setSkybox(CubemapHandle sky) {
     pendingSkybox_ = sky;
+}
+CubemapHandle VulkanRenderer::loadHdrSkybox(const std::string& hdrPath, int faceSize) {
+    return iblBaker_.equirectFileToCubemap(context_, cubemaps_, hdrPath, faceSize);
 }
 void VulkanRenderer::setShadowBounds(Vec3 center, float radius) {
     pendingShadowCenter_ = center;
