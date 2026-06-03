@@ -1,0 +1,5 @@
+Source: https://github.com/KhronosGroup/glTF-Sample-Assets/tree/main/Models/Fox
+Author: PixelMannen (model); tomkranis (rigging & animation); @AsoboStudio and @scurest (conversion to glTF)
+License: CC0 1.0 Universal (https://creativecommons.org/publicdomain/zero/1.0/) — (c) 2014 PixelMannen, model
+License: CC BY 4.0 (https://creativecommons.org/licenses/by/4.0/) — (c) 2014 tomkranis, rigging & animation
+License: CC BY 4.0 (https://creativecommons.org/licenses/by/4.0/) — (c) 2017 @AsoboStudio and @scurest, conversion to glTF
