@@ -231,6 +231,7 @@ private:
     VkSkybox       skybox_;
     CubemapHandle  pendingSkybox_ = kInvalidHandle;
     CubemapHandle  pendingIrradiance_ = kInvalidHandle;  // M46b — baked from the skybox
+    CubemapHandle  pendingPrefiltered_ = kInvalidHandle;  // M46c — baked from the skybox
     CubemapHandle  lastBakedSkybox_   = kInvalidHandle;  // M46b — bake-once guard
 
     // M36 — offscreen scene-color target + post-process composite pipeline.

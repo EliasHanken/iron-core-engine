@@ -80,6 +80,10 @@ bool VulkanRenderer::init(Window& window) {
         Log::error("VulkanRenderer: IBL baker init failed");
         return false;
     }
+    if (!iblBaker_.initBrdfLut(context_)) {
+        Log::error("VulkanRenderer: BRDF LUT bake failed");
+        return false;
+    }
     // M36 — offscreen scene-color target + copy pipeline. Must be init before
     // skybox_ because scenePass() now returns its render pass, and before
     // debugLines_/hud_ which build against viewportPass().
@@ -249,6 +253,10 @@ void VulkanRenderer::setSkybox(CubemapHandle sky) {
     if (sky != lastBakedSkybox_) {
         pendingIrradiance_ = cubemaps_.has(sky)
             ? iblBaker_.bakeIrradiance(context_, cubemaps_, sky, /*faceSize=*/32)
+            : kInvalidHandle;
+        // M46c — bake the prefiltered specular cube (per-mip GGX) for split-sum IBL.
+        pendingPrefiltered_ = cubemaps_.has(sky)
+            ? iblBaker_.bakePrefiltered(context_, cubemaps_, sky, /*faceSize=*/128, /*mipLevels=*/5)
             : kInvalidHandle;
         lastBakedSkybox_ = sky;
     }
@@ -659,7 +667,7 @@ void VulkanRenderer::recordSceneDraw(VkCommandBuffer cb, const DrawCall& call) {
         : cubemaps_.blackCubemap();
     const auto& skyTex = cubemaps_.get(skyHandle);
 
-    VkDescriptorImageInfo imgInfos[9]{};
+    VkDescriptorImageInfo imgInfos[11]{};
     imgInfos[0].sampler     = diffuse.sampler;
     imgInfos[0].imageView   = diffuse.view;
     imgInfos[0].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
@@ -695,8 +703,19 @@ void VulkanRenderer::recordSceneDraw(VkCommandBuffer cb, const DrawCall& call) {
     imgInfos[8].sampler     = irrTex.sampler;
     imgInfos[8].imageView   = irrTex.view;
     imgInfos[8].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    // M46c — prefiltered specular (binding 11).
+    const CubemapHandle prefiltHandle = cubemaps_.has(pendingPrefiltered_)
+        ? pendingPrefiltered_ : cubemaps_.blackCubemap();
+    const auto& prefiltTex = cubemaps_.get(prefiltHandle);
+    imgInfos[9].sampler     = prefiltTex.sampler;
+    imgInfos[9].imageView   = prefiltTex.view;
+    imgInfos[9].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    // M46c — BRDF LUT (binding 12).
+    imgInfos[10].sampler     = iblBaker_.brdfLutSampler();
+    imgInfos[10].imageView   = iblBaker_.brdfLutView();
+    imgInfos[10].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 
-    VkWriteDescriptorSet writes[10]{};
+    VkWriteDescriptorSet writes[12]{};
     writes[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
     writes[0].dstSet = set;
     writes[0].dstBinding = 0;
@@ -718,7 +737,21 @@ void VulkanRenderer::recordSceneDraw(VkCommandBuffer cb, const DrawCall& call) {
     writes[9].descriptorType  = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
     writes[9].descriptorCount = 1;
     writes[9].pImageInfo      = &imgInfos[8];
-    vkUpdateDescriptorSets(context_.device(), 10, writes, 0, nullptr);
+    // M46c — binding 11: prefiltered specular cubemap.
+    writes[10].sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    writes[10].dstSet          = set;
+    writes[10].dstBinding      = 11;
+    writes[10].descriptorType  = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    writes[10].descriptorCount = 1;
+    writes[10].pImageInfo      = &imgInfos[9];
+    // M46c — binding 12: BRDF integration LUT.
+    writes[11].sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    writes[11].dstSet          = set;
+    writes[11].dstBinding      = 12;
+    writes[11].descriptorType  = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    writes[11].descriptorCount = 1;
+    writes[11].pImageInfo      = &imgInfos[10];
+    vkUpdateDescriptorSets(context_.device(), 12, writes, 0, nullptr);
 
     vkCmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_GRAPHICS,
                             sh.pipelineLayout, 0, 1, &set, 0, nullptr);
@@ -851,7 +884,7 @@ void VulkanRenderer::recordSkinnedDraw(VkCommandBuffer cb,
         : cubemaps_.blackCubemap();
     const auto& skyTex = cubemaps_.get(skyHandle);
 
-    VkDescriptorImageInfo imgInfos[9]{};
+    VkDescriptorImageInfo imgInfos[11]{};
     imgInfos[0].sampler     = diffuse.sampler;
     imgInfos[0].imageView   = diffuse.view;
     imgInfos[0].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
@@ -885,13 +918,24 @@ void VulkanRenderer::recordSkinnedDraw(VkCommandBuffer cb,
     imgInfos[8].sampler     = irrTex.sampler;
     imgInfos[8].imageView   = irrTex.view;
     imgInfos[8].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    // M46c — prefiltered specular (binding 11).
+    const CubemapHandle prefiltHandle = cubemaps_.has(pendingPrefiltered_)
+        ? pendingPrefiltered_ : cubemaps_.blackCubemap();
+    const auto& prefiltTex = cubemaps_.get(prefiltHandle);
+    imgInfos[9].sampler     = prefiltTex.sampler;
+    imgInfos[9].imageView   = prefiltTex.view;
+    imgInfos[9].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    // M46c — BRDF LUT (binding 12).
+    imgInfos[10].sampler     = iblBaker_.brdfLutSampler();
+    imgInfos[10].imageView   = iblBaker_.brdfLutView();
+    imgInfos[10].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 
     VkDescriptorBufferInfo bonesInfo{};
     bonesInfo.buffer = f.uboBuffer;
     bonesInfo.offset = bonesOffset;
     bonesInfo.range  = sizeof(Mat4) * kMaxBonesPerSkinnedMesh;
 
-    VkWriteDescriptorSet writes[11]{};
+    VkWriteDescriptorSet writes[13]{};
     writes[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
     writes[0].dstSet = set;
     writes[0].dstBinding = 0;
@@ -920,7 +964,21 @@ void VulkanRenderer::recordSkinnedDraw(VkCommandBuffer cb,
     writes[10].descriptorType  = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
     writes[10].descriptorCount = 1;
     writes[10].pImageInfo      = &imgInfos[8];
-    vkUpdateDescriptorSets(context_.device(), 11, writes, 0, nullptr);
+    // M46c — binding 11: prefiltered specular cubemap.
+    writes[11].sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    writes[11].dstSet          = set;
+    writes[11].dstBinding      = 11;
+    writes[11].descriptorType  = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    writes[11].descriptorCount = 1;
+    writes[11].pImageInfo      = &imgInfos[9];
+    // M46c — binding 12: BRDF integration LUT.
+    writes[12].sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    writes[12].dstSet          = set;
+    writes[12].dstBinding      = 12;
+    writes[12].descriptorType  = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    writes[12].descriptorCount = 1;
+    writes[12].pImageInfo      = &imgInfos[10];
+    vkUpdateDescriptorSets(context_.device(), 13, writes, 0, nullptr);
 
     vkCmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_GRAPHICS,
                             sh.pipelineLayout, 0, 1, &set, 0, nullptr);
