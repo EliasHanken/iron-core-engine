@@ -180,6 +180,11 @@ public:
     void runBloomOffscreenPasses(VkCommandBuffer cb, float threshold, float knee,
                                  float scatter);
 
+    // Records the SSAO pass + 4x4 blur into ssaoBlurView_. Call BEFORE
+    // beginViewportPass(), like the bloom pre-pass. The SSAO UBO must already be
+    // updated for this frame (the renderer does this before calling).
+    void runSsaoPass(VkCommandBuffer cb);
+
 private:
     VkContext* ctx_ = nullptr;
     VkSampler  sampler_     = VK_NULL_HANDLE;  // linear-repeat (from VkTextureStore)

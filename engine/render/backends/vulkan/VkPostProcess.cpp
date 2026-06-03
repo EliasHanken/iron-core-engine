@@ -3272,6 +3272,60 @@ void VkPostProcess::runBloomOffscreenPasses(VkCommandBuffer cb, float threshold,
     }
 }
 
+void VkPostProcess::runSsaoPass(VkCommandBuffer cb) {
+    // Degenerate extent (targets not created) — nothing to record.
+    if (ssaoExtent_.width == 0 || ssaoExtent_.height == 0) return;
+
+    // Local helper: record one full-screen SSAO/blur pass into a framebuffer.
+    // Mirrors recordBloomPass (begin pass / dynamic viewport+scissor / bind
+    // pipeline+set / push constants / draw fullscreen triangle / end pass).
+    // Both passes share ssaoPass_ (one render pass, two framebuffers); its
+    // subpass dependencies serialize the SSAO write -> blur sample of ssaoView_.
+    auto recordSsaoPass = [&](VkFramebuffer dstFb, ::VkPipeline pipeline,
+                              VkPipelineLayout layout, VkDescriptorSet srcSet,
+                              const void* pushData, std::uint32_t pushSize) {
+        VkRenderPassBeginInfo rpBegin{};
+        rpBegin.sType             = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
+        rpBegin.renderPass        = ssaoPass_;
+        rpBegin.framebuffer       = dstFb;
+        rpBegin.renderArea.offset = {0, 0};
+        rpBegin.renderArea.extent = ssaoExtent_;
+        rpBegin.clearValueCount   = 0;     // loadOp=DONT_CARE — no clear
+        rpBegin.pClearValues      = nullptr;
+        vkCmdBeginRenderPass(cb, &rpBegin, VK_SUBPASS_CONTENTS_INLINE);
+
+        VkViewport vp{};
+        vp.x = 0.0f; vp.y = 0.0f;
+        vp.width    = static_cast<float>(ssaoExtent_.width);
+        vp.height   = static_cast<float>(ssaoExtent_.height);
+        vp.minDepth = 0.0f; vp.maxDepth = 1.0f;
+        vkCmdSetViewport(cb, 0, 1, &vp);
+        VkRect2D scissor{{0, 0}, ssaoExtent_};
+        vkCmdSetScissor(cb, 0, 1, &scissor);
+
+        vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
+        vkCmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                                layout, 0, 1, &srcSet, 0, nullptr);
+        if (pushData) {
+            vkCmdPushConstants(cb, layout, VK_SHADER_STAGE_FRAGMENT_BIT,
+                               0, pushSize, pushData);
+        }
+        vkCmdDraw(cb, 3, 1, 0, 0);
+        vkCmdEndRenderPass(cb);
+    };
+
+    // Pass 1: SSAO (scene depth + noise + UBO -> ssaoView_). No push constants.
+    recordSsaoPass(ssaoFb_, ssaoPipeline_, ssaoLayout_, ssaoSet_, nullptr, 0);
+
+    // Pass 2: 4x4 box blur (ssaoView_ -> ssaoBlurView_). Texel = 1/extent.
+    SsaoBlurPush push{
+        {1.0f / static_cast<float>(ssaoExtent_.width),
+         1.0f / static_cast<float>(ssaoExtent_.height)}
+    };
+    recordSsaoPass(ssaoBlurFb_, ssaoBlurPipeline_, ssaoBlurLayout_,
+                   ssaoBlurSet_, &push, sizeof(push));
+}
+
 bool VkPostProcess::createXRayPipeline(VkContext& ctx) {
     // Compile shaders (reuse kFullscreenVert from the copy pipeline).
     auto vspv = compileGlsl(VK_SHADER_STAGE_VERTEX_BIT,   kFullscreenVert);
