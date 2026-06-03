@@ -16,7 +16,8 @@ class VkComputePipeline {
 public:
     bool init(VkContext& ctx,
               const std::vector<std::uint32_t>& spirv,
-              VkDescriptorSetLayout setLayout);
+              VkDescriptorSetLayout setLayout,
+              std::uint32_t pushConstantBytes = 0);
     void destroy(VkContext& ctx);
 
     ::VkPipeline     pipeline()       const { return pipeline_; }
