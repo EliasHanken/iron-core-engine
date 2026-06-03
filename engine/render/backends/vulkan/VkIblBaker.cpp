@@ -11,6 +11,7 @@
 
 #include <stb_image.h>
 
+#include <algorithm>
 #include <cstring>
 #include <vector>
 
@@ -183,6 +184,75 @@ void main() {
 )";
 }
 
+const char* kPrefilteredSpecularComputeSrc() {
+    return R"(#version 450
+layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
+layout(binding = 0) uniform samplerCube uEnv;
+layout(binding = 1, rgba16f) uniform writeonly image2DArray uOut;
+layout(push_constant) uniform PC { float roughness; } pc;
+
+const float PI = 3.14159265358979323846;
+const uint  SAMPLES = 256u;
+const float MAX_RADIANCE = 50.0;
+
+vec3 faceDir(int face, float u, float v) {
+    vec3 d;
+    if      (face == 0) d = vec3( 1.0, -v,   -u);
+    else if (face == 1) d = vec3(-1.0, -v,    u);
+    else if (face == 2) d = vec3( u,    1.0,  v);
+    else if (face == 3) d = vec3( u,   -1.0, -v);
+    else if (face == 4) d = vec3( u,   -v,    1.0);
+    else                d = vec3(-u,   -v,   -1.0);
+    return normalize(d);
+}
+float radicalInverseVdC(uint bits) {
+    bits = (bits << 16u) | (bits >> 16u);
+    bits = ((bits & 0x55555555u) << 1u) | ((bits & 0xAAAAAAAAu) >> 1u);
+    bits = ((bits & 0x33333333u) << 2u) | ((bits & 0xCCCCCCCCu) >> 2u);
+    bits = ((bits & 0x0F0F0F0Fu) << 4u) | ((bits & 0xF0F0F0F0u) >> 4u);
+    bits = ((bits & 0x00FF00FFu) << 8u) | ((bits & 0xFF00FF00u) >> 8u);
+    return float(bits) * 2.3283064365386963e-10;
+}
+vec2 hammersley(uint i, uint n) { return vec2(float(i)/float(n), radicalInverseVdC(i)); }
+vec3 importanceSampleGGX(vec2 xi, vec3 N, float roughness) {
+    float a = roughness * roughness;
+    float phi = 2.0 * PI * xi.x;
+    float cosT = sqrt((1.0 - xi.y) / (1.0 + (a*a - 1.0) * xi.y));
+    float sinT = sqrt(1.0 - cosT * cosT);
+    vec3 H = vec3(cos(phi)*sinT, sin(phi)*sinT, cosT);
+    vec3 up = abs(N.z) < 0.999 ? vec3(0,0,1) : vec3(1,0,0);
+    vec3 tangent = normalize(cross(up, N));
+    vec3 bitangent = cross(N, tangent);
+    return normalize(tangent*H.x + bitangent*H.y + N*H.z);
+}
+void main() {
+    ivec3 gid = ivec3(gl_GlobalInvocationID);
+    ivec2 size = imageSize(uOut).xy;
+    if (gid.x >= size.x || gid.y >= size.y) return;
+    float u = 2.0*(float(gid.x)+0.5)/float(size.x) - 1.0;
+    float v = 2.0*(float(gid.y)+0.5)/float(size.y) - 1.0;
+    vec3 N = faceDir(gid.z, u, v);
+    vec3 R = N; vec3 V = N;  // split-sum assumption: V = R = N
+    float rough = pc.roughness;
+    vec3 prefiltered = vec3(0.0);
+    float totalW = 0.0;
+    for (uint i = 0u; i < SAMPLES; ++i) {
+        vec2 xi = hammersley(i, SAMPLES);
+        vec3 H = importanceSampleGGX(xi, N, rough);
+        vec3 L = normalize(2.0 * dot(V, H) * H - V);
+        float nDotL = max(dot(N, L), 0.0);
+        if (nDotL > 0.0) {
+            vec3 c = min(textureLod(uEnv, L, 0.0).rgb, vec3(MAX_RADIANCE));
+            prefiltered += c * nDotL;
+            totalW += nDotL;
+        }
+    }
+    prefiltered = totalW > 0.0 ? prefiltered / totalW : min(textureLod(uEnv, N, 0.0).rgb, vec3(MAX_RADIANCE));
+    imageStore(uOut, gid, vec4(prefiltered, 1.0));
+}
+)";
+}
+
 bool VkIblBaker::init(VkContext& ctx) {
     // Descriptor layout: equirect sampler (0) + cube storage image (1).
     VkDescriptorSetLayoutBinding b[2]{};
@@ -247,6 +317,36 @@ bool VkIblBaker::init(VkContext& ctx) {
         }
         if (!irradiancePipeline_.init(ctx, irrSpirv, irradianceSetLayout_)) return false;
     }
+
+    // M46c — prefiltered specular pipeline (env samplerCube -> per-mip GGX cube).
+    // Same 2-binding layout as irradiance, plus a float push constant (roughness).
+    {
+        VkDescriptorSetLayoutBinding pfB[2]{};
+        pfB[0].binding         = 0;
+        pfB[0].descriptorType  = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        pfB[0].descriptorCount = 1;
+        pfB[0].stageFlags      = VK_SHADER_STAGE_COMPUTE_BIT;
+        pfB[1].binding         = 1;
+        pfB[1].descriptorType  = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+        pfB[1].descriptorCount = 1;
+        pfB[1].stageFlags      = VK_SHADER_STAGE_COMPUTE_BIT;
+
+        VkDescriptorSetLayoutCreateInfo pfSlInfo{};
+        pfSlInfo.sType        = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+        pfSlInfo.bindingCount = 2;
+        pfSlInfo.pBindings    = pfB;
+        VK_CHECK(vkCreateDescriptorSetLayout(ctx.device(), &pfSlInfo, nullptr,
+                                             &prefilterSetLayout_));
+
+        auto pfSpirv = compileGlsl(VK_SHADER_STAGE_COMPUTE_BIT,
+                                   kPrefilteredSpecularComputeSrc());
+        if (pfSpirv.empty()) {
+            Log::error("VkIblBaker: prefilter compute compile failed");
+            return false;
+        }
+        if (!prefilterPipeline_.init(ctx, pfSpirv, prefilterSetLayout_,
+                                     /*pushConstantBytes=*/sizeof(float))) return false;
+    }
     return true;
 }
 
@@ -257,6 +357,9 @@ void VkIblBaker::destroy(VkContext& ctx) {
     if (brdfLutView_)    { vkDestroyImageView(ctx.device(), brdfLutView_, nullptr); brdfLutView_=VK_NULL_HANDLE; }
     if (brdfLutStorage_) { vkDestroyImageView(ctx.device(), brdfLutStorage_, nullptr); brdfLutStorage_=VK_NULL_HANDLE; }
     if (brdfLutImage_)   { vmaDestroyImage(ctx.allocator(), brdfLutImage_, brdfLutAlloc_); brdfLutImage_=VK_NULL_HANDLE; }
+
+    prefilterPipeline_.destroy(ctx);
+    if (prefilterSetLayout_) { vkDestroyDescriptorSetLayout(ctx.device(), prefilterSetLayout_, nullptr); prefilterSetLayout_=VK_NULL_HANDLE; }
 
     irradiancePipeline_.destroy(ctx);
     if (irradianceSetLayout_) {
@@ -598,6 +701,145 @@ CubemapHandle VkIblBaker::bakeIrradiance(VkContext& ctx, VkCubemapStore& store,
 
     barrier(out.image, VK_IMAGE_LAYOUT_GENERAL,
             VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+            VK_ACCESS_SHADER_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT,
+            VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT);
+
+    VK_CHECK(vkEndCommandBuffer(cb));
+    VkSubmitInfo submit{};
+    submit.sType              = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+    submit.commandBufferCount = 1;
+    submit.pCommandBuffers    = &cb;
+    VK_CHECK(vkQueueSubmit(ctx.graphicsQueue(), 1, &submit, VK_NULL_HANDLE));
+    VK_CHECK(vkQueueWaitIdle(ctx.graphicsQueue()));
+
+    vkDestroyDescriptorPool(ctx.device(), dpool, nullptr);
+    vkDestroyCommandPool(ctx.device(), pool, nullptr);
+    return outHandle;
+}
+
+CubemapHandle VkIblBaker::bakePrefiltered(VkContext& ctx, VkCubemapStore& store,
+                                          CubemapHandle envCube, int faceSize,
+                                          int mipLevels) {
+    if (!store.has(envCube)) return kInvalidHandle;
+    if (mipLevels < 1) mipLevels = 1;
+
+    // Capture env view/sampler before createHdr mutates the store's map.
+    const VkCubemapResource& env = store.get(envCube);
+    const VkImageView envView    = env.view;
+    const VkSampler   envSampler = env.sampler;
+
+    const CubemapHandle outHandle = store.createHdr(ctx, faceSize, mipLevels);
+    if (outHandle == kInvalidHandle) return kInvalidHandle;
+    const VkCubemapResource& out = store.get(outHandle);
+
+    VkCommandPool pool = VK_NULL_HANDLE;
+    VkCommandPoolCreateInfo pInfo{};
+    pInfo.sType            = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
+    pInfo.queueFamilyIndex = ctx.graphicsFamily();
+    pInfo.flags            = VK_COMMAND_POOL_CREATE_TRANSIENT_BIT;
+    VK_CHECK(vkCreateCommandPool(ctx.device(), &pInfo, nullptr, &pool));
+
+    VkCommandBuffer cb = VK_NULL_HANDLE;
+    VkCommandBufferAllocateInfo cbInfo{};
+    cbInfo.sType              = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
+    cbInfo.commandPool        = pool;
+    cbInfo.level              = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+    cbInfo.commandBufferCount = 1;
+    VK_CHECK(vkAllocateCommandBuffers(ctx.device(), &cbInfo, &cb));
+
+    VkCommandBufferBeginInfo begin{};
+    begin.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+    begin.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+    VK_CHECK(vkBeginCommandBuffer(cb, &begin));
+
+    // Barrier covers ALL mips (levelCount = mipLevels) and all 6 layers.
+    auto barrier = [&](VkImageLayout oldL, VkImageLayout newL,
+                       VkAccessFlags srcA, VkAccessFlags dstA,
+                       VkPipelineStageFlags srcS, VkPipelineStageFlags dstS) {
+        VkImageMemoryBarrier mb{};
+        mb.sType               = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+        mb.oldLayout           = oldL;
+        mb.newLayout           = newL;
+        mb.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        mb.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        mb.image               = out.image;
+        mb.subresourceRange    = {VK_IMAGE_ASPECT_COLOR_BIT, 0,
+                                  static_cast<std::uint32_t>(mipLevels), 0, 6};
+        mb.srcAccessMask       = srcA;
+        mb.dstAccessMask       = dstA;
+        vkCmdPipelineBarrier(cb, srcS, dstS, 0, 0, nullptr, 0, nullptr, 1, &mb);
+    };
+
+    barrier(VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL,
+            0, VK_ACCESS_SHADER_WRITE_BIT,
+            VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
+
+    // One descriptor pool sized for `mipLevels` sets (one per mip).
+    VkDescriptorPoolSize sizes[2]{};
+    sizes[0].type            = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    sizes[0].descriptorCount = static_cast<std::uint32_t>(mipLevels);
+    sizes[1].type            = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+    sizes[1].descriptorCount = static_cast<std::uint32_t>(mipLevels);
+    VkDescriptorPoolCreateInfo dpInfo{};
+    dpInfo.sType         = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
+    dpInfo.maxSets       = static_cast<std::uint32_t>(mipLevels);
+    dpInfo.poolSizeCount = 2;
+    dpInfo.pPoolSizes    = sizes;
+    VkDescriptorPool dpool = VK_NULL_HANDLE;
+    VK_CHECK(vkCreateDescriptorPool(ctx.device(), &dpInfo, nullptr, &dpool));
+
+    vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_COMPUTE, prefilterPipeline_.pipeline());
+
+    // Per-mip: allocate a set bound to that mip's storage view + env, push the
+    // roughness for the mip, dispatch over that mip's (smaller) face size.
+    // No inter-mip barrier needed: each dispatch writes a distinct mip
+    // subresource (storageViews[m]) and only reads the (read-only) env cube.
+    std::vector<VkDescriptorImageInfo> envInfos(mipLevels);
+    std::vector<VkDescriptorImageInfo> outInfos(mipLevels);
+    for (int m = 0; m < mipLevels; ++m) {
+        const int mipSize = std::max(1, faceSize >> m);
+        const float roughness =
+            mipLevels > 1 ? static_cast<float>(m) / static_cast<float>(mipLevels - 1)
+                          : 0.0f;
+
+        VkDescriptorSetAllocateInfo dsInfo{};
+        dsInfo.sType              = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+        dsInfo.descriptorPool     = dpool;
+        dsInfo.descriptorSetCount = 1;
+        dsInfo.pSetLayouts        = &prefilterSetLayout_;
+        VkDescriptorSet set = VK_NULL_HANDLE;
+        VK_CHECK(vkAllocateDescriptorSets(ctx.device(), &dsInfo, &set));
+
+        envInfos[m].sampler     = envSampler;
+        envInfos[m].imageView   = envView;
+        envInfos[m].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        outInfos[m].imageView   = out.storageViews[m];
+        outInfos[m].imageLayout = VK_IMAGE_LAYOUT_GENERAL;
+
+        VkWriteDescriptorSet writes[2]{};
+        writes[0].sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        writes[0].dstSet          = set;
+        writes[0].dstBinding      = 0;
+        writes[0].descriptorType  = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        writes[0].descriptorCount = 1;
+        writes[0].pImageInfo      = &envInfos[m];
+        writes[1].sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        writes[1].dstSet          = set;
+        writes[1].dstBinding      = 1;
+        writes[1].descriptorType  = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+        writes[1].descriptorCount = 1;
+        writes[1].pImageInfo      = &outInfos[m];
+        vkUpdateDescriptorSets(ctx.device(), 2, writes, 0, nullptr);
+
+        vkCmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_COMPUTE,
+                                prefilterPipeline_.pipelineLayout(), 0, 1, &set, 0, nullptr);
+        vkCmdPushConstants(cb, prefilterPipeline_.pipelineLayout(),
+                           VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(float), &roughness);
+        const std::uint32_t groups = (static_cast<std::uint32_t>(mipSize) + 7u) / 8u;
+        vkCmdDispatch(cb, groups, groups, 6);
+    }
+
+    barrier(VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
             VK_ACCESS_SHADER_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT,
             VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT);
 

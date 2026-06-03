@@ -29,6 +29,10 @@ const char* kIrradianceConvolveComputeSrc();
 // Exposed for a compile-check unit test.
 const char* kBrdfIntegrationComputeSrc();
 
+// Returns the embedded prefiltered-specular (GGX importance sample) compute
+// shader source. Exposed for a compile-check unit test.
+const char* kPrefilteredSpecularComputeSrc();
+
 // Owns the equirect->cube compute pipeline and the .hdr load path. This is
 // the shared IBL bake foundation; M46b/c add more compute passes alongside it.
 class VkIblBaker {
@@ -48,6 +52,10 @@ public:
     CubemapHandle bakeIrradiance(VkContext& ctx, VkCubemapStore& store,
                                  CubemapHandle envCube, int faceSize);
 
+    // Prefilters env specular into a multi-mip RGBA16F cube (roughness = mip/(mips-1)).
+    CubemapHandle bakePrefiltered(VkContext& ctx, VkCubemapStore& store,
+                                  CubemapHandle envCube, int faceSize, int mipLevels);
+
     // Bakes the scene-independent split-sum BRDF LUT (512x512 RG16F) once.
     bool initBrdfLut(VkContext& ctx);
     VkImageView brdfLutView()    const { return brdfLutView_; }
@@ -60,6 +68,9 @@ private:
 
     VkDescriptorSetLayout irradianceSetLayout_ = VK_NULL_HANDLE;
     VkComputePipeline     irradiancePipeline_;
+
+    VkDescriptorSetLayout prefilterSetLayout_ = VK_NULL_HANDLE;
+    VkComputePipeline     prefilterPipeline_;
 
     VkDescriptorSetLayout brdfSetLayout_  = VK_NULL_HANDLE;
     VkComputePipeline     brdfPipeline_;

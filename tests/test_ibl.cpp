@@ -108,6 +108,14 @@ int main() {
         assert(!spv.empty());
         assert(spv.front() == 0x07230203u);  // SPIR-V magic
     }
+
+    // 10. Prefiltered specular shader compiles (incl. the push_constant block).
+    {
+        const auto spv = iron::compileGlsl(
+            VK_SHADER_STAGE_COMPUTE_BIT, iron::kPrefilteredSpecularComputeSrc());
+        assert(!spv.empty());
+        assert(spv.front() == 0x07230203u);  // SPIR-V magic
+    }
 #endif
 
     // (BRDF LUT) Split-sum scale/bias endpoints. At NdotV=1, roughness=0 the
