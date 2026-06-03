@@ -1173,6 +1173,12 @@ void VulkanRenderer::endFrame() {
         postProcess_.runChainOffscreenPasses(cb, passes, effects_, swapchain_.extent());
     }
 
+    // --- M47: bloom down/up mip-chain pre-pass. Records its own render passes,
+    // so it must run OUTSIDE the viewport pass (like glow above). Runs every
+    // frame; intensity controls visibility in the composite. ---
+    postProcess_.runBloomOffscreenPasses(cb, pendingBloomThreshold_,
+                                         pendingBloomKnee_, pendingBloomScatter_);
+
     // --- M43a Pass 4: viewport pass — composite scene + overlays into the
     // offscreen sampleable target (instead of straight to the swapchain). ---
     {
@@ -1184,7 +1190,7 @@ void VulkanRenderer::endFrame() {
         {
             const std::vector<PostPass> passes = planPostChain(activeKindsThisFrame);
             postProcess_.runChain(cb, passes, effects_, postProcess_.viewportExtent(),
-                                  pendingExposure_);
+                                  pendingExposure_, pendingBloomIntensity_);
         }
 
         // Debug-line + HUD overlays now render into the viewport target (they
