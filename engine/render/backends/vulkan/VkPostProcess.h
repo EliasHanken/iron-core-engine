@@ -155,6 +155,17 @@ public:
     struct BloomDownPush   { float srcTexel[2]; };
     struct BloomUpPush     { float srcTexel[2]; float scatter; };
 
+    // M48 — SSAO uniform buffer (per-frame, updated in Task 4) + blur push.
+    static constexpr std::uint32_t kSsaoKernelSize = 32;
+    struct SsaoUbo {
+        Mat4 projection;
+        Mat4 invProjection;
+        Vec4 kernel[kSsaoKernelSize];  // .xyz = view-space sample; .w unused
+        Vec4 params;                   // x=radius, y=bias, z=power, w=sampleCount
+        Vec4 noiseScale;               // x,y = extent/4
+    };
+    struct SsaoBlurPush { float texel[2]; };
+
     // Run the offscreen pre-passes (GlowBlurH, GlowBlurV) that must execute
     // OUTSIDE any render pass. Called by VulkanRenderer::endFrame
     // BEFORE beginViewportPass. For Copy/Outline/XRay this is a no-op;
@@ -277,6 +288,35 @@ private:
     VkDescriptorSet  bloomBrightSet_ = VK_NULL_HANDLE;
     VkDescriptorSet  bloomSrcSets_[kBloomMaxMips] {};
 
+    // M48 — SSAO (R8 full-res) + 4x4 blur.
+    VkImage        ssaoImage_     = VK_NULL_HANDLE;
+    VmaAllocation  ssaoAlloc_     = VK_NULL_HANDLE;
+    VkImageView    ssaoView_      = VK_NULL_HANDLE;
+    VkFramebuffer  ssaoFb_        = VK_NULL_HANDLE;
+    VkImage        ssaoBlurImage_ = VK_NULL_HANDLE;
+    VmaAllocation  ssaoBlurAlloc_ = VK_NULL_HANDLE;
+    VkImageView    ssaoBlurView_  = VK_NULL_HANDLE;
+    VkFramebuffer  ssaoBlurFb_    = VK_NULL_HANDLE;
+    VkRenderPass   ssaoPass_      = VK_NULL_HANDLE;   // single R8 attachment, persistent
+    VkExtent2D     ssaoExtent_{};
+    VkImage        ssaoNoise_     = VK_NULL_HANDLE;   // 4x4 rotation vectors (persistent)
+    VmaAllocation  ssaoNoiseAlloc_= VK_NULL_HANDLE;
+    VkImageView    ssaoNoiseView_ = VK_NULL_HANDLE;
+    VkSampler      ssaoNoiseSampler_ = VK_NULL_HANDLE;  // NEAREST/REPEAT
+    VkBuffer       ssaoUboBuf_    = VK_NULL_HANDLE;     // persistent, host-visible, per-frame update
+    VmaAllocation  ssaoUboAlloc_  = VK_NULL_HANDLE;
+    void*          ssaoUboMapped_ = nullptr;
+    std::vector<Vec3> ssaoKernel_;                      // cached kernel (generated once)
+    ::VkPipeline     ssaoPipeline_     = VK_NULL_HANDLE;
+    ::VkPipeline     ssaoBlurPipeline_ = VK_NULL_HANDLE;
+    VkPipelineLayout ssaoLayout_       = VK_NULL_HANDLE;
+    VkPipelineLayout ssaoBlurLayout_   = VK_NULL_HANDLE;
+    VkDescriptorSetLayout ssaoSetLayout_     = VK_NULL_HANDLE;  // {0 depth,1 noise,2 ubo}
+    VkDescriptorSetLayout ssaoBlurSetLayout_ = VK_NULL_HANDLE;  // {0 ssaoTex}
+    VkDescriptorPool ssaoDescPool_ = VK_NULL_HANDLE;
+    VkDescriptorSet  ssaoSet_      = VK_NULL_HANDLE;   // depth+noise+ubo
+    VkDescriptorSet  ssaoBlurSet_  = VK_NULL_HANDLE;   // ssaoTex
+
     // --- Glow pipelines ---
     VkDescriptorSetLayout glowBlurHSetLayout_     = VK_NULL_HANDLE;
     VkPipelineLayout      glowBlurHPipeLayout_    = VK_NULL_HANDLE;
@@ -316,6 +356,12 @@ private:
     void destroyBloomTargets();
     bool createBloomPipelines();                  // 3 pipelines (call once in init)
     static std::uint32_t computeBloomMipCount(VkExtent2D extent);
+
+    // M48 SSAO helpers.
+    void createSsaoTargets(VkContext& ctx, VkExtent2D extent);  // images/views/fbs/pass + sets
+    void destroySsaoTargets(VkContext& ctx);                    // per-resize handles
+    bool createSsaoPipelines(VkContext& ctx);                   // 2 pipelines (call once in init)
+    bool createSsaoNoiseAndUbo(VkContext& ctx);                 // persistent noise tex + UBO + kernel
 };
 
 }  // namespace iron
