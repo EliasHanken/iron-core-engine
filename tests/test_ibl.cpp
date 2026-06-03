@@ -13,10 +13,12 @@
 #include "render/backends/vulkan/VkIblBaker.h"
 #endif
 
+using iron::Vec2;
 using iron::Vec3;
 using iron::cubeFaceDirection;
 using iron::directionToEquirectUv;
 using iron::convolveConstantIrradiance;
+using iron::integrateBrdf;
 
 static bool approx(float a, float b, float eps = 1e-4f) {
     float d = a - b;
@@ -99,6 +101,17 @@ int main() {
         assert(spv.front() == 0x07230203u);  // SPIR-V magic
     }
 #endif
+
+    // (BRDF LUT) Split-sum scale/bias endpoints. At NdotV=1, roughness=0 the
+    // surface is a perfect mirror: scale ~= 1, bias ~= 0 (specular == F0).
+    {
+        iron::Vec2 e = integrateBrdf(1.0f, 0.0f, 1024);
+        assert(approx(e.x, 1.0f, 0.02f));
+        assert(approx(e.y, 0.0f, 0.02f));
+        // Mid-roughness stays in [0,1] and finite.
+        iron::Vec2 m = integrateBrdf(0.5f, 0.5f, 1024);
+        assert(m.x >= 0.0f && m.x <= 1.0f && m.y >= 0.0f && m.y <= 1.0f);
+    }
 
     std::puts("test_ibl: OK");
     return 0;
