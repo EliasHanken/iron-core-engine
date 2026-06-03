@@ -155,30 +155,30 @@ bool VkIblBaker::init(VkContext& ctx) {
 
     // M46b — irradiance convolution pipeline (env samplerCube -> irradiance cube).
     {
-        VkDescriptorSetLayoutBinding b[2]{};
-        b[0].binding         = 0;
-        b[0].descriptorType  = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-        b[0].descriptorCount = 1;
-        b[0].stageFlags      = VK_SHADER_STAGE_COMPUTE_BIT;
-        b[1].binding         = 1;
-        b[1].descriptorType  = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
-        b[1].descriptorCount = 1;
-        b[1].stageFlags      = VK_SHADER_STAGE_COMPUTE_BIT;
+        VkDescriptorSetLayoutBinding irrB[2]{};
+        irrB[0].binding         = 0;
+        irrB[0].descriptorType  = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        irrB[0].descriptorCount = 1;
+        irrB[0].stageFlags      = VK_SHADER_STAGE_COMPUTE_BIT;
+        irrB[1].binding         = 1;
+        irrB[1].descriptorType  = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+        irrB[1].descriptorCount = 1;
+        irrB[1].stageFlags      = VK_SHADER_STAGE_COMPUTE_BIT;
 
-        VkDescriptorSetLayoutCreateInfo slInfo{};
-        slInfo.sType        = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-        slInfo.bindingCount = 2;
-        slInfo.pBindings    = b;
-        VK_CHECK(vkCreateDescriptorSetLayout(ctx.device(), &slInfo, nullptr,
+        VkDescriptorSetLayoutCreateInfo irrSlInfo{};
+        irrSlInfo.sType        = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+        irrSlInfo.bindingCount = 2;
+        irrSlInfo.pBindings    = irrB;
+        VK_CHECK(vkCreateDescriptorSetLayout(ctx.device(), &irrSlInfo, nullptr,
                                              &irradianceSetLayout_));
 
-        auto spirv = compileGlsl(VK_SHADER_STAGE_COMPUTE_BIT,
-                                 kIrradianceConvolveComputeSrc());
-        if (spirv.empty()) {
+        auto irrSpirv = compileGlsl(VK_SHADER_STAGE_COMPUTE_BIT,
+                                    kIrradianceConvolveComputeSrc());
+        if (irrSpirv.empty()) {
             Log::error("VkIblBaker: irradiance compute compile failed");
             return false;
         }
-        if (!irradiancePipeline_.init(ctx, spirv, irradianceSetLayout_)) return false;
+        if (!irradiancePipeline_.init(ctx, irrSpirv, irradianceSetLayout_)) return false;
     }
     return true;
 }
@@ -422,8 +422,8 @@ CubemapHandle VkIblBaker::bakeIrradiance(VkContext& ctx, VkCubemapStore& store,
                                          CubemapHandle envCube, int faceSize) {
     if (!store.has(envCube)) return kInvalidHandle;
 
-    // Capture env view+sampler before createHdr (defensive; unordered_map refs
-    // are stable across insert, but be explicit).
+    // Copy the scalars we need out of env now, so we don't hold a second live
+    // reference into the store's map while createHdr inserts into it.
     const VkCubemapResource& env = store.get(envCube);
     const VkImageView envView    = env.view;
     const VkSampler   envSampler = env.sampler;
