@@ -3,9 +3,10 @@
 namespace iron {
 
 std::vector<PostPass> planPostChain(const std::vector<EffectKind>& activeKinds) {
-    if (activeKinds.empty()) return {PostPass::Copy};
+    // Copy always runs first as the opaque base (scene + bloom + SSAO + tonemap).
+    // Effects are layered on top as blended overlays.
+    std::vector<PostPass> passes{PostPass::Copy};
 
-    std::vector<PostPass> passes;
     bool xray = false, outline = false, glow = false;
     for (auto k : activeKinds) {
         if (k == EffectKind::XRay)             xray = true;

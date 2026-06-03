@@ -7,6 +7,7 @@
 #include "math/Mat4.h"
 #include "render/PostChainPlan.h"
 #include "render/PostEffect.h"
+#include "render/backends/vulkan/VkFrameRing.h"  // kFramesInFlight (per-frame SSAO UBO)
 
 #include <vulkan/vulkan.h>
 #include <vk_mem_alloc.h>
@@ -118,7 +119,7 @@ public:
         float color[4];   // rgb outline color, a unused
         float texel[2];   // 1/width, 1/height (of the mask/screen)
         float width;      // outline thickness in pixels
-        float exposure;   // M44: tonemap exposure (was _pad)
+        float _pad;       // overlay: no exposure (Copy base already tonemapped)
     };
 
     // Push constants for the glow blur pipelines (H and V — direction is
@@ -133,16 +134,14 @@ public:
     struct GlowCompositePush {
         float color[4];      // rgb halo color + padding
         float intensity;     // halo strength (style.intensity)
-        float exposure;      // M44: tonemap exposure (was _pad[0])
-        float _pad[2];
+        float _pad[3];       // overlay: no exposure (Copy base already tonemapped)
     };
 
     // Push constants for the x-ray pipeline.
     struct XRayPush {
         float color[4];      // rgb tint color + padding
         float intensity;     // tint strength
-        float exposure;      // M44: tonemap exposure (was _pad[0])
-        float _pad[2];
+        float _pad[3];       // overlay: no exposure (Copy base already tonemapped)
     };
 
     // Push constants for the copy/composite (tonemap) pipeline.
@@ -186,13 +185,14 @@ public:
     // Fills the SSAO UBO for this frame: projection + its inverse, the static
     // kernel, radius/bias/power, and noiseScale (= extent/4). Call before
     // runSsaoPass. Reaches the allocator via the stored VkContext* (ctx_).
-    void updateSsaoUbo(const Mat4& projection, const Mat4& invProjection,
+    void updateSsaoUbo(int frame, const Mat4& projection, const Mat4& invProjection,
                        float radius, float bias, float power);
 
     // Records the SSAO pass + 4x4 blur into ssaoBlurView_. Call BEFORE
-    // beginViewportPass(), like the bloom pre-pass. The SSAO UBO must already be
-    // updated for this frame (the renderer does this before calling).
-    void runSsaoPass(VkCommandBuffer cb);
+    // beginViewportPass(), like the bloom pre-pass. The SSAO UBO for `frame`
+    // must already be updated for this frame (the renderer does this before
+    // calling). `frame` = current frame-in-flight slot for the recording cb.
+    void runSsaoPass(VkCommandBuffer cb, int frame);
 
 private:
     VkContext* ctx_ = nullptr;
@@ -317,9 +317,14 @@ private:
     VmaAllocation  ssaoNoiseAlloc_= VK_NULL_HANDLE;
     VkImageView    ssaoNoiseView_ = VK_NULL_HANDLE;
     VkSampler      ssaoNoiseSampler_ = VK_NULL_HANDLE;  // NEAREST/REPEAT
-    VkBuffer       ssaoUboBuf_    = VK_NULL_HANDLE;     // persistent, host-visible, per-frame update
-    VmaAllocation  ssaoUboAlloc_  = VK_NULL_HANDLE;
-    void*          ssaoUboMapped_ = nullptr;
+    // Per-frame-in-flight SSAO UBO (race fix): the CPU updateSsaoUbo write for
+    // this frame must not clobber the buffer the previous frame's GPU is still
+    // reading. One persistent host-visible mapped buffer per frame slot.
+    static_assert(VkFrameRing::kFramesInFlight == 2,
+                  "SSAO per-frame UBO/set arrays are sized [2]");
+    VkBuffer       ssaoUboBuf_[2]    {};               // persistent, host-visible, per-frame update
+    VmaAllocation  ssaoUboAlloc_[2]  {};
+    void*          ssaoUboMapped_[2] {};
     std::vector<Vec3> ssaoKernel_;                      // cached kernel (generated once)
     ::VkPipeline     ssaoPipeline_     = VK_NULL_HANDLE;
     ::VkPipeline     ssaoBlurPipeline_ = VK_NULL_HANDLE;
@@ -328,8 +333,8 @@ private:
     VkDescriptorSetLayout ssaoSetLayout_     = VK_NULL_HANDLE;  // {0 depth,1 noise,2 ubo}
     VkDescriptorSetLayout ssaoBlurSetLayout_ = VK_NULL_HANDLE;  // {0 ssaoTex}
     VkDescriptorPool ssaoDescPool_ = VK_NULL_HANDLE;
-    VkDescriptorSet  ssaoSet_      = VK_NULL_HANDLE;   // depth+noise+ubo
-    VkDescriptorSet  ssaoBlurSet_  = VK_NULL_HANDLE;   // ssaoTex
+    VkDescriptorSet  ssaoSet_[2]   {};                 // depth+noise+ubo, one set per frame slot (binding 2 = that slot's UBO)
+    VkDescriptorSet  ssaoBlurSet_  = VK_NULL_HANDLE;   // ssaoTex (no per-frame data)
 
     // --- Glow pipelines ---
     VkDescriptorSetLayout glowBlurHSetLayout_     = VK_NULL_HANDLE;

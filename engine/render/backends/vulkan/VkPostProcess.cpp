@@ -83,26 +83,17 @@ void main() { outId = pc.id; }
 )";
 
 // --- Outline pass shaders ---
-// Full-screen triangle (vertex = kFullscreenVert). Samples scene-color (binding 0)
-// and the R8_UINT mask id (binding 1). Edge-detects the mask with a 3x3 kernel
-// and composites the outline color over the scene.
+// Full-screen triangle (vertex = kFullscreenVert). Overlay: samples only the R8_UINT
+// mask id (binding 0), edge-detects it with a 3x3 kernel, and outputs the outline color
+// with alpha=edge so it alpha-blends over the Copy composite (which carries the scene +
+// bloom + SSAO + tonemap).
 const char* kOutlineFrag = R"(#version 450
-layout(location = 0) in vec2 vUV;
+layout(location = 0) in  vec2 vUV;
 layout(location = 0) out vec4 outColor;
-layout(set = 0, binding = 0) uniform sampler2D uScene;
-layout(set = 0, binding = 1) uniform usampler2D uMask;
-layout(push_constant) uniform Push {
-    vec4  color;
-    vec2  texel;
-    float width;
-    float exposure;
-} pc;
-vec3 aces(vec3 x) {
-    const float a = 2.51, b = 0.03, c = 2.43, d = 0.59, e = 0.14;
-    return clamp((x * (a * x + b)) / (x * (c * x + d) + e), 0.0, 1.0);
-}
+layout(set = 0, binding = 0) uniform usampler2D uMask;   // overlay: scene comes from the Copy base
+layout(push_constant) uniform Push { vec4 color; vec2 texel; float width; } pc;
+
 void main() {
-    vec3 scene = texture(uScene, vUV).rgb;
     uint here = texture(uMask, vUV).r;
     float edge = 0.0;
     for (int dx = -1; dx <= 1; ++dx)
@@ -112,7 +103,7 @@ void main() {
         uint n = texture(uMask, vUV + o).r;
         if (n != here) edge = 1.0;
     }
-    outColor = vec4(aces(mix(scene, pc.color.rgb, edge) * pc.exposure), 1.0);
+    outColor = vec4(pc.color.rgb, edge);   // alpha-blend over the composited scene
 }
 )";
 
@@ -157,57 +148,52 @@ void main() {
 }
 )";
 
-// kGlowCompositeFrag — adds a colored halo (blurred coverage minus solid
-// interior) over the scene. Runs inside the viewport pass (M43a).
+// kGlowCompositeFrag — overlay: emits a colored halo (blurred coverage minus
+// solid interior) and ADDITIVELY blends (ONE/ONE) over the Copy composite (which
+// carries the scene + bloom + SSAO + tonemap). Samples no scene color and does no
+// tonemap.
+// binding 0: sampler2D  uBlur — blurred coverage (GlowBlurV output, scratch[1])
+// binding 1: usampler2D uMask — tagged object id (0 = no object)
 const char* kGlowCompositeFrag = R"(#version 450
-layout(location = 0) in vec2 vUV;
+layout(location = 0) in  vec2 vUV;
 layout(location = 0) out vec4 outColor;
-layout(set = 0, binding = 0) uniform sampler2D uScene;
-layout(set = 0, binding = 1) uniform sampler2D uBlur;
-layout(set = 0, binding = 2) uniform usampler2D uMask;
-layout(push_constant) uniform Push { vec4 color; float intensity; float exposure; } pc;
-vec3 aces(vec3 x) {
-    const float a = 2.51, b = 0.03, c = 2.43, d = 0.59, e = 0.14;
-    return clamp((x * (a * x + b)) / (x * (c * x + d) + e), 0.0, 1.0);
-}
+layout(set = 0, binding = 0) uniform sampler2D  uBlur;
+layout(set = 0, binding = 1) uniform usampler2D uMask;
+layout(push_constant) uniform Push { vec4 color; float intensity; } pc;
+
 void main() {
-    vec3 scene = texture(uScene, vUV).rgb;
     float blur  = texture(uBlur, vUV).r;
     float solid = texture(uMask, vUV).r > 0u ? 1.0 : 0.0;
     float halo  = max(blur - solid, 0.0) * pc.intensity;
-    outColor = vec4(aces((scene + pc.color.rgb * halo) * pc.exposure), 1.0);
+    outColor = vec4(pc.color.rgb * halo, 1.0);   // additive blend (ONE/ONE) over the scene
 }
 )";
 
-// kXrayFrag — tint where the tagged object is occluded by nearer scene geometry.
-// binding 0: sampler2D  uScene      — full scene color
-// binding 1: usampler2D uMask       — tagged object id (0 = no object)
-// binding 2: sampler2D  uMaskDepth  — tagged object's own depth (from mask pass)
-// binding 3: sampler2D  uSceneDepth — full scene depth (includes occluders)
-// Tints toward pc.color where id != 0 AND sceneDepth < maskDepth (occluded).
+// kXrayFrag — overlay: tints where the tagged object is occluded by nearer scene
+// geometry, outputting only the tint with alpha so it alpha-blends over the Copy
+// composite (which carries the scene + bloom + SSAO + tonemap). Samples no scene
+// color and does no tonemap.
+// binding 0: usampler2D uMask       — tagged object id (0 = no object)
+// binding 1: sampler2D  uMaskDepth  — tagged object's own depth (from mask pass)
+// binding 2: sampler2D  uSceneDepth — full scene depth (includes occluders)
+// Emits alpha = occluded * intensity where id != 0 AND sceneDepth < maskDepth.
 // Both depths use the same projection, so raw float comparison is correct;
 // smaller depth value means nearer to the camera.
 const char* kXrayFrag = R"(#version 450
-layout(location = 0) in vec2 vUV;
+layout(location = 0) in  vec2 vUV;
 layout(location = 0) out vec4 outColor;
-layout(set = 0, binding = 0) uniform sampler2D uScene;
-layout(set = 0, binding = 1) uniform usampler2D uMask;
-layout(set = 0, binding = 2) uniform sampler2D uMaskDepth;
-layout(set = 0, binding = 3) uniform sampler2D uSceneDepth;
-layout(push_constant) uniform Push { vec4 color; float intensity; float exposure; } pc;
-vec3 aces(vec3 x) {
-    const float a = 2.51, b = 0.03, c = 2.43, d = 0.59, e = 0.14;
-    return clamp((x * (a * x + b)) / (x * (c * x + d) + e), 0.0, 1.0);
-}
+layout(set = 0, binding = 0) uniform usampler2D uMask;
+layout(set = 0, binding = 1) uniform sampler2D  uMaskDepth;
+layout(set = 0, binding = 2) uniform sampler2D  uSceneDepth;
+layout(push_constant) uniform Push { vec4 color; float intensity; } pc;
+
 void main() {
-    vec3 scene = texture(uScene, vUV).rgb;
     uint id = texture(uMask, vUV).r;
-    if (id == 0u) { outColor = vec4(aces(scene * pc.exposure), 1.0); return; }
-    float md = texture(uMaskDepth, vUV).r;   // tagged object depth
-    float sd = texture(uSceneDepth, vUV).r;  // nearest scene depth
-    // Occluded when something is in front of the object (smaller depth = nearer).
-    float occluded = (sd < md - 1e-4) ? 1.0 : 0.0;
-    outColor = vec4(aces(mix(scene, pc.color.rgb, occluded * pc.intensity) * pc.exposure), 1.0);
+    if (id == 0u) { outColor = vec4(0.0); return; }     // not tagged: transparent
+    float md = texture(uMaskDepth, vUV).r;
+    float sd = texture(uSceneDepth, vUV).r;
+    float occluded = (sd < md - 1e-4) ? 1.0 : 0.0;      // nearer geometry in front
+    outColor = vec4(pc.color.rgb, occluded * pc.intensity);   // alpha-blend tint
 }
 )";
 
@@ -493,14 +479,15 @@ bool VkPostProcess::init(VkContext& ctx, VkFormat colorFormat, VkFormat depthFor
         bli.bindingCount = 1; bli.pBindings = &bb;
         VK_CHECK(vkCreateDescriptorSetLayout(ctx.device(), &bli, nullptr, &ssaoBlurSetLayout_));
 
-        // Dedicated persistent pool: 2 sets; 3 combined-image-samplers
-        // (ssaoSet: depth+noise=2, blurSet: ssaoTex=1) + 1 uniform buffer.
+        // Dedicated persistent pool: 3 sets (2 per-frame ssao sets + 1 blur set);
+        // 5 combined-image-samplers (2 ssao sets * (depth+noise)=4, blurSet:
+        // ssaoTex=1) + 2 uniform buffers (1 per ssao set).
         VkDescriptorPoolSize ps[2]{};
-        ps[0].type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER; ps[0].descriptorCount = 3;
-        ps[1].type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;         ps[1].descriptorCount = 1;
+        ps[0].type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER; ps[0].descriptorCount = 5;
+        ps[1].type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;         ps[1].descriptorCount = 2;
         VkDescriptorPoolCreateInfo dp{};
         dp.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
-        dp.maxSets = 2; dp.poolSizeCount = 2; dp.pPoolSizes = ps;
+        dp.maxSets = 3; dp.poolSizeCount = 2; dp.pPoolSizes = ps;
         VK_CHECK(vkCreateDescriptorPool(ctx.device(), &dp, nullptr, &ssaoDescPool_));
     }
 
@@ -533,12 +520,15 @@ void VkPostProcess::destroy(VkContext& ctx) {
     if (ssaoLayout_)       { vkDestroyPipelineLayout(ctx.device(), ssaoLayout_, nullptr);     ssaoLayout_ = VK_NULL_HANDLE; }
     if (ssaoBlurSetLayout_){ vkDestroyDescriptorSetLayout(ctx.device(), ssaoBlurSetLayout_, nullptr); ssaoBlurSetLayout_ = VK_NULL_HANDLE; }
     if (ssaoSetLayout_)    { vkDestroyDescriptorSetLayout(ctx.device(), ssaoSetLayout_, nullptr);     ssaoSetLayout_ = VK_NULL_HANDLE; }
-    // The pool owns ssaoSet_/ssaoBlurSet_; destroying it frees them.
-    if (ssaoDescPool_)     { vkDestroyDescriptorPool(ctx.device(), ssaoDescPool_, nullptr); ssaoDescPool_ = VK_NULL_HANDLE; ssaoSet_ = VK_NULL_HANDLE; ssaoBlurSet_ = VK_NULL_HANDLE; }
+    // The pool owns ssaoSet_[0/1]/ssaoBlurSet_; destroying it frees them.
+    if (ssaoDescPool_)     { vkDestroyDescriptorPool(ctx.device(), ssaoDescPool_, nullptr); ssaoDescPool_ = VK_NULL_HANDLE; ssaoSet_[0] = VK_NULL_HANDLE; ssaoSet_[1] = VK_NULL_HANDLE; ssaoBlurSet_ = VK_NULL_HANDLE; }
     if (ssaoNoiseSampler_) { vkDestroySampler(ctx.device(), ssaoNoiseSampler_, nullptr); ssaoNoiseSampler_ = VK_NULL_HANDLE; }
     if (ssaoNoiseView_)    { vkDestroyImageView(ctx.device(), ssaoNoiseView_, nullptr); ssaoNoiseView_ = VK_NULL_HANDLE; }
     if (ssaoNoise_)        { vmaDestroyImage(ctx.allocator(), ssaoNoise_, ssaoNoiseAlloc_); ssaoNoise_ = VK_NULL_HANDLE; ssaoNoiseAlloc_ = VK_NULL_HANDLE; }
-    if (ssaoUboBuf_)       { vmaDestroyBuffer(ctx.allocator(), ssaoUboBuf_, ssaoUboAlloc_); ssaoUboBuf_ = VK_NULL_HANDLE; ssaoUboAlloc_ = VK_NULL_HANDLE; ssaoUboMapped_ = nullptr; }
+    for (int f = 0; f < 2; ++f) {
+        if (ssaoUboBuf_[f]) { vmaDestroyBuffer(ctx.allocator(), ssaoUboBuf_[f], ssaoUboAlloc_[f]); ssaoUboBuf_[f] = VK_NULL_HANDLE; ssaoUboAlloc_[f] = VK_NULL_HANDLE; }
+        ssaoUboMapped_[f] = nullptr;
+    }
 
     // M47 bloom pipelines/layouts/set-layout (persistent — not per-resize).
     if (bloomUpPipeline_)         { vkDestroyPipeline(ctx.device(), bloomUpPipeline_, nullptr);         bloomUpPipeline_ = VK_NULL_HANDLE; }
@@ -656,29 +646,21 @@ bool VkPostProcess::resize(VkContext& ctx, VkExtent2D extent) {
     }
 
     // Re-write the outline descriptor set to point at the new views.
+    // Overlay: binding 0 = mask only (scene comes from the Copy base).
     {
-        VkDescriptorImageInfo imgInfos[2]{};
-        imgInfos[0].sampler     = sampler_;
-        imgInfos[0].imageView   = sceneColorView_;
-        imgInfos[0].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-        imgInfos[1].sampler     = maskSampler_;
-        imgInfos[1].imageView   = maskColorView_;
-        imgInfos[1].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        VkDescriptorImageInfo imgInfo{};
+        imgInfo.sampler     = maskSampler_;
+        imgInfo.imageView   = maskColorView_;
+        imgInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 
-        VkWriteDescriptorSet writes[2]{};
-        writes[0].sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-        writes[0].dstSet          = outlineDescSet_;
-        writes[0].dstBinding      = 0;
-        writes[0].descriptorType  = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-        writes[0].descriptorCount = 1;
-        writes[0].pImageInfo      = &imgInfos[0];
-        writes[1].sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-        writes[1].dstSet          = outlineDescSet_;
-        writes[1].dstBinding      = 1;
-        writes[1].descriptorType  = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-        writes[1].descriptorCount = 1;
-        writes[1].pImageInfo      = &imgInfos[1];
-        vkUpdateDescriptorSets(ctx.device(), 2, writes, 0, nullptr);
+        VkWriteDescriptorSet write{};
+        write.sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        write.dstSet          = outlineDescSet_;
+        write.dstBinding      = 0;
+        write.descriptorType  = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        write.descriptorCount = 1;
+        write.pImageInfo      = &imgInfo;
+        vkUpdateDescriptorSets(ctx.device(), 1, &write, 0, nullptr);
     }
 
     // Re-write glow descriptor sets to point at the new size-varying views.
@@ -714,21 +696,19 @@ bool VkPostProcess::resize(VkContext& ctx, VkExtent2D extent) {
         write.pImageInfo      = &imgInfo;
         vkUpdateDescriptorSets(ctx.device(), 1, &write, 0, nullptr);
     }
-    // GlowComposite: binding 0 = sceneColorView_, binding 1 = glowScratchView_[1], binding 2 = maskColorView_.
+    // GlowComposite (overlay — no scene sampler): binding 0 = glowScratchView_[1]
+    //                                              (blur), binding 1 = maskColorView_.
     {
-        VkDescriptorImageInfo imgInfos[3]{};
+        VkDescriptorImageInfo imgInfos[2]{};
         imgInfos[0].sampler     = sampler_;
-        imgInfos[0].imageView   = sceneColorView_;
+        imgInfos[0].imageView   = glowScratchView_[1];
         imgInfos[0].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-        imgInfos[1].sampler     = sampler_;
-        imgInfos[1].imageView   = glowScratchView_[1];
+        imgInfos[1].sampler     = maskSampler_;
+        imgInfos[1].imageView   = maskColorView_;
         imgInfos[1].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-        imgInfos[2].sampler     = maskSampler_;
-        imgInfos[2].imageView   = maskColorView_;
-        imgInfos[2].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 
-        VkWriteDescriptorSet writes[3]{};
-        for (int i = 0; i < 3; ++i) {
+        VkWriteDescriptorSet writes[2]{};
+        for (int i = 0; i < 2; ++i) {
             writes[i].sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
             writes[i].dstSet          = glowCompositeDescSet_;
             writes[i].dstBinding      = static_cast<uint32_t>(i);
@@ -736,28 +716,25 @@ bool VkPostProcess::resize(VkContext& ctx, VkExtent2D extent) {
             writes[i].descriptorCount = 1;
             writes[i].pImageInfo      = &imgInfos[i];
         }
-        vkUpdateDescriptorSets(ctx.device(), 3, writes, 0, nullptr);
+        vkUpdateDescriptorSets(ctx.device(), 2, writes, 0, nullptr);
     }
 
-    // XRay: binding 0 = sceneColorView_, binding 1 = maskColorView_,
-    //        binding 2 = maskDepthView_, binding 3 = sceneDepthView_.
+    // XRay (overlay — no scene sampler): binding 0 = maskColorView_,
+    //        binding 1 = maskDepthView_, binding 2 = sceneDepthView_.
     {
-        VkDescriptorImageInfo imgInfos[4]{};
-        imgInfos[0].sampler     = sampler_;
-        imgInfos[0].imageView   = sceneColorView_;
+        VkDescriptorImageInfo imgInfos[3]{};
+        imgInfos[0].sampler     = maskSampler_;
+        imgInfos[0].imageView   = maskColorView_;
         imgInfos[0].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
         imgInfos[1].sampler     = maskSampler_;
-        imgInfos[1].imageView   = maskColorView_;
-        imgInfos[1].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        imgInfos[1].imageView   = maskDepthView_;
+        imgInfos[1].imageLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL;
         imgInfos[2].sampler     = maskSampler_;
-        imgInfos[2].imageView   = maskDepthView_;
+        imgInfos[2].imageView   = sceneDepthView_;
         imgInfos[2].imageLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL;
-        imgInfos[3].sampler     = maskSampler_;
-        imgInfos[3].imageView   = sceneDepthView_;
-        imgInfos[3].imageLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL;
 
-        VkWriteDescriptorSet writes[4]{};
-        for (int i = 0; i < 4; ++i) {
+        VkWriteDescriptorSet writes[3]{};
+        for (int i = 0; i < 3; ++i) {
             writes[i].sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
             writes[i].dstSet          = xrayDescSet_;
             writes[i].dstBinding      = static_cast<uint32_t>(i);
@@ -765,7 +742,7 @@ bool VkPostProcess::resize(VkContext& ctx, VkExtent2D extent) {
             writes[i].descriptorCount = 1;
             writes[i].pImageInfo      = &imgInfos[i];
         }
-        vkUpdateDescriptorSets(ctx.device(), 4, writes, 0, nullptr);
+        vkUpdateDescriptorSets(ctx.device(), 3, writes, 0, nullptr);
     }
 
     if (!resizeViewport(ctx, extent)) return false;
@@ -2128,18 +2105,18 @@ bool VkPostProcess::createCopyPipeline(VkContext& ctx) {
     vkDestroyShaderModule(ctx.device(), fsm, nullptr);
     VK_CHECK(copyPipeResult);
 
-    // Descriptor pool: 7 sets total, 15 combined-image-sampler descriptors.
+    // Descriptor pool: 7 sets total, 12 combined-image-sampler descriptors.
     //   set 0: copy/composite — 3 samplers (scene color + bloom mip0 + SSAO)  (M47/M48)
     //   set 1: blit         — 1 sampler  (viewport color)
-    //   set 2: outline      — 2 samplers (scene color + mask)
+    //   set 2: outline      — 1 sampler  (mask)  (overlay: scene from Copy base)
     //   set 3: glowBlurH    — 1 sampler  (mask)
     //   set 4: glowBlurV    — 1 sampler  (scratch[0])
-    //   set 5: glowComposite — 3 samplers (scene color + scratch[1] + mask)
-    //   set 6: xray         — 4 samplers (scene color + mask id + mask depth + scene depth)
-    // Total: 7 sets, 15 combined-image-samplers.
+    //   set 5: glowComposite — 2 samplers (scratch[1] + mask)  (overlay: scene from Copy base)
+    //   set 6: xray         — 3 samplers (mask id + mask depth + scene depth)  (overlay: scene from Copy base)
+    // Total: 7 sets, 12 combined-image-samplers.
     VkDescriptorPoolSize poolSize{};
     poolSize.type            = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-    poolSize.descriptorCount = 15;
+    poolSize.descriptorCount = 12;
 
     VkDescriptorPoolCreateInfo dpInfo{};
     dpInfo.sType         = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
@@ -2499,21 +2476,18 @@ bool VkPostProcess::createOutlinePipeline(VkContext& ctx) {
         return false;
     }
 
-    // Descriptor set layout: binding 0 = sampler2D (scene color), binding 1 = usampler2D (mask id).
-    // Both are COMBINED_IMAGE_SAMPLER; the mask uses maskSampler_ (NEAREST) at runtime.
-    VkDescriptorSetLayoutBinding bindings[2]{};
+    // Descriptor set layout: binding 0 = usampler2D (mask id). Overlay — the scene
+    // comes from the Copy base, so no scene sampler. COMBINED_IMAGE_SAMPLER; the mask
+    // uses maskSampler_ (NEAREST) at runtime (integer texture cannot be linear-filtered).
+    VkDescriptorSetLayoutBinding bindings[1]{};
     bindings[0].binding         = 0;
     bindings[0].descriptorType  = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
     bindings[0].descriptorCount = 1;
     bindings[0].stageFlags      = VK_SHADER_STAGE_FRAGMENT_BIT;
-    bindings[1].binding         = 1;
-    bindings[1].descriptorType  = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-    bindings[1].descriptorCount = 1;
-    bindings[1].stageFlags      = VK_SHADER_STAGE_FRAGMENT_BIT;
 
     VkDescriptorSetLayoutCreateInfo dslInfo{};
     dslInfo.sType        = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-    dslInfo.bindingCount = 2;
+    dslInfo.bindingCount = 1;
     dslInfo.pBindings    = bindings;
     VK_CHECK(vkCreateDescriptorSetLayout(ctx.device(), &dslInfo, nullptr, &outlineSetLayout_));
 
@@ -2571,9 +2545,19 @@ bool VkPostProcess::createOutlinePipeline(VkContext& ctx) {
     ds.depthTestEnable  = VK_FALSE;
     ds.depthWriteEnable = VK_FALSE;
 
+    // Alpha-blend the outline color over the composited Copy base.
     VkPipelineColorBlendAttachmentState att{};
-    att.colorWriteMask = 0xF;
-    att.blendEnable    = VK_FALSE;
+    att.blendEnable         = VK_TRUE;
+    att.srcColorBlendFactor = VK_BLEND_FACTOR_SRC_ALPHA;
+    att.dstColorBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
+    att.colorBlendOp        = VK_BLEND_OP_ADD;
+    att.srcAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
+    att.dstAlphaBlendFactor = VK_BLEND_FACTOR_ZERO;
+    att.alphaBlendOp        = VK_BLEND_OP_ADD;
+    att.colorWriteMask      = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT |
+                              VK_COLOR_COMPONENT_B_BIT;  // RGB only: preserve the
+    // viewport alpha (Copy wrote a=1; the editor's ImGui::Image samples it, so
+    // zeroing alpha here would make the scene render transparent).
 
     VkPipelineColorBlendStateCreateInfo cb{};
     cb.sType           = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO;
@@ -2610,7 +2594,7 @@ bool VkPostProcess::createOutlinePipeline(VkContext& ctx) {
     VK_CHECK(outlinePipeResult);
 
     // Allocate the outline descriptor set from the shared pool (allocated in
-    // createCopyPipeline with maxSets=7, descriptorCount=14).
+    // createCopyPipeline with maxSets=7, descriptorCount=12).
     VkDescriptorSetAllocateInfo dsAlloc{};
     dsAlloc.sType              = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
     dsAlloc.descriptorPool     = descPool_;
@@ -2618,30 +2602,21 @@ bool VkPostProcess::createOutlinePipeline(VkContext& ctx) {
     dsAlloc.pSetLayouts        = &outlineSetLayout_;
     VK_CHECK(vkAllocateDescriptorSets(ctx.device(), &dsAlloc, &outlineDescSet_));
 
-    // Write the outline descriptor set: binding 0 = scene color (linear sampler),
-    // binding 1 = mask id (NEAREST sampler — integer texture cannot be linear-filtered).
-    VkDescriptorImageInfo imgInfos[2]{};
-    imgInfos[0].sampler     = sampler_;
-    imgInfos[0].imageView   = sceneColorView_;
-    imgInfos[0].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-    imgInfos[1].sampler     = maskSampler_;
-    imgInfos[1].imageView   = maskColorView_;
-    imgInfos[1].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    // Write the outline descriptor set: binding 0 = mask id (NEAREST sampler —
+    // integer texture cannot be linear-filtered). Overlay: no scene sampler.
+    VkDescriptorImageInfo imgInfo{};
+    imgInfo.sampler     = maskSampler_;
+    imgInfo.imageView   = maskColorView_;
+    imgInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 
-    VkWriteDescriptorSet writes[2]{};
-    writes[0].sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-    writes[0].dstSet          = outlineDescSet_;
-    writes[0].dstBinding      = 0;
-    writes[0].descriptorType  = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-    writes[0].descriptorCount = 1;
-    writes[0].pImageInfo      = &imgInfos[0];
-    writes[1].sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-    writes[1].dstSet          = outlineDescSet_;
-    writes[1].dstBinding      = 1;
-    writes[1].descriptorType  = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-    writes[1].descriptorCount = 1;
-    writes[1].pImageInfo      = &imgInfos[1];
-    vkUpdateDescriptorSets(ctx.device(), 2, writes, 0, nullptr);
+    VkWriteDescriptorSet write{};
+    write.sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    write.dstSet          = outlineDescSet_;
+    write.dstBinding      = 0;
+    write.descriptorType  = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    write.descriptorCount = 1;
+    write.pImageInfo      = &imgInfo;
+    vkUpdateDescriptorSets(ctx.device(), 1, &write, 0, nullptr);
 
     return true;
 }
@@ -2693,9 +2668,19 @@ bool VkPostProcess::createGlowPipelines(VkContext& ctx) {
     ds.depthTestEnable  = VK_FALSE;
     ds.depthWriteEnable = VK_FALSE;
 
+    // ADDITIVE (ONE/ONE) blend — used ONLY by the GlowComposite pipeline (the
+    // blur pipelines use their own single-channel blend-OFF state). The halo adds
+    // on top of the Copy composite base.
     VkPipelineColorBlendAttachmentState blendAtt{};
-    blendAtt.colorWriteMask = 0xF;
-    blendAtt.blendEnable    = VK_FALSE;
+    blendAtt.blendEnable         = VK_TRUE;
+    blendAtt.srcColorBlendFactor = VK_BLEND_FACTOR_ONE;
+    blendAtt.dstColorBlendFactor = VK_BLEND_FACTOR_ONE;
+    blendAtt.colorBlendOp        = VK_BLEND_OP_ADD;
+    blendAtt.srcAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
+    blendAtt.dstAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
+    blendAtt.alphaBlendOp        = VK_BLEND_OP_ADD;
+    blendAtt.colorWriteMask      = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT |
+                                   VK_COLOR_COMPONENT_B_BIT;  // RGB only: preserve viewport alpha (Copy's a=1)
 
     VkPipelineColorBlendStateCreateInfo blend{};
     blend.sType           = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO;
@@ -2869,21 +2854,21 @@ bool VkPostProcess::createGlowPipelines(VkContext& ctx) {
     }
 
     // -----------------------------------------------------------------
-    // GlowComposite pipeline: reads scene + scratch[1] + mask; writes viewport pass
-    // (M43a). Built against swapchainPass for render-pass compatibility.
-    // Descriptor set layout: binding 0 = sampler2D uScene,
-    //                        binding 1 = sampler2D uBlur,
-    //                        binding 2 = usampler2D uMask.
+    // GlowComposite pipeline (overlay): reads scratch[1] + mask; writes viewport
+    // pass (M43a). Built against viewportPass_ for render-pass compatibility.
+    // The scene comes from the Copy base, so no scene sampler — the halo blends
+    // additively (ONE/ONE) on top.
+    // Descriptor set layout: binding 0 = sampler2D uBlur,
+    //                        binding 1 = usampler2D uMask.
     // -----------------------------------------------------------------
     {
-        VkDescriptorSetLayoutBinding bindings[3]{};
+        VkDescriptorSetLayoutBinding bindings[2]{};
         bindings[0].binding = 0; bindings[0].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER; bindings[0].descriptorCount = 1; bindings[0].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
         bindings[1].binding = 1; bindings[1].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER; bindings[1].descriptorCount = 1; bindings[1].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
-        bindings[2].binding = 2; bindings[2].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER; bindings[2].descriptorCount = 1; bindings[2].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
 
         VkDescriptorSetLayoutCreateInfo dslInfo{};
         dslInfo.sType        = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-        dslInfo.bindingCount = 3;
+        dslInfo.bindingCount = 2;
         dslInfo.pBindings    = bindings;
         VK_CHECK(vkCreateDescriptorSetLayout(ctx.device(), &dslInfo, nullptr, &glowCompositeSetLayout_));
 
@@ -2922,7 +2907,7 @@ bool VkPostProcess::createGlowPipelines(VkContext& ctx) {
         pInfo.pRasterizationState = &rs;
         pInfo.pMultisampleState   = &ms;
         pInfo.pDepthStencilState  = &ds;
-        pInfo.pColorBlendState    = &blend;  // 4-channel RGBA for swapchain-compatible format
+        pInfo.pColorBlendState    = &blend;  // RGB-only write mask — overlay preserves viewport alpha (Copy's a=1)
         pInfo.pDynamicState       = &dyn;
         pInfo.layout              = glowCompositePipeLayout_;
         pInfo.renderPass          = viewportPass_;  // composite records into viewportPass_ (must match its dependencyCount)
@@ -2981,20 +2966,20 @@ bool VkPostProcess::createGlowPipelines(VkContext& ctx) {
         write.descriptorCount = 1; write.pImageInfo = &imgInfo;
         vkUpdateDescriptorSets(ctx.device(), 1, &write, 0, nullptr);
     }
-    // GlowComposite: binding 0 = sceneColorView_, binding 1 = scratch[1], binding 2 = maskColorView_.
+    // GlowComposite (overlay — no scene sampler): binding 0 = scratch[1] (blur),
+    //                                              binding 1 = maskColorView_.
     {
-        VkDescriptorImageInfo imgInfos[3]{};
-        imgInfos[0].sampler = sampler_;     imgInfos[0].imageView = sceneColorView_;    imgInfos[0].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-        imgInfos[1].sampler = sampler_;     imgInfos[1].imageView = glowScratchView_[1]; imgInfos[1].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-        imgInfos[2].sampler = maskSampler_; imgInfos[2].imageView = maskColorView_;     imgInfos[2].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-        VkWriteDescriptorSet writes[3]{};
-        for (int i = 0; i < 3; ++i) {
+        VkDescriptorImageInfo imgInfos[2]{};
+        imgInfos[0].sampler = sampler_;     imgInfos[0].imageView = glowScratchView_[1]; imgInfos[0].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        imgInfos[1].sampler = maskSampler_; imgInfos[1].imageView = maskColorView_;      imgInfos[1].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        VkWriteDescriptorSet writes[2]{};
+        for (int i = 0; i < 2; ++i) {
             writes[i].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
             writes[i].dstSet = glowCompositeDescSet_; writes[i].dstBinding = static_cast<uint32_t>(i);
             writes[i].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
             writes[i].descriptorCount = 1; writes[i].pImageInfo = &imgInfos[i];
         }
-        vkUpdateDescriptorSets(ctx.device(), 3, writes, 0, nullptr);
+        vkUpdateDescriptorSets(ctx.device(), 2, writes, 0, nullptr);
     }
 
     return true;
@@ -3037,7 +3022,6 @@ void VkPostProcess::runChain(VkCommandBuffer cb,
                 }
                 pc.texel[0] = (swapExtent.width  > 0) ? 1.0f / static_cast<float>(swapExtent.width)  : 0.0f;
                 pc.texel[1] = (swapExtent.height > 0) ? 1.0f / static_cast<float>(swapExtent.height) : 0.0f;
-                pc.exposure = exposure;
 
                 vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, outlinePipeline_);
                 vkCmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_GRAPHICS,
@@ -3073,7 +3057,6 @@ void VkPostProcess::runChain(VkCommandBuffer cb,
                     pc.color[0] = 1.0f; pc.color[1] = 0.6f; pc.color[2] = 0.1f; pc.color[3] = 1.0f;
                     pc.intensity = 1.0f;
                 }
-                pc.exposure = exposure;
 
                 vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, glowCompositePipeline_);
                 vkCmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_GRAPHICS,
@@ -3110,7 +3093,6 @@ void VkPostProcess::runChain(VkCommandBuffer cb,
                     pc.color[0] = 1.0f; pc.color[1] = 0.6f; pc.color[2] = 0.1f; pc.color[3] = 1.0f;
                     pc.intensity = 0.5f;
                 }
-                pc.exposure = exposure;
 
                 vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, xrayPipeline_);
                 vkCmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_GRAPHICS,
@@ -3313,7 +3295,7 @@ void VkPostProcess::runBloomOffscreenPasses(VkCommandBuffer cb, float threshold,
     }
 }
 
-void VkPostProcess::updateSsaoUbo(const Mat4& projection, const Mat4& invProjection,
+void VkPostProcess::updateSsaoUbo(int frame, const Mat4& projection, const Mat4& invProjection,
                                   float radius, float bias, float power) {
     SsaoUbo ubo{};
     ubo.projection    = projection;
@@ -3325,12 +3307,12 @@ void VkPostProcess::updateSsaoUbo(const Mat4& projection, const Mat4& invProject
     ubo.params     = {radius, bias, power, static_cast<float>(kSsaoKernelSize)};
     ubo.noiseScale = {ssaoExtent_.width / 4.0f, ssaoExtent_.height / 4.0f, 0.0f, 0.0f};
 
-    std::memcpy(ssaoUboMapped_, &ubo, sizeof(SsaoUbo));
+    std::memcpy(ssaoUboMapped_[frame], &ubo, sizeof(SsaoUbo));
     // Host-visible memory may be non-coherent — flush the per-frame write.
-    vmaFlushAllocation(ctx_->allocator(), ssaoUboAlloc_, 0, sizeof(SsaoUbo));
+    vmaFlushAllocation(ctx_->allocator(), ssaoUboAlloc_[frame], 0, sizeof(SsaoUbo));
 }
 
-void VkPostProcess::runSsaoPass(VkCommandBuffer cb) {
+void VkPostProcess::runSsaoPass(VkCommandBuffer cb, int frame) {
     // Degenerate extent (targets not created) — nothing to record.
     if (ssaoExtent_.width == 0 || ssaoExtent_.height == 0) return;
 
@@ -3373,7 +3355,7 @@ void VkPostProcess::runSsaoPass(VkCommandBuffer cb) {
     };
 
     // Pass 1: SSAO (scene depth + noise + UBO -> ssaoView_). No push constants.
-    recordSsaoPass(ssaoFb_, ssaoPipeline_, ssaoLayout_, ssaoSet_, nullptr, 0);
+    recordSsaoPass(ssaoFb_, ssaoPipeline_, ssaoLayout_, ssaoSet_[frame], nullptr, 0);
 
     // Pass 2: 4x4 box blur (ssaoView_ -> ssaoBlurView_). Texel = 1/extent.
     SsaoBlurPush push{
@@ -3407,14 +3389,14 @@ bool VkPostProcess::createXRayPipeline(VkContext& ctx) {
         return false;
     }
 
-    // Descriptor set layout: 4 bindings (all COMBINED_IMAGE_SAMPLER, fragment stage).
-    //   binding 0: sampler2D  uScene      (scene color, linear sampler_)
-    //   binding 1: usampler2D uMask       (mask id, NEAREST maskSampler_)
-    //   binding 2: sampler2D  uMaskDepth  (tagged object depth, NEAREST maskSampler_)
-    //   binding 3: sampler2D  uSceneDepth (full scene depth, NEAREST maskSampler_)
+    // Descriptor set layout: 3 bindings (all COMBINED_IMAGE_SAMPLER, fragment stage).
+    // Overlay — the scene comes from the Copy base, so no scene sampler.
+    //   binding 0: usampler2D uMask       (mask id, NEAREST maskSampler_)
+    //   binding 1: sampler2D  uMaskDepth  (tagged object depth, NEAREST maskSampler_)
+    //   binding 2: sampler2D  uSceneDepth (full scene depth, NEAREST maskSampler_)
     // Depth images use NEAREST to avoid filtering across depth edges.
-    VkDescriptorSetLayoutBinding bindings[4]{};
-    for (int i = 0; i < 4; ++i) {
+    VkDescriptorSetLayoutBinding bindings[3]{};
+    for (int i = 0; i < 3; ++i) {
         bindings[i].binding         = static_cast<uint32_t>(i);
         bindings[i].descriptorType  = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
         bindings[i].descriptorCount = 1;
@@ -3423,7 +3405,7 @@ bool VkPostProcess::createXRayPipeline(VkContext& ctx) {
 
     VkDescriptorSetLayoutCreateInfo dslInfo{};
     dslInfo.sType        = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-    dslInfo.bindingCount = 4;
+    dslInfo.bindingCount = 3;
     dslInfo.pBindings    = bindings;
     VK_CHECK(vkCreateDescriptorSetLayout(ctx.device(), &dslInfo, nullptr, &xraySetLayout_));
 
@@ -3480,9 +3462,19 @@ bool VkPostProcess::createXRayPipeline(VkContext& ctx) {
     ds.depthTestEnable  = VK_FALSE;
     ds.depthWriteEnable = VK_FALSE;
 
+    // Alpha-blend the x-ray tint over the composited Copy base.
     VkPipelineColorBlendAttachmentState att{};
-    att.colorWriteMask = 0xF;
-    att.blendEnable    = VK_FALSE;
+    att.blendEnable         = VK_TRUE;
+    att.srcColorBlendFactor = VK_BLEND_FACTOR_SRC_ALPHA;
+    att.dstColorBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
+    att.colorBlendOp        = VK_BLEND_OP_ADD;
+    att.srcAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
+    att.dstAlphaBlendFactor = VK_BLEND_FACTOR_ZERO;
+    att.alphaBlendOp        = VK_BLEND_OP_ADD;
+    att.colorWriteMask      = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT |
+                              VK_COLOR_COMPONENT_B_BIT;  // RGB only: preserve the
+    // viewport alpha (Copy wrote a=1; the editor's ImGui::Image samples it, so
+    // zeroing alpha here would make the scene render transparent).
 
     VkPipelineColorBlendStateCreateInfo cb{};
     cb.sType           = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO;
@@ -3525,27 +3517,23 @@ bool VkPostProcess::createXRayPipeline(VkContext& ctx) {
     dsAlloc.pSetLayouts        = &xraySetLayout_;
     VK_CHECK(vkAllocateDescriptorSets(ctx.device(), &dsAlloc, &xrayDescSet_));
 
-    // Write the x-ray descriptor set:
-    //   binding 0: scene color   (linear sampler — floating-point color)
-    //   binding 1: mask id       (NEAREST maskSampler_ — integer texture)
-    //   binding 2: mask depth    (NEAREST maskSampler_ — depth, avoid edge filtering)
-    //   binding 3: scene depth   (NEAREST maskSampler_ — depth, avoid edge filtering)
-    VkDescriptorImageInfo imgInfos[4]{};
-    imgInfos[0].sampler     = sampler_;
-    imgInfos[0].imageView   = sceneColorView_;
+    // Write the x-ray descriptor set (overlay — no scene sampler):
+    //   binding 0: mask id       (NEAREST maskSampler_ — integer texture)
+    //   binding 1: mask depth    (NEAREST maskSampler_ — depth, avoid edge filtering)
+    //   binding 2: scene depth   (NEAREST maskSampler_ — depth, avoid edge filtering)
+    VkDescriptorImageInfo imgInfos[3]{};
+    imgInfos[0].sampler     = maskSampler_;
+    imgInfos[0].imageView   = maskColorView_;
     imgInfos[0].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
     imgInfos[1].sampler     = maskSampler_;
-    imgInfos[1].imageView   = maskColorView_;
-    imgInfos[1].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    imgInfos[1].imageView   = maskDepthView_;
+    imgInfos[1].imageLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL;
     imgInfos[2].sampler     = maskSampler_;
-    imgInfos[2].imageView   = maskDepthView_;
+    imgInfos[2].imageView   = sceneDepthView_;
     imgInfos[2].imageLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL;
-    imgInfos[3].sampler     = maskSampler_;
-    imgInfos[3].imageView   = sceneDepthView_;
-    imgInfos[3].imageLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL;
 
-    VkWriteDescriptorSet writes[4]{};
-    for (int i = 0; i < 4; ++i) {
+    VkWriteDescriptorSet writes[3]{};
+    for (int i = 0; i < 3; ++i) {
         writes[i].sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
         writes[i].dstSet          = xrayDescSet_;
         writes[i].dstBinding      = static_cast<uint32_t>(i);
@@ -3553,7 +3541,7 @@ bool VkPostProcess::createXRayPipeline(VkContext& ctx) {
         writes[i].descriptorCount = 1;
         writes[i].pImageInfo      = &imgInfos[i];
     }
-    vkUpdateDescriptorSets(ctx.device(), 4, writes, 0, nullptr);
+    vkUpdateDescriptorSets(ctx.device(), 3, writes, 0, nullptr);
 
     return true;
 }
@@ -3714,8 +3702,10 @@ bool VkPostProcess::createSsaoNoiseAndUbo(VkContext& ctx) {
         VK_CHECK(vkCreateSampler(ctx.device(), &si, nullptr, &ssaoNoiseSampler_));
     }
 
-    // --- Persistent host-visible, persistently-mapped SSAO UBO ---
-    {
+    // --- Persistent host-visible, persistently-mapped SSAO UBO (one per
+    // frame-in-flight slot so the CPU write for this frame can't race the
+    // previous frame's GPU read). ---
+    for (int f = 0; f < 2; ++f) {
         VkBufferCreateInfo bi{};
         bi.sType       = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
         bi.size        = sizeof(SsaoUbo);
@@ -3726,8 +3716,8 @@ bool VkPostProcess::createSsaoNoiseAndUbo(VkContext& ctx) {
         ai.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT |
                    VMA_ALLOCATION_CREATE_MAPPED_BIT;
         VmaAllocationInfo aiOut{};
-        VK_CHECK(vmaCreateBuffer(ctx.allocator(), &bi, &ai, &ssaoUboBuf_, &ssaoUboAlloc_, &aiOut));
-        ssaoUboMapped_ = aiOut.pMappedData;
+        VK_CHECK(vmaCreateBuffer(ctx.allocator(), &bi, &ai, &ssaoUboBuf_[f], &ssaoUboAlloc_[f], &aiOut));
+        ssaoUboMapped_[f] = aiOut.pMappedData;
     }
 
     // Cache the kernel (generated once; uploaded per-frame in Task 4).
@@ -3831,19 +3821,21 @@ void VkPostProcess::createSsaoTargets(VkContext& ctx, VkExtent2D extent) {
     makeFb(ssaoView_,     ssaoFb_);
     makeFb(ssaoBlurView_, ssaoBlurFb_);
 
-    // Allocate + write the 2 descriptor sets from the persistent ssaoDescPool_.
-    // Reset the pool first so a resize re-allocates cleanly (the pool is sized
-    // for exactly these 2 sets). The set layouts + pool were created in init
-    // before createTargets ran — heeds the M47 null-layout lesson.
+    // Allocate + write the 3 descriptor sets from the persistent ssaoDescPool_
+    // (2 per-frame ssao sets + 1 blur set). Reset the pool first so a resize
+    // re-allocates cleanly (the pool is sized for exactly these 3 sets). The set
+    // layouts + pool were created in init before createTargets ran — heeds the
+    // M47 null-layout lesson.
     VK_CHECK(vkResetDescriptorPool(ctx.device(), ssaoDescPool_, 0));
-    {
+    for (int f = 0; f < 2; ++f) {
         VkDescriptorSetAllocateInfo a0{};
         a0.sType              = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
         a0.descriptorPool     = ssaoDescPool_;
         a0.descriptorSetCount = 1;
         a0.pSetLayouts        = &ssaoSetLayout_;
-        VK_CHECK(vkAllocateDescriptorSets(ctx.device(), &a0, &ssaoSet_));
-
+        VK_CHECK(vkAllocateDescriptorSets(ctx.device(), &a0, &ssaoSet_[f]));
+    }
+    {
         VkDescriptorSetAllocateInfo a1{};
         a1.sType              = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
         a1.descriptorPool     = ssaoDescPool_;
@@ -3852,9 +3844,9 @@ void VkPostProcess::createSsaoTargets(VkContext& ctx, VkExtent2D extent) {
         VK_CHECK(vkAllocateDescriptorSets(ctx.device(), &a1, &ssaoBlurSet_));
     }
 
-    // ssaoSet_: 0 = scene depth (maskSampler_ NEAREST + depth layout, like x-ray),
-    // 1 = noise (NEAREST/REPEAT), 2 = UBO (whole range).
-    {
+    // ssaoSet_[f]: 0 = scene depth (maskSampler_ NEAREST + depth layout, like
+    // x-ray), 1 = noise (NEAREST/REPEAT), 2 = frame f's UBO (whole range).
+    for (int f = 0; f < 2; ++f) {
         VkDescriptorImageInfo depthInfo{};
         depthInfo.sampler     = maskSampler_;
         depthInfo.imageView   = sceneDepthView_;
@@ -3866,25 +3858,25 @@ void VkPostProcess::createSsaoTargets(VkContext& ctx, VkExtent2D extent) {
         noiseInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 
         VkDescriptorBufferInfo uboInfo{};
-        uboInfo.buffer = ssaoUboBuf_;
+        uboInfo.buffer = ssaoUboBuf_[f];
         uboInfo.offset = 0;
         uboInfo.range  = VK_WHOLE_SIZE;
 
         VkWriteDescriptorSet w[3]{};
         w[0].sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-        w[0].dstSet          = ssaoSet_;
+        w[0].dstSet          = ssaoSet_[f];
         w[0].dstBinding      = 0;
         w[0].descriptorType  = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
         w[0].descriptorCount = 1;
         w[0].pImageInfo      = &depthInfo;
         w[1].sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-        w[1].dstSet          = ssaoSet_;
+        w[1].dstSet          = ssaoSet_[f];
         w[1].dstBinding      = 1;
         w[1].descriptorType  = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
         w[1].descriptorCount = 1;
         w[1].pImageInfo      = &noiseInfo;
         w[2].sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-        w[2].dstSet          = ssaoSet_;
+        w[2].dstSet          = ssaoSet_[f];
         w[2].dstBinding      = 2;
         w[2].descriptorType  = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
         w[2].descriptorCount = 1;
@@ -3916,7 +3908,8 @@ void VkPostProcess::destroySsaoTargets(VkContext& ctx) {
     // the next createSsaoTargets frees them, and destroy() frees the pool itself.
     if (ssaoDescPool_) {
         vkResetDescriptorPool(ctx.device(), ssaoDescPool_, 0);
-        ssaoSet_     = VK_NULL_HANDLE;
+        ssaoSet_[0]  = VK_NULL_HANDLE;
+        ssaoSet_[1]  = VK_NULL_HANDLE;
         ssaoBlurSet_ = VK_NULL_HANDLE;
     }
     if (ssaoBlurFb_)    { vkDestroyFramebuffer(ctx.device(), ssaoBlurFb_, nullptr); ssaoBlurFb_ = VK_NULL_HANDLE; }
