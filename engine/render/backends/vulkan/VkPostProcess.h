@@ -156,10 +156,16 @@ public:
                                  const EffectTable& effects,
                                  VkExtent2D swapExtent);
 
+    // Records the HDR bloom down/up mip chain into bloomChain_ (mip0 holds the
+    // result). Call BEFORE beginViewportPass(), like the glow blur pre-passes.
+    void runBloomOffscreenPasses(VkCommandBuffer cb, float threshold, float knee,
+                                 float scatter);
+
 private:
     VkContext* ctx_ = nullptr;
     VkSampler  sampler_     = VK_NULL_HANDLE;  // linear-repeat (from VkTextureStore)
     VkSampler  maskSampler_ = VK_NULL_HANDLE;  // NEAREST — required for integer (R8_UINT) textures
+    VkSampler  bloomSampler_ = VK_NULL_HANDLE;  // LINEAR + CLAMP_TO_EDGE — bloom offset taps must not wrap edges
     VkExtent2D extent_{};
     VkFormat   colorFormat_ = VK_FORMAT_UNDEFINED;
     VkFormat   depthFormat_ = VK_FORMAT_UNDEFINED;
@@ -253,6 +259,15 @@ private:
     VkPipelineLayout bloomDownLayout_         = VK_NULL_HANDLE;
     VkPipelineLayout bloomUpLayout_           = VK_NULL_HANDLE;
     VkDescriptorSetLayout bloomSetLayout_     = VK_NULL_HANDLE;  // 1 binding: sampler2D
+    // Persistent per-source descriptor sets (mirrors glow's pre-written sets —
+    // the shared descPool_ is already full with maxSets=7, so bloom owns its own
+    // pool). Sources are fixed for the lifetime of the per-resize views, so the
+    // sets are written once in createBloomTargets and freed in destroyBloomTargets.
+    //   bloomBrightSet_     : samples sceneColorView_     (bright+downsample to mip0)
+    //   bloomSrcSets_[m]    : samples bloomMipViews_[m]   (down: m->m+1; up: m used as src m+1)
+    VkDescriptorPool bloomDescPool_  = VK_NULL_HANDLE;
+    VkDescriptorSet  bloomBrightSet_ = VK_NULL_HANDLE;
+    VkDescriptorSet  bloomSrcSets_[kBloomMaxMips] {};
 
     // --- Glow pipelines ---
     VkDescriptorSetLayout glowBlurHSetLayout_     = VK_NULL_HANDLE;
