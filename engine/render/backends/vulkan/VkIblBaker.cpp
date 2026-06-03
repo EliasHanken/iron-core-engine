@@ -123,6 +123,66 @@ void main() {
 )";
 }
 
+const char* kBrdfIntegrationComputeSrc() {
+    return R"(#version 450
+layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
+layout(binding = 0, rg16f) uniform writeonly image2D uLut;
+
+const float PI = 3.14159265358979323846;
+const uint  SAMPLES = 1024u;
+
+float radicalInverseVdC(uint bits) {
+    bits = (bits << 16u) | (bits >> 16u);
+    bits = ((bits & 0x55555555u) << 1u) | ((bits & 0xAAAAAAAAu) >> 1u);
+    bits = ((bits & 0x33333333u) << 2u) | ((bits & 0xCCCCCCCCu) >> 2u);
+    bits = ((bits & 0x0F0F0F0Fu) << 4u) | ((bits & 0xF0F0F0F0u) >> 4u);
+    bits = ((bits & 0x00FF00FFu) << 8u) | ((bits & 0xFF00FF00u) >> 8u);
+    return float(bits) * 2.3283064365386963e-10;
+}
+vec2 hammersley(uint i, uint n) { return vec2(float(i) / float(n), radicalInverseVdC(i)); }
+
+vec3 importanceSampleGGX(vec2 xi, float roughness) {
+    float a = roughness * roughness;
+    float phi = 2.0 * PI * xi.x;
+    float cosT = sqrt((1.0 - xi.y) / (1.0 + (a*a - 1.0) * xi.y));
+    float sinT = sqrt(1.0 - cosT * cosT);
+    return vec3(cos(phi) * sinT, sin(phi) * sinT, cosT);  // tangent space, N=+Z
+}
+float geomSchlickGGX(float nDotX, float roughness) {
+    float k = (roughness * roughness) / 2.0;
+    return nDotX / (nDotX * (1.0 - k) + k);
+}
+
+void main() {
+    ivec2 gid = ivec2(gl_GlobalInvocationID.xy);
+    ivec2 size = imageSize(uLut);
+    if (gid.x >= size.x || gid.y >= size.y) return;
+
+    float nDotV     = max((float(gid.x) + 0.5) / float(size.x), 1e-4);
+    float roughness =      (float(gid.y) + 0.5) / float(size.y);
+    vec3 V = vec3(sqrt(1.0 - nDotV * nDotV), 0.0, nDotV);
+
+    float A = 0.0, B = 0.0;
+    for (uint i = 0u; i < SAMPLES; ++i) {
+        vec2 xi = hammersley(i, SAMPLES);
+        vec3 H  = importanceSampleGGX(xi, roughness);
+        float vDotH = max(dot(V, H), 0.0);
+        vec3  L = 2.0 * vDotH * H - V;
+        float nDotL = max(L.z, 0.0);
+        float nDotH = max(H.z, 0.0);
+        if (nDotL > 0.0) {
+            float g  = geomSchlickGGX(nDotL, roughness) * geomSchlickGGX(nDotV, roughness);
+            float gv = (g * vDotH) / max(nDotH * nDotV, 1e-4);
+            float fc = pow(1.0 - vDotH, 5.0);
+            A += (1.0 - fc) * gv;
+            B += fc * gv;
+        }
+    }
+    imageStore(uLut, gid, vec4(A / float(SAMPLES), B / float(SAMPLES), 0.0, 0.0));
+}
+)";
+}
+
 bool VkIblBaker::init(VkContext& ctx) {
     // Descriptor layout: equirect sampler (0) + cube storage image (1).
     VkDescriptorSetLayoutBinding b[2]{};
@@ -191,6 +251,13 @@ bool VkIblBaker::init(VkContext& ctx) {
 }
 
 void VkIblBaker::destroy(VkContext& ctx) {
+    brdfPipeline_.destroy(ctx);
+    if (brdfSetLayout_)  { vkDestroyDescriptorSetLayout(ctx.device(), brdfSetLayout_, nullptr); brdfSetLayout_=VK_NULL_HANDLE; }
+    if (brdfLutSampler_) { vkDestroySampler(ctx.device(), brdfLutSampler_, nullptr); brdfLutSampler_=VK_NULL_HANDLE; }
+    if (brdfLutView_)    { vkDestroyImageView(ctx.device(), brdfLutView_, nullptr); brdfLutView_=VK_NULL_HANDLE; }
+    if (brdfLutStorage_) { vkDestroyImageView(ctx.device(), brdfLutStorage_, nullptr); brdfLutStorage_=VK_NULL_HANDLE; }
+    if (brdfLutImage_)   { vmaDestroyImage(ctx.allocator(), brdfLutImage_, brdfLutAlloc_); brdfLutImage_=VK_NULL_HANDLE; }
+
     irradiancePipeline_.destroy(ctx);
     if (irradianceSetLayout_) {
         vkDestroyDescriptorSetLayout(ctx.device(), irradianceSetLayout_, nullptr);
@@ -545,6 +612,102 @@ CubemapHandle VkIblBaker::bakeIrradiance(VkContext& ctx, VkCubemapStore& store,
     vkDestroyDescriptorPool(ctx.device(), dpool, nullptr);
     vkDestroyCommandPool(ctx.device(), pool, nullptr);
     return outHandle;
+}
+
+bool VkIblBaker::initBrdfLut(VkContext& ctx) {
+    const std::uint32_t kSize = 512;
+
+    // Image (RG16F, storage + sampled).
+    VkImageCreateInfo ii{};
+    ii.sType=VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO; ii.imageType=VK_IMAGE_TYPE_2D;
+    ii.format=VK_FORMAT_R16G16_SFLOAT; ii.extent={kSize,kSize,1};
+    ii.mipLevels=1; ii.arrayLayers=1; ii.samples=VK_SAMPLE_COUNT_1_BIT;
+    ii.tiling=VK_IMAGE_TILING_OPTIMAL;
+    ii.usage=VK_IMAGE_USAGE_STORAGE_BIT|VK_IMAGE_USAGE_SAMPLED_BIT;
+    ii.sharingMode=VK_SHARING_MODE_EXCLUSIVE; ii.initialLayout=VK_IMAGE_LAYOUT_UNDEFINED;
+    VmaAllocationCreateInfo ai{}; ai.usage=VMA_MEMORY_USAGE_AUTO;
+    VK_CHECK(vmaCreateImage(ctx.allocator(), &ii, &ai, &brdfLutImage_, &brdfLutAlloc_, nullptr));
+
+    VkImageViewCreateInfo vi{};
+    vi.sType=VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO; vi.image=brdfLutImage_;
+    vi.viewType=VK_IMAGE_VIEW_TYPE_2D; vi.format=VK_FORMAT_R16G16_SFLOAT;
+    vi.subresourceRange={VK_IMAGE_ASPECT_COLOR_BIT,0,1,0,1};
+    VK_CHECK(vkCreateImageView(ctx.device(), &vi, nullptr, &brdfLutView_));
+    VK_CHECK(vkCreateImageView(ctx.device(), &vi, nullptr, &brdfLutStorage_));
+
+    VkSamplerCreateInfo si{};
+    si.sType=VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
+    si.magFilter=VK_FILTER_LINEAR; si.minFilter=VK_FILTER_LINEAR;
+    si.mipmapMode=VK_SAMPLER_MIPMAP_MODE_NEAREST;
+    si.addressModeU=VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+    si.addressModeV=VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+    si.addressModeW=VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+    VK_CHECK(vkCreateSampler(ctx.device(), &si, nullptr, &brdfLutSampler_));
+
+    // Compute layout: binding 0 = storage image.
+    VkDescriptorSetLayoutBinding b{};
+    b.binding=0; b.descriptorType=VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+    b.descriptorCount=1; b.stageFlags=VK_SHADER_STAGE_COMPUTE_BIT;
+    VkDescriptorSetLayoutCreateInfo slInfo{};
+    slInfo.sType=VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+    slInfo.bindingCount=1; slInfo.pBindings=&b;
+    VK_CHECK(vkCreateDescriptorSetLayout(ctx.device(), &slInfo, nullptr, &brdfSetLayout_));
+
+    auto spirv = compileGlsl(VK_SHADER_STAGE_COMPUTE_BIT, kBrdfIntegrationComputeSrc());
+    if (spirv.empty()) { Log::error("VkIblBaker: BRDF LUT compute compile failed"); return false; }
+    if (!brdfPipeline_.init(ctx, spirv, brdfSetLayout_)) return false;
+
+    // One-shot bake.
+    VkCommandPool pool=VK_NULL_HANDLE; VkCommandPoolCreateInfo pInfo{};
+    pInfo.sType=VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO; pInfo.queueFamilyIndex=ctx.graphicsFamily();
+    pInfo.flags=VK_COMMAND_POOL_CREATE_TRANSIENT_BIT;
+    VK_CHECK(vkCreateCommandPool(ctx.device(), &pInfo, nullptr, &pool));
+    VkCommandBuffer cb=VK_NULL_HANDLE; VkCommandBufferAllocateInfo cbInfo{};
+    cbInfo.sType=VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO; cbInfo.commandPool=pool;
+    cbInfo.level=VK_COMMAND_BUFFER_LEVEL_PRIMARY; cbInfo.commandBufferCount=1;
+    VK_CHECK(vkAllocateCommandBuffers(ctx.device(), &cbInfo, &cb));
+    VkCommandBufferBeginInfo begin{}; begin.sType=VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+    begin.flags=VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+    VK_CHECK(vkBeginCommandBuffer(cb, &begin));
+
+    auto barrier=[&](VkImageLayout o,VkImageLayout n,VkAccessFlags sa,VkAccessFlags da,
+                     VkPipelineStageFlags ss,VkPipelineStageFlags ds){
+        VkImageMemoryBarrier mb{}; mb.sType=VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+        mb.oldLayout=o; mb.newLayout=n; mb.srcQueueFamilyIndex=VK_QUEUE_FAMILY_IGNORED;
+        mb.dstQueueFamilyIndex=VK_QUEUE_FAMILY_IGNORED; mb.image=brdfLutImage_;
+        mb.subresourceRange={VK_IMAGE_ASPECT_COLOR_BIT,0,1,0,1};
+        mb.srcAccessMask=sa; mb.dstAccessMask=da;
+        vkCmdPipelineBarrier(cb,ss,ds,0,0,nullptr,0,nullptr,1,&mb);
+    };
+    barrier(VK_IMAGE_LAYOUT_UNDEFINED,VK_IMAGE_LAYOUT_GENERAL,0,VK_ACCESS_SHADER_WRITE_BIT,
+            VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
+
+    VkDescriptorPoolSize ps{}; ps.type=VK_DESCRIPTOR_TYPE_STORAGE_IMAGE; ps.descriptorCount=1;
+    VkDescriptorPoolCreateInfo dpInfo{}; dpInfo.sType=VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
+    dpInfo.maxSets=1; dpInfo.poolSizeCount=1; dpInfo.pPoolSizes=&ps;
+    VkDescriptorPool dpool=VK_NULL_HANDLE; VK_CHECK(vkCreateDescriptorPool(ctx.device(),&dpInfo,nullptr,&dpool));
+    VkDescriptorSetAllocateInfo dsInfo{}; dsInfo.sType=VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+    dsInfo.descriptorPool=dpool; dsInfo.descriptorSetCount=1; dsInfo.pSetLayouts=&brdfSetLayout_;
+    VkDescriptorSet set=VK_NULL_HANDLE; VK_CHECK(vkAllocateDescriptorSets(ctx.device(),&dsInfo,&set));
+    VkDescriptorImageInfo info{}; info.imageView=brdfLutStorage_; info.imageLayout=VK_IMAGE_LAYOUT_GENERAL;
+    VkWriteDescriptorSet w{}; w.sType=VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET; w.dstSet=set;
+    w.dstBinding=0; w.descriptorType=VK_DESCRIPTOR_TYPE_STORAGE_IMAGE; w.descriptorCount=1; w.pImageInfo=&info;
+    vkUpdateDescriptorSets(ctx.device(),1,&w,0,nullptr);
+
+    vkCmdBindPipeline(cb,VK_PIPELINE_BIND_POINT_COMPUTE,brdfPipeline_.pipeline());
+    vkCmdBindDescriptorSets(cb,VK_PIPELINE_BIND_POINT_COMPUTE,brdfPipeline_.pipelineLayout(),0,1,&set,0,nullptr);
+    const std::uint32_t g=(kSize+7u)/8u; vkCmdDispatch(cb,g,g,1);
+
+    barrier(VK_IMAGE_LAYOUT_GENERAL,VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+            VK_ACCESS_SHADER_WRITE_BIT,VK_ACCESS_SHADER_READ_BIT,
+            VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT);
+    VK_CHECK(vkEndCommandBuffer(cb));
+    VkSubmitInfo submit{}; submit.sType=VK_STRUCTURE_TYPE_SUBMIT_INFO; submit.commandBufferCount=1; submit.pCommandBuffers=&cb;
+    VK_CHECK(vkQueueSubmit(ctx.graphicsQueue(),1,&submit,VK_NULL_HANDLE));
+    VK_CHECK(vkQueueWaitIdle(ctx.graphicsQueue()));
+    vkDestroyDescriptorPool(ctx.device(),dpool,nullptr);
+    vkDestroyCommandPool(ctx.device(),pool,nullptr);
+    return true;
 }
 
 }  // namespace iron

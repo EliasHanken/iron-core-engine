@@ -100,6 +100,14 @@ int main() {
         assert(!spv.empty());
         assert(spv.front() == 0x07230203u);  // SPIR-V magic
     }
+
+    // 9. The embedded split-sum BRDF integration compute shader compiles.
+    {
+        const auto spv = iron::compileGlsl(
+            VK_SHADER_STAGE_COMPUTE_BIT, iron::kBrdfIntegrationComputeSrc());
+        assert(!spv.empty());
+        assert(spv.front() == 0x07230203u);  // SPIR-V magic
+    }
 #endif
 
     // (BRDF LUT) Split-sum scale/bias endpoints. At NdotV=1, roughness=0 the

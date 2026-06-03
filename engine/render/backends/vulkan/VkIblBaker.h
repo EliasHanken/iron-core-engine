@@ -8,6 +8,7 @@
 #include "render/backends/vulkan/VkComputePipeline.h"
 
 #include <vulkan/vulkan.h>
+#include <vk_mem_alloc.h>  // VmaAllocation (BRDF LUT image)
 
 #include <string>
 
@@ -23,6 +24,10 @@ const char* kEquirectToCubeComputeSrc();
 // Returns the embedded irradiance-convolution compute shader source.
 // Exposed for a compile-check unit test.
 const char* kIrradianceConvolveComputeSrc();
+
+// Returns the embedded split-sum BRDF integration compute shader source.
+// Exposed for a compile-check unit test.
+const char* kBrdfIntegrationComputeSrc();
 
 // Owns the equirect->cube compute pipeline and the .hdr load path. This is
 // the shared IBL bake foundation; M46b/c add more compute passes alongside it.
@@ -43,6 +48,11 @@ public:
     CubemapHandle bakeIrradiance(VkContext& ctx, VkCubemapStore& store,
                                  CubemapHandle envCube, int faceSize);
 
+    // Bakes the scene-independent split-sum BRDF LUT (512x512 RG16F) once.
+    bool initBrdfLut(VkContext& ctx);
+    VkImageView brdfLutView()    const { return brdfLutView_; }
+    VkSampler   brdfLutSampler() const { return brdfLutSampler_; }
+
 private:
     VkDescriptorSetLayout setLayout_       = VK_NULL_HANDLE;
     VkSampler             equirectSampler_ = VK_NULL_HANDLE;
@@ -50,6 +60,14 @@ private:
 
     VkDescriptorSetLayout irradianceSetLayout_ = VK_NULL_HANDLE;
     VkComputePipeline     irradiancePipeline_;
+
+    VkDescriptorSetLayout brdfSetLayout_  = VK_NULL_HANDLE;
+    VkComputePipeline     brdfPipeline_;
+    VkImage               brdfLutImage_   = VK_NULL_HANDLE;
+    VmaAllocation         brdfLutAlloc_   = VK_NULL_HANDLE;
+    VkImageView           brdfLutView_    = VK_NULL_HANDLE;  // sampled (sampler2D)
+    VkImageView           brdfLutStorage_ = VK_NULL_HANDLE;  // image2D write
+    VkSampler             brdfLutSampler_ = VK_NULL_HANDLE;
 };
 
 }  // namespace iron
