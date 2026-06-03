@@ -1378,6 +1378,22 @@ void VkPostProcess::createBloomTargets(VkExtent2D extent) {
         vkDestroyCommandPool(ctx.device(), pool, nullptr);
     }
 
+    // The descriptor set layout (binding 0 = sampler2D) is persistent. It is
+    // created here — createBloomTargets runs before createBloomPipelines in init
+    // (and is the first user of the layout, allocating the per-source sets below).
+    if (bloomSetLayout_ == VK_NULL_HANDLE) {
+        VkDescriptorSetLayoutBinding slb{};
+        slb.binding         = 0;
+        slb.descriptorType  = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        slb.descriptorCount = 1;
+        slb.stageFlags      = VK_SHADER_STAGE_FRAGMENT_BIT;
+        VkDescriptorSetLayoutCreateInfo slInfo{};
+        slInfo.sType        = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+        slInfo.bindingCount = 1;
+        slInfo.pBindings    = &slb;
+        VK_CHECK(vkCreateDescriptorSetLayout(ctx.device(), &slInfo, nullptr, &bloomSetLayout_));
+    }
+
     // Persistent per-source descriptor sets (mirrors glow's pre-written sets).
     // The shared descPool_ is full (maxSets=7), so bloom owns a dedicated pool
     // sized for the worst case: 1 bright set (scene) + one set per mip. Sources
@@ -1486,19 +1502,8 @@ bool VkPostProcess::createBloomPipelines() {
         return m;
     };
 
-    // Descriptor set layout: binding 0 = sampler2D (the source mip / scene).
-    {
-        VkDescriptorSetLayoutBinding b{};
-        b.binding         = 0;
-        b.descriptorType  = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-        b.descriptorCount = 1;
-        b.stageFlags      = VK_SHADER_STAGE_FRAGMENT_BIT;
-        VkDescriptorSetLayoutCreateInfo dslInfo{};
-        dslInfo.sType        = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-        dslInfo.bindingCount = 1;
-        dslInfo.pBindings    = &b;
-        VK_CHECK(vkCreateDescriptorSetLayout(ctx.device(), &dslInfo, nullptr, &bloomSetLayout_));
-    }
+    // bloomSetLayout_ (binding 0 = sampler2D) is already created by
+    // createBloomTargets, which runs before this in init. Just use it here.
 
     // Common full-screen pipeline state (mirrors createGlowPipelines).
     VkPipelineInputAssemblyStateCreateInfo ia{};
