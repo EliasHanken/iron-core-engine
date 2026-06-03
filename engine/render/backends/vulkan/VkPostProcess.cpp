@@ -170,35 +170,31 @@ void main() {
 }
 )";
 
-// kXrayFrag — tint where the tagged object is occluded by nearer scene geometry.
-// binding 0: sampler2D  uScene      — full scene color
-// binding 1: usampler2D uMask       — tagged object id (0 = no object)
-// binding 2: sampler2D  uMaskDepth  — tagged object's own depth (from mask pass)
-// binding 3: sampler2D  uSceneDepth — full scene depth (includes occluders)
-// Tints toward pc.color where id != 0 AND sceneDepth < maskDepth (occluded).
+// kXrayFrag — overlay: tints where the tagged object is occluded by nearer scene
+// geometry, outputting only the tint with alpha so it alpha-blends over the Copy
+// composite (which carries the scene + bloom + SSAO + tonemap). Samples no scene
+// color and does no tonemap.
+// binding 0: usampler2D uMask       — tagged object id (0 = no object)
+// binding 1: sampler2D  uMaskDepth  — tagged object's own depth (from mask pass)
+// binding 2: sampler2D  uSceneDepth — full scene depth (includes occluders)
+// Emits alpha = occluded * intensity where id != 0 AND sceneDepth < maskDepth.
 // Both depths use the same projection, so raw float comparison is correct;
 // smaller depth value means nearer to the camera.
 const char* kXrayFrag = R"(#version 450
-layout(location = 0) in vec2 vUV;
+layout(location = 0) in  vec2 vUV;
 layout(location = 0) out vec4 outColor;
-layout(set = 0, binding = 0) uniform sampler2D uScene;
-layout(set = 0, binding = 1) uniform usampler2D uMask;
-layout(set = 0, binding = 2) uniform sampler2D uMaskDepth;
-layout(set = 0, binding = 3) uniform sampler2D uSceneDepth;
-layout(push_constant) uniform Push { vec4 color; float intensity; float exposure; } pc;
-vec3 aces(vec3 x) {
-    const float a = 2.51, b = 0.03, c = 2.43, d = 0.59, e = 0.14;
-    return clamp((x * (a * x + b)) / (x * (c * x + d) + e), 0.0, 1.0);
-}
+layout(set = 0, binding = 0) uniform usampler2D uMask;
+layout(set = 0, binding = 1) uniform sampler2D  uMaskDepth;
+layout(set = 0, binding = 2) uniform sampler2D  uSceneDepth;
+layout(push_constant) uniform Push { vec4 color; float intensity; } pc;
+
 void main() {
-    vec3 scene = texture(uScene, vUV).rgb;
     uint id = texture(uMask, vUV).r;
-    if (id == 0u) { outColor = vec4(aces(scene * pc.exposure), 1.0); return; }
-    float md = texture(uMaskDepth, vUV).r;   // tagged object depth
-    float sd = texture(uSceneDepth, vUV).r;  // nearest scene depth
-    // Occluded when something is in front of the object (smaller depth = nearer).
-    float occluded = (sd < md - 1e-4) ? 1.0 : 0.0;
-    outColor = vec4(aces(mix(scene, pc.color.rgb, occluded * pc.intensity) * pc.exposure), 1.0);
+    if (id == 0u) { outColor = vec4(0.0); return; }     // not tagged: transparent
+    float md = texture(uMaskDepth, vUV).r;
+    float sd = texture(uSceneDepth, vUV).r;
+    float occluded = (sd < md - 1e-4) ? 1.0 : 0.0;      // nearer geometry in front
+    outColor = vec4(pc.color.rgb, occluded * pc.intensity);   // alpha-blend tint
 }
 )";
 
@@ -722,25 +718,22 @@ bool VkPostProcess::resize(VkContext& ctx, VkExtent2D extent) {
         vkUpdateDescriptorSets(ctx.device(), 3, writes, 0, nullptr);
     }
 
-    // XRay: binding 0 = sceneColorView_, binding 1 = maskColorView_,
-    //        binding 2 = maskDepthView_, binding 3 = sceneDepthView_.
+    // XRay (overlay — no scene sampler): binding 0 = maskColorView_,
+    //        binding 1 = maskDepthView_, binding 2 = sceneDepthView_.
     {
-        VkDescriptorImageInfo imgInfos[4]{};
-        imgInfos[0].sampler     = sampler_;
-        imgInfos[0].imageView   = sceneColorView_;
+        VkDescriptorImageInfo imgInfos[3]{};
+        imgInfos[0].sampler     = maskSampler_;
+        imgInfos[0].imageView   = maskColorView_;
         imgInfos[0].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
         imgInfos[1].sampler     = maskSampler_;
-        imgInfos[1].imageView   = maskColorView_;
-        imgInfos[1].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        imgInfos[1].imageView   = maskDepthView_;
+        imgInfos[1].imageLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL;
         imgInfos[2].sampler     = maskSampler_;
-        imgInfos[2].imageView   = maskDepthView_;
+        imgInfos[2].imageView   = sceneDepthView_;
         imgInfos[2].imageLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL;
-        imgInfos[3].sampler     = maskSampler_;
-        imgInfos[3].imageView   = sceneDepthView_;
-        imgInfos[3].imageLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL;
 
-        VkWriteDescriptorSet writes[4]{};
-        for (int i = 0; i < 4; ++i) {
+        VkWriteDescriptorSet writes[3]{};
+        for (int i = 0; i < 3; ++i) {
             writes[i].sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
             writes[i].dstSet          = xrayDescSet_;
             writes[i].dstBinding      = static_cast<uint32_t>(i);
@@ -748,7 +741,7 @@ bool VkPostProcess::resize(VkContext& ctx, VkExtent2D extent) {
             writes[i].descriptorCount = 1;
             writes[i].pImageInfo      = &imgInfos[i];
         }
-        vkUpdateDescriptorSets(ctx.device(), 4, writes, 0, nullptr);
+        vkUpdateDescriptorSets(ctx.device(), 3, writes, 0, nullptr);
     }
 
     if (!resizeViewport(ctx, extent)) return false;
@@ -2118,11 +2111,11 @@ bool VkPostProcess::createCopyPipeline(VkContext& ctx) {
     //   set 3: glowBlurH    — 1 sampler  (mask)
     //   set 4: glowBlurV    — 1 sampler  (scratch[0])
     //   set 5: glowComposite — 3 samplers (scene color + scratch[1] + mask)
-    //   set 6: xray         — 4 samplers (scene color + mask id + mask depth + scene depth)
-    // Total: 7 sets, 14 combined-image-samplers.
+    //   set 6: xray         — 3 samplers (mask id + mask depth + scene depth)  (overlay: scene from Copy base)
+    // Total: 7 sets, 13 combined-image-samplers.
     VkDescriptorPoolSize poolSize{};
     poolSize.type            = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-    poolSize.descriptorCount = 14;
+    poolSize.descriptorCount = 13;
 
     VkDescriptorPoolCreateInfo dpInfo{};
     dpInfo.sType         = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
@@ -3088,7 +3081,6 @@ void VkPostProcess::runChain(VkCommandBuffer cb,
                     pc.color[0] = 1.0f; pc.color[1] = 0.6f; pc.color[2] = 0.1f; pc.color[3] = 1.0f;
                     pc.intensity = 0.5f;
                 }
-                pc.exposure = exposure;
 
                 vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, xrayPipeline_);
                 vkCmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_GRAPHICS,
@@ -3385,14 +3377,14 @@ bool VkPostProcess::createXRayPipeline(VkContext& ctx) {
         return false;
     }
 
-    // Descriptor set layout: 4 bindings (all COMBINED_IMAGE_SAMPLER, fragment stage).
-    //   binding 0: sampler2D  uScene      (scene color, linear sampler_)
-    //   binding 1: usampler2D uMask       (mask id, NEAREST maskSampler_)
-    //   binding 2: sampler2D  uMaskDepth  (tagged object depth, NEAREST maskSampler_)
-    //   binding 3: sampler2D  uSceneDepth (full scene depth, NEAREST maskSampler_)
+    // Descriptor set layout: 3 bindings (all COMBINED_IMAGE_SAMPLER, fragment stage).
+    // Overlay — the scene comes from the Copy base, so no scene sampler.
+    //   binding 0: usampler2D uMask       (mask id, NEAREST maskSampler_)
+    //   binding 1: sampler2D  uMaskDepth  (tagged object depth, NEAREST maskSampler_)
+    //   binding 2: sampler2D  uSceneDepth (full scene depth, NEAREST maskSampler_)
     // Depth images use NEAREST to avoid filtering across depth edges.
-    VkDescriptorSetLayoutBinding bindings[4]{};
-    for (int i = 0; i < 4; ++i) {
+    VkDescriptorSetLayoutBinding bindings[3]{};
+    for (int i = 0; i < 3; ++i) {
         bindings[i].binding         = static_cast<uint32_t>(i);
         bindings[i].descriptorType  = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
         bindings[i].descriptorCount = 1;
@@ -3401,7 +3393,7 @@ bool VkPostProcess::createXRayPipeline(VkContext& ctx) {
 
     VkDescriptorSetLayoutCreateInfo dslInfo{};
     dslInfo.sType        = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-    dslInfo.bindingCount = 4;
+    dslInfo.bindingCount = 3;
     dslInfo.pBindings    = bindings;
     VK_CHECK(vkCreateDescriptorSetLayout(ctx.device(), &dslInfo, nullptr, &xraySetLayout_));
 
@@ -3458,9 +3450,17 @@ bool VkPostProcess::createXRayPipeline(VkContext& ctx) {
     ds.depthTestEnable  = VK_FALSE;
     ds.depthWriteEnable = VK_FALSE;
 
+    // Alpha-blend the x-ray tint over the composited Copy base.
     VkPipelineColorBlendAttachmentState att{};
-    att.colorWriteMask = 0xF;
-    att.blendEnable    = VK_FALSE;
+    att.blendEnable         = VK_TRUE;
+    att.srcColorBlendFactor = VK_BLEND_FACTOR_SRC_ALPHA;
+    att.dstColorBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
+    att.colorBlendOp        = VK_BLEND_OP_ADD;
+    att.srcAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
+    att.dstAlphaBlendFactor = VK_BLEND_FACTOR_ZERO;
+    att.alphaBlendOp        = VK_BLEND_OP_ADD;
+    att.colorWriteMask      = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT |
+                              VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
 
     VkPipelineColorBlendStateCreateInfo cb{};
     cb.sType           = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO;
@@ -3503,27 +3503,23 @@ bool VkPostProcess::createXRayPipeline(VkContext& ctx) {
     dsAlloc.pSetLayouts        = &xraySetLayout_;
     VK_CHECK(vkAllocateDescriptorSets(ctx.device(), &dsAlloc, &xrayDescSet_));
 
-    // Write the x-ray descriptor set:
-    //   binding 0: scene color   (linear sampler — floating-point color)
-    //   binding 1: mask id       (NEAREST maskSampler_ — integer texture)
-    //   binding 2: mask depth    (NEAREST maskSampler_ — depth, avoid edge filtering)
-    //   binding 3: scene depth   (NEAREST maskSampler_ — depth, avoid edge filtering)
-    VkDescriptorImageInfo imgInfos[4]{};
-    imgInfos[0].sampler     = sampler_;
-    imgInfos[0].imageView   = sceneColorView_;
+    // Write the x-ray descriptor set (overlay — no scene sampler):
+    //   binding 0: mask id       (NEAREST maskSampler_ — integer texture)
+    //   binding 1: mask depth    (NEAREST maskSampler_ — depth, avoid edge filtering)
+    //   binding 2: scene depth   (NEAREST maskSampler_ — depth, avoid edge filtering)
+    VkDescriptorImageInfo imgInfos[3]{};
+    imgInfos[0].sampler     = maskSampler_;
+    imgInfos[0].imageView   = maskColorView_;
     imgInfos[0].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
     imgInfos[1].sampler     = maskSampler_;
-    imgInfos[1].imageView   = maskColorView_;
-    imgInfos[1].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    imgInfos[1].imageView   = maskDepthView_;
+    imgInfos[1].imageLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL;
     imgInfos[2].sampler     = maskSampler_;
-    imgInfos[2].imageView   = maskDepthView_;
+    imgInfos[2].imageView   = sceneDepthView_;
     imgInfos[2].imageLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL;
-    imgInfos[3].sampler     = maskSampler_;
-    imgInfos[3].imageView   = sceneDepthView_;
-    imgInfos[3].imageLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL;
 
-    VkWriteDescriptorSet writes[4]{};
-    for (int i = 0; i < 4; ++i) {
+    VkWriteDescriptorSet writes[3]{};
+    for (int i = 0; i < 3; ++i) {
         writes[i].sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
         writes[i].dstSet          = xrayDescSet_;
         writes[i].dstBinding      = static_cast<uint32_t>(i);
@@ -3531,7 +3527,7 @@ bool VkPostProcess::createXRayPipeline(VkContext& ctx) {
         writes[i].descriptorCount = 1;
         writes[i].pImageInfo      = &imgInfos[i];
     }
-    vkUpdateDescriptorSets(ctx.device(), 4, writes, 0, nullptr);
+    vkUpdateDescriptorSets(ctx.device(), 3, writes, 0, nullptr);
 
     return true;
 }

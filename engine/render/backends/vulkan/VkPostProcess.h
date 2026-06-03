@@ -141,8 +141,7 @@ public:
     struct XRayPush {
         float color[4];      // rgb tint color + padding
         float intensity;     // tint strength
-        float exposure;      // M44: tonemap exposure (was _pad[0])
-        float _pad[2];
+        float _pad[3];       // overlay: no exposure (Copy base already tonemapped)
     };
 
     // Push constants for the copy/composite (tonemap) pipeline.
