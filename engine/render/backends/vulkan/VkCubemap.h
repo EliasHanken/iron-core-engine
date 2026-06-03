@@ -12,18 +12,24 @@
 #include <array>
 #include <cstdint>
 #include <unordered_map>
+#include <vector>
 
 namespace iron {
 
 class VkContext;
 
 struct VkCubemapResource {
-    VkImage       image   = VK_NULL_HANDLE;
-    VmaAllocation alloc   = VK_NULL_HANDLE;
-    VkImageView   view    = VK_NULL_HANDLE;
-    VkSampler     sampler = VK_NULL_HANDLE;  // shared with store
-    std::uint32_t width   = 0;
-    std::uint32_t height  = 0;
+    VkImage       image     = VK_NULL_HANDLE;
+    VmaAllocation alloc     = VK_NULL_HANDLE;
+    VkImageView   view      = VK_NULL_HANDLE;  // cube view, for sampling
+    VkSampler     sampler   = VK_NULL_HANDLE;  // shared with store
+    VkFormat      format    = VK_FORMAT_R8G8B8A8_SRGB;
+    std::uint32_t width     = 0;
+    std::uint32_t height    = 0;
+    std::uint32_t mipLevels = 1;
+    // Per-mip 2D-array views (6 layers) for compute imageStore. Empty for
+    // sampled-only LDR cubemaps created via createFromFaces.
+    std::vector<VkImageView> storageViews;
 };
 
 // Vulkan cubemap storage. Mirrors VkTextureStore pattern: shared
@@ -37,6 +43,13 @@ public:
 
     CubemapHandle createFromFaces(VkContext& ctx, int width, int height,
                                   const std::array<const unsigned char*, 6>& faces);
+
+    // Allocates an RGBA16F cube-compatible image (faceSize x faceSize, 6
+    // layers, `mipLevels` mips) with STORAGE+SAMPLED usage. The returned
+    // resource has a cube sampling `view` plus one 2D-array `storageViews`
+    // entry per mip for compute writes. The image is left in
+    // VK_IMAGE_LAYOUT_UNDEFINED; the caller transitions it.
+    CubemapHandle createHdr(VkContext& ctx, int faceSize, int mipLevels);
 
     CubemapHandle blackCubemap() const { return black_; }
     const VkCubemapResource& get(CubemapHandle h) const;
