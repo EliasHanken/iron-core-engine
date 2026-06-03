@@ -54,7 +54,8 @@ public:
 
     void beginScenePass(VkCommandBuffer cb, const float clearColor[4]) const;
     void endScenePass(VkCommandBuffer cb) const;
-    void recordComposite(VkCommandBuffer cb, float exposure) const;
+    void recordComposite(VkCommandBuffer cb, float exposure,
+                         float bloomIntensity = 0.0f) const;
     // Full-screen blit of viewportColor into the (already-begun) swapchain pass.
     void blitToSwapchain(VkCommandBuffer cb) const;
 
@@ -77,7 +78,8 @@ public:
                   const std::vector<PostPass>& passes,
                   const EffectTable& effects,
                   VkExtent2D swapExtent,
-                  float exposure);
+                  float exposure,
+                  float bloomIntensity = 0.0f);
 
     // --- Mask pass API (Phase C) ---
     VkRenderPass maskPass() const { return maskPass_; }
@@ -138,8 +140,9 @@ public:
 
     // Push constants for the copy/composite (tonemap) pipeline.
     struct CopyPush {
-        float exposure;   // linear exposure multiply applied before ACES
-        float _pad[3];
+        float exposure;        // linear exposure multiply applied before ACES
+        float bloomIntensity;  // M47: bloom mip0 contribution added before ACES
+        float _pad[2];
     };
 
     // M47 — bloom push constants (fragment stage). srcTexel = 1/srcWidth, 1/srcHeight.

@@ -36,6 +36,30 @@ void main() {
 }
 )";
 
+// Composite (tonemap) fragment shader — a bloom-aware variant of kCopyFrag used
+// ONLY by the copy/composite pipeline (NOT the viewport->swapchain blit, which
+// keeps the binding-0-only kCopyFrag). Adds bloom mip0 (binding 1) before the
+// ACES curve. The aces() body and the exposure/output are byte-identical to
+// kCopyFrag; the only additions are the uBloom binding, the bloomIntensity push
+// field, and the `scene + bloom * intensity` add. (M47)
+const char* kCompositeFrag = R"(#version 450
+layout(location = 0) in vec2 vUV;
+layout(location = 0) out vec4 outColor;
+layout(set = 0, binding = 0) uniform sampler2D uScene;
+layout(set = 0, binding = 1) uniform sampler2D uBloom;
+layout(push_constant) uniform Push { float exposure; float bloomIntensity; } pc;
+vec3 aces(vec3 x) {
+    const float a = 2.51, b = 0.03, c = 2.43, d = 0.59, e = 0.14;
+    return clamp((x * (a * x + b)) / (x * (c * x + d) + e), 0.0, 1.0);
+}
+void main() {
+    vec3 scene = texture(uScene, vUV).rgb;
+    vec3 bloom = texture(uBloom, vUV).rgb;
+    vec3 hdr   = (scene + bloom * pc.bloomIntensity) * pc.exposure;
+    outColor = vec4(aces(hdr), 1.0);
+}
+)";
+
 // --- Mask pass shaders ---
 // Position-only; MVP from push constant. The vertex buffer is the full Vertex
 // struct (stride = sizeof(Vertex)) with position at location 0, mirroring
@@ -442,21 +466,32 @@ bool VkPostProcess::resize(VkContext& ctx, VkExtent2D extent) {
     destroyTargets(ctx);
     if (!createTargets(ctx)) return false;
 
-    // Re-write the copy descriptor set to point at the new sceneColorView_.
+    // Re-write the copy/composite descriptor set: binding 0 = new sceneColorView_,
+    // binding 1 = new bloom mip0 (createTargets above rebuilt the bloom targets, so
+    // bloomMipViews_[0] is the freshly-created view). (M47)
     {
-        VkDescriptorImageInfo imgInfo{};
-        imgInfo.sampler     = sampler_;
-        imgInfo.imageView   = sceneColorView_;
-        imgInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        VkDescriptorImageInfo imgInfos[2]{};
+        imgInfos[0].sampler     = sampler_;
+        imgInfos[0].imageView   = sceneColorView_;
+        imgInfos[0].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        imgInfos[1].sampler     = bloomSampler_;
+        imgInfos[1].imageView   = bloomMipViews_[0];
+        imgInfos[1].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 
-        VkWriteDescriptorSet write{};
-        write.sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-        write.dstSet          = copyDescSet_;
-        write.dstBinding      = 0;
-        write.descriptorType  = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-        write.descriptorCount = 1;
-        write.pImageInfo      = &imgInfo;
-        vkUpdateDescriptorSets(ctx.device(), 1, &write, 0, nullptr);
+        VkWriteDescriptorSet writes[2]{};
+        writes[0].sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        writes[0].dstSet          = copyDescSet_;
+        writes[0].dstBinding      = 0;
+        writes[0].descriptorType  = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        writes[0].descriptorCount = 1;
+        writes[0].pImageInfo      = &imgInfos[0];
+        writes[1].sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        writes[1].dstSet          = copyDescSet_;
+        writes[1].dstBinding      = 1;
+        writes[1].descriptorType  = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        writes[1].descriptorCount = 1;
+        writes[1].pImageInfo      = &imgInfos[1];
+        vkUpdateDescriptorSets(ctx.device(), 2, writes, 0, nullptr);
     }
 
     // Re-write the outline descriptor set to point at the new views.
@@ -648,12 +683,14 @@ void VkPostProcess::endViewportPass(VkCommandBuffer cb) const {
     vkCmdEndRenderPass(cb);
 }
 
-void VkPostProcess::recordComposite(VkCommandBuffer cb, float exposure) const {
+void VkPostProcess::recordComposite(VkCommandBuffer cb, float exposure,
+                                    float bloomIntensity) const {
     vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, copyPipeline_);
     vkCmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_GRAPHICS,
                             copyPipeLayout_, 0, 1, &copyDescSet_, 0, nullptr);
     CopyPush pc{};
-    pc.exposure = exposure;
+    pc.exposure       = exposure;
+    pc.bloomIntensity = bloomIntensity;
     vkCmdPushConstants(cb, copyPipeLayout_, VK_SHADER_STAGE_FRAGMENT_BIT,
                        0, sizeof(CopyPush), &pc);
     vkCmdDraw(cb, 3, 1, 0, 0);
@@ -1783,9 +1820,10 @@ bool VkPostProcess::resizeViewport(VkContext& ctx, VkExtent2D extent) {
 }
 
 bool VkPostProcess::createCopyPipeline(VkContext& ctx) {
-    // Compile shaders.
+    // Compile shaders. The composite pass uses kCompositeFrag (bloom-aware,
+    // 2 bindings); the viewport->swapchain blit keeps the binding-0-only kCopyFrag.
     auto vspv = compileGlsl(VK_SHADER_STAGE_VERTEX_BIT,   kFullscreenVert);
-    auto fspv = compileGlsl(VK_SHADER_STAGE_FRAGMENT_BIT, kCopyFrag);
+    auto fspv = compileGlsl(VK_SHADER_STAGE_FRAGMENT_BIT, kCompositeFrag);
     if (vspv.empty() || fspv.empty()) {
         Log::error("VkPostProcess: shader compile failed");
         return false;
@@ -1805,17 +1843,22 @@ bool VkPostProcess::createCopyPipeline(VkContext& ctx) {
         return false;
     }
 
-    // Descriptor set layout: binding 0 = combined image sampler (FS).
-    VkDescriptorSetLayoutBinding binding{};
-    binding.binding         = 0;
-    binding.descriptorType  = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-    binding.descriptorCount = 1;
-    binding.stageFlags      = VK_SHADER_STAGE_FRAGMENT_BIT;
+    // Descriptor set layout: binding 0 = scene color, binding 1 = bloom mip0
+    // (both combined image samplers, FS). (M47)
+    VkDescriptorSetLayoutBinding bindings[2]{};
+    bindings[0].binding         = 0;
+    bindings[0].descriptorType  = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    bindings[0].descriptorCount = 1;
+    bindings[0].stageFlags      = VK_SHADER_STAGE_FRAGMENT_BIT;
+    bindings[1].binding         = 1;
+    bindings[1].descriptorType  = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    bindings[1].descriptorCount = 1;
+    bindings[1].stageFlags      = VK_SHADER_STAGE_FRAGMENT_BIT;
 
     VkDescriptorSetLayoutCreateInfo dslInfo{};
     dslInfo.sType        = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-    dslInfo.bindingCount = 1;
-    dslInfo.pBindings    = &binding;
+    dslInfo.bindingCount = 2;
+    dslInfo.pBindings    = bindings;
     VK_CHECK(vkCreateDescriptorSetLayout(ctx.device(), &dslInfo, nullptr, &copySetLayout_));
 
     VkPushConstantRange pcRange{};
@@ -1908,18 +1951,18 @@ bool VkPostProcess::createCopyPipeline(VkContext& ctx) {
     vkDestroyShaderModule(ctx.device(), fsm, nullptr);
     VK_CHECK(copyPipeResult);
 
-    // Descriptor pool: 7 sets total, 13 combined-image-sampler descriptors.
-    //   set 0: copy         — 1 sampler  (scene color)
+    // Descriptor pool: 7 sets total, 14 combined-image-sampler descriptors.
+    //   set 0: copy/composite — 2 samplers (scene color + bloom mip0)  (M47)
     //   set 1: blit         — 1 sampler  (viewport color)
     //   set 2: outline      — 2 samplers (scene color + mask)
     //   set 3: glowBlurH    — 1 sampler  (mask)
     //   set 4: glowBlurV    — 1 sampler  (scratch[0])
     //   set 5: glowComposite — 3 samplers (scene color + scratch[1] + mask)
     //   set 6: xray         — 4 samplers (scene color + mask id + mask depth + scene depth)
-    // Total: 7 sets, 13 combined-image-samplers.
+    // Total: 7 sets, 14 combined-image-samplers.
     VkDescriptorPoolSize poolSize{};
     poolSize.type            = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-    poolSize.descriptorCount = 13;
+    poolSize.descriptorCount = 14;
 
     VkDescriptorPoolCreateInfo dpInfo{};
     dpInfo.sType         = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
@@ -1936,19 +1979,31 @@ bool VkPostProcess::createCopyPipeline(VkContext& ctx) {
     dsAlloc.pSetLayouts        = &copySetLayout_;
     VK_CHECK(vkAllocateDescriptorSets(ctx.device(), &dsAlloc, &copyDescSet_));
 
-    VkDescriptorImageInfo imgInfo{};
-    imgInfo.sampler     = sampler_;
-    imgInfo.imageView   = sceneColorView_;
-    imgInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    // Binding 0 = scene color, binding 1 = bloom mip0. bloomMipViews_[0] is valid
+    // here: init() runs createTargets() (which calls createBloomTargets) BEFORE
+    // createCopyPipeline(). (M47)
+    VkDescriptorImageInfo imgInfos[2]{};
+    imgInfos[0].sampler     = sampler_;
+    imgInfos[0].imageView   = sceneColorView_;
+    imgInfos[0].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    imgInfos[1].sampler     = bloomSampler_;
+    imgInfos[1].imageView   = bloomMipViews_[0];
+    imgInfos[1].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 
-    VkWriteDescriptorSet write{};
-    write.sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-    write.dstSet          = copyDescSet_;
-    write.dstBinding      = 0;
-    write.descriptorType  = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-    write.descriptorCount = 1;
-    write.pImageInfo      = &imgInfo;
-    vkUpdateDescriptorSets(ctx.device(), 1, &write, 0, nullptr);
+    VkWriteDescriptorSet writes[2]{};
+    writes[0].sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    writes[0].dstSet          = copyDescSet_;
+    writes[0].dstBinding      = 0;
+    writes[0].descriptorType  = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    writes[0].descriptorCount = 1;
+    writes[0].pImageInfo      = &imgInfos[0];
+    writes[1].sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    writes[1].dstSet          = copyDescSet_;
+    writes[1].dstBinding      = 1;
+    writes[1].descriptorType  = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    writes[1].descriptorCount = 1;
+    writes[1].pImageInfo      = &imgInfos[1];
+    vkUpdateDescriptorSets(ctx.device(), 2, writes, 0, nullptr);
 
     return true;
 }
@@ -2762,11 +2817,12 @@ void VkPostProcess::runChain(VkCommandBuffer cb,
                              const std::vector<PostPass>& passes,
                              const EffectTable& effects,
                              VkExtent2D swapExtent,
-                             float exposure) {
+                             float exposure,
+                             float bloomIntensity) {
     for (const PostPass pass : passes) {
         switch (pass) {
             case PostPass::Copy:
-                recordComposite(cb, exposure);
+                recordComposite(cb, exposure, bloomIntensity);
                 break;
 
             case PostPass::Outline: {
