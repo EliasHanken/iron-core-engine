@@ -2594,7 +2594,7 @@ bool VkPostProcess::createOutlinePipeline(VkContext& ctx) {
     VK_CHECK(outlinePipeResult);
 
     // Allocate the outline descriptor set from the shared pool (allocated in
-    // createCopyPipeline with maxSets=7, descriptorCount=14).
+    // createCopyPipeline with maxSets=7, descriptorCount=12).
     VkDescriptorSetAllocateInfo dsAlloc{};
     dsAlloc.sType              = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
     dsAlloc.descriptorPool     = descPool_;
@@ -2907,7 +2907,7 @@ bool VkPostProcess::createGlowPipelines(VkContext& ctx) {
         pInfo.pRasterizationState = &rs;
         pInfo.pMultisampleState   = &ms;
         pInfo.pDepthStencilState  = &ds;
-        pInfo.pColorBlendState    = &blend;  // 4-channel RGBA for swapchain-compatible format
+        pInfo.pColorBlendState    = &blend;  // RGB-only write mask — overlay preserves viewport alpha (Copy's a=1)
         pInfo.pDynamicState       = &dyn;
         pInfo.layout              = glowCompositePipeLayout_;
         pInfo.renderPass          = viewportPass_;  // composite records into viewportPass_ (must match its dependencyCount)
