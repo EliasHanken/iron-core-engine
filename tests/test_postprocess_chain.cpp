@@ -58,25 +58,31 @@ static void test_plan_empty_is_just_copy() {
 }
 static void test_plan_outline() {
     auto p = iron::planPostChain({iron::EffectKind::Outline});
-    CHECK(p.size() == 1); CHECK(p[0] == iron::PostPass::Outline);
+    CHECK(p.size() == 2);
+    CHECK(p[0] == iron::PostPass::Copy);
+    CHECK(p[1] == iron::PostPass::Outline);
 }
 static void test_plan_glow_is_multipass() {
     auto p = iron::planPostChain({iron::EffectKind::GlowOutline});
-    CHECK(p.size() == 3);
-    CHECK(p[0] == iron::PostPass::GlowBlurH);
-    CHECK(p[1] == iron::PostPass::GlowBlurV);
-    CHECK(p[2] == iron::PostPass::GlowComposite);
+    CHECK(p.size() == 4);
+    CHECK(p[0] == iron::PostPass::Copy);
+    CHECK(p[1] == iron::PostPass::GlowBlurH);
+    CHECK(p[2] == iron::PostPass::GlowBlurV);
+    CHECK(p[3] == iron::PostPass::GlowComposite);
 }
 static void test_plan_xray() {
     auto p = iron::planPostChain({iron::EffectKind::XRay});
-    CHECK(p.size() == 1); CHECK(p[0] == iron::PostPass::XRay);
+    CHECK(p.size() == 2);
+    CHECK(p[0] == iron::PostPass::Copy);
+    CHECK(p[1] == iron::PostPass::XRay);
 }
 static void test_plan_layer_order() {
     auto p = iron::planPostChain({iron::EffectKind::Outline, iron::EffectKind::XRay, iron::EffectKind::GlowOutline});
-    CHECK(p.size() == 5);
-    CHECK(p[0] == iron::PostPass::XRay);
-    CHECK(p[1] == iron::PostPass::Outline);
-    CHECK(p[2] == iron::PostPass::GlowBlurH);
+    CHECK(p.size() == 6);
+    CHECK(p[0] == iron::PostPass::Copy);
+    CHECK(p[1] == iron::PostPass::XRay);
+    CHECK(p[2] == iron::PostPass::Outline);
+    CHECK(p[3] == iron::PostPass::GlowBlurH);
 }
 static void test_pingpong_alternates() {
     CHECK(iron::pingPongSource(0) == 0);
