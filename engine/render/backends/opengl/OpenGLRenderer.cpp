@@ -207,7 +207,11 @@ void OpenGLRenderer::setSkybox(CubemapHandle sky) {
 
 CubemapHandle OpenGLRenderer::loadHdrSkybox(const std::string& /*hdrPath*/,
                                             int /*faceSize*/) {
-    Log::warn("OpenGLRenderer: loadHdrSkybox is Vulkan-only; returning invalid handle");
+    static bool warned = false;
+    if (!warned) {
+        Log::warn("OpenGLRenderer: loadHdrSkybox is Vulkan-only; returning invalid handle");
+        warned = true;
+    }
     return kInvalidHandle;
 }
 

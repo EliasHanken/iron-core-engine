@@ -46,7 +46,7 @@ public:
         int width, int height,
         const std::array<const unsigned char*, 6>& faces) override;
     void setSkybox(CubemapHandle sky) override;
-    CubemapHandle loadHdrSkybox(const std::string& hdrPath, int faceSize = 512) override;
+    CubemapHandle loadHdrSkybox(const std::string& hdrPath, int faceSize) override;
 
     void beginFrame(Vec3 clearColor, const DirectionalLight& light,
                     std::span<const PointLight> pointLights,
