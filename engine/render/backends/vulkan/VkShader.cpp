@@ -92,9 +92,10 @@ ShaderHandle VkShaderStore::create(VkContext& ctx,
         return kInvalidHandle;
     }
 
-    // M17/M45b/M45c — descriptor set layout: UBO + 8 samplers (diffuse, normal,
-    // metallic-roughness, shadow, sky cubemap, planar reflection, AO, emissive).
-    VkDescriptorSetLayoutBinding bindings[9]{};
+    // M17/M45b/M45c/M46b — descriptor set layout: UBO + 8 samplers (diffuse, normal,
+    // metallic-roughness, shadow, sky cubemap, planar reflection, AO, emissive) +
+    // binding 10 = irradiance cubemap (M46b).
+    VkDescriptorSetLayoutBinding bindings[10]{};
     bindings[0].binding = 0;
     bindings[0].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
     bindings[0].descriptorCount = 1;
@@ -131,10 +132,14 @@ ShaderHandle VkShaderStore::create(VkContext& ctx,
     bindings[8].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
     bindings[8].descriptorCount = 1;
     bindings[8].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+    bindings[9].binding         = 10;   // M46b — irradiance cubemap (diffuse IBL)
+    bindings[9].descriptorType  = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    bindings[9].descriptorCount = 1;
+    bindings[9].stageFlags      = VK_SHADER_STAGE_FRAGMENT_BIT;
 
     VkDescriptorSetLayoutCreateInfo dslInfo{};
     dslInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-    dslInfo.bindingCount = 9;
+    dslInfo.bindingCount = 10;
     dslInfo.pBindings = bindings;
     VK_CHECK(vkCreateDescriptorSetLayout(ctx.device(), &dslInfo, nullptr, &s.setLayout));
 
@@ -180,10 +185,11 @@ ShaderHandle VkShaderStore::createSkinned(VkContext& ctx,
         return kInvalidHandle;
     }
 
-    // M23/M45b/M45c — 10 bindings: same 9 as the lit path (0=scene UBO, 1-8=samplers
-    // including AO at 7 and emissive at 8) + binding 9 = bone-matrices UBO (vertex stage).
+    // M23/M45b/M45c/M46b — 11 bindings: same 9 as the lit path (0=scene UBO, 1-8=samplers
+    // including AO at 7 and emissive at 8) + binding 9 = bone-matrices UBO (vertex stage) +
+    // binding 10 = irradiance cubemap (M46b).
     // Bones moved 7→8→9 to keep sampler bindings consistent with the shared frag shader.
-    VkDescriptorSetLayoutBinding bindings[10]{};
+    VkDescriptorSetLayoutBinding bindings[11]{};
     bindings[0].binding = 0;
     bindings[0].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
     bindings[0].descriptorCount = 1;
@@ -198,10 +204,14 @@ ShaderHandle VkShaderStore::createSkinned(VkContext& ctx,
     bindings[9].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
     bindings[9].descriptorCount = 1;
     bindings[9].stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
+    bindings[10].binding         = 10;  // M46b — irradiance cubemap (diffuse IBL)
+    bindings[10].descriptorType  = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    bindings[10].descriptorCount = 1;
+    bindings[10].stageFlags      = VK_SHADER_STAGE_FRAGMENT_BIT;
 
     VkDescriptorSetLayoutCreateInfo dslInfo{};
     dslInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-    dslInfo.bindingCount = 10;
+    dslInfo.bindingCount = 11;
     dslInfo.pBindings = bindings;
     VK_CHECK(vkCreateDescriptorSetLayout(ctx.device(), &dslInfo, nullptr, &s.setLayout));
 
