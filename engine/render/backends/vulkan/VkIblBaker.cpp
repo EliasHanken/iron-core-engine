@@ -120,6 +120,12 @@ CubemapHandle VkIblBaker::equirectFileToCubemap(
         Log::error("VkIblBaker: failed to load HDR '%s'", hdrPath.c_str());
         return kInvalidHandle;
     }
+    // Equirectangular maps are 2:1. A non-2:1 source still bakes but will look
+    // distorted; warn rather than fail since this is a setup-time convenience.
+    if (w != 2 * h) {
+        Log::warn("VkIblBaker: '%s' is %dx%d, not 2:1 equirectangular; "
+                  "cubemap may look distorted", hdrPath.c_str(), w, h);
+    }
     const VkDeviceSize srcBytes =
         static_cast<VkDeviceSize>(w) * h * 4 * sizeof(float);
 
