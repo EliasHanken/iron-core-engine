@@ -16,6 +16,7 @@
 using iron::Vec3;
 using iron::cubeFaceDirection;
 using iron::directionToEquirectUv;
+using iron::convolveConstantIrradiance;
 
 static bool approx(float a, float b, float eps = 1e-4f) {
     float d = a - b;
@@ -70,8 +71,19 @@ int main() {
         assert(approx(uvNegZ.x, 0.25f));
     }
 
+    // 6. Irradiance normalization: convolving a CONSTANT environment of
+    //    radiance L must return ~L (cosine-weighted hemisphere integral
+    //    normalized by PI/nrSamples = 1). Validates the shader's constant.
+    {
+        Vec3 L{0.5f, 0.3f, 0.8f};
+        Vec3 e = convolveConstantIrradiance(L, 0.025f);
+        assert(approx(e.x, L.x, 0.02f));
+        assert(approx(e.y, L.y, 0.02f));
+        assert(approx(e.z, L.z, 0.02f));
+    }
+
 #ifdef IRON_RENDER_BACKEND_VULKAN
-    // 6. The embedded equirect->cube compute shader compiles to SPIR-V.
+    // 7. The embedded equirect->cube compute shader compiles to SPIR-V.
     {
         const auto spv = iron::compileGlsl(
             VK_SHADER_STAGE_COMPUTE_BIT, iron::kEquirectToCubeComputeSrc());
