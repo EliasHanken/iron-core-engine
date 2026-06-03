@@ -68,6 +68,13 @@ layout(binding = 1, rgba16f) uniform writeonly image2DArray uOut;
 
 const float PI = 3.14159265358979323846;
 
+// Clamp env radiance before integrating. HDR suns exceed the RGBA16F ceiling
+// (65504) and become +Inf in the env cube; a tiny bright sun under-sampled by
+// the regular hemisphere grid also aliases into fireflies. Both make the
+// irradiance map noisy (bright speckles). Clamping bounds them with negligible
+// effect on the sun's true (tiny-solid-angle) diffuse contribution.
+const float MAX_RADIANCE = 50.0;
+
 // Cube-face direction, matching ProceduralSky / Ibl.h / equirectToCube.
 vec3 faceDir(int face, float u, float v) {
     vec3 d;
@@ -105,8 +112,8 @@ void main() {
             vec3 sampleVec = tangentSample.x * right
                            + tangentSample.y * up
                            + tangentSample.z * N;
-            irradiance += textureLod(uEnv, sampleVec, 0.0).rgb
-                        * cos(theta) * sin(theta);
+            vec3 envColor = min(textureLod(uEnv, sampleVec, 0.0).rgb, vec3(MAX_RADIANCE));
+            irradiance += envColor * cos(theta) * sin(theta);
             nrSamples += 1.0;
         }
     }
