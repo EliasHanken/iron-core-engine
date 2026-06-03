@@ -1179,6 +1179,13 @@ void VulkanRenderer::endFrame() {
     postProcess_.runBloomOffscreenPasses(cb, pendingBloomThreshold_,
                                          pendingBloomKnee_, pendingBloomScatter_);
 
+    // --- M48: SSAO pre-pass. Also records its own render passes, so it must run
+    // OUTSIDE the viewport pass. Update the per-frame UBO (projection + kernel +
+    // knobs) first, then record the SSAO + blur passes into ssaoBlurView_. ---
+    postProcess_.updateSsaoUbo(pendingProjection_, iron::inverse(pendingProjection_),
+                               pendingSsaoRadius_, pendingSsaoBias_, pendingSsaoPower_);
+    postProcess_.runSsaoPass(cb);
+
     // --- M43a Pass 4: viewport pass — composite scene + overlays into the
     // offscreen sampleable target (instead of straight to the swapchain). ---
     {
@@ -1190,7 +1197,8 @@ void VulkanRenderer::endFrame() {
         {
             const std::vector<PostPass> passes = planPostChain(activeKindsThisFrame);
             postProcess_.runChain(cb, passes, effects_, postProcess_.viewportExtent(),
-                                  pendingExposure_, pendingBloomIntensity_);
+                                  pendingExposure_, pendingBloomIntensity_,
+                                  pendingSsaoStrength_);
         }
 
         // Debug-line + HUD overlays now render into the viewport target (they

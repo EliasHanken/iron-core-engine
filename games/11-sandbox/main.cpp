@@ -913,6 +913,24 @@ int main() {
             ImGui::End();
         }
 
+        // M48: SSAO tuning knobs — mirroring the M47 bloom group above.
+        // Static locals match the renderer defaults (radius 0.5 / bias 0.025 /
+        // power 1.5 / strength 1.0).
+        {
+            static float ssaoRadius   = 0.5f;
+            static float ssaoBias     = 0.025f;
+            static float ssaoPower    = 1.5f;
+            static float ssaoStrength = 1.0f;
+            ImGui::Begin("Environment");
+            if (ImGui::CollapsingHeader("SSAO (M48)")) {
+                if (ImGui::SliderFloat("AO Radius",   &ssaoRadius,   0.05f, 2.0f))  vkRenderer.setSsaoRadius(ssaoRadius);
+                if (ImGui::SliderFloat("AO Bias",     &ssaoBias,     0.0f,  0.2f))  vkRenderer.setSsaoBias(ssaoBias);
+                if (ImGui::SliderFloat("AO Power",    &ssaoPower,    0.5f,  4.0f))  vkRenderer.setSsaoPower(ssaoPower);
+                if (ImGui::SliderFloat("AO Strength", &ssaoStrength, 0.0f,  2.0f))  vkRenderer.setSsaoStrength(ssaoStrength);
+            }
+            ImGui::End();
+        }
+
         // M41: scene-mutating actions (save / add / delete / duplicate) gated
         // on Edit mode. Inspector + Outliner remain visible/clickable but the
         // user can't modify the scene during Play.

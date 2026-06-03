@@ -4,10 +4,12 @@
 #include "render/backends/vulkan/VkContext.h"
 #include "render/backends/vulkan/VkShader.h"
 #include "render/backends/vulkan/VkUtils.h"
+#include "render/Ssao.h"  // M48: generateSsaoKernel
 #include "scene/Mesh.h"
 #include "core/Log.h"
 
 #include <algorithm>  // std::min / std::max (bloom mip math)
+#include <cstring>    // std::memcpy (SSAO noise upload)
 
 namespace iron {
 
@@ -41,13 +43,15 @@ void main() {
 // keeps the binding-0-only kCopyFrag). Adds bloom mip0 (binding 1) before the
 // ACES curve. The aces() body and the exposure/output are byte-identical to
 // kCopyFrag; the only additions are the uBloom binding, the bloomIntensity push
-// field, and the `scene + bloom * intensity` add. (M47)
+// field, and the `scene + bloom * intensity` add. (M47) M48 adds the uSsao
+// binding (2), the aoStrength push field, and the `scene * ao` multiply.
 const char* kCompositeFrag = R"(#version 450
 layout(location = 0) in vec2 vUV;
 layout(location = 0) out vec4 outColor;
 layout(set = 0, binding = 0) uniform sampler2D uScene;
 layout(set = 0, binding = 1) uniform sampler2D uBloom;
-layout(push_constant) uniform Push { float exposure; float bloomIntensity; } pc;
+layout(set = 0, binding = 2) uniform sampler2D uSsao;   // M48 — blurred AO
+layout(push_constant) uniform Push { float exposure; float bloomIntensity; float aoStrength; } pc;
 vec3 aces(vec3 x) {
     const float a = 2.51, b = 0.03, c = 2.43, d = 0.59, e = 0.14;
     return clamp((x * (a * x + b)) / (x * (c * x + d) + e), 0.0, 1.0);
@@ -55,7 +59,8 @@ vec3 aces(vec3 x) {
 void main() {
     vec3 scene = texture(uScene, vUV).rgb;
     vec3 bloom = texture(uBloom, vUV).rgb;
-    vec3 hdr   = (scene + bloom * pc.bloomIntensity) * pc.exposure;
+    float ao   = mix(1.0, texture(uSsao, vUV).r, pc.aoStrength);   // M48
+    vec3 hdr   = (scene * ao + bloom * pc.bloomIntensity) * pc.exposure;  // AO darkens scene, not bloom
     outColor = vec4(aces(hdr), 1.0);
 }
 )";
@@ -323,6 +328,93 @@ void main() {
 }
 
 // ---------------------------------------------------------------------------
+// SSAO fragment shaders (M48). Public (declared in the header) so test_ssao
+// can compile-check them to SPIR-V. Reuse the anonymous-namespace
+// kFullscreenVert for the vertex stage when building the actual pipelines.
+// ---------------------------------------------------------------------------
+
+const char* kSsaoSrc() {
+    return R"(#version 450
+layout(location = 0) in  vec2 vUV;
+layout(location = 0) out vec4 outColor;   // R8: write .r
+layout(binding = 0) uniform sampler2D uDepth;
+layout(binding = 1) uniform sampler2D uNoise;
+layout(binding = 2, std140) uniform SsaoUbo {
+    mat4 projection;
+    mat4 invProjection;
+    vec4 kernel[32];     // .xyz = view-space hemisphere sample
+    vec4 params;         // x=radius, y=bias, z=power, w=sampleCount
+    vec4 noiseScale;     // xy = extent / 4
+} u;
+
+vec3 reconstructViewPos(vec2 uv, float depth) {
+    vec4 clip = vec4(uv * 2.0 - 1.0, depth, 1.0);  // Vulkan clip z is [0,1]
+    vec4 v = u.invProjection * clip;
+    return v.xyz / v.w;
+}
+
+void main() {
+    float depth = texture(uDepth, vUV).r;
+    if (depth >= 1.0) { outColor = vec4(1.0); return; }   // background: unoccluded
+    vec3 P = reconstructViewPos(vUV, depth);
+    // Robust view-space normal from depth: pick the nearer horizontal/vertical
+    // neighbor on each axis (Drobot) to avoid the spikes at depth discontinuities
+    // that naive cross(dFdx,dFdy) produces (dark silhouette halos). Then force the
+    // normal to face the camera (origin in view space, looking down -z).
+    vec2 texel = 1.0 / vec2(textureSize(uDepth, 0));
+    vec3 Pr = reconstructViewPos(vUV + vec2(texel.x, 0.0), texture(uDepth, vUV + vec2(texel.x, 0.0)).r);
+    vec3 Pl = reconstructViewPos(vUV - vec2(texel.x, 0.0), texture(uDepth, vUV - vec2(texel.x, 0.0)).r);
+    vec3 Pu = reconstructViewPos(vUV + vec2(0.0, texel.y), texture(uDepth, vUV + vec2(0.0, texel.y)).r);
+    vec3 Pd = reconstructViewPos(vUV - vec2(0.0, texel.y), texture(uDepth, vUV - vec2(0.0, texel.y)).r);
+    vec3 ddxP = (abs(Pr.z - P.z) < abs(P.z - Pl.z)) ? (Pr - P) : (P - Pl);
+    vec3 ddyP = (abs(Pu.z - P.z) < abs(P.z - Pd.z)) ? (Pu - P) : (P - Pd);
+    vec3 N = normalize(cross(ddxP, ddyP));
+    if (dot(N, P) > 0.0) N = -N;   // face the camera
+    vec3 rnd = texture(uNoise, vUV * u.noiseScale.xy).xyz;
+    vec3 T = normalize(rnd - N * dot(rnd, N));   // Gram-Schmidt
+    vec3 B = cross(N, T);
+    mat3 TBN = mat3(T, B, N);
+
+    float radius = u.params.x;
+    float bias   = u.params.y;
+    int   count  = int(u.params.w);
+    float occlusion = 0.0;
+    for (int i = 0; i < count; ++i) {
+        vec3 samplePos = P + TBN * u.kernel[i].xyz * radius;   // view space
+        vec4 off = u.projection * vec4(samplePos, 1.0);
+        off.xyz /= off.w;
+        vec2 sampleUv = off.xy * 0.5 + 0.5;
+        float sd = texture(uDepth, sampleUv).r;
+        vec3 surface = reconstructViewPos(sampleUv, sd);
+        float rangeCheck = smoothstep(0.0, 1.0, radius / max(abs(P.z - surface.z), 1e-4));
+        occlusion += (surface.z >= samplePos.z + bias ? 1.0 : 0.0) * rangeCheck;
+    }
+    float ao = 1.0 - occlusion / float(count);
+    ao = pow(clamp(ao, 0.0, 1.0), u.params.z);
+    outColor = vec4(ao, ao, ao, 1.0);
+}
+)";
+}
+
+const char* kSsaoBlurSrc() {
+    return R"(#version 450
+layout(location = 0) in  vec2 vUV;
+layout(location = 0) out vec4 outColor;
+layout(binding = 0) uniform sampler2D uSsao;
+layout(push_constant) uniform PC { vec2 texel; } pc;   // 1 / extent
+
+void main() {
+    float sum = 0.0;
+    for (int x = -2; x < 2; ++x)
+        for (int y = -2; y < 2; ++y)
+            sum += texture(uSsao, vUV + vec2(float(x), float(y)) * pc.texel).r;
+    float ao = sum / 16.0;
+    outColor = vec4(ao, ao, ao, 1.0);
+}
+)";
+}
+
+// ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------
 
@@ -373,6 +465,45 @@ bool VkPostProcess::init(VkContext& ctx, VkFormat colorFormat, VkFormat depthFor
         VK_CHECK(vkCreateSampler(ctx.device(), &si, nullptr, &bloomSampler_));
     }
 
+    // M48 SSAO persistent setup (noise texture, UBO, kernel) + the set layouts and
+    // descriptor pool. These MUST exist BEFORE createTargets(ctx) below, since
+    // createSsaoTargets (invoked from createTargets) allocates + writes the SSAO
+    // descriptor sets and references the noise view/sampler + UBO. Heeds the M47
+    // null-layout lesson: layouts + pool created before the sets are allocated.
+    if (!createSsaoNoiseAndUbo(ctx))               { destroy(ctx); return false; }
+    {
+        // ssaoSetLayout_: {0 depth, 1 noise, 2 ubo}; ssaoBlurSetLayout_: {0 ssaoTex}.
+        VkDescriptorSetLayoutBinding sb[3]{};
+        sb[0].binding = 0; sb[0].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        sb[0].descriptorCount = 1; sb[0].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+        sb[1].binding = 1; sb[1].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        sb[1].descriptorCount = 1; sb[1].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+        sb[2].binding = 2; sb[2].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+        sb[2].descriptorCount = 1; sb[2].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+        VkDescriptorSetLayoutCreateInfo li{};
+        li.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+        li.bindingCount = 3; li.pBindings = sb;
+        VK_CHECK(vkCreateDescriptorSetLayout(ctx.device(), &li, nullptr, &ssaoSetLayout_));
+
+        VkDescriptorSetLayoutBinding bb{};
+        bb.binding = 0; bb.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        bb.descriptorCount = 1; bb.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+        VkDescriptorSetLayoutCreateInfo bli{};
+        bli.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+        bli.bindingCount = 1; bli.pBindings = &bb;
+        VK_CHECK(vkCreateDescriptorSetLayout(ctx.device(), &bli, nullptr, &ssaoBlurSetLayout_));
+
+        // Dedicated persistent pool: 2 sets; 3 combined-image-samplers
+        // (ssaoSet: depth+noise=2, blurSet: ssaoTex=1) + 1 uniform buffer.
+        VkDescriptorPoolSize ps[2]{};
+        ps[0].type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER; ps[0].descriptorCount = 3;
+        ps[1].type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;         ps[1].descriptorCount = 1;
+        VkDescriptorPoolCreateInfo dp{};
+        dp.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
+        dp.maxSets = 2; dp.poolSizeCount = 2; dp.pPoolSizes = ps;
+        VK_CHECK(vkCreateDescriptorPool(ctx.device(), &dp, nullptr, &ssaoDescPool_));
+    }
+
     if (!createTargets(ctx))                       { destroy(ctx); return false; }
     if (!createViewportTarget(ctx))                { destroy(ctx); return false; }
     if (!createCopyPipeline(ctx))                  { destroy(ctx); return false; }
@@ -386,10 +517,29 @@ bool VkPostProcess::init(VkContext& ctx, VkFormat colorFormat, VkFormat depthFor
     // by createTargets(ctx) above and rebuilt on resize in createTargets()/destroyTargets();
     // the pipelines/layouts/set-layout are persistent (built once here, torn down in destroy()).
     if (!createBloomPipelines())                   { destroy(ctx); return false; }
+
+    // M48 SSAO pipelines: built against ssaoPass_, which createTargets(ctx) above
+    // created (via createSsaoTargets). Persistent (torn down in destroy()).
+    if (!createSsaoPipelines(ctx))                 { destroy(ctx); return false; }
     return true;
 }
 
 void VkPostProcess::destroy(VkContext& ctx) {
+    // M48 SSAO persistent objects (pipelines, layouts, set layouts, pool, noise, ubo).
+    // Per-resize SSAO handles (images/views/fbs/sets) are freed by destroyTargets below.
+    if (ssaoBlurPipeline_) { vkDestroyPipeline(ctx.device(), ssaoBlurPipeline_, nullptr); ssaoBlurPipeline_ = VK_NULL_HANDLE; }
+    if (ssaoPipeline_)     { vkDestroyPipeline(ctx.device(), ssaoPipeline_, nullptr);     ssaoPipeline_ = VK_NULL_HANDLE; }
+    if (ssaoBlurLayout_)   { vkDestroyPipelineLayout(ctx.device(), ssaoBlurLayout_, nullptr); ssaoBlurLayout_ = VK_NULL_HANDLE; }
+    if (ssaoLayout_)       { vkDestroyPipelineLayout(ctx.device(), ssaoLayout_, nullptr);     ssaoLayout_ = VK_NULL_HANDLE; }
+    if (ssaoBlurSetLayout_){ vkDestroyDescriptorSetLayout(ctx.device(), ssaoBlurSetLayout_, nullptr); ssaoBlurSetLayout_ = VK_NULL_HANDLE; }
+    if (ssaoSetLayout_)    { vkDestroyDescriptorSetLayout(ctx.device(), ssaoSetLayout_, nullptr);     ssaoSetLayout_ = VK_NULL_HANDLE; }
+    // The pool owns ssaoSet_/ssaoBlurSet_; destroying it frees them.
+    if (ssaoDescPool_)     { vkDestroyDescriptorPool(ctx.device(), ssaoDescPool_, nullptr); ssaoDescPool_ = VK_NULL_HANDLE; ssaoSet_ = VK_NULL_HANDLE; ssaoBlurSet_ = VK_NULL_HANDLE; }
+    if (ssaoNoiseSampler_) { vkDestroySampler(ctx.device(), ssaoNoiseSampler_, nullptr); ssaoNoiseSampler_ = VK_NULL_HANDLE; }
+    if (ssaoNoiseView_)    { vkDestroyImageView(ctx.device(), ssaoNoiseView_, nullptr); ssaoNoiseView_ = VK_NULL_HANDLE; }
+    if (ssaoNoise_)        { vmaDestroyImage(ctx.allocator(), ssaoNoise_, ssaoNoiseAlloc_); ssaoNoise_ = VK_NULL_HANDLE; ssaoNoiseAlloc_ = VK_NULL_HANDLE; }
+    if (ssaoUboBuf_)       { vmaDestroyBuffer(ctx.allocator(), ssaoUboBuf_, ssaoUboAlloc_); ssaoUboBuf_ = VK_NULL_HANDLE; ssaoUboAlloc_ = VK_NULL_HANDLE; ssaoUboMapped_ = nullptr; }
+
     // M47 bloom pipelines/layouts/set-layout (persistent — not per-resize).
     if (bloomUpPipeline_)         { vkDestroyPipeline(ctx.device(), bloomUpPipeline_, nullptr);         bloomUpPipeline_ = VK_NULL_HANDLE; }
     if (bloomDownPipeline_)       { vkDestroyPipeline(ctx.device(), bloomDownPipeline_, nullptr);       bloomDownPipeline_ = VK_NULL_HANDLE; }
@@ -456,6 +606,7 @@ void VkPostProcess::destroy(VkContext& ctx) {
     destroyTargets(ctx);
     if (viewportPass_) { vkDestroyRenderPass(ctx.device(), viewportPass_, nullptr); viewportPass_ = VK_NULL_HANDLE; }
     if (bloomPass_)    { vkDestroyRenderPass(ctx.device(), bloomPass_, nullptr);    bloomPass_ = VK_NULL_HANDLE; }
+    if (ssaoPass_)     { vkDestroyRenderPass(ctx.device(), ssaoPass_, nullptr);     ssaoPass_ = VK_NULL_HANDLE; }
     if (glowPass_)     { vkDestroyRenderPass(ctx.device(), glowPass_, nullptr);     glowPass_ = VK_NULL_HANDLE; }
     if (maskPass_)     { vkDestroyRenderPass(ctx.device(), maskPass_, nullptr);     maskPass_ = VK_NULL_HANDLE; }
     if (scenePass_)    { vkDestroyRenderPass(ctx.device(), scenePass_, nullptr);    scenePass_ = VK_NULL_HANDLE; }
@@ -467,18 +618,22 @@ bool VkPostProcess::resize(VkContext& ctx, VkExtent2D extent) {
     if (!createTargets(ctx)) return false;
 
     // Re-write the copy/composite descriptor set: binding 0 = new sceneColorView_,
-    // binding 1 = new bloom mip0 (createTargets above rebuilt the bloom targets, so
-    // bloomMipViews_[0] is the freshly-created view). (M47)
+    // binding 1 = new bloom mip0, binding 2 = new blurred SSAO (createTargets above
+    // rebuilt the bloom + SSAO targets, so bloomMipViews_[0] and ssaoBlurView_ are
+    // the freshly-created views). ssaoBlurView_ uses bloomSampler_ (LINEAR+CLAMP). (M47/M48)
     {
-        VkDescriptorImageInfo imgInfos[2]{};
+        VkDescriptorImageInfo imgInfos[3]{};
         imgInfos[0].sampler     = sampler_;
         imgInfos[0].imageView   = sceneColorView_;
         imgInfos[0].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
         imgInfos[1].sampler     = bloomSampler_;
         imgInfos[1].imageView   = bloomMipViews_[0];
         imgInfos[1].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        imgInfos[2].sampler     = bloomSampler_;
+        imgInfos[2].imageView   = ssaoBlurView_;
+        imgInfos[2].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 
-        VkWriteDescriptorSet writes[2]{};
+        VkWriteDescriptorSet writes[3]{};
         writes[0].sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
         writes[0].dstSet          = copyDescSet_;
         writes[0].dstBinding      = 0;
@@ -491,7 +646,13 @@ bool VkPostProcess::resize(VkContext& ctx, VkExtent2D extent) {
         writes[1].descriptorType  = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
         writes[1].descriptorCount = 1;
         writes[1].pImageInfo      = &imgInfos[1];
-        vkUpdateDescriptorSets(ctx.device(), 2, writes, 0, nullptr);
+        writes[2].sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        writes[2].dstSet          = copyDescSet_;
+        writes[2].dstBinding      = 2;
+        writes[2].descriptorType  = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        writes[2].descriptorCount = 1;
+        writes[2].pImageInfo      = &imgInfos[2];
+        vkUpdateDescriptorSets(ctx.device(), 3, writes, 0, nullptr);
     }
 
     // Re-write the outline descriptor set to point at the new views.
@@ -684,13 +845,14 @@ void VkPostProcess::endViewportPass(VkCommandBuffer cb) const {
 }
 
 void VkPostProcess::recordComposite(VkCommandBuffer cb, float exposure,
-                                    float bloomIntensity) const {
+                                    float bloomIntensity, float aoStrength) const {
     vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, copyPipeline_);
     vkCmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_GRAPHICS,
                             copyPipeLayout_, 0, 1, &copyDescSet_, 0, nullptr);
     CopyPush pc{};
     pc.exposure       = exposure;
     pc.bloomIntensity = bloomIntensity;
+    pc.aoStrength     = aoStrength;
     vkCmdPushConstants(cb, copyPipeLayout_, VK_SHADER_STAGE_FRAGMENT_BIT,
                        0, sizeof(CopyPush), &pc);
     vkCmdDraw(cb, 3, 1, 0, 0);
@@ -1168,10 +1330,16 @@ bool VkPostProcess::createTargets(VkContext& ctx) {
     // created once and persisted (like glowPass_); see createBloomTargets.
     createBloomTargets(extent_);
 
+    // M48 SSAO/blur targets (R8) + pass (persistent) + per-resize descriptor sets.
+    createSsaoTargets(ctx, extent_);
+
     return true;
 }
 
 void VkPostProcess::destroyTargets(VkContext& ctx) {
+    // M48 SSAO/blur image/views/fbs + per-resize sets (pass persists; freed in destroy()).
+    destroySsaoTargets(ctx);
+
     // M47 bloom mip-chain image/views/fbs (pass persists; freed in destroy()).
     destroyBloomTargets();
 
@@ -1848,9 +2016,9 @@ bool VkPostProcess::createCopyPipeline(VkContext& ctx) {
         return false;
     }
 
-    // Descriptor set layout: binding 0 = scene color, binding 1 = bloom mip0
-    // (both combined image samplers, FS). (M47)
-    VkDescriptorSetLayoutBinding bindings[2]{};
+    // Descriptor set layout: binding 0 = scene color, binding 1 = bloom mip0,
+    // binding 2 = blurred SSAO (all combined image samplers, FS). (M47/M48)
+    VkDescriptorSetLayoutBinding bindings[3]{};
     bindings[0].binding         = 0;
     bindings[0].descriptorType  = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
     bindings[0].descriptorCount = 1;
@@ -1859,10 +2027,14 @@ bool VkPostProcess::createCopyPipeline(VkContext& ctx) {
     bindings[1].descriptorType  = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
     bindings[1].descriptorCount = 1;
     bindings[1].stageFlags      = VK_SHADER_STAGE_FRAGMENT_BIT;
+    bindings[2].binding         = 2;
+    bindings[2].descriptorType  = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    bindings[2].descriptorCount = 1;
+    bindings[2].stageFlags      = VK_SHADER_STAGE_FRAGMENT_BIT;
 
     VkDescriptorSetLayoutCreateInfo dslInfo{};
     dslInfo.sType        = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-    dslInfo.bindingCount = 2;
+    dslInfo.bindingCount = 3;
     dslInfo.pBindings    = bindings;
     VK_CHECK(vkCreateDescriptorSetLayout(ctx.device(), &dslInfo, nullptr, &copySetLayout_));
 
@@ -1956,18 +2128,18 @@ bool VkPostProcess::createCopyPipeline(VkContext& ctx) {
     vkDestroyShaderModule(ctx.device(), fsm, nullptr);
     VK_CHECK(copyPipeResult);
 
-    // Descriptor pool: 7 sets total, 14 combined-image-sampler descriptors.
-    //   set 0: copy/composite — 2 samplers (scene color + bloom mip0)  (M47)
+    // Descriptor pool: 7 sets total, 15 combined-image-sampler descriptors.
+    //   set 0: copy/composite — 3 samplers (scene color + bloom mip0 + SSAO)  (M47/M48)
     //   set 1: blit         — 1 sampler  (viewport color)
     //   set 2: outline      — 2 samplers (scene color + mask)
     //   set 3: glowBlurH    — 1 sampler  (mask)
     //   set 4: glowBlurV    — 1 sampler  (scratch[0])
     //   set 5: glowComposite — 3 samplers (scene color + scratch[1] + mask)
     //   set 6: xray         — 4 samplers (scene color + mask id + mask depth + scene depth)
-    // Total: 7 sets, 14 combined-image-samplers.
+    // Total: 7 sets, 15 combined-image-samplers.
     VkDescriptorPoolSize poolSize{};
     poolSize.type            = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-    poolSize.descriptorCount = 14;
+    poolSize.descriptorCount = 15;
 
     VkDescriptorPoolCreateInfo dpInfo{};
     dpInfo.sType         = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
@@ -1984,18 +2156,22 @@ bool VkPostProcess::createCopyPipeline(VkContext& ctx) {
     dsAlloc.pSetLayouts        = &copySetLayout_;
     VK_CHECK(vkAllocateDescriptorSets(ctx.device(), &dsAlloc, &copyDescSet_));
 
-    // Binding 0 = scene color, binding 1 = bloom mip0. bloomMipViews_[0] is valid
-    // here: init() runs createTargets() (which calls createBloomTargets) BEFORE
-    // createCopyPipeline(). (M47)
-    VkDescriptorImageInfo imgInfos[2]{};
+    // Binding 0 = scene color, binding 1 = bloom mip0, binding 2 = blurred SSAO.
+    // bloomMipViews_[0] and ssaoBlurView_ are valid here: init() runs
+    // createTargets() (which calls createBloomTargets + createSsaoTargets) BEFORE
+    // createCopyPipeline(). ssaoBlurView_ uses bloomSampler_ (LINEAR + CLAMP). (M47/M48)
+    VkDescriptorImageInfo imgInfos[3]{};
     imgInfos[0].sampler     = sampler_;
     imgInfos[0].imageView   = sceneColorView_;
     imgInfos[0].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
     imgInfos[1].sampler     = bloomSampler_;
     imgInfos[1].imageView   = bloomMipViews_[0];
     imgInfos[1].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    imgInfos[2].sampler     = bloomSampler_;
+    imgInfos[2].imageView   = ssaoBlurView_;
+    imgInfos[2].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 
-    VkWriteDescriptorSet writes[2]{};
+    VkWriteDescriptorSet writes[3]{};
     writes[0].sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
     writes[0].dstSet          = copyDescSet_;
     writes[0].dstBinding      = 0;
@@ -2008,7 +2184,13 @@ bool VkPostProcess::createCopyPipeline(VkContext& ctx) {
     writes[1].descriptorType  = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
     writes[1].descriptorCount = 1;
     writes[1].pImageInfo      = &imgInfos[1];
-    vkUpdateDescriptorSets(ctx.device(), 2, writes, 0, nullptr);
+    writes[2].sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    writes[2].dstSet          = copyDescSet_;
+    writes[2].dstBinding      = 2;
+    writes[2].descriptorType  = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    writes[2].descriptorCount = 1;
+    writes[2].pImageInfo      = &imgInfos[2];
+    vkUpdateDescriptorSets(ctx.device(), 3, writes, 0, nullptr);
 
     return true;
 }
@@ -2823,11 +3005,12 @@ void VkPostProcess::runChain(VkCommandBuffer cb,
                              const EffectTable& effects,
                              VkExtent2D swapExtent,
                              float exposure,
-                             float bloomIntensity) {
+                             float bloomIntensity,
+                             float aoStrength) {
     for (const PostPass pass : passes) {
         switch (pass) {
             case PostPass::Copy:
-                recordComposite(cb, exposure, bloomIntensity);
+                recordComposite(cb, exposure, bloomIntensity, aoStrength);
                 break;
 
             case PostPass::Outline: {
@@ -3130,6 +3313,77 @@ void VkPostProcess::runBloomOffscreenPasses(VkCommandBuffer cb, float threshold,
     }
 }
 
+void VkPostProcess::updateSsaoUbo(const Mat4& projection, const Mat4& invProjection,
+                                  float radius, float bias, float power) {
+    SsaoUbo ubo{};
+    ubo.projection    = projection;
+    ubo.invProjection = invProjection;
+    for (std::uint32_t i = 0; i < kSsaoKernelSize; ++i) {
+        const Vec3& k = ssaoKernel_[i];
+        ubo.kernel[i] = {k.x, k.y, k.z, 0.0f};
+    }
+    ubo.params     = {radius, bias, power, static_cast<float>(kSsaoKernelSize)};
+    ubo.noiseScale = {ssaoExtent_.width / 4.0f, ssaoExtent_.height / 4.0f, 0.0f, 0.0f};
+
+    std::memcpy(ssaoUboMapped_, &ubo, sizeof(SsaoUbo));
+    // Host-visible memory may be non-coherent — flush the per-frame write.
+    vmaFlushAllocation(ctx_->allocator(), ssaoUboAlloc_, 0, sizeof(SsaoUbo));
+}
+
+void VkPostProcess::runSsaoPass(VkCommandBuffer cb) {
+    // Degenerate extent (targets not created) — nothing to record.
+    if (ssaoExtent_.width == 0 || ssaoExtent_.height == 0) return;
+
+    // Local helper: record one full-screen SSAO/blur pass into a framebuffer.
+    // Mirrors recordBloomPass (begin pass / dynamic viewport+scissor / bind
+    // pipeline+set / push constants / draw fullscreen triangle / end pass).
+    // Both passes share ssaoPass_ (one render pass, two framebuffers); its
+    // subpass dependencies serialize the SSAO write -> blur sample of ssaoView_.
+    auto recordSsaoPass = [&](VkFramebuffer dstFb, ::VkPipeline pipeline,
+                              VkPipelineLayout layout, VkDescriptorSet srcSet,
+                              const void* pushData, std::uint32_t pushSize) {
+        VkRenderPassBeginInfo rpBegin{};
+        rpBegin.sType             = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
+        rpBegin.renderPass        = ssaoPass_;
+        rpBegin.framebuffer       = dstFb;
+        rpBegin.renderArea.offset = {0, 0};
+        rpBegin.renderArea.extent = ssaoExtent_;
+        rpBegin.clearValueCount   = 0;     // loadOp=DONT_CARE — no clear
+        rpBegin.pClearValues      = nullptr;
+        vkCmdBeginRenderPass(cb, &rpBegin, VK_SUBPASS_CONTENTS_INLINE);
+
+        VkViewport vp{};
+        vp.x = 0.0f; vp.y = 0.0f;
+        vp.width    = static_cast<float>(ssaoExtent_.width);
+        vp.height   = static_cast<float>(ssaoExtent_.height);
+        vp.minDepth = 0.0f; vp.maxDepth = 1.0f;
+        vkCmdSetViewport(cb, 0, 1, &vp);
+        VkRect2D scissor{{0, 0}, ssaoExtent_};
+        vkCmdSetScissor(cb, 0, 1, &scissor);
+
+        vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
+        vkCmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                                layout, 0, 1, &srcSet, 0, nullptr);
+        if (pushData) {
+            vkCmdPushConstants(cb, layout, VK_SHADER_STAGE_FRAGMENT_BIT,
+                               0, pushSize, pushData);
+        }
+        vkCmdDraw(cb, 3, 1, 0, 0);
+        vkCmdEndRenderPass(cb);
+    };
+
+    // Pass 1: SSAO (scene depth + noise + UBO -> ssaoView_). No push constants.
+    recordSsaoPass(ssaoFb_, ssaoPipeline_, ssaoLayout_, ssaoSet_, nullptr, 0);
+
+    // Pass 2: 4x4 box blur (ssaoView_ -> ssaoBlurView_). Texel = 1/extent.
+    SsaoBlurPush push{
+        {1.0f / static_cast<float>(ssaoExtent_.width),
+         1.0f / static_cast<float>(ssaoExtent_.height)}
+    };
+    recordSsaoPass(ssaoBlurFb_, ssaoBlurPipeline_, ssaoBlurLayout_,
+                   ssaoBlurSet_, &push, sizeof(push));
+}
+
 bool VkPostProcess::createXRayPipeline(VkContext& ctx) {
     // Compile shaders (reuse kFullscreenVert from the copy pipeline).
     auto vspv = compileGlsl(VK_SHADER_STAGE_VERTEX_BIT,   kFullscreenVert);
@@ -3301,6 +3555,504 @@ bool VkPostProcess::createXRayPipeline(VkContext& ctx) {
     }
     vkUpdateDescriptorSets(ctx.device(), 4, writes, 0, nullptr);
 
+    return true;
+}
+
+// ---------------------------------------------------------------------------
+// M48 SSAO — noise texture + UBO (persistent), R8 targets + pass + sets
+// (per-resize), and the 2 full-screen pipelines (persistent).
+// ---------------------------------------------------------------------------
+
+// Persistent: 4x4 RGBA16F rotation-vector noise texture (NEAREST/REPEAT),
+// the host-visible per-frame SSAO UBO (persistently mapped), and the cached
+// kernel. Created once in init; destroyed in destroy(). Mirrors the staging→
+// image one-shot copy in VkTextureStore::uploadRgba and the mapped-buffer
+// pattern (VMA_ALLOCATION_CREATE_MAPPED_BIT) in VkTexture's createStagingBuffer.
+bool VkPostProcess::createSsaoNoiseAndUbo(VkContext& ctx) {
+    // --- 4x4 noise texture (16 texels of (rndx,rndy,0,0), x,y in [-1,1]) ---
+    constexpr std::uint32_t kNoiseDim = 4;
+    constexpr std::uint32_t kNoiseTexels = kNoiseDim * kNoiseDim;
+    float noise[kNoiseTexels * 4];
+    {
+        std::uint32_t state = 0x1234567u;  // deterministic LCG (matches Ssao.h style)
+        auto rnd01 = [&state]() {
+            state = state * 1664525u + 1013904223u;
+            return static_cast<float>(state >> 8) / static_cast<float>(1u << 24);
+        };
+        for (std::uint32_t i = 0; i < kNoiseTexels; ++i) {
+            noise[i * 4 + 0] = rnd01() * 2.0f - 1.0f;
+            noise[i * 4 + 1] = rnd01() * 2.0f - 1.0f;
+            noise[i * 4 + 2] = 0.0f;
+            noise[i * 4 + 3] = 0.0f;
+        }
+    }
+    // RGBA32F: upload the 16 vec4s as plain floats (vkCmdCopyBufferToImage copies
+    // raw bytes, which already match R32G32B32A32_SFLOAT texel layout).
+    const VkFormat noiseFmt = VK_FORMAT_R32G32B32A32_SFLOAT;
+    const VkDeviceSize noiseSize = sizeof(noise);  // 16 texels * 4 floats = 256 bytes
+
+    // Staging buffer (host-visible, mapped) — mirrors VkTexture's createStagingBuffer.
+    VkBuffer staging = VK_NULL_HANDLE;
+    VmaAllocation stagingAlloc = VK_NULL_HANDLE;
+    void* stagingMap = nullptr;
+    {
+        VkBufferCreateInfo bi{};
+        bi.sType       = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+        bi.size        = noiseSize;
+        bi.usage       = VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
+        bi.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+        VmaAllocationCreateInfo ai{};
+        ai.usage = VMA_MEMORY_USAGE_AUTO;
+        ai.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT |
+                   VMA_ALLOCATION_CREATE_MAPPED_BIT;
+        VmaAllocationInfo aiOut{};
+        VK_CHECK(vmaCreateBuffer(ctx.allocator(), &bi, &ai, &staging, &stagingAlloc, &aiOut));
+        stagingMap = aiOut.pMappedData;
+    }
+    std::memcpy(stagingMap, noise, noiseSize);
+    vmaFlushAllocation(ctx.allocator(), stagingAlloc, 0, noiseSize);
+
+    // Noise image (SAMPLED | TRANSFER_DST).
+    {
+        VkImageCreateInfo iInfo{};
+        iInfo.sType         = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
+        iInfo.imageType     = VK_IMAGE_TYPE_2D;
+        iInfo.format        = noiseFmt;
+        iInfo.extent        = {kNoiseDim, kNoiseDim, 1};
+        iInfo.mipLevels     = 1;
+        iInfo.arrayLayers   = 1;
+        iInfo.samples       = VK_SAMPLE_COUNT_1_BIT;
+        iInfo.tiling        = VK_IMAGE_TILING_OPTIMAL;
+        iInfo.usage         = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+        iInfo.sharingMode   = VK_SHARING_MODE_EXCLUSIVE;
+        iInfo.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+        VmaAllocationCreateInfo aInfo{};
+        aInfo.usage         = VMA_MEMORY_USAGE_AUTO;
+        aInfo.requiredFlags = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT;
+        VK_CHECK(vmaCreateImage(ctx.allocator(), &iInfo, &aInfo, &ssaoNoise_, &ssaoNoiseAlloc_, nullptr));
+    }
+
+    // One-shot copy (UNDEFINED → TRANSFER_DST → copy → SHADER_READ_ONLY).
+    {
+        VkCommandPool pool = VK_NULL_HANDLE;
+        VkCommandPoolCreateInfo pInfo{};
+        pInfo.sType            = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
+        pInfo.queueFamilyIndex = ctx.graphicsFamily();
+        pInfo.flags            = VK_COMMAND_POOL_CREATE_TRANSIENT_BIT;
+        VK_CHECK(vkCreateCommandPool(ctx.device(), &pInfo, nullptr, &pool));
+
+        VkCommandBuffer cb = VK_NULL_HANDLE;
+        VkCommandBufferAllocateInfo cbInfo{};
+        cbInfo.sType              = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
+        cbInfo.commandPool        = pool;
+        cbInfo.level              = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+        cbInfo.commandBufferCount = 1;
+        VK_CHECK(vkAllocateCommandBuffers(ctx.device(), &cbInfo, &cb));
+
+        VkCommandBufferBeginInfo begin{};
+        begin.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+        begin.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+        VK_CHECK(vkBeginCommandBuffer(cb, &begin));
+
+        VkImageMemoryBarrier toDst{};
+        toDst.sType            = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+        toDst.oldLayout        = VK_IMAGE_LAYOUT_UNDEFINED;
+        toDst.newLayout        = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+        toDst.image            = ssaoNoise_;
+        toDst.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+        toDst.srcAccessMask    = 0;
+        toDst.dstAccessMask    = VK_ACCESS_TRANSFER_WRITE_BIT;
+        vkCmdPipelineBarrier(cb, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+                             VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, nullptr, 0, nullptr, 1, &toDst);
+
+        VkBufferImageCopy region{};
+        region.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+        region.imageExtent      = {kNoiseDim, kNoiseDim, 1};
+        vkCmdCopyBufferToImage(cb, staging, ssaoNoise_,
+                               VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
+
+        VkImageMemoryBarrier toShader = toDst;
+        toShader.oldLayout     = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+        toShader.newLayout     = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        toShader.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+        toShader.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+        vkCmdPipelineBarrier(cb, VK_PIPELINE_STAGE_TRANSFER_BIT,
+                             VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0, 0, nullptr, 0, nullptr, 1, &toShader);
+
+        VK_CHECK(vkEndCommandBuffer(cb));
+        VkSubmitInfo submit{};
+        submit.sType              = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+        submit.commandBufferCount = 1;
+        submit.pCommandBuffers    = &cb;
+        VK_CHECK(vkQueueSubmit(ctx.graphicsQueue(), 1, &submit, VK_NULL_HANDLE));
+        VK_CHECK(vkQueueWaitIdle(ctx.graphicsQueue()));
+        vkDestroyCommandPool(ctx.device(), pool, nullptr);
+    }
+    vmaDestroyBuffer(ctx.allocator(), staging, stagingAlloc);
+
+    // Noise view.
+    {
+        VkImageViewCreateInfo vInfo{};
+        vInfo.sType            = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+        vInfo.image            = ssaoNoise_;
+        vInfo.viewType         = VK_IMAGE_VIEW_TYPE_2D;
+        vInfo.format           = noiseFmt;
+        vInfo.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+        VK_CHECK(vkCreateImageView(ctx.device(), &vInfo, nullptr, &ssaoNoiseView_));
+    }
+
+    // Noise sampler: NEAREST + REPEAT (the 4x4 noise tiles across the screen).
+    {
+        VkSamplerCreateInfo si{};
+        si.sType        = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
+        si.magFilter    = VK_FILTER_NEAREST;
+        si.minFilter    = VK_FILTER_NEAREST;
+        si.mipmapMode   = VK_SAMPLER_MIPMAP_MODE_NEAREST;
+        si.addressModeU = VK_SAMPLER_ADDRESS_MODE_REPEAT;
+        si.addressModeV = VK_SAMPLER_ADDRESS_MODE_REPEAT;
+        si.addressModeW = VK_SAMPLER_ADDRESS_MODE_REPEAT;
+        VK_CHECK(vkCreateSampler(ctx.device(), &si, nullptr, &ssaoNoiseSampler_));
+    }
+
+    // --- Persistent host-visible, persistently-mapped SSAO UBO ---
+    {
+        VkBufferCreateInfo bi{};
+        bi.sType       = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+        bi.size        = sizeof(SsaoUbo);
+        bi.usage       = VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT;
+        bi.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+        VmaAllocationCreateInfo ai{};
+        ai.usage = VMA_MEMORY_USAGE_AUTO;
+        ai.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT |
+                   VMA_ALLOCATION_CREATE_MAPPED_BIT;
+        VmaAllocationInfo aiOut{};
+        VK_CHECK(vmaCreateBuffer(ctx.allocator(), &bi, &ai, &ssaoUboBuf_, &ssaoUboAlloc_, &aiOut));
+        ssaoUboMapped_ = aiOut.pMappedData;
+    }
+
+    // Cache the kernel (generated once; uploaded per-frame in Task 4).
+    ssaoKernel_ = generateSsaoKernel(kSsaoKernelSize);
+    return true;
+}
+
+// Per-resize: R8 AO + blurred-AO images/views/fbs, the persistent single-R8
+// render pass (create-if-null, like bloomPass_), and the 2 descriptor sets
+// (re-allocated each resize because they reference the rebuilt ssaoView_ +
+// sceneDepthView_). Mirrors createBloomTargets' structure.
+void VkPostProcess::createSsaoTargets(VkContext& ctx, VkExtent2D extent) {
+    ssaoExtent_ = extent;
+
+    auto makeR8 = [&](VkImage& img, VmaAllocation& alloc, VkImageView& view) {
+        VkImageCreateInfo iInfo{};
+        iInfo.sType         = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
+        iInfo.imageType     = VK_IMAGE_TYPE_2D;
+        iInfo.format        = VK_FORMAT_R8_UNORM;
+        iInfo.extent        = {extent.width, extent.height, 1};
+        iInfo.mipLevels     = 1;
+        iInfo.arrayLayers   = 1;
+        iInfo.samples       = VK_SAMPLE_COUNT_1_BIT;
+        iInfo.tiling        = VK_IMAGE_TILING_OPTIMAL;
+        iInfo.usage         = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
+        iInfo.sharingMode   = VK_SHARING_MODE_EXCLUSIVE;
+        iInfo.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+        VmaAllocationCreateInfo aInfo{};
+        aInfo.usage = VMA_MEMORY_USAGE_AUTO;
+        VK_CHECK(vmaCreateImage(ctx.allocator(), &iInfo, &aInfo, &img, &alloc, nullptr));
+
+        VkImageViewCreateInfo vInfo{};
+        vInfo.sType            = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+        vInfo.image            = img;
+        vInfo.viewType         = VK_IMAGE_VIEW_TYPE_2D;
+        vInfo.format           = VK_FORMAT_R8_UNORM;
+        vInfo.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+        VK_CHECK(vkCreateImageView(ctx.device(), &vInfo, nullptr, &view));
+    };
+    makeR8(ssaoImage_,     ssaoAlloc_,     ssaoView_);
+    makeR8(ssaoBlurImage_, ssaoBlurAlloc_, ssaoBlurView_);
+
+    // Single R8 color attachment pass. loadOp=DONT_CARE (both passes fully
+    // overwrite, no blend), finalLayout SHADER_READ_ONLY so the result is
+    // immediately sampleable. No COLOR_ATTACHMENT_READ_BIT (no LOAD/blend).
+    if (ssaoPass_ == VK_NULL_HANDLE) {  // persist across resize (see bloomPass_)
+        VkAttachmentDescription att{};
+        att.format         = VK_FORMAT_R8_UNORM;
+        att.samples        = VK_SAMPLE_COUNT_1_BIT;
+        att.loadOp         = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+        att.storeOp        = VK_ATTACHMENT_STORE_OP_STORE;
+        att.stencilLoadOp  = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+        att.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+        att.initialLayout  = VK_IMAGE_LAYOUT_UNDEFINED;
+        att.finalLayout    = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+
+        VkAttachmentReference colorRef{0, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL};
+
+        VkSubpassDescription subpass{};
+        subpass.pipelineBindPoint    = VK_PIPELINE_BIND_POINT_GRAPHICS;
+        subpass.colorAttachmentCount = 1;
+        subpass.pColorAttachments    = &colorRef;
+
+        VkSubpassDependency deps[2]{};
+        deps[0].srcSubpass    = VK_SUBPASS_EXTERNAL;
+        deps[0].dstSubpass    = 0;
+        deps[0].srcStageMask  = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
+        deps[0].dstStageMask  = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+        deps[0].srcAccessMask = VK_ACCESS_SHADER_READ_BIT;
+        deps[0].dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+        deps[1].srcSubpass    = 0;
+        deps[1].dstSubpass    = VK_SUBPASS_EXTERNAL;
+        deps[1].srcStageMask  = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+        deps[1].dstStageMask  = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
+        deps[1].srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+        deps[1].dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+
+        VkRenderPassCreateInfo rpInfo{};
+        rpInfo.sType           = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO;
+        rpInfo.attachmentCount = 1;
+        rpInfo.pAttachments    = &att;
+        rpInfo.subpassCount    = 1;
+        rpInfo.pSubpasses      = &subpass;
+        rpInfo.dependencyCount = 2;
+        rpInfo.pDependencies   = deps;
+        VK_CHECK(vkCreateRenderPass(ctx.device(), &rpInfo, nullptr, &ssaoPass_));
+    }
+
+    // Framebuffers (one per R8 target), both at full extent.
+    auto makeFb = [&](VkImageView view, VkFramebuffer& fb) {
+        VkFramebufferCreateInfo fbInfo{};
+        fbInfo.sType           = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO;
+        fbInfo.renderPass      = ssaoPass_;
+        fbInfo.attachmentCount = 1;
+        fbInfo.pAttachments    = &view;
+        fbInfo.width           = extent.width;
+        fbInfo.height          = extent.height;
+        fbInfo.layers          = 1;
+        VK_CHECK(vkCreateFramebuffer(ctx.device(), &fbInfo, nullptr, &fb));
+    };
+    makeFb(ssaoView_,     ssaoFb_);
+    makeFb(ssaoBlurView_, ssaoBlurFb_);
+
+    // Allocate + write the 2 descriptor sets from the persistent ssaoDescPool_.
+    // Reset the pool first so a resize re-allocates cleanly (the pool is sized
+    // for exactly these 2 sets). The set layouts + pool were created in init
+    // before createTargets ran — heeds the M47 null-layout lesson.
+    VK_CHECK(vkResetDescriptorPool(ctx.device(), ssaoDescPool_, 0));
+    {
+        VkDescriptorSetAllocateInfo a0{};
+        a0.sType              = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+        a0.descriptorPool     = ssaoDescPool_;
+        a0.descriptorSetCount = 1;
+        a0.pSetLayouts        = &ssaoSetLayout_;
+        VK_CHECK(vkAllocateDescriptorSets(ctx.device(), &a0, &ssaoSet_));
+
+        VkDescriptorSetAllocateInfo a1{};
+        a1.sType              = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+        a1.descriptorPool     = ssaoDescPool_;
+        a1.descriptorSetCount = 1;
+        a1.pSetLayouts        = &ssaoBlurSetLayout_;
+        VK_CHECK(vkAllocateDescriptorSets(ctx.device(), &a1, &ssaoBlurSet_));
+    }
+
+    // ssaoSet_: 0 = scene depth (maskSampler_ NEAREST + depth layout, like x-ray),
+    // 1 = noise (NEAREST/REPEAT), 2 = UBO (whole range).
+    {
+        VkDescriptorImageInfo depthInfo{};
+        depthInfo.sampler     = maskSampler_;
+        depthInfo.imageView   = sceneDepthView_;
+        depthInfo.imageLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL;
+
+        VkDescriptorImageInfo noiseInfo{};
+        noiseInfo.sampler     = ssaoNoiseSampler_;
+        noiseInfo.imageView   = ssaoNoiseView_;
+        noiseInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+
+        VkDescriptorBufferInfo uboInfo{};
+        uboInfo.buffer = ssaoUboBuf_;
+        uboInfo.offset = 0;
+        uboInfo.range  = VK_WHOLE_SIZE;
+
+        VkWriteDescriptorSet w[3]{};
+        w[0].sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        w[0].dstSet          = ssaoSet_;
+        w[0].dstBinding      = 0;
+        w[0].descriptorType  = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        w[0].descriptorCount = 1;
+        w[0].pImageInfo      = &depthInfo;
+        w[1].sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        w[1].dstSet          = ssaoSet_;
+        w[1].dstBinding      = 1;
+        w[1].descriptorType  = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        w[1].descriptorCount = 1;
+        w[1].pImageInfo      = &noiseInfo;
+        w[2].sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        w[2].dstSet          = ssaoSet_;
+        w[2].dstBinding      = 2;
+        w[2].descriptorType  = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+        w[2].descriptorCount = 1;
+        w[2].pBufferInfo     = &uboInfo;
+        vkUpdateDescriptorSets(ctx.device(), 3, w, 0, nullptr);
+    }
+
+    // ssaoBlurSet_: 0 = raw AO (ssaoView_) via the shared linear-clamp sampler
+    // (bloomSampler_ is LINEAR + CLAMP_TO_EDGE — exactly what the box blur taps want).
+    {
+        VkDescriptorImageInfo aoInfo{};
+        aoInfo.sampler     = bloomSampler_;
+        aoInfo.imageView   = ssaoView_;
+        aoInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        VkWriteDescriptorSet w{};
+        w.sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        w.dstSet          = ssaoBlurSet_;
+        w.dstBinding      = 0;
+        w.descriptorType  = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        w.descriptorCount = 1;
+        w.pImageInfo      = &aoInfo;
+        vkUpdateDescriptorSets(ctx.device(), 1, &w, 0, nullptr);
+    }
+}
+
+void VkPostProcess::destroySsaoTargets(VkContext& ctx) {
+    // Per-resize handles only. ssaoPass_ persists (freed in destroy()).
+    // The descriptor sets live in the persistent ssaoDescPool_; resetting it on
+    // the next createSsaoTargets frees them, and destroy() frees the pool itself.
+    if (ssaoDescPool_) {
+        vkResetDescriptorPool(ctx.device(), ssaoDescPool_, 0);
+        ssaoSet_     = VK_NULL_HANDLE;
+        ssaoBlurSet_ = VK_NULL_HANDLE;
+    }
+    if (ssaoBlurFb_)    { vkDestroyFramebuffer(ctx.device(), ssaoBlurFb_, nullptr); ssaoBlurFb_ = VK_NULL_HANDLE; }
+    if (ssaoFb_)        { vkDestroyFramebuffer(ctx.device(), ssaoFb_, nullptr); ssaoFb_ = VK_NULL_HANDLE; }
+    if (ssaoBlurView_)  { vkDestroyImageView(ctx.device(), ssaoBlurView_, nullptr); ssaoBlurView_ = VK_NULL_HANDLE; }
+    if (ssaoView_)      { vkDestroyImageView(ctx.device(), ssaoView_, nullptr); ssaoView_ = VK_NULL_HANDLE; }
+    if (ssaoBlurImage_) { vmaDestroyImage(ctx.allocator(), ssaoBlurImage_, ssaoBlurAlloc_); ssaoBlurImage_ = VK_NULL_HANDLE; ssaoBlurAlloc_ = VK_NULL_HANDLE; }
+    if (ssaoImage_)     { vmaDestroyImage(ctx.allocator(), ssaoImage_, ssaoAlloc_); ssaoImage_ = VK_NULL_HANDLE; ssaoAlloc_ = VK_NULL_HANDLE; }
+}
+
+// Persistent: the SSAO + blur full-screen pipelines, built against ssaoPass_
+// (created by createSsaoTargets before this runs in init). Mirrors the bloom
+// fullscreen pipeline builder. Returns false on shader-compile failure.
+bool VkPostProcess::createSsaoPipelines(VkContext& ctx) {
+    auto vspv = compileGlsl(VK_SHADER_STAGE_VERTEX_BIT, kFullscreenVert);
+    if (vspv.empty()) {
+        Log::error("VkPostProcess: SSAO vertex shader compile failed");
+        return false;
+    }
+    auto makeModule = [&](const std::vector<std::uint32_t>& spv) -> VkShaderModule {
+        VkShaderModuleCreateInfo smInfo{};
+        smInfo.sType    = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
+        smInfo.codeSize = spv.size() * sizeof(std::uint32_t);
+        smInfo.pCode    = spv.data();
+        VkShaderModule m = VK_NULL_HANDLE;
+        if (vkCreateShaderModule(ctx.device(), &smInfo, nullptr, &m) != VK_SUCCESS) m = VK_NULL_HANDLE;
+        return m;
+    };
+
+    // Pipeline layouts: SSAO = ssaoSetLayout_, no push; blur = ssaoBlurSetLayout_ +
+    // FRAGMENT push (SsaoBlurPush).
+    {
+        VkPipelineLayoutCreateInfo plInfo{};
+        plInfo.sType          = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+        plInfo.setLayoutCount = 1;
+        plInfo.pSetLayouts    = &ssaoSetLayout_;
+        VK_CHECK(vkCreatePipelineLayout(ctx.device(), &plInfo, nullptr, &ssaoLayout_));
+    }
+    {
+        VkPushConstantRange pc{};
+        pc.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+        pc.offset     = 0;
+        pc.size       = sizeof(SsaoBlurPush);
+        VkPipelineLayoutCreateInfo plInfo{};
+        plInfo.sType                  = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+        plInfo.setLayoutCount         = 1;
+        plInfo.pSetLayouts            = &ssaoBlurSetLayout_;
+        plInfo.pushConstantRangeCount = 1;
+        plInfo.pPushConstantRanges    = &pc;
+        VK_CHECK(vkCreatePipelineLayout(ctx.device(), &plInfo, nullptr, &ssaoBlurLayout_));
+    }
+
+    // Common full-screen fixed-function state (mirrors createBloomPipelines).
+    VkPipelineInputAssemblyStateCreateInfo ia{};
+    ia.sType    = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO;
+    ia.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+
+    VkPipelineViewportStateCreateInfo vpState{};
+    vpState.sType         = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO;
+    vpState.viewportCount = 1;
+    vpState.scissorCount  = 1;
+
+    VkPipelineRasterizationStateCreateInfo rs{};
+    rs.sType       = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO;
+    rs.polygonMode = VK_POLYGON_MODE_FILL;
+    rs.cullMode    = VK_CULL_MODE_NONE;
+    rs.frontFace   = VK_FRONT_FACE_COUNTER_CLOCKWISE;
+    rs.lineWidth   = 1.0f;
+
+    VkPipelineMultisampleStateCreateInfo ms{};
+    ms.sType                = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO;
+    ms.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
+
+    VkPipelineDepthStencilStateCreateInfo dsState{};
+    dsState.sType            = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO;
+    dsState.depthTestEnable  = VK_FALSE;
+    dsState.depthWriteEnable = VK_FALSE;
+
+    VkDynamicState dynStates[] = {VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR};
+    VkPipelineDynamicStateCreateInfo dyn{};
+    dyn.sType             = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO;
+    dyn.dynamicStateCount = 2;
+    dyn.pDynamicStates    = dynStates;
+
+    VkPipelineVertexInputStateCreateInfo vi{};
+    vi.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
+
+    VkPipelineColorBlendAttachmentState att{};
+    att.colorWriteMask = 0xF;
+    att.blendEnable    = VK_FALSE;   // both passes fully overwrite — no blend
+    VkPipelineColorBlendStateCreateInfo blend{};
+    blend.sType           = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO;
+    blend.attachmentCount = 1;
+    blend.pAttachments    = &att;
+
+    auto buildPipeline = [&](const char* frag, VkPipelineLayout layout,
+                             ::VkPipeline* outPipe, const char* tag) -> bool {
+        auto fspv = compileGlsl(VK_SHADER_STAGE_FRAGMENT_BIT, frag);
+        if (fspv.empty()) { Log::error("VkPostProcess: SSAO %s shader compile failed", tag); return false; }
+        VkShaderModule vsm = makeModule(vspv);
+        VkShaderModule fsm = makeModule(fspv);
+        if (!vsm || !fsm) {
+            if (vsm) vkDestroyShaderModule(ctx.device(), vsm, nullptr);
+            if (fsm) vkDestroyShaderModule(ctx.device(), fsm, nullptr);
+            Log::error("VkPostProcess: SSAO %s shader module creation failed", tag);
+            return false;
+        }
+        VkPipelineShaderStageCreateInfo stages[2]{};
+        stages[0].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+        stages[0].stage = VK_SHADER_STAGE_VERTEX_BIT;   stages[0].module = vsm; stages[0].pName = "main";
+        stages[1].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+        stages[1].stage = VK_SHADER_STAGE_FRAGMENT_BIT; stages[1].module = fsm; stages[1].pName = "main";
+
+        VkGraphicsPipelineCreateInfo pInfo{};
+        pInfo.sType               = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
+        pInfo.stageCount          = 2; pInfo.pStages = stages;
+        pInfo.pVertexInputState   = &vi;
+        pInfo.pInputAssemblyState = &ia;
+        pInfo.pViewportState      = &vpState;
+        pInfo.pRasterizationState = &rs;
+        pInfo.pMultisampleState   = &ms;
+        pInfo.pDepthStencilState  = &dsState;
+        pInfo.pColorBlendState    = &blend;
+        pInfo.pDynamicState       = &dyn;
+        pInfo.layout              = layout;
+        pInfo.renderPass          = ssaoPass_;
+        pInfo.subpass             = 0;
+        VkResult r = vkCreateGraphicsPipelines(ctx.device(), VK_NULL_HANDLE, 1, &pInfo, nullptr, outPipe);
+        vkDestroyShaderModule(ctx.device(), vsm, nullptr);
+        vkDestroyShaderModule(ctx.device(), fsm, nullptr);
+        VK_CHECK(r);
+        return true;
+    };
+
+    if (!buildPipeline(kSsaoSrc(),     ssaoLayout_,     &ssaoPipeline_,     "occlusion")) return false;
+    if (!buildPipeline(kSsaoBlurSrc(), ssaoBlurLayout_, &ssaoBlurPipeline_, "blur"))      return false;
     return true;
 }
 
