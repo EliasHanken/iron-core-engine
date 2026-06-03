@@ -121,8 +121,8 @@ int main() {
     // procedural sunset cubemap if the .hdr is missing or the backend
     // lacks IBL support.
     {
-        iron::CubemapHandle sky =
-            renderer.loadHdrSkybox("assets/hdri/symmetrical_garden_02_2k.hdr", 512);
+        iron::CubemapHandle sky = renderer.loadHdrSkybox(
+            iron::executableDir() + "/assets/hdri/symmetrical_garden_02_2k.hdr", 512);
         if (sky == iron::kInvalidHandle) {
             iron::Log::warn("sandbox: HDR skybox failed; using procedural sunset");
             sky = iron::createSunsetSkybox(renderer);

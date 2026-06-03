@@ -1,5 +1,0 @@
-Source: https://github.com/KhronosGroup/glTF-Sample-Assets/tree/main/Models/DamagedHelmet
-Author: ctxwing (rebuild and conversion to glTF); theblueturtle_ (earlier version of model)
-License: CC BY 4.0 (https://creativecommons.org/licenses/by/4.0/) — (c) 2018 ctxwing, rebuild and conversion to glTF
-License: CC BY-NC 4.0 (https://creativecommons.org/licenses/by-nc/4.0/) — (c) 2016 theblueturtle_, earlier version of model
-Note: The earlier version of the model is licensed CC BY-NC 4.0 (NON-COMMERCIAL). Verify usage rights before any commercial use.
