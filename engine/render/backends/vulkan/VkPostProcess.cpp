@@ -7,6 +7,8 @@
 #include "scene/Mesh.h"
 #include "core/Log.h"
 
+#include <algorithm>  // std::min / std::max (bloom mip math)
+
 namespace iron {
 
 namespace {
@@ -30,6 +32,30 @@ vec3 aces(vec3 x) {
 }
 void main() {
     vec3 hdr = texture(uScene, vUV).rgb * pc.exposure;
+    outColor = vec4(aces(hdr), 1.0);
+}
+)";
+
+// Composite (tonemap) fragment shader — a bloom-aware variant of kCopyFrag used
+// ONLY by the copy/composite pipeline (NOT the viewport->swapchain blit, which
+// keeps the binding-0-only kCopyFrag). Adds bloom mip0 (binding 1) before the
+// ACES curve. The aces() body and the exposure/output are byte-identical to
+// kCopyFrag; the only additions are the uBloom binding, the bloomIntensity push
+// field, and the `scene + bloom * intensity` add. (M47)
+const char* kCompositeFrag = R"(#version 450
+layout(location = 0) in vec2 vUV;
+layout(location = 0) out vec4 outColor;
+layout(set = 0, binding = 0) uniform sampler2D uScene;
+layout(set = 0, binding = 1) uniform sampler2D uBloom;
+layout(push_constant) uniform Push { float exposure; float bloomIntensity; } pc;
+vec3 aces(vec3 x) {
+    const float a = 2.51, b = 0.03, c = 2.43, d = 0.59, e = 0.14;
+    return clamp((x * (a * x + b)) / (x * (c * x + d) + e), 0.0, 1.0);
+}
+void main() {
+    vec3 scene = texture(uScene, vUV).rgb;
+    vec3 bloom = texture(uBloom, vUV).rgb;
+    vec3 hdr   = (scene + bloom * pc.bloomIntensity) * pc.exposure;
     outColor = vec4(aces(hdr), 1.0);
 }
 )";
@@ -183,6 +209,120 @@ void main() {
 }  // namespace
 
 // ---------------------------------------------------------------------------
+// Bloom fragment shaders (M47). Public (declared in the header) so test_bloom
+// can compile-check them to SPIR-V. Reuse the anonymous-namespace kFullscreenVert
+// for the vertex stage when building the actual pipelines.
+// ---------------------------------------------------------------------------
+
+const char* kBloomPrefilterDownSrc() {
+    return R"(#version 450
+layout(location = 0) in  vec2 vUV;
+layout(location = 0) out vec4 outColor;
+layout(binding = 0) uniform sampler2D uSrc;
+layout(push_constant) uniform PC { float threshold; float knee; vec2 srcTexel; } pc;
+
+vec3 prefilter(vec3 c) {
+    float br = max(c.r, max(c.g, c.b));
+    float soft = br - pc.threshold + pc.knee;
+    soft = clamp(soft, 0.0, 2.0 * pc.knee);
+    soft = soft * soft / (4.0 * pc.knee + 1e-4);
+    float contrib = max(soft, br - pc.threshold);
+    contrib /= max(br, 1e-4);
+    return c * contrib;
+}
+float karis(vec3 c) { float l = dot(c, vec3(0.2126, 0.7152, 0.0722)); return 1.0 / (1.0 + l); }
+
+void main() {
+    vec2 t = pc.srcTexel; vec2 uv = vUV;
+    vec3 a = texture(uSrc, uv + t * vec2(-2.0,  2.0)).rgb;
+    vec3 b = texture(uSrc, uv + t * vec2( 0.0,  2.0)).rgb;
+    vec3 c = texture(uSrc, uv + t * vec2( 2.0,  2.0)).rgb;
+    vec3 d = texture(uSrc, uv + t * vec2(-2.0,  0.0)).rgb;
+    vec3 e = texture(uSrc, uv + t * vec2( 0.0,  0.0)).rgb;
+    vec3 f = texture(uSrc, uv + t * vec2( 2.0,  0.0)).rgb;
+    vec3 g = texture(uSrc, uv + t * vec2(-2.0, -2.0)).rgb;
+    vec3 h = texture(uSrc, uv + t * vec2( 0.0, -2.0)).rgb;
+    vec3 i = texture(uSrc, uv + t * vec2( 2.0, -2.0)).rgb;
+    vec3 j = texture(uSrc, uv + t * vec2(-1.0,  1.0)).rgb;
+    vec3 k = texture(uSrc, uv + t * vec2( 1.0,  1.0)).rgb;
+    vec3 l = texture(uSrc, uv + t * vec2(-1.0, -1.0)).rgb;
+    vec3 m = texture(uSrc, uv + t * vec2( 1.0, -1.0)).rgb;
+    vec3 box0 = (j + k + l + m) * 0.25;
+    vec3 box1 = (a + b + d + e) * 0.25;
+    vec3 box2 = (b + c + e + f) * 0.25;
+    vec3 box3 = (d + e + g + h) * 0.25;
+    vec3 box4 = (e + f + h + i) * 0.25;
+    box0 = prefilter(box0); box1 = prefilter(box1); box2 = prefilter(box2);
+    box3 = prefilter(box3); box4 = prefilter(box4);
+    float w0 = karis(box0) * 0.5;
+    float w1 = karis(box1) * 0.125;
+    float w2 = karis(box2) * 0.125;
+    float w3 = karis(box3) * 0.125;
+    float w4 = karis(box4) * 0.125;
+    vec3 sum = box0 * w0 + box1 * w1 + box2 * w2 + box3 * w3 + box4 * w4;
+    float wsum = w0 + w1 + w2 + w3 + w4;
+    outColor = vec4(sum / max(wsum, 1e-4), 1.0);
+}
+)";
+}
+
+const char* kBloomDownsampleSrc() {
+    return R"(#version 450
+layout(location = 0) in  vec2 vUV;
+layout(location = 0) out vec4 outColor;
+layout(binding = 0) uniform sampler2D uSrc;
+layout(push_constant) uniform PC { vec2 srcTexel; } pc;
+
+void main() {
+    vec2 t = pc.srcTexel; vec2 uv = vUV;
+    vec3 a = texture(uSrc, uv + t * vec2(-2.0,  2.0)).rgb;
+    vec3 b = texture(uSrc, uv + t * vec2( 0.0,  2.0)).rgb;
+    vec3 c = texture(uSrc, uv + t * vec2( 2.0,  2.0)).rgb;
+    vec3 d = texture(uSrc, uv + t * vec2(-2.0,  0.0)).rgb;
+    vec3 e = texture(uSrc, uv + t * vec2( 0.0,  0.0)).rgb;
+    vec3 f = texture(uSrc, uv + t * vec2( 2.0,  0.0)).rgb;
+    vec3 g = texture(uSrc, uv + t * vec2(-2.0, -2.0)).rgb;
+    vec3 h = texture(uSrc, uv + t * vec2( 0.0, -2.0)).rgb;
+    vec3 i = texture(uSrc, uv + t * vec2( 2.0, -2.0)).rgb;
+    vec3 j = texture(uSrc, uv + t * vec2(-1.0,  1.0)).rgb;
+    vec3 k = texture(uSrc, uv + t * vec2( 1.0,  1.0)).rgb;
+    vec3 l = texture(uSrc, uv + t * vec2(-1.0, -1.0)).rgb;
+    vec3 m = texture(uSrc, uv + t * vec2( 1.0, -1.0)).rgb;
+    vec3 r  = (j + k + l + m) * 0.5   * 0.25;
+    r      += (a + b + d + e) * 0.125 * 0.25;
+    r      += (b + c + e + f) * 0.125 * 0.25;
+    r      += (d + e + g + h) * 0.125 * 0.25;
+    r      += (e + f + h + i) * 0.125 * 0.25;
+    outColor = vec4(r, 1.0);
+}
+)";
+}
+
+const char* kBloomUpsampleSrc() {
+    return R"(#version 450
+layout(location = 0) in  vec2 vUV;
+layout(location = 0) out vec4 outColor;
+layout(binding = 0) uniform sampler2D uSrc;
+layout(push_constant) uniform PC { vec2 srcTexel; float scatter; } pc;
+
+void main() {
+    vec2 t = pc.srcTexel * pc.scatter; vec2 uv = vUV;
+    vec3 s = vec3(0.0);
+    s += texture(uSrc, uv + t * vec2(-1.0,  1.0)).rgb * 1.0;
+    s += texture(uSrc, uv + t * vec2( 0.0,  1.0)).rgb * 2.0;
+    s += texture(uSrc, uv + t * vec2( 1.0,  1.0)).rgb * 1.0;
+    s += texture(uSrc, uv + t * vec2(-1.0,  0.0)).rgb * 2.0;
+    s += texture(uSrc, uv + t * vec2( 0.0,  0.0)).rgb * 4.0;
+    s += texture(uSrc, uv + t * vec2( 1.0,  0.0)).rgb * 2.0;
+    s += texture(uSrc, uv + t * vec2(-1.0, -1.0)).rgb * 1.0;
+    s += texture(uSrc, uv + t * vec2( 0.0, -1.0)).rgb * 2.0;
+    s += texture(uSrc, uv + t * vec2( 1.0, -1.0)).rgb * 1.0;
+    outColor = vec4(s * (1.0 / 16.0), 1.0);
+}
+)";
+}
+
+// ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------
 
@@ -212,6 +352,27 @@ bool VkPostProcess::init(VkContext& ctx, VkFormat colorFormat, VkFormat depthFor
         VK_CHECK(vkCreateSampler(ctx.device(), &si, nullptr, &maskSampler_));
     }
 
+    // M47: dedicated bloom sampler — LINEAR filter with CLAMP_TO_EDGE addressing.
+    // The bloom down/upsample shaders take offset filter taps; with the shared
+    // sampler_'s REPEAT addressing those taps wrap around screen/mip edges and
+    // bleed light across edges. Each bloom pass samples a single mip via a
+    // distinct image view, so no mip LOD is needed (mipmapMode NEAREST, maxLod 0).
+    // Must be created BEFORE createTargets(ctx) below, since createBloomTargets
+    // (invoked from createTargets) writes the bloom descriptor sets with it.
+    {
+        VkSamplerCreateInfo si{};
+        si.sType        = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
+        si.magFilter    = VK_FILTER_LINEAR;
+        si.minFilter    = VK_FILTER_LINEAR;
+        si.mipmapMode   = VK_SAMPLER_MIPMAP_MODE_NEAREST;
+        si.addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+        si.addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+        si.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+        si.minLod       = 0.0f;
+        si.maxLod       = 0.0f;
+        VK_CHECK(vkCreateSampler(ctx.device(), &si, nullptr, &bloomSampler_));
+    }
+
     if (!createTargets(ctx))                       { destroy(ctx); return false; }
     if (!createViewportTarget(ctx))                { destroy(ctx); return false; }
     if (!createCopyPipeline(ctx))                  { destroy(ctx); return false; }
@@ -220,10 +381,24 @@ bool VkPostProcess::init(VkContext& ctx, VkFormat colorFormat, VkFormat depthFor
     if (!createMaskPipeline(ctx))                  { destroy(ctx); return false; }
     if (!createGlowPipelines(ctx))                 { destroy(ctx); return false; }
     if (!createXRayPipeline(ctx))                  { destroy(ctx); return false; }
+
+    // M47 bloom: the mip-chain target (image + per-mip views/fbs + pass) is created
+    // by createTargets(ctx) above and rebuilt on resize in createTargets()/destroyTargets();
+    // the pipelines/layouts/set-layout are persistent (built once here, torn down in destroy()).
+    if (!createBloomPipelines())                   { destroy(ctx); return false; }
     return true;
 }
 
 void VkPostProcess::destroy(VkContext& ctx) {
+    // M47 bloom pipelines/layouts/set-layout (persistent — not per-resize).
+    if (bloomUpPipeline_)         { vkDestroyPipeline(ctx.device(), bloomUpPipeline_, nullptr);         bloomUpPipeline_ = VK_NULL_HANDLE; }
+    if (bloomDownPipeline_)       { vkDestroyPipeline(ctx.device(), bloomDownPipeline_, nullptr);       bloomDownPipeline_ = VK_NULL_HANDLE; }
+    if (bloomBrightDownPipeline_) { vkDestroyPipeline(ctx.device(), bloomBrightDownPipeline_, nullptr); bloomBrightDownPipeline_ = VK_NULL_HANDLE; }
+    if (bloomUpLayout_)           { vkDestroyPipelineLayout(ctx.device(), bloomUpLayout_, nullptr);           bloomUpLayout_ = VK_NULL_HANDLE; }
+    if (bloomDownLayout_)         { vkDestroyPipelineLayout(ctx.device(), bloomDownLayout_, nullptr);         bloomDownLayout_ = VK_NULL_HANDLE; }
+    if (bloomBrightDownLayout_)   { vkDestroyPipelineLayout(ctx.device(), bloomBrightDownLayout_, nullptr);   bloomBrightDownLayout_ = VK_NULL_HANDLE; }
+    if (bloomSetLayout_)          { vkDestroyDescriptorSetLayout(ctx.device(), bloomSetLayout_, nullptr);     bloomSetLayout_ = VK_NULL_HANDLE; }
+
     // X-ray pipeline objects.
     if (xrayPipeline_)   { vkDestroyPipeline(ctx.device(), xrayPipeline_, nullptr); xrayPipeline_ = VK_NULL_HANDLE; }
     if (xrayPipeLayout_) { vkDestroyPipelineLayout(ctx.device(), xrayPipeLayout_, nullptr); xrayPipeLayout_ = VK_NULL_HANDLE; }
@@ -271,6 +446,8 @@ void VkPostProcess::destroy(VkContext& ctx) {
 
     // NEAREST sampler for integer mask texture.
     if (maskSampler_)    { vkDestroySampler(ctx.device(), maskSampler_, nullptr); maskSampler_ = VK_NULL_HANDLE; }
+    // M47: LINEAR + CLAMP_TO_EDGE sampler for the bloom mip chain.
+    if (bloomSampler_)   { vkDestroySampler(ctx.device(), bloomSampler_, nullptr); bloomSampler_ = VK_NULL_HANDLE; }
 
     // Render target objects (images + framebuffers). The render passes are
     // persistent across resize, so they are NOT freed by these helpers —
@@ -278,6 +455,7 @@ void VkPostProcess::destroy(VkContext& ctx) {
     destroyViewportTarget(ctx);
     destroyTargets(ctx);
     if (viewportPass_) { vkDestroyRenderPass(ctx.device(), viewportPass_, nullptr); viewportPass_ = VK_NULL_HANDLE; }
+    if (bloomPass_)    { vkDestroyRenderPass(ctx.device(), bloomPass_, nullptr);    bloomPass_ = VK_NULL_HANDLE; }
     if (glowPass_)     { vkDestroyRenderPass(ctx.device(), glowPass_, nullptr);     glowPass_ = VK_NULL_HANDLE; }
     if (maskPass_)     { vkDestroyRenderPass(ctx.device(), maskPass_, nullptr);     maskPass_ = VK_NULL_HANDLE; }
     if (scenePass_)    { vkDestroyRenderPass(ctx.device(), scenePass_, nullptr);    scenePass_ = VK_NULL_HANDLE; }
@@ -288,21 +466,32 @@ bool VkPostProcess::resize(VkContext& ctx, VkExtent2D extent) {
     destroyTargets(ctx);
     if (!createTargets(ctx)) return false;
 
-    // Re-write the copy descriptor set to point at the new sceneColorView_.
+    // Re-write the copy/composite descriptor set: binding 0 = new sceneColorView_,
+    // binding 1 = new bloom mip0 (createTargets above rebuilt the bloom targets, so
+    // bloomMipViews_[0] is the freshly-created view). (M47)
     {
-        VkDescriptorImageInfo imgInfo{};
-        imgInfo.sampler     = sampler_;
-        imgInfo.imageView   = sceneColorView_;
-        imgInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        VkDescriptorImageInfo imgInfos[2]{};
+        imgInfos[0].sampler     = sampler_;
+        imgInfos[0].imageView   = sceneColorView_;
+        imgInfos[0].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        imgInfos[1].sampler     = bloomSampler_;
+        imgInfos[1].imageView   = bloomMipViews_[0];
+        imgInfos[1].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 
-        VkWriteDescriptorSet write{};
-        write.sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-        write.dstSet          = copyDescSet_;
-        write.dstBinding      = 0;
-        write.descriptorType  = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-        write.descriptorCount = 1;
-        write.pImageInfo      = &imgInfo;
-        vkUpdateDescriptorSets(ctx.device(), 1, &write, 0, nullptr);
+        VkWriteDescriptorSet writes[2]{};
+        writes[0].sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        writes[0].dstSet          = copyDescSet_;
+        writes[0].dstBinding      = 0;
+        writes[0].descriptorType  = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        writes[0].descriptorCount = 1;
+        writes[0].pImageInfo      = &imgInfos[0];
+        writes[1].sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        writes[1].dstSet          = copyDescSet_;
+        writes[1].dstBinding      = 1;
+        writes[1].descriptorType  = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        writes[1].descriptorCount = 1;
+        writes[1].pImageInfo      = &imgInfos[1];
+        vkUpdateDescriptorSets(ctx.device(), 2, writes, 0, nullptr);
     }
 
     // Re-write the outline descriptor set to point at the new views.
@@ -494,12 +683,14 @@ void VkPostProcess::endViewportPass(VkCommandBuffer cb) const {
     vkCmdEndRenderPass(cb);
 }
 
-void VkPostProcess::recordComposite(VkCommandBuffer cb, float exposure) const {
+void VkPostProcess::recordComposite(VkCommandBuffer cb, float exposure,
+                                    float bloomIntensity) const {
     vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, copyPipeline_);
     vkCmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_GRAPHICS,
                             copyPipeLayout_, 0, 1, &copyDescSet_, 0, nullptr);
     CopyPush pc{};
-    pc.exposure = exposure;
+    pc.exposure       = exposure;
+    pc.bloomIntensity = bloomIntensity;
     vkCmdPushConstants(cb, copyPipeLayout_, VK_SHADER_STAGE_FRAGMENT_BIT,
                        0, sizeof(CopyPush), &pc);
     vkCmdDraw(cb, 3, 1, 0, 0);
@@ -973,10 +1164,17 @@ bool VkPostProcess::createTargets(VkContext& ctx) {
         }
     }
 
+    // M47 bloom mip-chain target (image + per-mip views/fbs). The pass is
+    // created once and persisted (like glowPass_); see createBloomTargets.
+    createBloomTargets(extent_);
+
     return true;
 }
 
 void VkPostProcess::destroyTargets(VkContext& ctx) {
+    // M47 bloom mip-chain image/views/fbs (pass persists; freed in destroy()).
+    destroyBloomTargets();
+
     // Glow scratch targets (destroy in reverse creation order).
     // NOTE: glowPass_/maskPass_/scenePass_ are NOT destroyed here — render
     // passes are extent-independent and must persist across resize so the
@@ -1003,6 +1201,437 @@ void VkPostProcess::destroyTargets(VkContext& ctx) {
     if (sceneDepthView_)  { vkDestroyImageView(ctx.device(), sceneDepthView_, nullptr); sceneDepthView_ = VK_NULL_HANDLE; }
     if (sceneColor_)      { vmaDestroyImage(ctx.allocator(), sceneColor_, sceneColorAlloc_); sceneColor_ = VK_NULL_HANDLE; sceneColorAlloc_ = VK_NULL_HANDLE; }
     if (sceneDepth_)      { vmaDestroyImage(ctx.allocator(), sceneDepth_, sceneDepthAlloc_); sceneDepth_ = VK_NULL_HANDLE; sceneDepthAlloc_ = VK_NULL_HANDLE; }
+}
+
+// ---------------------------------------------------------------------------
+// M47 bloom — mip-chain target, render pass, and 3 pipelines.
+// ---------------------------------------------------------------------------
+
+std::uint32_t VkPostProcess::computeBloomMipCount(VkExtent2D extent) {
+    std::uint32_t s = std::min(extent.width, extent.height) / 2u;  // mip0 = half res
+    std::uint32_t n = 1;
+    while (s > 8u && n < kBloomMaxMips) { s >>= 1u; ++n; }
+    return n;  // in [1, kBloomMaxMips]
+}
+
+// Creates a single RGBA16F image (mip0 = half scene res) with per-mip image
+// views + framebuffers, plus a render pass shared by all mip framebuffers.
+// The image/views/fbs are per-resize (rebuilt in createTargets); the pass is
+// created once and persists (pipelines are built against it — see glowPass_).
+// All mips are transitioned UNDEFINED -> SHADER_READ_ONLY_OPTIMAL once here so
+// they satisfy bloomPass_'s initialLayout = SHADER_READ_ONLY before first use.
+void VkPostProcess::createBloomTargets(VkExtent2D extent) {
+    VkContext& ctx = *ctx_;
+    bloomMipCount_ = computeBloomMipCount(extent);
+
+    const std::uint32_t w0 = std::max(1u, extent.width  / 2u);
+    const std::uint32_t h0 = std::max(1u, extent.height / 2u);
+
+    // Single image with bloomMipCount_ mip levels.
+    {
+        VkImageCreateInfo iInfo{};
+        iInfo.sType         = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
+        iInfo.imageType     = VK_IMAGE_TYPE_2D;
+        iInfo.format        = VK_FORMAT_R16G16B16A16_SFLOAT;
+        iInfo.extent        = {w0, h0, 1};
+        iInfo.mipLevels     = bloomMipCount_;
+        iInfo.arrayLayers   = 1;
+        iInfo.samples       = VK_SAMPLE_COUNT_1_BIT;
+        iInfo.tiling        = VK_IMAGE_TILING_OPTIMAL;
+        iInfo.usage         = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT |
+                              VK_IMAGE_USAGE_SAMPLED_BIT;
+        iInfo.sharingMode   = VK_SHARING_MODE_EXCLUSIVE;
+        iInfo.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+
+        VmaAllocationCreateInfo aInfo{};
+        aInfo.usage = VMA_MEMORY_USAGE_AUTO;
+        VK_CHECK(vmaCreateImage(ctx.allocator(), &iInfo, &aInfo,
+                                &bloomChain_, &bloomChainAlloc_, nullptr));
+    }
+
+    // Per-mip views + extents.
+    for (std::uint32_t m = 0; m < bloomMipCount_; ++m) {
+        bloomMipExtents_[m] = {std::max(1u, w0 >> m), std::max(1u, h0 >> m)};
+
+        VkImageViewCreateInfo vInfo{};
+        vInfo.sType                       = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+        vInfo.image                       = bloomChain_;
+        vInfo.viewType                    = VK_IMAGE_VIEW_TYPE_2D;
+        vInfo.format                      = VK_FORMAT_R16G16B16A16_SFLOAT;
+        vInfo.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+        vInfo.subresourceRange.baseMipLevel = m;
+        vInfo.subresourceRange.levelCount   = 1;
+        vInfo.subresourceRange.layerCount   = 1;
+        VK_CHECK(vkCreateImageView(ctx.device(), &vInfo, nullptr, &bloomMipViews_[m]));
+    }
+
+    // Render pass: single RGBA16F color attachment, loadOp = LOAD so the
+    // additive upsample preserves the mip's existing (downsampled) content and
+    // adds onto it; initialLayout = finalLayout = SHADER_READ_ONLY_OPTIMAL so a
+    // mip written as an attachment is immediately sampleable by the next pass.
+    // Two subpass dependencies mirror glowPass_ (FRAGMENT_SHADER <-> COLOR_OUT).
+    if (bloomPass_ == VK_NULL_HANDLE) {  // persist across resize (see glowPass_)
+        VkAttachmentDescription att{};
+        att.format         = VK_FORMAT_R16G16B16A16_SFLOAT;
+        att.samples        = VK_SAMPLE_COUNT_1_BIT;
+        att.loadOp         = VK_ATTACHMENT_LOAD_OP_LOAD;
+        att.storeOp        = VK_ATTACHMENT_STORE_OP_STORE;
+        att.stencilLoadOp  = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+        att.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+        att.initialLayout  = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        att.finalLayout    = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+
+        VkAttachmentReference colorRef{0, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL};
+
+        VkSubpassDescription subpass{};
+        subpass.pipelineBindPoint    = VK_PIPELINE_BIND_POINT_GRAPHICS;
+        subpass.colorAttachmentCount = 1;
+        subpass.pColorAttachments    = &colorRef;
+
+        VkSubpassDependency deps[2]{};
+        // Entry: wait for prior sampling (and, with LOAD, the read of existing
+        // attachment contents) before writing color.
+        deps[0].srcSubpass    = VK_SUBPASS_EXTERNAL;
+        deps[0].dstSubpass    = 0;
+        deps[0].srcStageMask  = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
+        deps[0].dstStageMask  = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+        deps[0].srcAccessMask = VK_ACCESS_SHADER_READ_BIT;
+        deps[0].dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_READ_BIT |
+                                VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+        // Exit: next pass can sample after color writes complete.
+        deps[1].srcSubpass    = 0;
+        deps[1].dstSubpass    = VK_SUBPASS_EXTERNAL;
+        deps[1].srcStageMask  = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+        deps[1].dstStageMask  = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
+        deps[1].srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+        deps[1].dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+
+        VkRenderPassCreateInfo rpInfo{};
+        rpInfo.sType           = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO;
+        rpInfo.attachmentCount = 1;
+        rpInfo.pAttachments    = &att;
+        rpInfo.subpassCount    = 1;
+        rpInfo.pSubpasses      = &subpass;
+        rpInfo.dependencyCount = 2;
+        rpInfo.pDependencies   = deps;
+        VK_CHECK(vkCreateRenderPass(ctx.device(), &rpInfo, nullptr, &bloomPass_));
+    }
+
+    // Per-mip framebuffers (each binds its own mip view, sized to that mip).
+    for (std::uint32_t m = 0; m < bloomMipCount_; ++m) {
+        VkFramebufferCreateInfo fbInfo{};
+        fbInfo.sType           = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO;
+        fbInfo.renderPass      = bloomPass_;
+        fbInfo.attachmentCount = 1;
+        fbInfo.pAttachments    = &bloomMipViews_[m];
+        fbInfo.width           = bloomMipExtents_[m].width;
+        fbInfo.height          = bloomMipExtents_[m].height;
+        fbInfo.layers          = 1;
+        VK_CHECK(vkCreateFramebuffer(ctx.device(), &fbInfo, nullptr, &bloomMipFbs_[m]));
+    }
+
+    // One-shot barrier: transition ALL mips UNDEFINED -> SHADER_READ_ONLY_OPTIMAL
+    // so each mip is in bloomPass_'s initialLayout before its first pass. Mirrors
+    // VkIblBaker's transient command pool + queue-wait-idle pattern.
+    {
+        VkCommandPool pool = VK_NULL_HANDLE;
+        VkCommandPoolCreateInfo pInfo{};
+        pInfo.sType            = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
+        pInfo.queueFamilyIndex = ctx.graphicsFamily();
+        pInfo.flags            = VK_COMMAND_POOL_CREATE_TRANSIENT_BIT;
+        VK_CHECK(vkCreateCommandPool(ctx.device(), &pInfo, nullptr, &pool));
+
+        VkCommandBuffer cb = VK_NULL_HANDLE;
+        VkCommandBufferAllocateInfo cbInfo{};
+        cbInfo.sType              = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
+        cbInfo.commandPool        = pool;
+        cbInfo.level              = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+        cbInfo.commandBufferCount = 1;
+        VK_CHECK(vkAllocateCommandBuffers(ctx.device(), &cbInfo, &cb));
+
+        VkCommandBufferBeginInfo begin{};
+        begin.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+        begin.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+        VK_CHECK(vkBeginCommandBuffer(cb, &begin));
+
+        VkImageMemoryBarrier mb{};
+        mb.sType               = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+        mb.oldLayout           = VK_IMAGE_LAYOUT_UNDEFINED;
+        mb.newLayout           = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        mb.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        mb.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        mb.image               = bloomChain_;
+        mb.subresourceRange    = {VK_IMAGE_ASPECT_COLOR_BIT, 0, bloomMipCount_, 0, 1};
+        mb.srcAccessMask       = 0;
+        mb.dstAccessMask       = VK_ACCESS_SHADER_READ_BIT;
+        vkCmdPipelineBarrier(cb, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+                             VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+                             0, 0, nullptr, 0, nullptr, 1, &mb);
+
+        VK_CHECK(vkEndCommandBuffer(cb));
+        VkSubmitInfo submit{};
+        submit.sType              = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+        submit.commandBufferCount = 1;
+        submit.pCommandBuffers    = &cb;
+        VK_CHECK(vkQueueSubmit(ctx.graphicsQueue(), 1, &submit, VK_NULL_HANDLE));
+        VK_CHECK(vkQueueWaitIdle(ctx.graphicsQueue()));
+        vkDestroyCommandPool(ctx.device(), pool, nullptr);
+    }
+
+    // The descriptor set layout (binding 0 = sampler2D) is persistent. It is
+    // created here — createBloomTargets runs before createBloomPipelines in init
+    // (and is the first user of the layout, allocating the per-source sets below).
+    if (bloomSetLayout_ == VK_NULL_HANDLE) {
+        VkDescriptorSetLayoutBinding slb{};
+        slb.binding         = 0;
+        slb.descriptorType  = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        slb.descriptorCount = 1;
+        slb.stageFlags      = VK_SHADER_STAGE_FRAGMENT_BIT;
+        VkDescriptorSetLayoutCreateInfo slInfo{};
+        slInfo.sType        = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+        slInfo.bindingCount = 1;
+        slInfo.pBindings    = &slb;
+        VK_CHECK(vkCreateDescriptorSetLayout(ctx.device(), &slInfo, nullptr, &bloomSetLayout_));
+    }
+
+    // Persistent per-source descriptor sets (mirrors glow's pre-written sets).
+    // The shared descPool_ is full (maxSets=7), so bloom owns a dedicated pool
+    // sized for the worst case: 1 bright set (scene) + one set per mip. Sources
+    // are fixed for the lifetime of these views, so we write the sets once here.
+    {
+        const std::uint32_t setCount = 1u + bloomMipCount_;  // bright + per-mip
+
+        VkDescriptorPoolSize poolSize{};
+        poolSize.type            = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        poolSize.descriptorCount = setCount;  // 1 sampler per set
+
+        VkDescriptorPoolCreateInfo dpInfo{};
+        dpInfo.sType         = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
+        dpInfo.maxSets       = setCount;
+        dpInfo.poolSizeCount = 1;
+        dpInfo.pPoolSizes    = &poolSize;
+        VK_CHECK(vkCreateDescriptorPool(ctx.device(), &dpInfo, nullptr, &bloomDescPool_));
+
+        // Allocate the bright set (samples sceneColorView_).
+        {
+            VkDescriptorSetAllocateInfo dsAlloc{};
+            dsAlloc.sType              = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+            dsAlloc.descriptorPool     = bloomDescPool_;
+            dsAlloc.descriptorSetCount = 1;
+            dsAlloc.pSetLayouts        = &bloomSetLayout_;
+            VK_CHECK(vkAllocateDescriptorSets(ctx.device(), &dsAlloc, &bloomBrightSet_));
+
+            VkDescriptorImageInfo imgInfo{};
+            imgInfo.sampler     = bloomSampler_;
+            imgInfo.imageView   = sceneColorView_;
+            imgInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+            VkWriteDescriptorSet write{};
+            write.sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+            write.dstSet          = bloomBrightSet_;
+            write.dstBinding      = 0;
+            write.descriptorType  = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+            write.descriptorCount = 1;
+            write.pImageInfo      = &imgInfo;
+            vkUpdateDescriptorSets(ctx.device(), 1, &write, 0, nullptr);
+        }
+
+        // Allocate one set per mip, each sampling bloomMipViews_[m].
+        for (std::uint32_t m = 0; m < bloomMipCount_; ++m) {
+            VkDescriptorSetAllocateInfo dsAlloc{};
+            dsAlloc.sType              = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+            dsAlloc.descriptorPool     = bloomDescPool_;
+            dsAlloc.descriptorSetCount = 1;
+            dsAlloc.pSetLayouts        = &bloomSetLayout_;
+            VK_CHECK(vkAllocateDescriptorSets(ctx.device(), &dsAlloc, &bloomSrcSets_[m]));
+
+            VkDescriptorImageInfo imgInfo{};
+            imgInfo.sampler     = bloomSampler_;
+            imgInfo.imageView   = bloomMipViews_[m];
+            imgInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+            VkWriteDescriptorSet write{};
+            write.sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+            write.dstSet          = bloomSrcSets_[m];
+            write.dstBinding      = 0;
+            write.descriptorType  = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+            write.descriptorCount = 1;
+            write.pImageInfo      = &imgInfo;
+            vkUpdateDescriptorSets(ctx.device(), 1, &write, 0, nullptr);
+        }
+    }
+}
+
+void VkPostProcess::destroyBloomTargets() {
+    VkContext& ctx = *ctx_;
+    // Per-resize handles only. bloomPass_ persists (freed in destroy()).
+    // The dedicated bloom pool owns the per-source sets; destroying it frees them.
+    if (bloomDescPool_) {
+        vkDestroyDescriptorPool(ctx.device(), bloomDescPool_, nullptr);
+        bloomDescPool_  = VK_NULL_HANDLE;
+        bloomBrightSet_ = VK_NULL_HANDLE;
+        for (std::uint32_t m = 0; m < kBloomMaxMips; ++m) bloomSrcSets_[m] = VK_NULL_HANDLE;
+    }
+    for (std::uint32_t m = 0; m < kBloomMaxMips; ++m) {
+        if (bloomMipFbs_[m])   { vkDestroyFramebuffer(ctx.device(), bloomMipFbs_[m], nullptr); bloomMipFbs_[m] = VK_NULL_HANDLE; }
+    }
+    for (std::uint32_t m = 0; m < kBloomMaxMips; ++m) {
+        if (bloomMipViews_[m]) { vkDestroyImageView(ctx.device(), bloomMipViews_[m], nullptr); bloomMipViews_[m] = VK_NULL_HANDLE; }
+        bloomMipExtents_[m] = {};
+    }
+    if (bloomChain_) { vmaDestroyImage(ctx.allocator(), bloomChain_, bloomChainAlloc_); bloomChain_ = VK_NULL_HANDLE; bloomChainAlloc_ = VK_NULL_HANDLE; }
+    bloomMipCount_ = 0;
+}
+
+bool VkPostProcess::createBloomPipelines() {
+    VkContext& ctx = *ctx_;
+
+    // Compile the shared full-screen vertex shader once; reuse for all 3 passes.
+    auto vspv = compileGlsl(VK_SHADER_STAGE_VERTEX_BIT, kFullscreenVert);
+    if (vspv.empty()) {
+        Log::error("VkPostProcess: bloom vertex shader compile failed");
+        return false;
+    }
+
+    auto makeModule = [&](const std::vector<std::uint32_t>& spv) -> VkShaderModule {
+        VkShaderModuleCreateInfo smInfo{};
+        smInfo.sType    = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
+        smInfo.codeSize = spv.size() * sizeof(std::uint32_t);
+        smInfo.pCode    = spv.data();
+        VkShaderModule m = VK_NULL_HANDLE;
+        if (vkCreateShaderModule(ctx.device(), &smInfo, nullptr, &m) != VK_SUCCESS)
+            m = VK_NULL_HANDLE;
+        return m;
+    };
+
+    // bloomSetLayout_ (binding 0 = sampler2D) is already created by
+    // createBloomTargets, which runs before this in init. Just use it here.
+
+    // Common full-screen pipeline state (mirrors createGlowPipelines).
+    VkPipelineInputAssemblyStateCreateInfo ia{};
+    ia.sType    = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO;
+    ia.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+
+    VkPipelineViewportStateCreateInfo vpState{};
+    vpState.sType         = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO;
+    vpState.viewportCount = 1;
+    vpState.scissorCount  = 1;
+
+    VkPipelineRasterizationStateCreateInfo rs{};
+    rs.sType       = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO;
+    rs.polygonMode = VK_POLYGON_MODE_FILL;
+    rs.cullMode    = VK_CULL_MODE_NONE;
+    rs.frontFace   = VK_FRONT_FACE_COUNTER_CLOCKWISE;
+    rs.lineWidth   = 1.0f;
+
+    VkPipelineMultisampleStateCreateInfo ms{};
+    ms.sType                = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO;
+    ms.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
+
+    VkPipelineDepthStencilStateCreateInfo ds{};
+    ds.sType            = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO;
+    ds.depthTestEnable  = VK_FALSE;
+    ds.depthWriteEnable = VK_FALSE;
+
+    VkDynamicState dynStates[] = {VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR};
+    VkPipelineDynamicStateCreateInfo dyn{};
+    dyn.sType             = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO;
+    dyn.dynamicStateCount = 2;
+    dyn.pDynamicStates    = dynStates;
+
+    VkPipelineVertexInputStateCreateInfo vi{};
+    vi.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
+    // No vertex bindings — positions come from gl_VertexIndex.
+
+    // Blend states: down/bright-down overwrite; up is additive (ONE,ONE,ADD).
+    VkPipelineColorBlendAttachmentState overwriteAtt{};
+    overwriteAtt.colorWriteMask = 0xF;  // RGBA
+    overwriteAtt.blendEnable    = VK_FALSE;
+    VkPipelineColorBlendStateCreateInfo overwriteBlend{};
+    overwriteBlend.sType           = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO;
+    overwriteBlend.attachmentCount = 1;
+    overwriteBlend.pAttachments    = &overwriteAtt;
+
+    VkPipelineColorBlendAttachmentState additiveAtt{};
+    additiveAtt.colorWriteMask         = 0xF;  // RGBA
+    additiveAtt.blendEnable            = VK_TRUE;
+    additiveAtt.srcColorBlendFactor    = VK_BLEND_FACTOR_ONE;
+    additiveAtt.dstColorBlendFactor    = VK_BLEND_FACTOR_ONE;
+    additiveAtt.colorBlendOp           = VK_BLEND_OP_ADD;
+    additiveAtt.srcAlphaBlendFactor    = VK_BLEND_FACTOR_ONE;
+    additiveAtt.dstAlphaBlendFactor    = VK_BLEND_FACTOR_ONE;
+    additiveAtt.alphaBlendOp           = VK_BLEND_OP_ADD;
+    VkPipelineColorBlendStateCreateInfo additiveBlend{};
+    additiveBlend.sType           = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO;
+    additiveBlend.attachmentCount = 1;
+    additiveBlend.pAttachments    = &additiveAtt;
+
+    // Helper to build one bloom pipeline: own push-constant range + layout +
+    // graphics pipeline against bloomPass_ using kFullscreenVert + `frag`.
+    auto buildPipeline = [&](const char* frag, std::uint32_t pcSize,
+                             const VkPipelineColorBlendStateCreateInfo& blend,
+                             VkPipelineLayout* outLayout, ::VkPipeline* outPipe,
+                             const char* tag) -> bool {
+        VkPushConstantRange pcRange{};
+        pcRange.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+        pcRange.offset     = 0;
+        pcRange.size       = pcSize;
+
+        VkPipelineLayoutCreateInfo plInfo{};
+        plInfo.sType                  = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+        plInfo.setLayoutCount         = 1;
+        plInfo.pSetLayouts            = &bloomSetLayout_;
+        plInfo.pushConstantRangeCount = 1;
+        plInfo.pPushConstantRanges    = &pcRange;
+        VK_CHECK(vkCreatePipelineLayout(ctx.device(), &plInfo, nullptr, outLayout));
+
+        auto fspv = compileGlsl(VK_SHADER_STAGE_FRAGMENT_BIT, frag);
+        if (fspv.empty()) { Log::error("VkPostProcess: bloom %s shader compile failed", tag); return false; }
+
+        VkShaderModule vsm = makeModule(vspv);
+        VkShaderModule fsm = makeModule(fspv);
+        if (!vsm || !fsm) {
+            if (vsm) vkDestroyShaderModule(ctx.device(), vsm, nullptr);
+            if (fsm) vkDestroyShaderModule(ctx.device(), fsm, nullptr);
+            Log::error("VkPostProcess: bloom %s shader module creation failed", tag);
+            return false;
+        }
+
+        VkPipelineShaderStageCreateInfo stages[2]{};
+        stages[0].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+        stages[0].stage = VK_SHADER_STAGE_VERTEX_BIT;   stages[0].module = vsm; stages[0].pName = "main";
+        stages[1].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+        stages[1].stage = VK_SHADER_STAGE_FRAGMENT_BIT; stages[1].module = fsm; stages[1].pName = "main";
+
+        VkGraphicsPipelineCreateInfo pInfo{};
+        pInfo.sType               = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
+        pInfo.stageCount          = 2; pInfo.pStages = stages;
+        pInfo.pVertexInputState   = &vi;
+        pInfo.pInputAssemblyState = &ia;
+        pInfo.pViewportState      = &vpState;
+        pInfo.pRasterizationState = &rs;
+        pInfo.pMultisampleState   = &ms;
+        pInfo.pDepthStencilState  = &ds;
+        pInfo.pColorBlendState    = &blend;
+        pInfo.pDynamicState       = &dyn;
+        pInfo.layout              = *outLayout;
+        pInfo.renderPass          = bloomPass_;  // offscreen RGBA16F mip pass
+        pInfo.subpass             = 0;
+        VkResult r = vkCreateGraphicsPipelines(ctx.device(), VK_NULL_HANDLE, 1, &pInfo, nullptr, outPipe);
+        vkDestroyShaderModule(ctx.device(), vsm, nullptr);
+        vkDestroyShaderModule(ctx.device(), fsm, nullptr);
+        VK_CHECK(r);
+        return true;
+    };
+
+    // bright-down (scene -> mip0): overwrite blend.
+    if (!buildPipeline(kBloomPrefilterDownSrc(), sizeof(BloomBrightPush),
+                       overwriteBlend, &bloomBrightDownLayout_, &bloomBrightDownPipeline_, "bright-down")) return false;
+    // down (mip[i] -> mip[i+1]): overwrite blend.
+    if (!buildPipeline(kBloomDownsampleSrc(), sizeof(BloomDownPush),
+                       overwriteBlend, &bloomDownLayout_, &bloomDownPipeline_, "down")) return false;
+    // up (mip[i+1] -> mip[i]): additive blend.
+    if (!buildPipeline(kBloomUpsampleSrc(), sizeof(BloomUpPush),
+                       additiveBlend, &bloomUpLayout_, &bloomUpPipeline_, "up")) return false;
+    return true;
 }
 
 bool VkPostProcess::createViewportTarget(VkContext& ctx) {
@@ -1196,9 +1825,10 @@ bool VkPostProcess::resizeViewport(VkContext& ctx, VkExtent2D extent) {
 }
 
 bool VkPostProcess::createCopyPipeline(VkContext& ctx) {
-    // Compile shaders.
+    // Compile shaders. The composite pass uses kCompositeFrag (bloom-aware,
+    // 2 bindings); the viewport->swapchain blit keeps the binding-0-only kCopyFrag.
     auto vspv = compileGlsl(VK_SHADER_STAGE_VERTEX_BIT,   kFullscreenVert);
-    auto fspv = compileGlsl(VK_SHADER_STAGE_FRAGMENT_BIT, kCopyFrag);
+    auto fspv = compileGlsl(VK_SHADER_STAGE_FRAGMENT_BIT, kCompositeFrag);
     if (vspv.empty() || fspv.empty()) {
         Log::error("VkPostProcess: shader compile failed");
         return false;
@@ -1218,17 +1848,22 @@ bool VkPostProcess::createCopyPipeline(VkContext& ctx) {
         return false;
     }
 
-    // Descriptor set layout: binding 0 = combined image sampler (FS).
-    VkDescriptorSetLayoutBinding binding{};
-    binding.binding         = 0;
-    binding.descriptorType  = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-    binding.descriptorCount = 1;
-    binding.stageFlags      = VK_SHADER_STAGE_FRAGMENT_BIT;
+    // Descriptor set layout: binding 0 = scene color, binding 1 = bloom mip0
+    // (both combined image samplers, FS). (M47)
+    VkDescriptorSetLayoutBinding bindings[2]{};
+    bindings[0].binding         = 0;
+    bindings[0].descriptorType  = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    bindings[0].descriptorCount = 1;
+    bindings[0].stageFlags      = VK_SHADER_STAGE_FRAGMENT_BIT;
+    bindings[1].binding         = 1;
+    bindings[1].descriptorType  = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    bindings[1].descriptorCount = 1;
+    bindings[1].stageFlags      = VK_SHADER_STAGE_FRAGMENT_BIT;
 
     VkDescriptorSetLayoutCreateInfo dslInfo{};
     dslInfo.sType        = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-    dslInfo.bindingCount = 1;
-    dslInfo.pBindings    = &binding;
+    dslInfo.bindingCount = 2;
+    dslInfo.pBindings    = bindings;
     VK_CHECK(vkCreateDescriptorSetLayout(ctx.device(), &dslInfo, nullptr, &copySetLayout_));
 
     VkPushConstantRange pcRange{};
@@ -1321,18 +1956,18 @@ bool VkPostProcess::createCopyPipeline(VkContext& ctx) {
     vkDestroyShaderModule(ctx.device(), fsm, nullptr);
     VK_CHECK(copyPipeResult);
 
-    // Descriptor pool: 7 sets total, 13 combined-image-sampler descriptors.
-    //   set 0: copy         — 1 sampler  (scene color)
+    // Descriptor pool: 7 sets total, 14 combined-image-sampler descriptors.
+    //   set 0: copy/composite — 2 samplers (scene color + bloom mip0)  (M47)
     //   set 1: blit         — 1 sampler  (viewport color)
     //   set 2: outline      — 2 samplers (scene color + mask)
     //   set 3: glowBlurH    — 1 sampler  (mask)
     //   set 4: glowBlurV    — 1 sampler  (scratch[0])
     //   set 5: glowComposite — 3 samplers (scene color + scratch[1] + mask)
     //   set 6: xray         — 4 samplers (scene color + mask id + mask depth + scene depth)
-    // Total: 7 sets, 13 combined-image-samplers.
+    // Total: 7 sets, 14 combined-image-samplers.
     VkDescriptorPoolSize poolSize{};
     poolSize.type            = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-    poolSize.descriptorCount = 13;
+    poolSize.descriptorCount = 14;
 
     VkDescriptorPoolCreateInfo dpInfo{};
     dpInfo.sType         = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
@@ -1349,19 +1984,31 @@ bool VkPostProcess::createCopyPipeline(VkContext& ctx) {
     dsAlloc.pSetLayouts        = &copySetLayout_;
     VK_CHECK(vkAllocateDescriptorSets(ctx.device(), &dsAlloc, &copyDescSet_));
 
-    VkDescriptorImageInfo imgInfo{};
-    imgInfo.sampler     = sampler_;
-    imgInfo.imageView   = sceneColorView_;
-    imgInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    // Binding 0 = scene color, binding 1 = bloom mip0. bloomMipViews_[0] is valid
+    // here: init() runs createTargets() (which calls createBloomTargets) BEFORE
+    // createCopyPipeline(). (M47)
+    VkDescriptorImageInfo imgInfos[2]{};
+    imgInfos[0].sampler     = sampler_;
+    imgInfos[0].imageView   = sceneColorView_;
+    imgInfos[0].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    imgInfos[1].sampler     = bloomSampler_;
+    imgInfos[1].imageView   = bloomMipViews_[0];
+    imgInfos[1].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 
-    VkWriteDescriptorSet write{};
-    write.sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-    write.dstSet          = copyDescSet_;
-    write.dstBinding      = 0;
-    write.descriptorType  = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-    write.descriptorCount = 1;
-    write.pImageInfo      = &imgInfo;
-    vkUpdateDescriptorSets(ctx.device(), 1, &write, 0, nullptr);
+    VkWriteDescriptorSet writes[2]{};
+    writes[0].sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    writes[0].dstSet          = copyDescSet_;
+    writes[0].dstBinding      = 0;
+    writes[0].descriptorType  = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    writes[0].descriptorCount = 1;
+    writes[0].pImageInfo      = &imgInfos[0];
+    writes[1].sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    writes[1].dstSet          = copyDescSet_;
+    writes[1].dstBinding      = 1;
+    writes[1].descriptorType  = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    writes[1].descriptorCount = 1;
+    writes[1].pImageInfo      = &imgInfos[1];
+    vkUpdateDescriptorSets(ctx.device(), 2, writes, 0, nullptr);
 
     return true;
 }
@@ -1781,7 +2428,7 @@ bool VkPostProcess::createOutlinePipeline(VkContext& ctx) {
     VK_CHECK(outlinePipeResult);
 
     // Allocate the outline descriptor set from the shared pool (allocated in
-    // createCopyPipeline with maxSets=6, descriptorCount=12).
+    // createCopyPipeline with maxSets=7, descriptorCount=14).
     VkDescriptorSetAllocateInfo dsAlloc{};
     dsAlloc.sType              = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
     dsAlloc.descriptorPool     = descPool_;
@@ -2175,11 +2822,12 @@ void VkPostProcess::runChain(VkCommandBuffer cb,
                              const std::vector<PostPass>& passes,
                              const EffectTable& effects,
                              VkExtent2D swapExtent,
-                             float exposure) {
+                             float exposure,
+                             float bloomIntensity) {
     for (const PostPass pass : passes) {
         switch (pass) {
             case PostPass::Copy:
-                recordComposite(cb, exposure);
+                recordComposite(cb, exposure, bloomIntensity);
                 break;
 
             case PostPass::Outline: {
@@ -2402,6 +3050,83 @@ void VkPostProcess::runChainOffscreenPasses(VkCommandBuffer cb,
             default:
                 break;
         }
+    }
+}
+
+void VkPostProcess::runBloomOffscreenPasses(VkCommandBuffer cb, float threshold,
+                                            float knee, float scatter) {
+    // Degenerate extent (no mips) — nothing to record.
+    if (bloomMipCount_ < 1) return;
+
+    // Local helper: record one full-screen bloom pass into a destination mip.
+    // Mirrors the glow blur recording (begin pass / dynamic viewport+scissor /
+    // bind pipeline+set / push constants / draw fullscreen triangle / end pass).
+    // bloomPass_ has loadOp=LOAD; downsample pipelines overwrite (blend off) so
+    // the loaded content is irrelevant, upsample relies on LOAD for additive add.
+    auto recordBloomPass = [&](VkFramebuffer dstFb, VkExtent2D dstExtent,
+                               ::VkPipeline pipeline, VkPipelineLayout layout,
+                               VkDescriptorSet srcSet, const void* pushData,
+                               std::uint32_t pushSize) {
+        VkRenderPassBeginInfo rpBegin{};
+        rpBegin.sType             = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
+        rpBegin.renderPass        = bloomPass_;
+        rpBegin.framebuffer       = dstFb;
+        rpBegin.renderArea.offset = {0, 0};
+        rpBegin.renderArea.extent = dstExtent;
+        rpBegin.clearValueCount   = 0;     // loadOp=LOAD — no clear
+        rpBegin.pClearValues      = nullptr;
+        vkCmdBeginRenderPass(cb, &rpBegin, VK_SUBPASS_CONTENTS_INLINE);
+
+        VkViewport vp{};
+        vp.x = 0.0f; vp.y = 0.0f;
+        vp.width    = static_cast<float>(dstExtent.width);
+        vp.height   = static_cast<float>(dstExtent.height);
+        vp.minDepth = 0.0f; vp.maxDepth = 1.0f;
+        vkCmdSetViewport(cb, 0, 1, &vp);
+        VkRect2D scissor{{0, 0}, dstExtent};
+        vkCmdSetScissor(cb, 0, 1, &scissor);
+
+        vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
+        vkCmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                                layout, 0, 1, &srcSet, 0, nullptr);
+        vkCmdPushConstants(cb, layout, VK_SHADER_STAGE_FRAGMENT_BIT,
+                           0, pushSize, pushData);
+        vkCmdDraw(cb, 3, 1, 0, 0);
+        vkCmdEndRenderPass(cb);
+    };
+
+    // Pass 1: bright + downsample (scene -> mip0). Texel size = full scene extent.
+    {
+        BloomBrightPush pc{};
+        pc.threshold   = threshold;
+        pc.knee        = knee;
+        pc.srcTexel[0] = (extent_.width  > 0) ? 1.0f / static_cast<float>(extent_.width)  : 0.0f;
+        pc.srcTexel[1] = (extent_.height > 0) ? 1.0f / static_cast<float>(extent_.height) : 0.0f;
+        recordBloomPass(bloomMipFbs_[0], bloomMipExtents_[0],
+                        bloomBrightDownPipeline_, bloomBrightDownLayout_,
+                        bloomBrightSet_, &pc, sizeof(pc));
+    }
+
+    // Pass 2: downsample chain (mip m -> mip m+1).
+    for (std::uint32_t m = 0; m + 1 < bloomMipCount_; ++m) {
+        BloomDownPush pc{};
+        pc.srcTexel[0] = 1.0f / static_cast<float>(bloomMipExtents_[m].width);
+        pc.srcTexel[1] = 1.0f / static_cast<float>(bloomMipExtents_[m].height);
+        recordBloomPass(bloomMipFbs_[m + 1], bloomMipExtents_[m + 1],
+                        bloomDownPipeline_, bloomDownLayout_,
+                        bloomSrcSets_[m], &pc, sizeof(pc));
+    }
+
+    // Pass 3: upsample chain (mip m+1 -> mip m, additive), descending.
+    for (std::uint32_t m = bloomMipCount_ - 1; m-- > 0; ) {
+        // Loop runs m = bloomMipCount_-2 .. 0 (no-op if bloomMipCount_ == 1).
+        BloomUpPush pc{};
+        pc.srcTexel[0] = 1.0f / static_cast<float>(bloomMipExtents_[m + 1].width);
+        pc.srcTexel[1] = 1.0f / static_cast<float>(bloomMipExtents_[m + 1].height);
+        pc.scatter     = scatter;
+        recordBloomPass(bloomMipFbs_[m], bloomMipExtents_[m],
+                        bloomUpPipeline_, bloomUpLayout_,
+                        bloomSrcSets_[m + 1], &pc, sizeof(pc));
     }
 }
 

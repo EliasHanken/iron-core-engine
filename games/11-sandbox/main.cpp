@@ -894,6 +894,25 @@ int main() {
             }
         }
         environment.draw(scene);
+
+        // M47: bloom tuning knobs — appended to the Environment panel so all
+        // rendering controls live in one place. Static locals match the renderer
+        // defaults (threshold 1.0 / knee 0.5 / intensity 0.05 / scatter 0.85).
+        {
+            static float bloomThreshold = 1.0f;
+            static float bloomKnee      = 0.5f;
+            static float bloomIntensity = 0.05f;
+            static float bloomScatter   = 0.85f;
+            ImGui::Begin("Environment");
+            if (ImGui::CollapsingHeader("Bloom (M47)")) {
+                if (ImGui::SliderFloat("Threshold", &bloomThreshold, 0.0f, 5.0f))  vkRenderer.setBloomThreshold(bloomThreshold);
+                if (ImGui::SliderFloat("Knee",      &bloomKnee,      0.0f, 2.0f))  vkRenderer.setBloomKnee(bloomKnee);
+                if (ImGui::SliderFloat("Intensity", &bloomIntensity, 0.0f, 1.0f))  vkRenderer.setBloomIntensity(bloomIntensity);
+                if (ImGui::SliderFloat("Scatter",   &bloomScatter,   0.0f, 2.0f))  vkRenderer.setBloomScatter(bloomScatter);
+            }
+            ImGui::End();
+        }
+
         // M41: scene-mutating actions (save / add / delete / duplicate) gated
         // on Edit mode. Inspector + Outliner remain visible/clickable but the
         // user can't modify the scene during Play.

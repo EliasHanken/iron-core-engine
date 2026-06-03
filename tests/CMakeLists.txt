@@ -108,6 +108,7 @@ iron_add_test(test_audio_emitter test_audio_emitter.cpp)
 iron_add_test(test_tonemap test_tonemap.cpp)
 iron_add_test(test_pbr test_pbr.cpp)
 iron_add_test(test_ibl test_ibl.cpp)
+iron_add_test(test_bloom test_bloom.cpp)
 iron_add_test(test_iso_view test_iso_view.cpp)
 target_link_libraries(test_iso_view PRIVATE ironcore_editor)
 

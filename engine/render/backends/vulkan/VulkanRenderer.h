@@ -152,6 +152,14 @@ public:
     // step (M44). Default 1.0. Auto-exposure is deferred.
     void setExposure(float exposure) { pendingExposure_ = exposure; }
 
+    // M47 bloom knobs (VulkanRenderer-only, mirror setExposure). Threshold/knee
+    // gate the bright-pass; intensity scales the bloom added before ACES;
+    // scatter biases the up-sample blend toward wider/tighter spread.
+    void setBloomThreshold(float v) { pendingBloomThreshold_ = v; }
+    void setBloomKnee(float v)      { pendingBloomKnee_ = v; }
+    void setBloomIntensity(float v) { pendingBloomIntensity_ = v; }
+    void setBloomScatter(float v)   { pendingBloomScatter_ = v; }
+
     // Engine-internal: external Vulkan subsystems register a deferred
     // render callback. Fires inside the scene render pass during endFrame,
     // after the geometry replay and before debug-lines + HUD.
@@ -293,6 +301,10 @@ private:
     // editor sets false and composites the image via ImGui::Image instead.
     bool       blitViewportToSwapchain_ = true;
     float      pendingExposure_ = 1.0f;
+    float      pendingBloomThreshold_ = 1.0f;
+    float      pendingBloomKnee_      = 0.5f;
+    float      pendingBloomIntensity_ = 0.05f;
+    float      pendingBloomScatter_   = 0.85f;
 };
 
 }  // namespace iron

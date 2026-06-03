@@ -17,6 +17,12 @@ namespace iron {
 
 class VkContext;
 
+// Bloom fragment shader sources (exposed for compile-check tests; reuse the
+// existing kFullscreenVert for the vertex stage).
+const char* kBloomPrefilterDownSrc();  // sceneColor -> mip0 (threshold+knee+Karis)
+const char* kBloomDownsampleSrc();     // mip[i] -> mip[i+1] (13-tap)
+const char* kBloomUpsampleSrc();       // mip[i+1] -> mip[i] (3x3 tent, additive)
+
 // Owns the offscreen render targets and full-screen passes for the M36
 // post-process chain. Phase A: a single offscreen scene-color target (+ depth)
 // matching the swapchain, and a "copy" pipeline that blits it to the swapchain
@@ -48,7 +54,8 @@ public:
 
     void beginScenePass(VkCommandBuffer cb, const float clearColor[4]) const;
     void endScenePass(VkCommandBuffer cb) const;
-    void recordComposite(VkCommandBuffer cb, float exposure) const;
+    void recordComposite(VkCommandBuffer cb, float exposure,
+                         float bloomIntensity = 0.0f) const;
     // Full-screen blit of viewportColor into the (already-begun) swapchain pass.
     void blitToSwapchain(VkCommandBuffer cb) const;
 
@@ -71,7 +78,8 @@ public:
                   const std::vector<PostPass>& passes,
                   const EffectTable& effects,
                   VkExtent2D swapExtent,
-                  float exposure);
+                  float exposure,
+                  float bloomIntensity = 0.0f);
 
     // --- Mask pass API (Phase C) ---
     VkRenderPass maskPass() const { return maskPass_; }
@@ -132,9 +140,15 @@ public:
 
     // Push constants for the copy/composite (tonemap) pipeline.
     struct CopyPush {
-        float exposure;   // linear exposure multiply applied before ACES
-        float _pad[3];
+        float exposure;        // linear exposure multiply applied before ACES
+        float bloomIntensity;  // M47: bloom mip0 contribution added before ACES
+        float _pad[2];
     };
+
+    // M47 — bloom push constants (fragment stage). srcTexel = 1/srcWidth, 1/srcHeight.
+    struct BloomBrightPush { float threshold; float knee; float srcTexel[2]; };
+    struct BloomDownPush   { float srcTexel[2]; };
+    struct BloomUpPush     { float srcTexel[2]; float scatter; };
 
     // Run the offscreen pre-passes (GlowBlurH, GlowBlurV) that must execute
     // OUTSIDE any render pass. Called by VulkanRenderer::endFrame
@@ -145,10 +159,16 @@ public:
                                  const EffectTable& effects,
                                  VkExtent2D swapExtent);
 
+    // Records the HDR bloom down/up mip chain into bloomChain_ (mip0 holds the
+    // result). Call BEFORE beginViewportPass(), like the glow blur pre-passes.
+    void runBloomOffscreenPasses(VkCommandBuffer cb, float threshold, float knee,
+                                 float scatter);
+
 private:
     VkContext* ctx_ = nullptr;
     VkSampler  sampler_     = VK_NULL_HANDLE;  // linear-repeat (from VkTextureStore)
     VkSampler  maskSampler_ = VK_NULL_HANDLE;  // NEAREST — required for integer (R8_UINT) textures
+    VkSampler  bloomSampler_ = VK_NULL_HANDLE;  // LINEAR + CLAMP_TO_EDGE — bloom offset taps must not wrap edges
     VkExtent2D extent_{};
     VkFormat   colorFormat_ = VK_FORMAT_UNDEFINED;
     VkFormat   depthFormat_ = VK_FORMAT_UNDEFINED;
@@ -226,6 +246,32 @@ private:
     VkRenderPass  glowPass_            = VK_NULL_HANDLE;
     VkFramebuffer glowFb_[2]           = {VK_NULL_HANDLE, VK_NULL_HANDLE};
 
+    // --- M47: bloom HDR mip chain (RGBA16F). mip0 = half scene res, halving down. ---
+    static constexpr std::uint32_t kBloomMaxMips = 7;
+    VkImage        bloomChain_      = VK_NULL_HANDLE;
+    VmaAllocation  bloomChainAlloc_ = VK_NULL_HANDLE;
+    VkImageView    bloomMipViews_[kBloomMaxMips] {};   // one view per mip
+    VkFramebuffer  bloomMipFbs_[kBloomMaxMips]   {};   // one fb per mip
+    VkExtent2D     bloomMipExtents_[kBloomMaxMips] {};
+    std::uint32_t  bloomMipCount_   = 0;
+    VkRenderPass   bloomPass_       = VK_NULL_HANDLE;
+    ::VkPipeline     bloomBrightDownPipeline_ = VK_NULL_HANDLE;
+    ::VkPipeline     bloomDownPipeline_       = VK_NULL_HANDLE;
+    ::VkPipeline     bloomUpPipeline_         = VK_NULL_HANDLE;
+    VkPipelineLayout bloomBrightDownLayout_   = VK_NULL_HANDLE;
+    VkPipelineLayout bloomDownLayout_         = VK_NULL_HANDLE;
+    VkPipelineLayout bloomUpLayout_           = VK_NULL_HANDLE;
+    VkDescriptorSetLayout bloomSetLayout_     = VK_NULL_HANDLE;  // 1 binding: sampler2D
+    // Persistent per-source descriptor sets (mirrors glow's pre-written sets —
+    // the shared descPool_ is already full with maxSets=7, so bloom owns its own
+    // pool). Sources are fixed for the lifetime of the per-resize views, so the
+    // sets are written once in createBloomTargets and freed in destroyBloomTargets.
+    //   bloomBrightSet_     : samples sceneColorView_     (bright+downsample to mip0)
+    //   bloomSrcSets_[m]    : samples bloomMipViews_[m]   (down: m->m+1; up: m used as src m+1)
+    VkDescriptorPool bloomDescPool_  = VK_NULL_HANDLE;
+    VkDescriptorSet  bloomBrightSet_ = VK_NULL_HANDLE;
+    VkDescriptorSet  bloomSrcSets_[kBloomMaxMips] {};
+
     // --- Glow pipelines ---
     VkDescriptorSetLayout glowBlurHSetLayout_     = VK_NULL_HANDLE;
     VkPipelineLayout      glowBlurHPipeLayout_    = VK_NULL_HANDLE;
@@ -259,6 +305,12 @@ private:
     bool createMaskPipeline(VkContext& ctx);
     bool createGlowPipelines(VkContext& ctx);
     bool createXRayPipeline(VkContext& ctx);
+
+    // M47 bloom helpers.
+    void createBloomTargets(VkExtent2D extent);   // image + per-mip views/fbs + pass
+    void destroyBloomTargets();
+    bool createBloomPipelines();                  // 3 pipelines (call once in init)
+    static std::uint32_t computeBloomMipCount(VkExtent2D extent);
 };
 
 }  // namespace iron
