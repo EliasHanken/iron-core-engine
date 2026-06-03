@@ -3301,6 +3301,23 @@ void VkPostProcess::runBloomOffscreenPasses(VkCommandBuffer cb, float threshold,
     }
 }
 
+void VkPostProcess::updateSsaoUbo(const Mat4& projection, const Mat4& invProjection,
+                                  float radius, float bias, float power) {
+    SsaoUbo ubo{};
+    ubo.projection    = projection;
+    ubo.invProjection = invProjection;
+    for (std::uint32_t i = 0; i < kSsaoKernelSize; ++i) {
+        const Vec3& k = ssaoKernel_[i];
+        ubo.kernel[i] = {k.x, k.y, k.z, 0.0f};
+    }
+    ubo.params     = {radius, bias, power, static_cast<float>(kSsaoKernelSize)};
+    ubo.noiseScale = {ssaoExtent_.width / 4.0f, ssaoExtent_.height / 4.0f, 0.0f, 0.0f};
+
+    std::memcpy(ssaoUboMapped_, &ubo, sizeof(SsaoUbo));
+    // Host-visible memory may be non-coherent — flush the per-frame write.
+    vmaFlushAllocation(ctx_->allocator(), ssaoUboAlloc_, 0, sizeof(SsaoUbo));
+}
+
 void VkPostProcess::runSsaoPass(VkCommandBuffer cb) {
     // Degenerate extent (targets not created) — nothing to record.
     if (ssaoExtent_.width == 0 || ssaoExtent_.height == 0) return;

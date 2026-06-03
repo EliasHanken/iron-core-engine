@@ -183,6 +183,12 @@ public:
     void runBloomOffscreenPasses(VkCommandBuffer cb, float threshold, float knee,
                                  float scatter);
 
+    // Fills the SSAO UBO for this frame: projection + its inverse, the static
+    // kernel, radius/bias/power, and noiseScale (= extent/4). Call before
+    // runSsaoPass. Reaches the allocator via the stored VkContext* (ctx_).
+    void updateSsaoUbo(const Mat4& projection, const Mat4& invProjection,
+                       float radius, float bias, float power);
+
     // Records the SSAO pass + 4x4 blur into ssaoBlurView_. Call BEFORE
     // beginViewportPass(), like the bloom pre-pass. The SSAO UBO must already be
     // updated for this frame (the renderer does this before calling).

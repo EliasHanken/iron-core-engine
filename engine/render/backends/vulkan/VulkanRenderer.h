@@ -160,6 +160,14 @@ public:
     void setBloomIntensity(float v) { pendingBloomIntensity_ = v; }
     void setBloomScatter(float v)   { pendingBloomScatter_ = v; }
 
+    // M48 SSAO knobs (VulkanRenderer-only, mirror the bloom knobs). radius/bias/
+    // power tune the occlusion estimate; strength scales the AO applied in the
+    // composite (mix(1, ao, strength)).
+    void setSsaoRadius(float v)   { pendingSsaoRadius_ = v; }
+    void setSsaoBias(float v)     { pendingSsaoBias_ = v; }
+    void setSsaoPower(float v)    { pendingSsaoPower_ = v; }
+    void setSsaoStrength(float v) { pendingSsaoStrength_ = v; }
+
     // Engine-internal: external Vulkan subsystems register a deferred
     // render callback. Fires inside the scene render pass during endFrame,
     // after the geometry replay and before debug-lines + HUD.
@@ -305,6 +313,10 @@ private:
     float      pendingBloomKnee_      = 0.5f;
     float      pendingBloomIntensity_ = 0.05f;
     float      pendingBloomScatter_   = 0.85f;
+    float      pendingSsaoRadius_   = 0.5f;
+    float      pendingSsaoBias_     = 0.025f;
+    float      pendingSsaoPower_    = 1.5f;
+    float      pendingSsaoStrength_ = 1.0f;
 };
 
 }  // namespace iron
