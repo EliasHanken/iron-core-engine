@@ -42,6 +42,9 @@ bool VkCubemapStore::init(VkContext& ctx) {
 
 void VkCubemapStore::destroyAll(VkContext& ctx) {
     for (auto& [h, res] : cubemaps_) {
+        for (VkImageView sv : res.storageViews) {
+            if (sv) { vkDestroyImageView(ctx.device(), sv, nullptr); }
+        }
         if (res.view)  { vkDestroyImageView(ctx.device(), res.view, nullptr); }
         if (res.image) { vmaDestroyImage(ctx.allocator(), res.image, res.alloc); }
     }
@@ -101,6 +104,70 @@ CubemapHandle VkCubemapStore::createFromFaces(
     VK_CHECK(vkCreateImageView(ctx.device(), &vInfo, nullptr, &res.view));
 
     uploadFaces(ctx, res, width, height, faces);
+
+    const CubemapHandle h = nextHandle_++;
+    cubemaps_[h] = res;
+    return h;
+}
+
+CubemapHandle VkCubemapStore::createHdr(VkContext& ctx, int faceSize, int mipLevels) {
+    if (faceSize <= 0 || mipLevels <= 0) return kInvalidHandle;
+    if (sharedSampler_ == VK_NULL_HANDLE) return kInvalidHandle;
+
+    VkCubemapResource res{};
+    res.width     = static_cast<std::uint32_t>(faceSize);
+    res.height    = static_cast<std::uint32_t>(faceSize);
+    res.mipLevels = static_cast<std::uint32_t>(mipLevels);
+    res.format    = VK_FORMAT_R16G16B16A16_SFLOAT;
+    res.sampler   = sharedSampler_;
+
+    VkImageCreateInfo imgInfo{};
+    imgInfo.sType         = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
+    imgInfo.flags         = VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT;
+    imgInfo.imageType     = VK_IMAGE_TYPE_2D;
+    imgInfo.format        = res.format;
+    imgInfo.extent        = {res.width, res.height, 1};
+    imgInfo.mipLevels     = res.mipLevels;
+    imgInfo.arrayLayers   = 6;
+    imgInfo.samples       = VK_SAMPLE_COUNT_1_BIT;
+    imgInfo.tiling        = VK_IMAGE_TILING_OPTIMAL;
+    imgInfo.usage         = VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
+    imgInfo.sharingMode   = VK_SHARING_MODE_EXCLUSIVE;
+    imgInfo.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+
+    VmaAllocationCreateInfo aInfo{};
+    aInfo.usage = VMA_MEMORY_USAGE_AUTO;
+    VK_CHECK(vmaCreateImage(ctx.allocator(), &imgInfo, &aInfo,
+                            &res.image, &res.alloc, nullptr));
+
+    // Cube view spanning all mips, for sampling.
+    VkImageViewCreateInfo cubeView{};
+    cubeView.sType    = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+    cubeView.image    = res.image;
+    cubeView.viewType = VK_IMAGE_VIEW_TYPE_CUBE;
+    cubeView.format   = res.format;
+    cubeView.subresourceRange.aspectMask     = VK_IMAGE_ASPECT_COLOR_BIT;
+    cubeView.subresourceRange.baseMipLevel   = 0;
+    cubeView.subresourceRange.levelCount     = res.mipLevels;
+    cubeView.subresourceRange.baseArrayLayer = 0;
+    cubeView.subresourceRange.layerCount     = 6;
+    VK_CHECK(vkCreateImageView(ctx.device(), &cubeView, nullptr, &res.view));
+
+    // One 2D-array storage view per mip, for compute imageStore.
+    res.storageViews.resize(res.mipLevels);
+    for (std::uint32_t m = 0; m < res.mipLevels; ++m) {
+        VkImageViewCreateInfo sv{};
+        sv.sType    = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+        sv.image    = res.image;
+        sv.viewType = VK_IMAGE_VIEW_TYPE_2D_ARRAY;
+        sv.format   = res.format;
+        sv.subresourceRange.aspectMask     = VK_IMAGE_ASPECT_COLOR_BIT;
+        sv.subresourceRange.baseMipLevel   = m;
+        sv.subresourceRange.levelCount     = 1;
+        sv.subresourceRange.baseArrayLayer = 0;
+        sv.subresourceRange.layerCount     = 6;
+        VK_CHECK(vkCreateImageView(ctx.device(), &sv, nullptr, &res.storageViews[m]));
+    }
 
     const CubemapHandle h = nextHandle_++;
     cubemaps_[h] = res;

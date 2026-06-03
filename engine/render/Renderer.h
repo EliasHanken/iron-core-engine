@@ -151,6 +151,14 @@ public:
     // kInvalidHandle to disable the skybox.
     virtual void setSkybox(CubemapHandle sky) = 0;
 
+    // Loads an equirectangular Radiance .hdr from disk, bakes it into an
+    // RGBA16F cubemap, and returns its handle (usable with setSkybox). The
+    // path is resolved relative to the working directory. `faceSize` is the
+    // per-face resolution of the baked cube. Returns kInvalidHandle on
+    // failure (e.g. file not found, or on backends without IBL support).
+    virtual CubemapHandle loadHdrSkybox(const std::string& hdrPath,
+                                        int faceSize = 512) = 0;
+
     // --- per-frame ---
     // Begins a frame: records the clear colour, the directional sun, the
     // per-frame point lights (capped to kMaxPointLights), the fog, and the

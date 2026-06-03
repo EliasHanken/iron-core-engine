@@ -13,6 +13,7 @@
 #include "render/backends/vulkan/VkShadowMap.h"
 #include "render/backends/vulkan/VkTexture.h"
 #include "render/backends/vulkan/VkCubemap.h"
+#include "render/backends/vulkan/VkIblBaker.h"
 #include "render/backends/vulkan/VkSkybox.h"
 #include "render/backends/vulkan/VkReflectionTarget.h"
 #include "render/backends/vulkan/VkPostProcess.h"
@@ -70,6 +71,7 @@ public:
     CubemapHandle createCubemap(int width, int height,
         const std::array<const unsigned char*, 6>& faces) override;
     void setSkybox(CubemapHandle sky) override;
+    CubemapHandle loadHdrSkybox(const std::string& hdrPath, int faceSize) override;
 
     // --- per-frame ---
     void beginFrame(Vec3 clearColor, const DirectionalLight& light,
@@ -225,6 +227,7 @@ private:
 
     // M16 — cubemap storage + skybox subsystem + currently-set skybox.
     VkCubemapStore cubemaps_;
+    VkIblBaker     iblBaker_;
     VkSkybox       skybox_;
     CubemapHandle  pendingSkybox_ = kInvalidHandle;
 

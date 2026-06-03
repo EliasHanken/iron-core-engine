@@ -90,6 +90,7 @@ if (IRON_RENDER_BACKEND STREQUAL "vulkan")
       render/backends/vulkan/VkHud.cpp
       render/backends/vulkan/VkShadowMap.cpp
       render/backends/vulkan/VkCubemap.cpp
+      render/backends/vulkan/VkIblBaker.cpp
       render/backends/vulkan/VkSkybox.cpp
       render/backends/vulkan/VkReflectionTarget.cpp
       render/backends/vulkan/VkPostProcess.cpp
