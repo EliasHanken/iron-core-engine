@@ -325,19 +325,40 @@ int main() {
     iron::Log::info("sandbox: resolved %zu / %zu entities from scene",
                     resolved.size(), scene.entities.size());
 
+    // M49: Room centre — well away from the PBR grid (near-origin, Z=-8) and
+    // the DamagedHelmet scene content so no outside geometry enters the probe.
+    // Also used in the render loop to position the mirror sphere DrawCall.
+    constexpr iron::Vec3 kRoomCenter{ -40.0f, 3.5f, 0.0f };
+
     // --- M49: reflection-probe demo room (runtime only, not serialized) ---
-    // A ~10×6×10 unit box-room with colour-coded walls so probe reflections
-    // are visually legible. One metallic sphere in the centre acts as the
-    // "mirror". One probe entity covers the whole room.
+    // Clean, isolated, fully-enclosed box room at kRoomCenter — far from the
+    // existing PBR grid / DamagedHelmet content near the origin so the probe
+    // captures ONLY the 6 coloured walls.
+    //
+    // Axis-colour diagnostic: each surface colour maps to a world axis so we
+    // can read cubemap face orientation from the mirror sphere:
+    //   +X wall (right)   → RED
+    //   -X wall (left)    → GREEN
+    //   +Z wall (far)     → BLUE
+    //   -Z wall (near)    → MAGENTA
+    //   -Y floor (bottom) → YELLOW
+    //   +Y ceiling (top)  → WHITE
+    //
+    // Interior: 8 wide (X) × 7 tall (Y) × 8 deep (Z).
+    // Walls are 0.4 units thick; placed so their INNER surface is flush with
+    // the interior half-extents (±4 X, ±3.5 Y, ±4 Z relative to kRoomCenter).
+    // The probe halfExtents slightly exceed the interior so the sphere stays
+    // inside the probe box.
     //
     // Helper: append a box-primitive SceneEntity with given position / scale /
     // baseColorFactor + PBR params, resolve it, and push into resolved[].
     // Not serialized (not added via appendAndSelect → no save path needed).
     {
+
         auto addRoom = [&](const char* name,
                            iron::Vec3 pos, iron::Vec3 scale,
                            iron::Vec3 color,
-                           float metallic = 0.0f, float roughness = 0.7f) {
+                           float metallic = 0.0f, float roughness = 0.9f) {
             iron::SceneEntity ne;
             ne.name = name;
             ne.transform.position = pos;
@@ -363,37 +384,60 @@ int main() {
             }
         };
 
-        // Room dimensions: 10 wide (X), 6 tall (Y), 10 deep (Z).
-        // Walls are 0.3 units thick; placed so their inner surface is flush.
-        constexpr float RW = 10.0f, RH = 6.0f, RD = 10.0f, T = 0.3f;
-        // Floor
-        addRoom("probe_room_floor",   {0,    -T*0.5f,    0},    {RW, T, RD},  {0.80f, 0.75f, 0.70f});
-        // Ceiling
-        addRoom("probe_room_ceiling", {0,    RH+T*0.5f,  0},    {RW, T, RD},  {0.85f, 0.85f, 0.90f});
-        // Wall +Z (back, reddish)
-        addRoom("probe_room_wall_z+", {0,    RH*0.5f,    RD*0.5f+T*0.5f}, {RW, RH, T}, {0.75f, 0.20f, 0.18f});
-        // Wall -Z (front, blueish)
-        addRoom("probe_room_wall_z-", {0,    RH*0.5f,   -RD*0.5f-T*0.5f}, {RW, RH, T}, {0.15f, 0.25f, 0.75f});
-        // Wall +X (right, greenish)
-        addRoom("probe_room_wall_x+", {RW*0.5f+T*0.5f, RH*0.5f, 0},  {T, RH, RD}, {0.15f, 0.60f, 0.20f});
-        // Wall -X (left, warm cream)
-        addRoom("probe_room_wall_x-", {-RW*0.5f-T*0.5f, RH*0.5f, 0}, {T, RH, RD}, {0.90f, 0.82f, 0.55f});
+        // Interior: 8 wide (X) × 7 tall (Y) × 8 deep (Z). Wall thickness T=0.4.
+        // Each wall centre = kRoomCenter ± (half-interior + T/2) on its axis.
+        // Floors / ceiling: full RW × T × RD slabs.
+        // Side walls: T × RH × RD (X walls) or RW × RH × T (Z walls).
+        constexpr float RW = 8.0f, RH = 7.0f, RD = 8.0f, T = 0.4f;
+        const iron::Vec3 C = kRoomCenter;  // shorthand
+
+        // Floor (-Y, bottom) → YELLOW
+        addRoom("probe_room_floor",
+                {C.x,               C.y - RH*0.5f - T*0.5f, C.z},
+                {RW + 2*T, T, RD + 2*T},
+                {1.0f, 0.9f, 0.05f});
+        // Ceiling (+Y, top) → WHITE
+        addRoom("probe_room_ceiling",
+                {C.x,               C.y + RH*0.5f + T*0.5f, C.z},
+                {RW + 2*T, T, RD + 2*T},
+                {0.95f, 0.95f, 0.95f});
+        // Wall +X (right) → RED
+        addRoom("probe_room_wall_x+",
+                {C.x + RW*0.5f + T*0.5f, C.y, C.z},
+                {T, RH, RD},
+                {1.0f, 0.05f, 0.05f});
+        // Wall -X (left) → GREEN
+        addRoom("probe_room_wall_x-",
+                {C.x - RW*0.5f - T*0.5f, C.y, C.z},
+                {T, RH, RD},
+                {0.05f, 1.0f, 0.05f});
+        // Wall +Z (far) → BLUE
+        addRoom("probe_room_wall_z+",
+                {C.x, C.y, C.z + RD*0.5f + T*0.5f},
+                {RW, RH, T},
+                {0.1f, 0.2f, 1.0f});
+        // Wall -Z (near) → MAGENTA
+        addRoom("probe_room_wall_z-",
+                {C.x, C.y, C.z - RD*0.5f - T*0.5f},
+                {RW, RH, T},
+                {1.0f, 0.05f, 1.0f});
 
         // Note: the metallic reflective sphere is submitted as a runtime DrawCall
         // (UV sphere mesh) below in the render loop — no cube entity needed here;
         // that avoids Z-fighting with the sphere DrawCall at the same position.
 
-        // Probe entity: wraps the room, centred at (0, RH/2, 0)
+        // Probe entity at kRoomCenter. halfExtents slightly exceed the interior
+        // half-sizes so the sphere is fully inside the probe box.
         {
             iron::SceneEntity ne;
             ne.name = "probe_room_probe";
-            ne.transform.position = {0.0f, RH * 0.5f, 0.0f};
-            ne.transform.scale    = {1.0f, 1.0f, 1.0f};
-            ne.mesh.primitive     = iron::PrimitiveKind::Cube;   // placeholder (tiny, editor only)
-            ne.transform.scale    = {0.2f, 0.2f, 0.2f};
+            ne.transform.position = {C.x, C.y, C.z};
+            ne.transform.scale    = {0.2f, 0.2f, 0.2f};   // tiny visual marker only
+            ne.mesh.primitive     = iron::PrimitiveKind::Cube;
             ne.material.baseColorFactor = {0.2f, 0.9f, 1.0f};
             ne.probe.emplace();
-            ne.probe->halfExtents = {RW * 0.5f + T, RH * 0.5f + T, RD * 0.5f + T};
+            // 4.2 > RW/2=4.0; 3.7 > RH/2=3.5; 4.2 > RD/2=4.0
+            ne.probe->halfExtents = {4.2f, 3.7f, 4.2f};
             ne.probe->faceSize    = 128;
 
             const int idx = static_cast<int>(scene.entities.size());
@@ -429,9 +473,11 @@ int main() {
 
     // --- Camera ---
     iron::FreeFlyCamera cam;
-    // M49: start inside the probe demo room (room goes Z -5..+5), looking
-    // toward the metallic sphere at the centre.
-    cam.position = {0.0f, 2.0f, 4.0f};
+    // M49: start inside the isolated probe demo room looking toward the
+    // mirror sphere. Camera is 4.5 units in front of kRoomCenter on +Z;
+    // yaw=0 (default) looks toward world -Z, which is exactly toward the
+    // sphere at kRoomCenter = {-40, 3.5, 0}.
+    cam.position = {-40.0f, 3.5f, 4.5f};
 
     // M41: Play/Stop mode state.
     iron::EditorState editor;
@@ -1243,19 +1289,20 @@ int main() {
             }
         }
 
-        // M49: high-quality UV sphere at the probe-room centre — submitted as a
-        // runtime draw (sphere mesh) on top of the cube scene entity so the
-        // box-projection parallax correction is visible on a curved surface.
+        // M49: mirror sphere at the probe-room centre (kRoomCenter). Metallic=1,
+        // roughness=0.03 → near-perfect mirror so the coloured wall reflections
+        // map crisply onto the sphere and serve as the orientation diagnostic.
+        // Neutral gold-tint albedo; sharp reflection reads colour from the probe.
         {
             iron::DrawCall dc{};
             dc.mesh    = pbrSphereMesh;
             dc.shader  = litShader;
-            dc.model   = iron::translation(iron::Vec3{0.0f, 1.5f, 0.0f})
+            dc.model   = iron::translation(kRoomCenter)
                        * iron::scaling(iron::Vec3{1.5f, 1.5f, 1.5f});
-            dc.material.texture      = renderer.whiteTexture();
-            dc.material.metallic     = 1.0f;
-            dc.material.roughness    = 0.05f;
-            dc.material.baseColorFactor = {0.95f, 0.92f, 0.85f};
+            dc.material.texture         = renderer.whiteTexture();
+            dc.material.metallic        = 1.0f;
+            dc.material.roughness       = 0.03f;
+            dc.material.baseColorFactor = {0.95f, 0.92f, 0.85f};  // neutral
             renderer.submit(dc);
         }
 
