@@ -312,9 +312,9 @@ void VulkanRenderer::drawHud(const HudBatch& batch, int fbW, int fbH) {
 
 namespace {
 
-// M12+M13+M14+M15+M17+M45b+M45c — per-draw UBO uploaded by submit. std140 layout:
+// M12+M13+M14+M15+M17+M45b+M45c+M49 — per-draw UBO uploaded by submit. std140 layout:
 // all members are mat4 (64-byte aligned) or vec4 (16-byte aligned), so no
-// straddling. Total 960 bytes (M45c added baseColorFactor after materialParams2).
+// straddling. Total 1008 bytes (M49 added probeBoxMin/Max/Center after clipPlane).
 struct LitUbo {
     Mat4 mvp;                 // 64
     Mat4 model;               // 64
@@ -334,8 +334,11 @@ struct LitUbo {
     Mat4 reflectionViewProj;  // 64  M17 — scene: identity; reflection: P * V * mirror
     Vec4 reflectionParams;    // 16  M17 — x=useReflectionPlane (0/1), y=screenW, z=screenH, w=0
     Vec4 clipPlane;           // 16  M17 — (normal.xyz, -d) for reflection pass; ignored in scene
+    Vec4 probeBoxMin;         // 16  M49 — xyz = probe AABB min (world); w unused
+    Vec4 probeBoxMax;         // 16  M49 — xyz = probe AABB max (world); w unused
+    Vec4 probeCenter;         // 16  M49 — xyz = probe center; w = probeActive (0/1)
 };
-static_assert(sizeof(LitUbo) == 960, "LitUbo std140 layout (M45c)");
+static_assert(sizeof(LitUbo) == 1008, "LitUbo std140 layout (M49 reflection probes)");
 
 // Extracts the camera's world-space position from a view matrix.
 // Assumes view is a pure rigid transform [R | t; 0 0 0 1] (rotation +
@@ -396,7 +399,7 @@ layout(location = 1) in vec3 aNormal;
 layout(location = 2) in vec2 aUV;
 layout(location = 3) in vec3 aTangent;
 
-// Full LitUbo std140 layout (960 bytes after M45c). We reference only
+// Full LitUbo std140 layout (1008 bytes after M49). We reference only
 // `model`, `reflectionViewProj`, and `clipPlane`.
 layout(set = 0, binding = 0) uniform LitUbo {
     mat4 mvp;
@@ -417,6 +420,9 @@ layout(set = 0, binding = 0) uniform LitUbo {
     mat4 reflectionViewProj;
     vec4 reflectionParams;
     vec4 clipPlane;
+    vec4 probeBoxMin;   // M49
+    vec4 probeBoxMax;   // M49
+    vec4 probeCenter;   // M49 — w = probeActive
 } u;
 
 out gl_PerVertex {
