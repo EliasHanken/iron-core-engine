@@ -370,9 +370,9 @@ struct LitUbo {
     Vec4 pointPositions[16];  // 256 M15 — xyz=position, w=intensity
     Vec4 pointColors[16];     // 256 M15 — xyz=color, w=range
     Mat4 reflectionViewProj;  // 64  M17 — scene: identity; reflection: P * V * mirror
-    Vec4 reflectionParams;    // 16  M17 — x=useReflectionPlane (0/1), y=screenW, z=screenH, w=0
+    Vec4 reflectionParams;    // 16  M17 — x=useReflectionPlane (0/1), y=screenW, z=screenH, w=displacement scale (M50b)
     Vec4 clipPlane;           // 16  M17 — (normal.xyz, -d) for reflection pass; ignored in scene
-    Vec4 probeBoxMin;         // 16  M49 — xyz = probe AABB min (world); w unused
+    Vec4 probeBoxMin;         // 16  M49 — xyz = probe AABB min (world); w = tessellation factor (M50b)
     Vec4 probeBoxMax;         // 16  M49 — xyz = probe AABB max (world); w unused
     Vec4 probeCenter;         // 16  M49 — xyz = probe center; w = probeActive (0/1)
 };

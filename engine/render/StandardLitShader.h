@@ -35,9 +35,9 @@ layout(set = 0, binding = 0) uniform LitUbo {
     vec4 pointPositions[16];
     vec4 pointColors[16];
     mat4 reflectionViewProj;  // M17 (unused in scene shader, here for layout parity)
-    vec4 reflectionParams;    // M17 x=useReflectionPlane, yz=screenSize, w=0
+    vec4 reflectionParams;    // M17 x=useReflectionPlane, yz=screenSize; w=displacement scale (M50b tess)
     vec4 clipPlane;           // M17 — used only by reflection-pass shader
-    vec4 probeBoxMin;   // M49
+    vec4 probeBoxMin;   // M49 xyz=box min; w=tessellation factor (M50b tess)
     vec4 probeBoxMax;   // M49
     vec4 probeCenter;   // M49 — w = probeActive
 } u;
@@ -86,9 +86,9 @@ layout(set = 0, binding = 0) uniform LitUbo {
     vec4 pointPositions[16];
     vec4 pointColors[16];
     mat4 reflectionViewProj;  // M17 (unused in scene shader, here for layout parity)
-    vec4 reflectionParams;    // M17 x=useReflectionPlane, yz=screenSize, w=0
+    vec4 reflectionParams;    // M17 x=useReflectionPlane, yz=screenSize; w=displacement scale (M50b tess)
     vec4 clipPlane;           // M17 — used only by reflection-pass shader
-    vec4 probeBoxMin;   // M49
+    vec4 probeBoxMin;   // M49 xyz=box min; w=tessellation factor (M50b tess)
     vec4 probeBoxMax;   // M49
     vec4 probeCenter;   // M49 — w = probeActive
 } u;
@@ -148,9 +148,9 @@ layout(set = 0, binding = 0) uniform LitUbo {
     vec4 pointPositions[16];
     vec4 pointColors[16];
     mat4 reflectionViewProj;  // M17 (unused in scene shader, here for layout parity)
-    vec4 reflectionParams;    // M17 x=useReflectionPlane, yz=screenSize, w=0
+    vec4 reflectionParams;    // M17 x=useReflectionPlane, yz=screenSize; w=displacement scale (M50b tess)
     vec4 clipPlane;           // M17 — used only by reflection-pass shader
-    vec4 probeBoxMin;   // M49
+    vec4 probeBoxMin;   // M49 xyz=box min; w=tessellation factor (M50b tess)
     vec4 probeBoxMax;   // M49
     vec4 probeCenter;   // M49 — w = probeActive
 } u;
