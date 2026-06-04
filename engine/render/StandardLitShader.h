@@ -7,8 +7,9 @@ namespace iron {
 // Single source of truth; games obtain handles via Renderer::createStandardLitShader().
 // Consumes the shared LitUbo (set=0, binding=0) + bindings 1..8 (diffuse, normal,
 // metallicRoughness, shadow, skyCubemap, reflection, AO, emissive) + 10/11/12
-// (irradiance, prefiltered specular, BRDF LUT — M46b/c IBL); binding 9 = skinned bones.
-// Keep in lockstep with VulkanRenderer's descriptor-set layout and engine/render/Pbr.h BRDF formulas.
+// (irradiance, prefiltered specular, BRDF LUT — M46b/c IBL); binding 9 = skinned bones;
+// binding 13 = uHeightMap (M50a POM). Keep in lockstep with VulkanRenderer's descriptor-set
+// layout, engine/render/Pbr.h BRDF formulas, and engine/render/Parallax.h POM port.
 
 inline const char* standardLitVertSource() {
     return R"GLSL(#version 450
@@ -135,7 +136,7 @@ layout(set = 0, binding = 0) uniform LitUbo {
     vec4 cameraPos;
     vec4 materialParams;   // x=uvScale, y=roughness, z=reflectivity, w=shadowBias
     vec4 materialParams2;  // x=metallic, y=ao, z=normalScale, w=iblEnabled (M46b)
-    vec4 baseColorFactor;  // M45c — xyz=albedo tint, w unused
+    vec4 baseColorFactor;  // M45c — xyz=albedo tint, w=heightScale (M50a POM; 0=off)
     vec4 fogColor;
     vec4 lightCounts;
     vec4 pointPositions[16];
@@ -156,6 +157,7 @@ layout(set = 0, binding = 8) uniform sampler2D uEmissiveMap;
 layout(set = 0, binding = 10) uniform samplerCube uIrradianceCube;  // M46b diffuse IBL
 layout(set = 0, binding = 11) uniform samplerCube uPrefiltered;   // M46c specular IBL
 layout(set = 0, binding = 12) uniform sampler2D   uBrdfLut;       // M46c split-sum LUT
+layout(set = 0, binding = 13) uniform sampler2D   uHeightMap;     // M50a — POM height (white=peak), samples .r
 
 float shadowFactor(vec4 lightSpacePos, float bias) {
     vec3 proj = lightSpacePos.xyz / lightSpacePos.w;
@@ -203,6 +205,35 @@ vec3 fresnelSchlickRoughness(float cosT, vec3 F0, float rough) {
     return F0 + (max(vec3(1.0 - rough), F0) - F0) * pow(clamp(1.0 - cosT, 0.0, 1.0), 5.0);
 }
 
+// M50a — Parallax Occlusion Mapping. Mirrors engine/render/Parallax.h
+// (parallaxOcclusionOffset / parallaxLayerCount). viewTS = tangent-space dir from surface toward
+// camera. Height: white=peak, depth = 1 - height (.r channel). Returns offset UV.
+const int POM_MIN_LAYERS = 8;
+const int POM_MAX_LAYERS = 32;
+vec2 parallaxOcclusionUV(vec2 uv, vec3 viewTS, float heightScale) {
+    float numLayers = mix(float(POM_MAX_LAYERS), float(POM_MIN_LAYERS), abs(viewTS.z));
+    float layerDepth = 1.0 / numLayers;
+    float vz = (abs(viewTS.z) < 1e-3) ? 1e-3 : viewTS.z;
+    vec2 P = viewTS.xy / vz * heightScale;
+    vec2 deltaUV = P / numLayers;
+
+    float currentLayerDepth = 0.0;
+    vec2 curUV = uv;
+    float curDepth = 1.0 - texture(uHeightMap, curUV).r;
+    for (int i = 0; i < POM_MAX_LAYERS + 1; ++i) {   // constant bound (GLSL requires it)
+        if (currentLayerDepth >= curDepth) break;
+        curUV -= deltaUV;
+        curDepth = 1.0 - texture(uHeightMap, curUV).r;
+        currentLayerDepth += layerDepth;
+    }
+    vec2 prevUV = curUV + deltaUV;
+    float afterDepth = curDepth - currentLayerDepth;
+    float beforeDepth = (1.0 - texture(uHeightMap, prevUV).r) - (currentLayerDepth - layerDepth);
+    float denom = afterDepth - beforeDepth;
+    float weight = (abs(denom) < 1e-6) ? 0.0 : clamp(afterDepth / denom, 0.0, 1.0);
+    return mix(curUV, prevUV, weight);
+}
+
 void main() {
     float uvScale = u.materialParams.x;
     float bias    = u.materialParams.w;
@@ -212,6 +243,17 @@ void main() {
     vec3 T = normalize(vTangent);
     vec3 B = cross(N, T);
     mat3 TBN = mat3(T, B, N);
+
+    // M50a — POM: offset uv along the tangent-space view dir before sampling any map.
+    // heightScale packed in baseColorFactor.w (0 => POM off). transpose(TBN) maps
+    // world->tangent; with TBN = mat3(T,B,N) column-major, viewTS.z = dot(N, viewWS).
+    float heightScale = u.baseColorFactor.w;
+    if (heightScale > 0.0) {
+        vec3 viewWS = u.cameraPos.xyz - vWorldPos;
+        vec3 viewTS = normalize(transpose(TBN) * viewWS);
+        uv = parallaxOcclusionUV(uv, viewTS, heightScale);
+    }
+
     float normalScale = u.materialParams2.z;
     vec3 tangentNormal = texture(uNormalMap, uv).rgb * 2.0 - 1.0;
     tangentNormal.xy *= normalScale;   // glTF normalTexture.scale (0=flat, >1=exaggerated)
