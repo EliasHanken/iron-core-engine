@@ -356,7 +356,10 @@ CubemapHandle VkSceneCapture::capture(VkContext& ctx, VkCubemapStore& cubes,
     }
 
     // 2. Depth (re)creation if needed.
-    if (!ensureDepth(ctx, fs)) return kInvalidHandle;
+    if (!ensureDepth(ctx, fs)) {
+        cubes.destroy(ctx, cube);
+        return kInvalidHandle;
+    }
 
     // 3. Reset per-capture transient state.
     VK_CHECK(vkResetDescriptorPool(ctx.device(), descPool_, 0));
