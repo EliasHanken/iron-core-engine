@@ -30,6 +30,9 @@ struct VkCubemapResource {
     // Per-mip 2D-array views (6 layers) for compute imageStore. Empty for
     // sampled-only LDR cubemaps created via createFromFaces.
     std::vector<VkImageView> storageViews;
+    // Per-face single-layer 2D views (6) for color-attachment rendering.
+    // Empty unless created via createColorCube.
+    std::vector<VkImageView> faceViews;
 };
 
 // Vulkan cubemap storage. Mirrors VkTextureStore pattern: shared
@@ -50,6 +53,16 @@ public:
     // entry per mip for compute writes. The image is left in
     // VK_IMAGE_LAYOUT_UNDEFINED; the caller transitions it.
     CubemapHandle createHdr(VkContext& ctx, int faceSize, int mipLevels);
+
+    // Allocates an RGBA16F cube-compatible image (faceSize^2, 6 layers, 1 mip)
+    // with COLOR_ATTACHMENT + SAMPLED usage, a cube sampling `view`, and 6
+    // single-layer `faceViews` for rendering each face. Left in
+    // VK_IMAGE_LAYOUT_UNDEFINED; the render pass transitions it.
+    CubemapHandle createColorCube(VkContext& ctx, int faceSize);
+
+    // Destroys one baked cube (image/alloc/views). Safe no-op on kInvalidHandle
+    // or an unknown handle. Does NOT destroy the shared sampler or the black fallback.
+    void destroy(VkContext& ctx, CubemapHandle h);
 
     CubemapHandle blackCubemap() const { return black_; }
     const VkCubemapResource& get(CubemapHandle h) const;

@@ -42,6 +42,9 @@ bool VkCubemapStore::init(VkContext& ctx) {
 
 void VkCubemapStore::destroyAll(VkContext& ctx) {
     for (auto& [h, res] : cubemaps_) {
+        for (VkImageView fv : res.faceViews) {
+            if (fv) { vkDestroyImageView(ctx.device(), fv, nullptr); }
+        }
         for (VkImageView sv : res.storageViews) {
             if (sv) { vkDestroyImageView(ctx.device(), sv, nullptr); }
         }
@@ -172,6 +175,86 @@ CubemapHandle VkCubemapStore::createHdr(VkContext& ctx, int faceSize, int mipLev
     const CubemapHandle h = nextHandle_++;
     cubemaps_[h] = res;
     return h;
+}
+
+CubemapHandle VkCubemapStore::createColorCube(VkContext& ctx, int faceSize) {
+    if (faceSize <= 0) return kInvalidHandle;
+    if (sharedSampler_ == VK_NULL_HANDLE) return kInvalidHandle;
+
+    VkCubemapResource res{};
+    res.width     = static_cast<std::uint32_t>(faceSize);
+    res.height    = static_cast<std::uint32_t>(faceSize);
+    res.mipLevels = 1;
+    res.format    = VK_FORMAT_R16G16B16A16_SFLOAT;
+    res.sampler   = sharedSampler_;
+
+    VkImageCreateInfo imgInfo{};
+    imgInfo.sType         = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
+    imgInfo.flags         = VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT;
+    imgInfo.imageType     = VK_IMAGE_TYPE_2D;
+    imgInfo.format        = res.format;
+    imgInfo.extent        = {res.width, res.height, 1};
+    imgInfo.mipLevels     = res.mipLevels;
+    imgInfo.arrayLayers   = 6;
+    imgInfo.samples       = VK_SAMPLE_COUNT_1_BIT;
+    imgInfo.tiling        = VK_IMAGE_TILING_OPTIMAL;
+    imgInfo.usage         = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
+    imgInfo.sharingMode   = VK_SHARING_MODE_EXCLUSIVE;
+    imgInfo.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+
+    VmaAllocationCreateInfo aInfo{};
+    aInfo.usage = VMA_MEMORY_USAGE_AUTO;
+    VK_CHECK(vmaCreateImage(ctx.allocator(), &imgInfo, &aInfo,
+                            &res.image, &res.alloc, nullptr));
+
+    // Cube view spanning all 6 faces, for sampling.
+    VkImageViewCreateInfo cubeView{};
+    cubeView.sType    = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+    cubeView.image    = res.image;
+    cubeView.viewType = VK_IMAGE_VIEW_TYPE_CUBE;
+    cubeView.format   = res.format;
+    cubeView.subresourceRange.aspectMask     = VK_IMAGE_ASPECT_COLOR_BIT;
+    cubeView.subresourceRange.baseMipLevel   = 0;
+    cubeView.subresourceRange.levelCount     = 1;
+    cubeView.subresourceRange.baseArrayLayer = 0;
+    cubeView.subresourceRange.layerCount     = 6;
+    VK_CHECK(vkCreateImageView(ctx.device(), &cubeView, nullptr, &res.view));
+
+    // Six single-layer 2D views, one per face, for color-attachment rendering.
+    res.faceViews.resize(6);
+    for (std::uint32_t f = 0; f < 6; ++f) {
+        VkImageViewCreateInfo fv{};
+        fv.sType    = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+        fv.image    = res.image;
+        fv.viewType = VK_IMAGE_VIEW_TYPE_2D;
+        fv.format   = res.format;
+        fv.subresourceRange.aspectMask     = VK_IMAGE_ASPECT_COLOR_BIT;
+        fv.subresourceRange.baseMipLevel   = 0;
+        fv.subresourceRange.levelCount     = 1;
+        fv.subresourceRange.baseArrayLayer = f;
+        fv.subresourceRange.layerCount     = 1;
+        VK_CHECK(vkCreateImageView(ctx.device(), &fv, nullptr, &res.faceViews[f]));
+    }
+
+    const CubemapHandle h = nextHandle_++;
+    cubemaps_[h] = res;
+    return h;
+}
+
+void VkCubemapStore::destroy(VkContext& ctx, CubemapHandle h) {
+    if (h == kInvalidHandle) return;
+    auto it = cubemaps_.find(h);
+    if (it == cubemaps_.end()) return;
+    VkCubemapResource& r = it->second;
+    for (VkImageView fv : r.faceViews) {
+        if (fv) { vkDestroyImageView(ctx.device(), fv, nullptr); }
+    }
+    for (VkImageView sv : r.storageViews) {
+        if (sv) { vkDestroyImageView(ctx.device(), sv, nullptr); }
+    }
+    if (r.view)  { vkDestroyImageView(ctx.device(), r.view, nullptr); }
+    if (r.image) { vmaDestroyImage(ctx.allocator(), r.image, r.alloc); }
+    cubemaps_.erase(it);
 }
 
 const VkCubemapResource& VkCubemapStore::get(CubemapHandle h) const {
