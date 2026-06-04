@@ -1265,17 +1265,24 @@ int main() {
         // setReflectionProbes is cheap (a span copy) and called every frame so
         // the shader always has the current probe list even if it's empty.
         if (bakeRequested) {
-            bakedProbes.clear();
+            std::vector<iron::GpuReflectionProbe> next;
             for (const iron::SceneEntity& e : scene.entities) {
                 if (!e.probe) continue;
                 const iron::Vec3 c = e.transform.position;
                 const iron::Vec3 h = e.probe->halfExtents;
-                bakedProbes.push_back(iron::GpuReflectionProbe{
+                iron::GpuReflectionProbe gp{
                     {c.x - h.x, c.y - h.y, c.z - h.z},
                     {c.x + h.x, c.y + h.y, c.z + h.z},
                     c,
-                    iron::kInvalidHandle});
+                    iron::kInvalidHandle};
+                gp.faceSize = e.probe->faceSize;
+                next.push_back(gp);
             }
+            // Carry over prior baked handles (by order) so bakeReflectionProbes
+            // frees the old prefiltered cubes on re-bake instead of leaking them.
+            for (size_t i = 0; i < next.size() && i < bakedProbes.size(); ++i)
+                next[i].prefiltered = bakedProbes[i].prefiltered;
+            bakedProbes = std::move(next);
             renderer.bakeReflectionProbes(bakedProbes);
             bakeRequested = false;
             iron::Log::info("sandbox: baked %zu reflection probe(s)",

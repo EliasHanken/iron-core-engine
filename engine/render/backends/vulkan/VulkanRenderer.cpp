@@ -292,15 +292,15 @@ void VulkanRenderer::bakeReflectionProbes(std::vector<GpuReflectionProbe>& probe
     // Captures each probe's surroundings from the CURRENT frame's submitted
     // draws (sceneDraws_), so the caller must submit the scene before baking.
     // Blocking/on-demand (editor action), not part of the per-frame path.
-    constexpr int kMips     = 5;
-    constexpr int kFaceSize = 128;  // v1 default; per-probe faceSize deferred
+    constexpr int kMips = 5;
     for (auto& p : probes) {
+        const int faceSize = std::clamp(p.faceSize, 16, 1024);
         CubemapHandle radiance = sceneCapture_.capture(
             context_, cubemaps_, meshes_, textures_, sceneDraws_,
-            pendingSunDir_, pendingSunColor_, pendingAmbient_, p.center, kFaceSize);
+            pendingSunDir_, pendingSunColor_, pendingAmbient_, p.center, faceSize);
         if (radiance == kInvalidHandle) continue;
         CubemapHandle prefiltered =
-            iblBaker_.bakePrefiltered(context_, cubemaps_, radiance, kFaceSize, kMips);
+            iblBaker_.bakePrefiltered(context_, cubemaps_, radiance, faceSize, kMips);
         cubemaps_.destroy(context_, radiance);                 // free the intermediate
         if (p.prefiltered != kInvalidHandle)
             cubemaps_.destroy(context_, p.prefiltered);        // free the previous bake (re-bake)

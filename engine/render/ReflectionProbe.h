@@ -26,6 +26,7 @@ struct GpuReflectionProbe {
     Vec3          boxMax;
     Vec3          center;
     CubemapHandle prefiltered = kInvalidHandle;
+    int           faceSize    = 128;
 };
 
 inline bool boxContains(const GpuReflectionProbe& p, Vec3 pos) {
