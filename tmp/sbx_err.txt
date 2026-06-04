@@ -1,1 +1,0 @@
-[WARN] VkContext: VK_LAYER_KHRONOS_validation not available; validation disabled
