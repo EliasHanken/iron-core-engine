@@ -24,6 +24,7 @@ struct Material {
     float roughness   = 0.5f;
     float ao          = 1.0f;
     float normalScale = 1.0f;                            // glTF normalTexture.scale
+    bool excludeFromProbeCapture = false;  // M49: skip this draw when baking reflection probes (chrome objects / probe markers)
 };
 
 } // namespace iron

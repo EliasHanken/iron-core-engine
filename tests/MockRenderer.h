@@ -37,6 +37,8 @@ public:
     CubemapHandle createCubemap(int, int, const std::array<const unsigned char*, 6>&) override { return kInvalidHandle; }
     void setSkybox(CubemapHandle) override {}
     CubemapHandle loadHdrSkybox(const std::string&, int) override { return kInvalidHandle; }
+    void setReflectionProbes(std::span<const GpuReflectionProbe>) override {}
+    void bakeReflectionProbes(std::vector<GpuReflectionProbe>&) override {}
 
     // Per-frame — no-op.
     void beginFrame(Vec3, const DirectionalLight&,

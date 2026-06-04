@@ -2208,10 +2208,22 @@ bool VkPostProcess::createBlitPipeline(VkContext& ctx, VkRenderPass swapchainPas
     dslInfo.pBindings    = &binding;
     VK_CHECK(vkCreateDescriptorSetLayout(ctx.device(), &dslInfo, nullptr, &blitSetLayout_));
 
+    // kCopyFrag declares `layout(push_constant) uniform Push { float exposure; }`,
+    // so the layout must include a FRAGMENT push-constant range covering that block.
+    // Without it, vkCreateGraphicsPipelines raises VUID-07987. The blit path
+    // (viewport→swapchain) never actually pushes constants at draw time; the range
+    // here only satisfies the layout/shader-compatibility requirement.
+    VkPushConstantRange blitPcRange{};
+    blitPcRange.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+    blitPcRange.offset     = 0;
+    blitPcRange.size       = sizeof(float);  // kCopyFrag Push: { float exposure; }
+
     VkPipelineLayoutCreateInfo plInfo{};
-    plInfo.sType          = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
-    plInfo.setLayoutCount = 1;
-    plInfo.pSetLayouts    = &blitSetLayout_;
+    plInfo.sType                  = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+    plInfo.setLayoutCount         = 1;
+    plInfo.pSetLayouts            = &blitSetLayout_;
+    plInfo.pushConstantRangeCount = 1;
+    plInfo.pPushConstantRanges    = &blitPcRange;
     VK_CHECK(vkCreatePipelineLayout(ctx.device(), &plInfo, nullptr, &blitPipeLayout_));
 
     // Pipeline — full-screen triangle, no vertex input, depth test off.

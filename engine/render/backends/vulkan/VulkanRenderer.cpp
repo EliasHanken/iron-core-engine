@@ -24,6 +24,7 @@ VulkanRenderer::~VulkanRenderer() {
         skinnedMeshes_.destroyAll(context_);  // M23
         textures_.destroyAll(context_);
         iblBaker_.destroy(context_);
+        sceneCapture_.destroy(context_);
         cubemaps_.destroyAll(context_);
         shaders_.destroyAll(context_);
         hud_.destroy(context_);
@@ -82,6 +83,10 @@ bool VulkanRenderer::init(Window& window) {
     }
     if (!iblBaker_.initBrdfLut(context_)) {
         Log::error("VulkanRenderer: BRDF LUT bake failed");
+        return false;
+    }
+    if (!sceneCapture_.init(context_)) {
+        Log::error("VulkanRenderer: VkSceneCapture init failed");
         return false;
     }
     // M36 — offscreen scene-color target + copy pipeline. Must be init before
@@ -278,6 +283,32 @@ void VulkanRenderer::setReflectionPlane(Vec3 normal, float d) {
 void VulkanRenderer::disableReflectionPlane() {
     reflectionPlane_.reset();
 }
+
+void VulkanRenderer::setReflectionProbes(std::span<const GpuReflectionProbe> probes) {
+    pendingProbes_.assign(probes.begin(), probes.end());
+}
+
+void VulkanRenderer::bakeReflectionProbes(std::vector<GpuReflectionProbe>& probes) {
+    // Captures each probe's surroundings from the CURRENT frame's submitted
+    // draws (sceneDraws_), so the caller must submit the scene before baking.
+    // Blocking/on-demand (editor action), not part of the per-frame path.
+    constexpr int kMips = 5;
+    for (auto& p : probes) {
+        const int faceSize = std::clamp(p.faceSize, 16, 1024);
+        CubemapHandle radiance = sceneCapture_.capture(
+            context_, cubemaps_, meshes_, textures_, sceneDraws_,
+            pendingSunDir_, pendingSunColor_, pendingAmbient_, p.center, faceSize,
+            pendingSkybox_);
+        if (radiance == kInvalidHandle) continue;
+        CubemapHandle prefiltered =
+            iblBaker_.bakePrefiltered(context_, cubemaps_, radiance, faceSize, kMips);
+        cubemaps_.destroy(context_, radiance);                 // free the intermediate
+        if (p.prefiltered != kInvalidHandle)
+            cubemaps_.destroy(context_, p.prefiltered);        // free the previous bake (re-bake)
+        p.prefiltered = prefiltered;
+    }
+}
+
 void VulkanRenderer::drawLine(Vec3 a, Vec3 b, Vec3 color) {
     debugLines_.queue(a, b, color);
 }
@@ -312,9 +343,9 @@ void VulkanRenderer::drawHud(const HudBatch& batch, int fbW, int fbH) {
 
 namespace {
 
-// M12+M13+M14+M15+M17+M45b+M45c — per-draw UBO uploaded by submit. std140 layout:
+// M12+M13+M14+M15+M17+M45b+M45c+M49 — per-draw UBO uploaded by submit. std140 layout:
 // all members are mat4 (64-byte aligned) or vec4 (16-byte aligned), so no
-// straddling. Total 960 bytes (M45c added baseColorFactor after materialParams2).
+// straddling. Total 1008 bytes (M49 added probeBoxMin/Max/Center after clipPlane).
 struct LitUbo {
     Mat4 mvp;                 // 64
     Mat4 model;               // 64
@@ -334,8 +365,11 @@ struct LitUbo {
     Mat4 reflectionViewProj;  // 64  M17 — scene: identity; reflection: P * V * mirror
     Vec4 reflectionParams;    // 16  M17 — x=useReflectionPlane (0/1), y=screenW, z=screenH, w=0
     Vec4 clipPlane;           // 16  M17 — (normal.xyz, -d) for reflection pass; ignored in scene
+    Vec4 probeBoxMin;         // 16  M49 — xyz = probe AABB min (world); w unused
+    Vec4 probeBoxMax;         // 16  M49 — xyz = probe AABB max (world); w unused
+    Vec4 probeCenter;         // 16  M49 — xyz = probe center; w = probeActive (0/1)
 };
-static_assert(sizeof(LitUbo) == 960, "LitUbo std140 layout (M45c)");
+static_assert(sizeof(LitUbo) == 1008, "LitUbo std140 layout (M49 reflection probes)");
 
 // Extracts the camera's world-space position from a view matrix.
 // Assumes view is a pure rigid transform [R | t; 0 0 0 1] (rotation +
@@ -396,7 +430,7 @@ layout(location = 1) in vec3 aNormal;
 layout(location = 2) in vec2 aUV;
 layout(location = 3) in vec3 aTangent;
 
-// Full LitUbo std140 layout (960 bytes after M45c). We reference only
+// Full LitUbo std140 layout (1008 bytes after M49). We reference only
 // `model`, `reflectionViewProj`, and `clipPlane`.
 layout(set = 0, binding = 0) uniform LitUbo {
     mat4 mvp;
@@ -417,6 +451,9 @@ layout(set = 0, binding = 0) uniform LitUbo {
     mat4 reflectionViewProj;
     vec4 reflectionParams;
     vec4 clipPlane;
+    vec4 probeBoxMin;   // M49
+    vec4 probeBoxMax;   // M49
+    vec4 probeCenter;   // M49 — w = probeActive
 } u;
 
 out gl_PerVertex {
@@ -561,7 +598,7 @@ void VulkanRenderer::recordSceneDraw(VkCommandBuffer cb, const DrawCall& call) {
 
     VkFrameRing::Frame& f = frames_.current();
 
-    LitUbo ubo;
+    LitUbo ubo{};
     ubo.mvp      = pendingProjection_ * pendingView_ * call.model;
     ubo.model    = call.model;
     ubo.sunDir   = Vec4{pendingSunDir_.x,   pendingSunDir_.y,   pendingSunDir_.z,   0.0f};
@@ -621,6 +658,18 @@ void VulkanRenderer::recordSceneDraw(VkCommandBuffer cb, const DrawCall& call) {
         0.0f,
     };
     ubo.clipPlane = Vec4{0.0f, 0.0f, 0.0f, 0.0f};
+
+    // M49 — per-draw probe selection. Object position = model translation.
+    CubemapHandle drawPrefiltered = pendingPrefiltered_;  // skybox default
+    const Vec3 objPos{call.model.m[12], call.model.m[13], call.model.m[14]};
+    const int probeIdx = nearestProbeContaining(pendingProbes_, objPos);
+    if (probeIdx >= 0 && cubemaps_.has(pendingProbes_[probeIdx].prefiltered)) {
+        const GpuReflectionProbe& gp = pendingProbes_[probeIdx];
+        drawPrefiltered = gp.prefiltered;
+        ubo.probeBoxMin = Vec4{gp.boxMin.x, gp.boxMin.y, gp.boxMin.z, 0.0f};
+        ubo.probeBoxMax = Vec4{gp.boxMax.x, gp.boxMax.y, gp.boxMax.z, 0.0f};
+        ubo.probeCenter = Vec4{gp.center.x, gp.center.y, gp.center.z, 1.0f};
+    }
 
     const VkShader& sh = shaders_.get(call.shader);
     ::VkPipeline pipe = pipelines_.pipelineFor(context_, swapchain_, sh);
@@ -703,9 +752,10 @@ void VulkanRenderer::recordSceneDraw(VkCommandBuffer cb, const DrawCall& call) {
     imgInfos[8].sampler     = irrTex.sampler;
     imgInfos[8].imageView   = irrTex.view;
     imgInfos[8].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-    // M46c — prefiltered specular (binding 11).
-    const CubemapHandle prefiltHandle = cubemaps_.has(pendingPrefiltered_)
-        ? pendingPrefiltered_ : cubemaps_.blackCubemap();
+    // M46c/M49 — prefiltered specular (binding 11); drawPrefiltered may be a
+    // probe cube (M49 per-draw selection) instead of the skybox default.
+    const CubemapHandle prefiltHandle = cubemaps_.has(drawPrefiltered)
+        ? drawPrefiltered : cubemaps_.blackCubemap();
     const auto& prefiltTex = cubemaps_.get(prefiltHandle);
     imgInfos[9].sampler     = prefiltTex.sampler;
     imgInfos[9].imageView   = prefiltTex.view;
@@ -775,7 +825,7 @@ void VulkanRenderer::recordSkinnedDraw(VkCommandBuffer cb,
     VkFrameRing::Frame& f = frames_.current();
 
     // --- 1. Build LitUbo (copied verbatim from recordSceneDraw) ---
-    LitUbo ubo;
+    LitUbo ubo{};
     ubo.mvp      = pendingProjection_ * pendingView_ * call.model;
     ubo.model    = call.model;
     ubo.sunDir   = Vec4{pendingSunDir_.x,   pendingSunDir_.y,   pendingSunDir_.z,   0.0f};
@@ -830,6 +880,18 @@ void VulkanRenderer::recordSkinnedDraw(VkCommandBuffer cb,
         0.0f,
     };
     ubo.clipPlane = Vec4{0.0f, 0.0f, 0.0f, 0.0f};
+
+    // M49 — per-draw probe selection. Object position = model translation.
+    CubemapHandle drawPrefiltered = pendingPrefiltered_;  // skybox default
+    const Vec3 objPos{call.model.m[12], call.model.m[13], call.model.m[14]};
+    const int probeIdx = nearestProbeContaining(pendingProbes_, objPos);
+    if (probeIdx >= 0 && cubemaps_.has(pendingProbes_[probeIdx].prefiltered)) {
+        const GpuReflectionProbe& gp = pendingProbes_[probeIdx];
+        drawPrefiltered = gp.prefiltered;
+        ubo.probeBoxMin = Vec4{gp.boxMin.x, gp.boxMin.y, gp.boxMin.z, 0.0f};
+        ubo.probeBoxMax = Vec4{gp.boxMax.x, gp.boxMax.y, gp.boxMax.z, 0.0f};
+        ubo.probeCenter = Vec4{gp.center.x, gp.center.y, gp.center.z, 1.0f};
+    }
 
     const VkDeviceSize uboOffset = frames_.allocateUbo(&ubo, sizeof(ubo));
 
@@ -918,9 +980,10 @@ void VulkanRenderer::recordSkinnedDraw(VkCommandBuffer cb,
     imgInfos[8].sampler     = irrTex.sampler;
     imgInfos[8].imageView   = irrTex.view;
     imgInfos[8].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-    // M46c — prefiltered specular (binding 11).
-    const CubemapHandle prefiltHandle = cubemaps_.has(pendingPrefiltered_)
-        ? pendingPrefiltered_ : cubemaps_.blackCubemap();
+    // M46c/M49 — prefiltered specular (binding 11); drawPrefiltered may be a
+    // probe cube (M49 per-draw selection) instead of the skybox default.
+    const CubemapHandle prefiltHandle = cubemaps_.has(drawPrefiltered)
+        ? drawPrefiltered : cubemaps_.blackCubemap();
     const auto& prefiltTex = cubemaps_.get(prefiltHandle);
     imgInfos[9].sampler     = prefiltTex.sampler;
     imgInfos[9].imageView   = prefiltTex.view;

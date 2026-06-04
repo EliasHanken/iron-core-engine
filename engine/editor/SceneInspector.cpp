@@ -2,6 +2,7 @@
 
 #include "audio/AudioEmitter.h"
 #include "editor/ReflectionInspector.h"
+#include "render/ReflectionProbe.h"
 #include "scene/SceneFormat.h"
 #include "world/CollisionShape.h"
 
@@ -64,6 +65,11 @@ bool SceneInspector::draw(const Reflection& reflection,
           [](SceneEntity& s){ s.audio.emplace(); },
           [](SceneEntity& s){ s.audio.reset(); },
           [](const Reflection& r, SceneEntity& s){ return renderComponent(r, *s.audio); } },
+        { "ReflectionProbe",
+          [](const SceneEntity& s){ return s.probe.has_value(); },
+          [](SceneEntity& s){ s.probe.emplace(); },
+          [](SceneEntity& s){ s.probe.reset(); },
+          [](const Reflection& r, SceneEntity& s){ return renderComponent(r, *s.probe); } },
     };
 
     for (const OptionalComp& oc : kOptional) {

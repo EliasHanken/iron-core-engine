@@ -157,6 +157,7 @@ int main() {
     iron::registerRenderHandles(reflection);
     iron::registerCollisionShape(reflection);
     iron::registerAudioEmitter(reflection);
+    iron::registerReflectionProbe(reflection);
 
     // --- M29: load the scene file ---
     const std::string exeDir = iron::executableDir();
@@ -324,6 +325,144 @@ int main() {
     iron::Log::info("sandbox: resolved %zu / %zu entities from scene",
                     resolved.size(), scene.entities.size());
 
+    // M49: Room centre — well away from the PBR grid (near-origin, Z=-8) and
+    // the DamagedHelmet scene content so no outside geometry enters the probe.
+    // Also used in the render loop to position the mirror sphere DrawCall.
+    constexpr iron::Vec3 kRoomCenter{ -40.0f, 3.5f, 0.0f };
+
+    // --- M49: reflection-probe demo room (runtime only, not serialized) ---
+    // Clean, isolated, fully-enclosed box room at kRoomCenter — far from the
+    // existing PBR grid / DamagedHelmet content near the origin so the probe
+    // captures ONLY the 6 coloured walls.
+    //
+    // Axis-colour diagnostic: each surface colour maps to a world axis so we
+    // can read cubemap face orientation from the mirror sphere:
+    //   +X wall (right)   → RED
+    //   -X wall (left)    → GREEN
+    //   +Z wall (far)     → BLUE
+    //   -Z wall (near)    → MAGENTA
+    //   -Y floor (bottom) → YELLOW
+    //   +Y ceiling (top)  → WHITE
+    //
+    // Interior: 8 wide (X) × 7 tall (Y) × 8 deep (Z).
+    // Walls are 0.4 units thick; placed so their INNER surface is flush with
+    // the interior half-extents (±4 X, ±3.5 Y, ±4 Z relative to kRoomCenter).
+    // The probe halfExtents slightly exceed the interior so the sphere stays
+    // inside the probe box.
+    //
+    // Helper: append a box-primitive SceneEntity with given position / scale /
+    // baseColorFactor + PBR params, resolve it, and push into resolved[].
+    // Not serialized (not added via appendAndSelect → no save path needed).
+    {
+
+        auto addRoom = [&](const char* name,
+                           iron::Vec3 pos, iron::Vec3 scale,
+                           iron::Vec3 color,
+                           float metallic = 0.0f, float roughness = 0.9f) {
+            iron::SceneEntity ne;
+            ne.name = name;
+            ne.transform.position = pos;
+            ne.transform.scale    = scale;
+            ne.mesh.primitive     = iron::PrimitiveKind::Cube;
+            ne.material.baseColorFactor = color;
+            ne.material.metallic  = metallic;
+            ne.material.roughness = roughness;
+
+            const int idx = static_cast<int>(scene.entities.size());
+            scene.entities.push_back(ne);
+            ResolvedEntity re;
+            if (resolveEntity(scene.entities[idx], idx, re)) {
+                resolved.push_back(re);
+                iron::EntityId entity = world.create();
+                world.add<iron::Transform>(entity, scene.entities[idx].transform);
+                world.add<iron::MeshRef>(entity, scene.entities[idx].mesh);
+                world.add<iron::MaterialDef>(entity, scene.entities[idx].material);
+                world.add<iron::RenderHandles>(entity, toRenderHandles(re));
+                sceneIndexToEntity.push_back(entity);
+            } else {
+                scene.entities.pop_back();
+            }
+        };
+
+        // Interior: 8 wide (X) × 7 tall (Y) × 8 deep (Z). Wall thickness T=0.4.
+        // Each wall centre = kRoomCenter ± (half-interior + T/2) on its axis.
+        // Floors / ceiling: full RW × T × RD slabs.
+        // Side walls: T × RH × RD (X walls) or RW × RH × T (Z walls).
+        constexpr float RW = 8.0f, RH = 7.0f, RD = 8.0f, T = 0.4f;
+        const iron::Vec3 C = kRoomCenter;  // shorthand
+
+        // Floor (-Y, bottom) → YELLOW
+        addRoom("probe_room_floor",
+                {C.x,               C.y - RH*0.5f - T*0.5f, C.z},
+                {RW + 2*T, T, RD + 2*T},
+                {1.0f, 0.9f, 0.05f});
+        // Ceiling (+Y, top) → WHITE
+        addRoom("probe_room_ceiling",
+                {C.x,               C.y + RH*0.5f + T*0.5f, C.z},
+                {RW + 2*T, T, RD + 2*T},
+                {0.95f, 0.95f, 0.95f});
+        // Wall +X (right) → RED
+        addRoom("probe_room_wall_x+",
+                {C.x + RW*0.5f + T*0.5f, C.y, C.z},
+                {T, RH, RD},
+                {1.0f, 0.05f, 0.05f});
+        // Wall -X (left) → GREEN
+        addRoom("probe_room_wall_x-",
+                {C.x - RW*0.5f - T*0.5f, C.y, C.z},
+                {T, RH, RD},
+                {0.05f, 1.0f, 0.05f});
+        // Wall +Z (far) → BLUE
+        addRoom("probe_room_wall_z+",
+                {C.x, C.y, C.z + RD*0.5f + T*0.5f},
+                {RW, RH, T},
+                {0.1f, 0.2f, 1.0f});
+        // Wall -Z (near) → MAGENTA
+        addRoom("probe_room_wall_z-",
+                {C.x, C.y, C.z - RD*0.5f - T*0.5f},
+                {RW, RH, T},
+                {1.0f, 0.05f, 1.0f});
+
+        // Note: the metallic reflective sphere is submitted as a runtime DrawCall
+        // (UV sphere mesh) below in the render loop — no cube entity needed here;
+        // that avoids Z-fighting with the sphere DrawCall at the same position.
+
+        // Probe entity at kRoomCenter. halfExtents slightly exceed the interior
+        // half-sizes so the sphere is fully inside the probe box.
+        {
+            iron::SceneEntity ne;
+            ne.name = "probe_room_probe";
+            ne.transform.position = {C.x, C.y, C.z};
+            ne.transform.scale    = {0.2f, 0.2f, 0.2f};   // tiny visual marker only
+            ne.mesh.primitive     = iron::PrimitiveKind::Cube;
+            ne.material.baseColorFactor = {0.2f, 0.9f, 1.0f};
+            ne.probe.emplace();
+            // 4.2 > RW/2=4.0; 3.7 > RH/2=3.5; 4.2 > RD/2=4.0
+            ne.probe->halfExtents = {4.2f, 3.7f, 4.2f};
+            ne.probe->faceSize    = 256;  // 128→256: thinner cube-face seams at wall/floor edges
+
+            const int idx = static_cast<int>(scene.entities.size());
+            scene.entities.push_back(ne);
+            ResolvedEntity re;
+            if (resolveEntity(scene.entities[idx], idx, re)) {
+                resolved.push_back(re);
+                iron::EntityId entity = world.create();
+                world.add<iron::Transform>(entity, scene.entities[idx].transform);
+                world.add<iron::MeshRef>(entity, scene.entities[idx].mesh);
+                world.add<iron::MaterialDef>(entity, scene.entities[idx].material);
+                world.add<iron::RenderHandles>(entity, toRenderHandles(re));
+                sceneIndexToEntity.push_back(entity);
+            } else {
+                scene.entities.pop_back();
+            }
+        }
+        iron::Log::info("sandbox: M49 probe demo room added (%zu entities total)",
+                        scene.entities.size());
+    }
+
+    // M49: baked probe list (persists across frames; populated on Bake button press).
+    std::vector<iron::GpuReflectionProbe> bakedProbes;
+    bool bakeRequested = false;
+
     // --- M45b: PBR sphere grid (runtime only, not serialized) ---
     // 6x6 grid of unit spheres sweeping metallic (X) x roughness (Z).
     // Placed at Z=-8 so it sits clearly behind the authored demo scene content.
@@ -334,7 +473,12 @@ int main() {
 
     // --- Camera ---
     iron::FreeFlyCamera cam;
-    cam.position = {0.0f, 2.0f, 6.0f};
+    // M49: start inside the isolated probe demo room looking toward the
+    // mirror sphere. Camera is 3.3 units in front of kRoomCenter on +Z,
+    // kept inside the interior (which ends at +4 Z); yaw=0 (default) looks
+    // toward world -Z, which is exactly toward the sphere at
+    // kRoomCenter = {-40, 3.5, 0}.
+    cam.position = {-40.0f, 3.5f, 3.3f};
 
     // M41: Play/Stop mode state.
     iron::EditorState editor;
@@ -567,6 +711,25 @@ int main() {
                 break;
             }
         }
+    };
+
+    // M49: draw a reflection probe's half-extents as a cyan wireframe box in
+    // Edit mode. Uses the entity transform position as the probe center; no
+    // rotation (probes are axis-aligned). Distinct cyan avoids confusion with
+    // the collider green.
+    auto drawProbeWireframe = [&](const iron::SceneEntity& e) {
+        if (!e.probe) return;
+        const iron::Vec3 c   = e.transform.position;
+        const iron::Vec3 col{0.2f, 0.9f, 1.0f};  // probe cyan
+        const iron::Vec3 h   = e.probe->halfExtents;
+        iron::Vec3 v[8];
+        for (int i = 0; i < 8; ++i)
+            v[i] = iron::Vec3{c.x + ((i & 1) ? h.x : -h.x),
+                              c.y + ((i & 2) ? h.y : -h.y),
+                              c.z + ((i & 4) ? h.z : -h.z)};
+        const int edges[12][2] = {{0,1},{2,3},{4,5},{6,7},{0,2},{1,3},
+                                  {4,6},{5,7},{0,4},{1,5},{2,6},{3,7}};
+        for (const auto& ed : edges) renderer.drawLineOverlay(v[ed[0]], v[ed[1]], col);
     };
 
     // Generate a scene-unique entity name from a base ("cube" -> "cube", "cube 2"...).
@@ -931,6 +1094,24 @@ int main() {
             ImGui::End();
         }
 
+        // M49: Reflection probe bake button — in its own collapsible group in
+        // the Environment panel. Pressing "Bake Reflection Probes" latches
+        // bakeRequested so the bake runs after the submit loop this same frame
+        // (sceneDraws_ is populated; bake must happen before endFrame).
+        {
+            ImGui::Begin("Environment");
+            if (ImGui::CollapsingHeader("Reflection Probes (M49)", ImGuiTreeNodeFlags_DefaultOpen)) {
+                ImGui::TextUnformatted(bakedProbes.empty()
+                    ? "Probes: not baked yet"
+                    : "Probes: baked (active)");
+                if (ImGui::Button("Bake Reflection Probes"))
+                    bakeRequested = true;
+                ImGui::SameLine();
+                ImGui::TextDisabled("(captures live scene)");
+            }
+            ImGui::End();
+        }
+
         // M41: scene-mutating actions (save / add / delete / duplicate) gated
         // on Edit mode. Inspector + Outliner remain visible/clickable but the
         // user can't modify the scene during Play.
@@ -1081,6 +1262,12 @@ int main() {
             call.material.uvScale         = mat->uvScale;
             call.material.reflectivity    = mat->reflectivity;
             call.material.normalScale     = mat->normalScale;
+            // M49: probe marker entities are shown only as a cyan wireframe gizmo;
+            // skip the solid box draw so neither the viewport nor probe captures
+            // see a stray box floating at the probe center.
+            if (sceneIdx >= 0 && sceneIdx < static_cast<int>(scene.entities.size()) &&
+                scene.entities[sceneIdx].probe.has_value()) continue;
+
             call.effectId              = (sceneIdx == selectedIndex) ? 1 : 0;
             renderer.submit(call);
         }
@@ -1108,6 +1295,56 @@ int main() {
                 renderer.submit(dc);
             }
         }
+
+        // M49: mirror sphere at the probe-room centre (kRoomCenter). Metallic=1,
+        // roughness=0.03 → near-perfect mirror so the coloured wall reflections
+        // map crisply onto the sphere and serve as the orientation diagnostic.
+        // Neutral gold-tint albedo; sharp reflection reads colour from the probe.
+        {
+            iron::DrawCall dc{};
+            dc.mesh    = pbrSphereMesh;
+            dc.shader  = litShader;
+            dc.model   = iron::translation(kRoomCenter)
+                       * iron::scaling(iron::Vec3{1.5f, 1.5f, 1.5f});
+            dc.material.texture         = renderer.whiteTexture();
+            dc.material.metallic        = 1.0f;
+            dc.material.roughness       = 0.03f;
+            dc.material.baseColorFactor = {0.95f, 0.92f, 0.85f};  // neutral
+            dc.material.excludeFromProbeCapture = true;  // M49: chrome sphere must not self-occlude the probe
+            renderer.submit(dc);
+        }
+
+        // M49: reflection probe bake + per-frame upload.
+        // Bake is triggered AFTER all submit() calls for this frame so that
+        // sceneDraws_ is fully populated when bakeReflectionProbes() reads it.
+        // setReflectionProbes is cheap (a span copy) and called every frame so
+        // the shader always has the current probe list even if it's empty.
+        if (bakeRequested) {
+            std::vector<iron::GpuReflectionProbe> next;
+            for (const iron::SceneEntity& e : scene.entities) {
+                if (!e.probe) continue;
+                const iron::Vec3 c = e.transform.position;
+                const iron::Vec3 h = e.probe->halfExtents;
+                iron::GpuReflectionProbe gp{
+                    {c.x - h.x, c.y - h.y, c.z - h.z},
+                    {c.x + h.x, c.y + h.y, c.z + h.z},
+                    c,
+                    iron::kInvalidHandle};
+                gp.faceSize = e.probe->faceSize;
+                next.push_back(gp);
+            }
+            // Carry over prior baked handles (by order) so bakeReflectionProbes
+            // frees the old prefiltered cubes on re-bake instead of leaking them.
+            for (size_t i = 0; i < next.size() && i < bakedProbes.size(); ++i)
+                next[i].prefiltered = bakedProbes[i].prefiltered;
+            bakedProbes = std::move(next);
+            renderer.bakeReflectionProbes(bakedProbes);
+            bakeRequested = false;
+            iron::Log::info("sandbox: baked %zu reflection probe(s)",
+                            bakedProbes.size());
+        }
+        renderer.setReflectionProbes(
+            std::span<const iron::GpuReflectionProbe>(bakedProbes.data(), bakedProbes.size()));
 
         if (selectedIndex >= 0 && selectedIndex < static_cast<int>(scene.entities.size()))
             gizmo.draw(renderer, gizmoOriginFor(selectedIndex),
@@ -1148,6 +1385,7 @@ int main() {
         // result). Drawn via the same drawLineOverlay path as the outline.
         if (!editor.isPlaying()) {
             for (const auto& e : scene.entities) drawColliderWireframe(e);
+            for (const auto& e : scene.entities) drawProbeWireframe(e);
         }
         renderer.flushDebugLines(view, proj);
         // M43b: the 3D scene as a dockable panel. Resize the offscreen target to
