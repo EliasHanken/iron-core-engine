@@ -24,6 +24,7 @@ VulkanRenderer::~VulkanRenderer() {
         skinnedMeshes_.destroyAll(context_);  // M23
         textures_.destroyAll(context_);
         iblBaker_.destroy(context_);
+        sceneCapture_.destroy(context_);
         cubemaps_.destroyAll(context_);
         shaders_.destroyAll(context_);
         hud_.destroy(context_);
@@ -82,6 +83,10 @@ bool VulkanRenderer::init(Window& window) {
     }
     if (!iblBaker_.initBrdfLut(context_)) {
         Log::error("VulkanRenderer: BRDF LUT bake failed");
+        return false;
+    }
+    if (!sceneCapture_.init(context_)) {
+        Log::error("VulkanRenderer: VkSceneCapture init failed");
         return false;
     }
     // M36 — offscreen scene-color target + copy pipeline. Must be init before
@@ -282,6 +287,27 @@ void VulkanRenderer::disableReflectionPlane() {
 void VulkanRenderer::setReflectionProbes(std::span<const GpuReflectionProbe> probes) {
     pendingProbes_.assign(probes.begin(), probes.end());
 }
+
+void VulkanRenderer::bakeReflectionProbes(std::vector<GpuReflectionProbe>& probes) {
+    // Captures each probe's surroundings from the CURRENT frame's submitted
+    // draws (sceneDraws_), so the caller must submit the scene before baking.
+    // Blocking/on-demand (editor action), not part of the per-frame path.
+    constexpr int kMips     = 5;
+    constexpr int kFaceSize = 128;  // v1 default; per-probe faceSize deferred
+    for (auto& p : probes) {
+        CubemapHandle radiance = sceneCapture_.capture(
+            context_, cubemaps_, meshes_, textures_, sceneDraws_,
+            pendingSunDir_, pendingSunColor_, pendingAmbient_, p.center, kFaceSize);
+        if (radiance == kInvalidHandle) continue;
+        CubemapHandle prefiltered =
+            iblBaker_.bakePrefiltered(context_, cubemaps_, radiance, kFaceSize, kMips);
+        cubemaps_.destroy(context_, radiance);                 // free the intermediate
+        if (p.prefiltered != kInvalidHandle)
+            cubemaps_.destroy(context_, p.prefiltered);        // free the previous bake (re-bake)
+        p.prefiltered = prefiltered;
+    }
+}
+
 void VulkanRenderer::drawLine(Vec3 a, Vec3 b, Vec3 color) {
     debugLines_.queue(a, b, color);
 }

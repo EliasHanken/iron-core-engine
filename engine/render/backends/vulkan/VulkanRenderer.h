@@ -14,6 +14,7 @@
 #include "render/backends/vulkan/VkTexture.h"
 #include "render/backends/vulkan/VkCubemap.h"
 #include "render/backends/vulkan/VkIblBaker.h"
+#include "render/backends/vulkan/VkSceneCapture.h"
 #include "render/backends/vulkan/VkSkybox.h"
 #include "render/backends/vulkan/VkReflectionTarget.h"
 #include "render/backends/vulkan/VkPostProcess.h"
@@ -76,7 +77,7 @@ public:
 
     // M49 — reflection probe API.
     void setReflectionProbes(std::span<const GpuReflectionProbe> probes) override;
-    void bakeReflectionProbes(std::vector<GpuReflectionProbe>& probes) override { /* implemented in Task 6 */ (void)probes; }
+    void bakeReflectionProbes(std::vector<GpuReflectionProbe>& probes) override;
 
     // --- per-frame ---
     void beginFrame(Vec3 clearColor, const DirectionalLight& light,
@@ -247,8 +248,9 @@ private:
     VkShadowMap shadowMap_;
 
     // M16 — cubemap storage + skybox subsystem + currently-set skybox.
-    VkCubemapStore cubemaps_;
-    VkIblBaker     iblBaker_;
+    VkCubemapStore  cubemaps_;
+    VkIblBaker      iblBaker_;
+    VkSceneCapture  sceneCapture_;  // M49 — probe capture rig
     VkSkybox       skybox_;
     CubemapHandle  pendingSkybox_ = kInvalidHandle;
     CubemapHandle  pendingIrradiance_ = kInvalidHandle;  // M46b — baked from the skybox
