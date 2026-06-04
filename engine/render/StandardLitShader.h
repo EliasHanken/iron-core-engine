@@ -360,7 +360,9 @@ void main() {
 // M50b — hardware tessellation shader sources.
 // standardLitTessVertSource: passthrough vertex, outputs control-point attrs
 //   in LOCAL space (no MVP) at loc 0-3 for the tesc stage.
-// standardLitTescSource: fixed-factor tesc — factor from probeBoxMin.w (min 1).
+// standardLitTescSource: fixed or adaptive tesc (lightCounts.y: 0=fixed, 1=adaptive).
+//   Fixed: all levels = probeBoxMin.w (min 1). Adaptive (M50c): per-edge NDC-screen
+//   factor, target = lightCounts.z, max = probeBoxMin.w. Mirrors render/TessLod.h.
 // standardLitTeseSource: barycentric interp + GGX height displacement; emits
 //   the same lit varyings (loc 0-4) that standardLitFragSource consumes.
 
