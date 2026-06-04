@@ -247,8 +247,8 @@ void VkPipeline::destroy(VkContext& ctx) {
         if (e.pipeline) vkDestroyPipeline(ctx.device(), e.pipeline, nullptr);
     }
     pipelines_.clear();
-    for (auto& [sh, pipe] : skinnedPipelines_) {
-        if (pipe) vkDestroyPipeline(ctx.device(), pipe, nullptr);
+    for (auto& e : skinnedPipelines_) {
+        if (e.pipeline) vkDestroyPipeline(ctx.device(), e.pipeline, nullptr);
     }
     skinnedPipelines_.clear();
     for (auto fb : framebuffers_) if (fb) vkDestroyFramebuffer(ctx.device(), fb, nullptr);
@@ -292,12 +292,12 @@ bool VkPipeline::recreateFramebuffers(VkContext& ctx, VkSwapchain& swap) {
 }
 
 ::VkPipeline VkPipeline::skinnedPipelineFor(VkContext& ctx, VkSwapchain& swap,
-                                              const VkShader& sh) {
-    for (const auto& [s, p] : skinnedPipelines_) {
-        if (s == &sh) return p;
+                                              const VkShader& sh, bool wireframe) {
+    for (const auto& e : skinnedPipelines_) {
+        if (e.shader == &sh && e.wireframe == wireframe) return e.pipeline;
     }
-    auto p = createSkinnedGraphicsPipeline(ctx, swap, scenePass_, sh, false);
-    skinnedPipelines_.emplace_back(&sh, p);
+    auto p = createSkinnedGraphicsPipeline(ctx, swap, scenePass_, sh, wireframe);
+    skinnedPipelines_.push_back({&sh, wireframe, p});
     return p;
 }
 
@@ -311,10 +311,10 @@ void VkPipeline::invalidate(VkContext& ctx, const VkShader* sh) {
             ++it;
         }
     }
-    // Drop skinned pipeline entries (still pair-based).
+    // Drop skinned pipeline entries for this shader.
     for (auto it = skinnedPipelines_.begin(); it != skinnedPipelines_.end(); ) {
-        if (it->first == sh) {
-            if (it->second) vkDestroyPipeline(ctx.device(), it->second, nullptr);
+        if (it->shader == sh) {
+            if (it->pipeline) vkDestroyPipeline(ctx.device(), it->pipeline, nullptr);
             it = skinnedPipelines_.erase(it);
         } else {
             ++it;

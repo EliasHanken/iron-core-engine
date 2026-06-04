@@ -96,6 +96,10 @@ public:
     void setReflectionPlane(Vec3 normal, float d) override;
     void disableReflectionPlane() override;
 
+    // M50b — wireframe + tessellation factor.
+    void setWireframe(bool e) override { pendingWireframe_ = e; }
+    void setTessellationFactor(float f) override { pendingTessFactor_ = f; }
+
     // --- debug ---
     void drawLine(Vec3 a, Vec3 b, Vec3 color) override;
     void drawLineOverlay(Vec3 a, Vec3 b, Vec3 color) override;
@@ -332,6 +336,9 @@ private:
     float      pendingSsaoBias_     = 0.025f;
     float      pendingSsaoPower_    = 1.5f;
     float      pendingSsaoStrength_ = 1.0f;
+    // M50b — wireframe toggle + tessellation factor for tessellated draws.
+    bool       pendingWireframe_    = false;
+    float      pendingTessFactor_   = 16.0f;
 };
 
 }  // namespace iron

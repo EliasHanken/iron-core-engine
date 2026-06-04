@@ -681,7 +681,17 @@ void VulkanRenderer::recordSceneDraw(VkCommandBuffer cb, const DrawCall& call) {
     }
 
     const VkShader& sh = shaders_.get(call.shader);
-    ::VkPipeline pipe = pipelines_.pipelineFor(context_, swapchain_, sh, false);
+
+    // M50b — for tessellated draws, override tess-specific UBO fields.
+    // Must run after sh is fetched (tescModule check) and before allocateUbo.
+    const bool tessellated = (sh.tescModule != VK_NULL_HANDLE);
+    if (tessellated) {
+        ubo.reflectionParams.w = call.material.heightScale;  // displacement amount
+        ubo.probeBoxMin.w      = pendingTessFactor_;           // UI tessellation factor
+        ubo.baseColorFactor.w  = 0.0f;                         // POM OFF (real geometry)
+    }
+
+    ::VkPipeline pipe = pipelines_.pipelineFor(context_, swapchain_, sh, pendingWireframe_);
     vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, pipe);
 
     // Allocate + write descriptor set from the frame's pool.
@@ -933,7 +943,7 @@ void VulkanRenderer::recordSkinnedDraw(VkCommandBuffer cb,
 
     // --- 3. Bind pipeline + allocate descriptor set ---
     const VkShader& sh = shaders_.get(call.shader);
-    ::VkPipeline pipe = pipelines_.skinnedPipelineFor(context_, swapchain_, sh);
+    ::VkPipeline pipe = pipelines_.skinnedPipelineFor(context_, swapchain_, sh, pendingWireframe_);
     vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, pipe);
 
     VkDescriptorSetAllocateInfo dsInfo{};

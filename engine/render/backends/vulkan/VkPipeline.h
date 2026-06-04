@@ -28,8 +28,9 @@ public:
     // M23 — build (or fetch) a graphics pipeline for a skinned shader.
     // Identical to pipelineFor() except the vertex input layout matches
     // SkinnedVertex (6 attributes, 76-byte stride). Cached separately.
+    // M50b — wireframe param threads the polygon-mode flag into the skinned pipeline.
     ::VkPipeline skinnedPipelineFor(VkContext& ctx, VkSwapchain& swap,
-                                     const VkShader& sh);
+                                     const VkShader& sh, bool wireframe = false);
 
     // M28 — drop the cached pipeline(s) built against `sh` (both the scene
     // and skinned caches are checked). The matching VkPipeline is destroyed;
@@ -54,8 +55,9 @@ private:
     // One pipeline per (shader pointer, wireframe) pair.
     struct PipelineEntry { const VkShader* shader; bool wireframe; ::VkPipeline pipeline; };
     std::vector<PipelineEntry> pipelines_;
-    // M23 — separate cache for the skinned vertex-input pipeline.
-    std::vector<std::pair<const VkShader*, ::VkPipeline>> skinnedPipelines_;
+    // M23/M50b — separate cache for the skinned vertex-input pipeline.
+    // Keyed by (shader, wireframe) so wireframe toggle works for skinned draws too.
+    std::vector<PipelineEntry> skinnedPipelines_;
 };
 
 }  // namespace iron

@@ -203,6 +203,11 @@ public:
     // scene.
     virtual void setShadowBounds(Vec3 center, float radius) = 0;
 
+    // M50b — toggle global wireframe (line polygon mode) for scene geometry.
+    virtual void setWireframe(bool enable) = 0;
+    // M50b — fixed tessellation factor (subdivision level) for tessellated draws.
+    virtual void setTessellationFactor(float factor) = 0;
+
     // Sets the world-space reflection plane. The renderer will run an extra
     // planar reflection pass per frame using a camera mirrored across this
     // plane; any DrawCall with material.useReflectionPlane=true samples the

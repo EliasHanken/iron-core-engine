@@ -53,6 +53,9 @@ public:
     void setShadowBounds(Vec3, float) override {}
     void setReflectionPlane(Vec3, float) override {}
     void disableReflectionPlane() override {}
+    // M50b — Vulkan-only; stubs.
+    void setWireframe(bool) override {}
+    void setTessellationFactor(float) override {}
 
     // Debug drawing — drawLine captures; flushDebugLines no-op (the registry
     // doesn't call it).
