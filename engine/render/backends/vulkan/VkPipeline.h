@@ -21,8 +21,9 @@ public:
     bool recreateFramebuffers(VkContext& ctx, VkSwapchain& swap);
 
     // Build (or fetch) a graphics pipeline for a given VkShader.
-    // Cached by shader pointer.
-    ::VkPipeline pipelineFor(VkContext& ctx, VkSwapchain& swap, const VkShader& sh);
+    // Cached by (shader pointer, wireframe).
+    ::VkPipeline pipelineFor(VkContext& ctx, VkSwapchain& swap, const VkShader& sh,
+                             bool wireframe = false);
 
     // M23 — build (or fetch) a graphics pipeline for a skinned shader.
     // Identical to pipelineFor() except the vertex input layout matches
@@ -50,8 +51,9 @@ private:
     VkRenderPass               renderPass_   = VK_NULL_HANDLE;
     VkRenderPass               scenePass_    = VK_NULL_HANDLE;
     std::vector<VkFramebuffer> framebuffers_;
-    // One pipeline per (shader pointer) value.
-    std::vector<std::pair<const VkShader*, ::VkPipeline>> pipelines_;
+    // One pipeline per (shader pointer, wireframe) pair.
+    struct PipelineEntry { const VkShader* shader; bool wireframe; ::VkPipeline pipeline; };
+    std::vector<PipelineEntry> pipelines_;
     // M23 — separate cache for the skinned vertex-input pipeline.
     std::vector<std::pair<const VkShader*, ::VkPipeline>> skinnedPipelines_;
 };

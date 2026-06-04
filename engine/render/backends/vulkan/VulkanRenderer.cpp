@@ -674,7 +674,7 @@ void VulkanRenderer::recordSceneDraw(VkCommandBuffer cb, const DrawCall& call) {
     }
 
     const VkShader& sh = shaders_.get(call.shader);
-    ::VkPipeline pipe = pipelines_.pipelineFor(context_, swapchain_, sh);
+    ::VkPipeline pipe = pipelines_.pipelineFor(context_, swapchain_, sh, false);
     vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, pipe);
 
     // Allocate + write descriptor set from the frame's pool.
