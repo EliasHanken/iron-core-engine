@@ -326,7 +326,7 @@ struct LitUbo {
     Vec4 cameraPos;           // 16
     Vec4 materialParams;      // 16  x=uvScale, y=roughness, z=reflectivity, w=shadowBias
     Vec4 materialParams2;     // 16  M45b — x=metallic, y=ao, z=normalScale, w spare
-    Vec4 baseColorFactor;     // 16  M45c — xyz = albedo tint, w unused
+    Vec4 baseColorFactor;     // 16  M45c — xyz = albedo tint; w = heightScale (M50a POM; 0=off)
     Vec4 fogColor;            // 16  M15 — xyz=color, w=density
     Vec4 lightCounts;         // 16  M15 — x=pointLightCount (as float), y/z/w padding
     Vec4 pointPositions[16];  // 256 M15 — xyz=position, w=intensity
