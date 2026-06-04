@@ -112,6 +112,7 @@ iron_add_test(test_bloom test_bloom.cpp)
 iron_add_test(test_ssao test_ssao.cpp)
 iron_add_test(test_parallax test_parallax.cpp)
 iron_add_test(test_reflection_probe test_reflection_probe.cpp)
+iron_add_test(test_tess_lod test_tess_lod.cpp)
 iron_add_test(test_iso_view test_iso_view.cpp)
 target_link_libraries(test_iso_view PRIVATE ironcore_editor)
 
