@@ -93,6 +93,7 @@ if (IRON_RENDER_BACKEND STREQUAL "vulkan")
       render/backends/vulkan/VkIblBaker.cpp
       render/backends/vulkan/VkSkybox.cpp
       render/backends/vulkan/VkReflectionTarget.cpp
+      render/backends/vulkan/VkSceneCapture.cpp
       render/backends/vulkan/VkPostProcess.cpp
     )
     target_compile_definitions(ironcore PUBLIC IRON_RENDER_BACKEND_VULKAN)
