@@ -92,11 +92,12 @@ ShaderHandle VkShaderStore::create(VkContext& ctx,
         return kInvalidHandle;
     }
 
-    // M17/M45b/M45c/M46b/M46c — descriptor set layout: UBO + 8 samplers (diffuse, normal,
+    // M17/M45b/M45c/M46b/M46c/M50a — descriptor set layout: UBO + 8 samplers (diffuse, normal,
     // metallic-roughness, shadow, sky cubemap, planar reflection, AO, emissive) +
     // binding 10 = irradiance cubemap (M46b) + binding 11 = prefiltered specular cubemap +
-    // binding 12 = BRDF integration LUT (M46c split-sum).
-    VkDescriptorSetLayoutBinding bindings[12]{};
+    // binding 12 = BRDF integration LUT (M46c split-sum) +
+    // binding 13 = height map (M50a POM; white fallback = depth 0 = POM no-op).
+    VkDescriptorSetLayoutBinding bindings[13]{};
     bindings[0].binding = 0;
     bindings[0].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
     bindings[0].descriptorCount = 1;
@@ -145,10 +146,14 @@ ShaderHandle VkShaderStore::create(VkContext& ctx,
     bindings[11].descriptorType  = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
     bindings[11].descriptorCount = 1;
     bindings[11].stageFlags      = VK_SHADER_STAGE_FRAGMENT_BIT;
+    bindings[12].binding         = 13;   // M50a — height map (POM)
+    bindings[12].descriptorType  = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    bindings[12].descriptorCount = 1;
+    bindings[12].stageFlags      = VK_SHADER_STAGE_FRAGMENT_BIT;
 
     VkDescriptorSetLayoutCreateInfo dslInfo{};
     dslInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-    dslInfo.bindingCount = 12;
+    dslInfo.bindingCount = 13;
     dslInfo.pBindings = bindings;
     VK_CHECK(vkCreateDescriptorSetLayout(ctx.device(), &dslInfo, nullptr, &s.setLayout));
 
@@ -194,12 +199,13 @@ ShaderHandle VkShaderStore::createSkinned(VkContext& ctx,
         return kInvalidHandle;
     }
 
-    // M23/M45b/M45c/M46b/M46c — 13 bindings: same 9 as the lit path (0=scene UBO, 1-8=samplers
+    // M23/M45b/M45c/M46b/M46c/M50a — 14 bindings: same 9 as the lit path (0=scene UBO, 1-8=samplers
     // including AO at 7 and emissive at 8) + binding 9 = bone-matrices UBO (vertex stage) +
     // binding 10 = irradiance cubemap (M46b) + binding 11 = prefiltered specular cubemap +
-    // binding 12 = BRDF integration LUT (M46c split-sum).
+    // binding 12 = BRDF integration LUT (M46c split-sum) +
+    // binding 13 = height map (M50a POM; white fallback = depth 0 = POM no-op).
     // Bones moved 7→8→9 to keep sampler bindings consistent with the shared frag shader.
-    VkDescriptorSetLayoutBinding bindings[13]{};
+    VkDescriptorSetLayoutBinding bindings[14]{};
     bindings[0].binding = 0;
     bindings[0].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
     bindings[0].descriptorCount = 1;
@@ -226,10 +232,14 @@ ShaderHandle VkShaderStore::createSkinned(VkContext& ctx,
     bindings[12].descriptorType  = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
     bindings[12].descriptorCount = 1;
     bindings[12].stageFlags      = VK_SHADER_STAGE_FRAGMENT_BIT;
+    bindings[13].binding         = 13;  // M50a — height map (POM)
+    bindings[13].descriptorType  = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    bindings[13].descriptorCount = 1;
+    bindings[13].stageFlags      = VK_SHADER_STAGE_FRAGMENT_BIT;
 
     VkDescriptorSetLayoutCreateInfo dslInfo{};
     dslInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-    dslInfo.bindingCount = 13;
+    dslInfo.bindingCount = 14;
     dslInfo.pBindings = bindings;
     VK_CHECK(vkCreateDescriptorSetLayout(ctx.device(), &dslInfo, nullptr, &s.setLayout));
 

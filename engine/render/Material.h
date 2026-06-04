@@ -25,6 +25,7 @@ struct Material {
     float roughness   = 0.5f;
     float ao          = 1.0f;
     float normalScale = 1.0f;                            // glTF normalTexture.scale
+    float heightScale = 0.05f;                           // M50a — POM depth scale; 0 = POM off
 };
 
 } // namespace iron

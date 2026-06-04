@@ -293,6 +293,7 @@ int main() {
         out.material.uvScale         = e.material.uvScale;
         out.material.reflectivity    = e.material.reflectivity;
         out.material.normalScale     = e.material.normalScale;
+        out.material.heightScale     = e.material.heightScale;
         out.model = iron::translation(e.transform.position) * e.transform.rotation.toMat4() * iron::scaling(e.transform.scale);
         return true;
     };
