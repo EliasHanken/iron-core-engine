@@ -4,6 +4,7 @@
 #include "math/Vec.h"
 #include "render/Fog.h"
 #include "render/Light.h"
+#include "render/ReflectionProbe.h"
 #include "world/CollisionShape.h"
 #include "world/Transform.h"
 
@@ -52,8 +53,9 @@ struct SceneEntity {
     Transform   transform;
     MeshRef     mesh;
     MaterialDef material;
-    std::optional<CollisionShape> collision;  // M42 — absent = no collider
-    std::optional<AudioEmitter>   audio;       // M42 — absent = no emitter
+    std::optional<CollisionShape>    collision;  // M42 — absent = no collider
+    std::optional<AudioEmitter>      audio;      // M42 — absent = no emitter
+    std::optional<ReflectionProbeDef> probe;     // M49 — absent = no probe
 };
 
 // A complete authored scene: placed entities + global lighting/environment.

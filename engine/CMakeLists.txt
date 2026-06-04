@@ -45,6 +45,7 @@ add_library(ironcore STATIC
   world/Transform.reflect.cpp
   world/CollisionShape.reflect.cpp
   audio/AudioEmitter.reflect.cpp
+  render/ReflectionProbe.reflect.cpp
   scene/ReflectionIO.cpp
 )
 

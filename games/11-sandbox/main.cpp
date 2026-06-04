@@ -157,6 +157,7 @@ int main() {
     iron::registerRenderHandles(reflection);
     iron::registerCollisionShape(reflection);
     iron::registerAudioEmitter(reflection);
+    iron::registerReflectionProbe(reflection);
 
     // --- M29: load the scene file ---
     const std::string exeDir = iron::executableDir();
@@ -567,6 +568,25 @@ int main() {
                 break;
             }
         }
+    };
+
+    // M49: draw a reflection probe's half-extents as a cyan wireframe box in
+    // Edit mode. Uses the entity transform position as the probe center; no
+    // rotation (probes are axis-aligned). Distinct cyan avoids confusion with
+    // the collider green.
+    auto drawProbeWireframe = [&](const iron::SceneEntity& e) {
+        if (!e.probe) return;
+        const iron::Vec3 c   = e.transform.position;
+        const iron::Vec3 col{0.2f, 0.9f, 1.0f};  // probe cyan
+        const iron::Vec3 h   = e.probe->halfExtents;
+        iron::Vec3 v[8];
+        for (int i = 0; i < 8; ++i)
+            v[i] = iron::Vec3{c.x + ((i & 1) ? h.x : -h.x),
+                              c.y + ((i & 2) ? h.y : -h.y),
+                              c.z + ((i & 4) ? h.z : -h.z)};
+        const int edges[12][2] = {{0,1},{2,3},{4,5},{6,7},{0,2},{1,3},
+                                  {4,6},{5,7},{0,4},{1,5},{2,6},{3,7}};
+        for (const auto& ed : edges) renderer.drawLineOverlay(v[ed[0]], v[ed[1]], col);
     };
 
     // Generate a scene-unique entity name from a base ("cube" -> "cube", "cube 2"...).
@@ -1148,6 +1168,7 @@ int main() {
         // result). Drawn via the same drawLineOverlay path as the outline.
         if (!editor.isPlaying()) {
             for (const auto& e : scene.entities) drawColliderWireframe(e);
+            for (const auto& e : scene.entities) drawProbeWireframe(e);
         }
         renderer.flushDebugLines(view, proj);
         // M43b: the 3D scene as a dockable panel. Resize the offscreen target to

@@ -29,6 +29,7 @@ iron::Reflection makeReflectionRegistry() {
     iron::registerRenderHandles(r);
     iron::registerCollisionShape(r);
     iron::registerAudioEmitter(r);
+    iron::registerReflectionProbe(r);
     return r;
 }
 
