@@ -399,13 +399,39 @@ layout(location = 0) out vec3 tcPos[];
 layout(location = 1) out vec3 tcNormal[];
 layout(location = 2) out vec2 tcUV[];
 layout(location = 3) out vec3 tcTangent[];
+// M50c — per-edge factor from clip-space NDC length. Crack-free: a pure function
+// of the two shared vertices. Behind near plane (w<=0) => max (no collapse).
+// Mirrors engine/render/TessLod.h::tessEdgeFactor.
+float edgeFactor(vec4 ca, vec4 cb, float target, float maxF) {
+    if (ca.w <= 0.0 || cb.w <= 0.0) return maxF;
+    vec2 a = ca.xy / ca.w;
+    vec2 b = cb.xy / cb.w;
+    return clamp(length(a - b) / max(target, 1e-4), 1.0, maxF);
+}
 void main() {
     if (gl_InvocationID == 0) {
-        float f = max(u.probeBoxMin.w, 1.0);
-        gl_TessLevelInner[0] = f;
-        gl_TessLevelOuter[0] = f;
-        gl_TessLevelOuter[1] = f;
-        gl_TessLevelOuter[2] = f;
+        float mode   = u.lightCounts.y;             // M50c: 0=fixed, 1=adaptive
+        float target = u.lightCounts.z;             // M50c: adaptive target NDC edge length
+        float maxF   = max(u.probeBoxMin.w, 1.0);   // fixed factor / adaptive max
+        if (mode < 0.5) {
+            gl_TessLevelInner[0] = maxF;
+            gl_TessLevelOuter[0] = maxF;
+            gl_TessLevelOuter[1] = maxF;
+            gl_TessLevelOuter[2] = maxF;
+        } else {
+            // Project the (undisplaced) local control points to clip space.
+            vec4 c0 = u.mvp * vec4(cpPos[0], 1.0);
+            vec4 c1 = u.mvp * vec4(cpPos[1], 1.0);
+            vec4 c2 = u.mvp * vec4(cpPos[2], 1.0);
+            // gl_TessLevelOuter[i] = the edge OPPOSITE control point i.
+            float e0 = edgeFactor(c1, c2, target, maxF);   // edge between cp 1 and 2
+            float e1 = edgeFactor(c2, c0, target, maxF);   // edge between cp 2 and 0
+            float e2 = edgeFactor(c0, c1, target, maxF);   // edge between cp 0 and 1
+            gl_TessLevelOuter[0] = e0;
+            gl_TessLevelOuter[1] = e1;
+            gl_TessLevelOuter[2] = e2;
+            gl_TessLevelInner[0] = max(e0, max(e1, e2));
+        }
     }
     tcPos[gl_InvocationID]     = cpPos[gl_InvocationID];
     tcNormal[gl_InvocationID]  = cpNormal[gl_InvocationID];
