@@ -66,6 +66,11 @@ public:
     SkinnedMeshHandle createSkinnedMesh(const SkinnedMeshData& data) override;
     ShaderHandle createSkinnedShader(const std::string& vertexSrc,
                                       const std::string& fragmentSrc) override;
+    // M50b — tessellated shader (vert + tesc + tese + frag).
+    ShaderHandle createTessellatedShader(const std::string& vert,
+                                          const std::string& tesc,
+                                          const std::string& tese,
+                                          const std::string& frag) override;
     bool reloadShader(ShaderHandle handle,
                       const std::string& vertexSrc,
                       const std::string& fragmentSrc) override;

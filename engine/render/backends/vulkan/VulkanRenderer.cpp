@@ -215,6 +215,13 @@ ShaderHandle VulkanRenderer::createSkinnedShader(const std::string& vertexSrc,
     return shaders_.createSkinned(context_, vertexSrc, fragmentSrc);
 }
 
+ShaderHandle VulkanRenderer::createTessellatedShader(const std::string& vert,
+                                                      const std::string& tesc,
+                                                      const std::string& tese,
+                                                      const std::string& frag) {
+    return shaders_.createTessellated(context_, vert, tesc, tese, frag);
+}
+
 bool VulkanRenderer::reloadShader(ShaderHandle handle,
                                   const std::string& vertexSrc,
                                   const std::string& fragmentSrc) {

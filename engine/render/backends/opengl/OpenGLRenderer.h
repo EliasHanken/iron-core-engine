@@ -40,6 +40,11 @@ public:
     SkinnedMeshHandle createSkinnedMesh(const SkinnedMeshData& data) override;
     ShaderHandle createSkinnedShader(const std::string& vertexSrc,
                                       const std::string& fragmentSrc) override;
+    // M50b — tessellation is Vulkan-only; stub returns invalid handle.
+    ShaderHandle createTessellatedShader(const std::string&, const std::string&,
+                                          const std::string&, const std::string&) override {
+        return kInvalidHandle;
+    }
     bool reloadShader(ShaderHandle, const std::string&, const std::string&) override;
     void submitSkinnedDraw(const SkinnedDrawCall& call) override;
     CubemapHandle createCubemap(
