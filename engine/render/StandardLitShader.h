@@ -29,7 +29,7 @@ layout(set = 0, binding = 0) uniform LitUbo {
     vec4 cameraPos;
     vec4 materialParams;   // x=uvScale, y=roughness, z=reflectivity, w=shadowBias
     vec4 materialParams2;  // x=metallic, y=ao, z=normalScale, w=iblEnabled (M46b)
-    vec4 baseColorFactor;  // M45c — xyz=albedo tint, w unused
+    vec4 baseColorFactor;  // M45c — xyz=albedo tint; w=heightScale (M50a POM; unused in this stage)
     vec4 fogColor;
     vec4 lightCounts;
     vec4 pointPositions[16];
@@ -80,7 +80,7 @@ layout(set = 0, binding = 0) uniform LitUbo {
     vec4 cameraPos;
     vec4 materialParams;   // x=uvScale, y=roughness, z=reflectivity, w=shadowBias
     vec4 materialParams2;  // x=metallic, y=ao, z=normalScale, w=iblEnabled (M46b)
-    vec4 baseColorFactor;  // M45c — xyz=albedo tint, w unused
+    vec4 baseColorFactor;  // M45c — xyz=albedo tint; w=heightScale (M50a POM; unused in this stage)
     vec4 fogColor;
     vec4 lightCounts;
     vec4 pointPositions[16];
