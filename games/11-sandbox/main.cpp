@@ -500,6 +500,11 @@ int main() {
     // Height field: sRGB=false — linear values required; POM samples this as [0,1].
     const iron::TextureHandle pomHeightTex =
         renderer.createTexture(512, 512, pomStoneData.data(), /*srgb=*/false);
+    // Normal map: tangent-space normals derived from the same stone dome function
+    // via central-difference gradient. sRGB=false — normal maps are always linear.
+    const auto pomNormalData = iron::generateStoneNormalMap(512, 6);
+    const iron::TextureHandle pomNormalTex =
+        renderer.createTexture(512, 512, pomNormalData.data(), /*srgb=*/false);
 
     // Left quad: flat (no POM). Normal = +Y (horizontal, like a floor slab).
     // Tiny Y=0.01 offset above the scene floor to avoid z-fighting.
@@ -548,7 +553,7 @@ int main() {
 
     // M50b: wireframe toggle (F2) + tessellation factor.
     bool wireframe = false;
-    static float tessFactor = 16.0f;
+    static float tessFactor = 48.0f;
     renderer.setTessellationFactor(tessFactor);  // apply initial value before the loop
 
     // M41: Play/Stop mode state.
@@ -1398,7 +1403,7 @@ int main() {
             iron::Material pomBase{};
             pomBase.texture    = pomAlbedoTex;
             pomBase.heightMap  = pomHeightTex;
-            pomBase.normalMap  = renderer.flatNormalTexture();  // flat normal — height provides depth
+            pomBase.normalMap  = pomNormalTex;  // derived from stone dome — gives correct per-texel shading
             pomBase.metallic   = 0.0f;
             pomBase.roughness  = 0.7f;
             pomBase.uvScale    = 2.0f;

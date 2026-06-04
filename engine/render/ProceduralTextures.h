@@ -80,4 +80,53 @@ inline std::vector<unsigned char> generateStoneHeightMap(int size, int cells) {
     return out;
 }
 
+// Generates an RGBA8 tangent-space normal map that matches the dome pattern of
+// generateStoneHeightMap(size, cells). Heights are computed analytically from
+// the same rounded-dome function (cone → smoothstep), then a central-difference
+// gradient is used to build the tangent-space normal for each texel.
+// `strength` scales the XY slope so ~3 gives clearly bumpy-but-not-extreme
+// rounded stones. Output is `size*size*4` bytes RGBA, alpha 255.
+inline std::vector<unsigned char> generateStoneNormalMap(int size, int cells) {
+    const float strength = 3.0f;
+    const float cellPx = static_cast<float>(size) / static_cast<float>(cells);
+
+    // Helper: compute the height value for a given (px, py) coordinate using
+    // the same dome math as generateStoneHeightMap.
+    auto domeHeight = [&](float px, float py) -> float {
+        const float cx = (std::fmod(px, cellPx) / cellPx) * 2.0f - 1.0f;
+        const float cy = (std::fmod(py, cellPx) / cellPx) * 2.0f - 1.0f;
+        const float r = std::sqrt(cx * cx + cy * cy);
+        float h = 1.0f - r;
+        h = std::clamp(h, 0.0f, 1.0f);
+        h = h * h * (3.0f - 2.0f * h);  // smoothstep dome
+        return h;
+    };
+
+    std::vector<unsigned char> out(static_cast<std::size_t>(size) * size * 4);
+    for (int y = 0; y < size; ++y) {
+        for (int x = 0; x < size; ++x) {
+            // Central differences (1-pixel step) for gradient estimation.
+            const float hR = domeHeight(static_cast<float>(x) + 1.0f, static_cast<float>(y));
+            const float hL = domeHeight(static_cast<float>(x) - 1.0f, static_cast<float>(y));
+            const float hU = domeHeight(static_cast<float>(x), static_cast<float>(y) - 1.0f);
+            const float hD = domeHeight(static_cast<float>(x), static_cast<float>(y) + 1.0f);
+
+            // Tangent-space normal: X tilts with U-slope, Y tilts with V-slope, Z up.
+            float nx = -(hR - hL) * strength;
+            float ny = -(hD - hU) * strength;  // +V is down in UV space
+            float nz = 1.0f;
+            // Normalize
+            const float len = std::sqrt(nx * nx + ny * ny + nz * nz);
+            nx /= len; ny /= len; nz /= len;
+
+            const std::size_t i = (static_cast<std::size_t>(y) * size + x) * 4;
+            out[i + 0] = static_cast<unsigned char>((nx * 0.5f + 0.5f) * 255.0f);
+            out[i + 1] = static_cast<unsigned char>((ny * 0.5f + 0.5f) * 255.0f);
+            out[i + 2] = static_cast<unsigned char>((nz * 0.5f + 0.5f) * 255.0f);
+            out[i + 3] = 255;
+        }
+    }
+    return out;
+}
+
 } // namespace iron
