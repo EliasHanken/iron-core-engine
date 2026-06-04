@@ -202,6 +202,10 @@ int main() {
         withBoth.audio = iron::AudioEmitter{};
         withBoth.audio->wavPath = "hum.wav";
         withBoth.audio->loop = true;
+        withBoth.probe = iron::ReflectionProbeDef{};
+        withBoth.probe->halfExtents = {3.0f, 4.0f, 5.0f};
+        withBoth.probe->faceSize    = 256;
+        withBoth.probe->intensity   = 2.0f;
         s.entities.push_back(withBoth);
 
         iron::SceneEntity plain;
@@ -222,10 +226,17 @@ int main() {
         CHECK_NEAR(a.collision->mass, 7.0f);
         CHECK(a.audio.has_value());
         CHECK(a.audio->wavPath == "hum.wav");
+        CHECK(a.probe.has_value());
+        CHECK_NEAR(a.probe->halfExtents.x, 3.0f);
+        CHECK_NEAR(a.probe->halfExtents.y, 4.0f);
+        CHECK_NEAR(a.probe->halfExtents.z, 5.0f);
+        CHECK(a.probe->faceSize == 256);
+        CHECK_NEAR(a.probe->intensity, 2.0f);
 
         const auto& b = loaded->entities[1];
         CHECK(!b.collision.has_value());
         CHECK(!b.audio.has_value());
+        CHECK(!b.probe.has_value());
 
         fs::remove(path);
     }
