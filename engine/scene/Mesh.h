@@ -60,4 +60,10 @@ void appendTube(MeshData& out, const std::vector<Vec3>& points, float radius,
 // +normal.
 void appendQuad(MeshData& out, Vec3 center, Vec2 size, Vec3 normal);
 
+// Appends a flat XZ grid of `cells`×`cells` quads centered at `center`, spanning
+// `size` (x,z), facing +Y. UVs run 0..1 across the whole grid (scale with the
+// material's uvScale for tiling); tangent along +X. Produces (cells+1)^2 verts
+// and cells*cells*2 triangles — used as a tessellation patch field.
+void appendGrid(MeshData& out, Vec3 center, Vec2 size, int cells);
+
 } // namespace iron

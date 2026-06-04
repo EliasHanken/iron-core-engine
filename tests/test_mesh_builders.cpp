@@ -184,5 +184,14 @@ int main() {
         }
     }
 
+    // --- appendGrid ---
+    // 2x2 grid: (2+1)^2 = 9 vertices, 2*2*2*3 = 24 indices.
+    {
+        MeshData m;
+        appendGrid(m, Vec3{0.0f, 0.0f, 0.0f}, Vec2{4.0f, 4.0f}, 2);
+        CHECK(m.vertices.size() == 9u);
+        CHECK(m.indices.size() == 24u);
+    }
+
     return iron_test_result();
 }

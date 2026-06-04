@@ -243,6 +243,39 @@ void appendQuad(MeshData& out, Vec3 center, Vec2 size, Vec3 normal) {
     out.indices.push_back(base + 3);
 }
 
+void appendGrid(MeshData& out, Vec3 center, Vec2 size, int cells) {
+    if (cells < 1) cells = 1;
+    const std::uint32_t base = static_cast<std::uint32_t>(out.vertices.size());
+    const float halfX = size.x * 0.5f;
+    const float halfZ = size.y * 0.5f;
+    const int verts = cells + 1;
+    for (int z = 0; z < verts; ++z) {
+        for (int x = 0; x < verts; ++x) {
+            const float fx = static_cast<float>(x) / static_cast<float>(cells);  // 0..1
+            const float fz = static_cast<float>(z) / static_cast<float>(cells);
+            Vertex v{};
+            v.position = Vec3{center.x - halfX + fx * size.x, center.y,
+                              center.z - halfZ + fz * size.y};
+            v.normal   = Vec3{0.0f, 1.0f, 0.0f};
+            v.uv       = Vec2{fx, fz};
+            v.tangent  = Vec3{1.0f, 0.0f, 0.0f};
+            out.vertices.push_back(v);
+        }
+    }
+    // Two triangles per cell, CCW seen from +Y (matches appendQuad winding).
+    // i0=(z,x), i1=(z,x+1), i2=(z+1,x), i3=(z+1,x+1).
+    for (int z = 0; z < cells; ++z) {
+        for (int x = 0; x < cells; ++x) {
+            const std::uint32_t i0 = base + static_cast<std::uint32_t>(z * verts + x);
+            const std::uint32_t i1 = i0 + 1;
+            const std::uint32_t i2 = i0 + static_cast<std::uint32_t>(verts);
+            const std::uint32_t i3 = i2 + 1;
+            out.indices.push_back(i0); out.indices.push_back(i2); out.indices.push_back(i1);
+            out.indices.push_back(i1); out.indices.push_back(i2); out.indices.push_back(i3);
+        }
+    }
+}
+
 Aabb meshBounds(const MeshData& mesh) {
     if (mesh.vertices.empty()) return Aabb{Vec3{0.0f, 0.0f, 0.0f}, Vec3{0.0f, 0.0f, 0.0f}};
     Vec3 lo = mesh.vertices[0].position;

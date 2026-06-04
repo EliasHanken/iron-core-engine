@@ -338,6 +338,11 @@ int main() {
     // Also used in the render loop to position the mirror sphere DrawCall.
     constexpr iron::Vec3 kRoomCenter{ -40.0f, 3.5f, 0.0f };
 
+    // M50c: tessellated ground plane centre. Placed in front of (negative-Z from)
+    // the camera starting position so the plane recedes toward the horizon.
+    // 60×60 units, 24×24 cells — near patches are close, far patches recede.
+    constexpr iron::Vec3 kGroundCenter{0.0f, 0.0f, -25.0f};
+
     // --- M49: reflection-probe demo room (runtime only, not serialized) ---
     // Clean, isolated, fully-enclosed box room at kRoomCenter — far from the
     // existing PBR grid / DamagedHelmet content near the origin so the probe
@@ -534,10 +539,19 @@ int main() {
                      iron::Vec3{0.0f, 1.0f, 0.0f});
     const iron::MeshHandle pomTessMesh = renderer.createMesh(pomTessMeshData);
 
+    // M50c: large receding tessellated ground plane. 24×24 quad grid (576 patches),
+    // 60×60 world units, centred at kGroundCenter so it stretches into the distance
+    // from the camera's starting position. uvScale=12 tiles the stone surface.
+    iron::MeshData groundData;
+    iron::appendGrid(groundData, kGroundCenter, iron::Vec2{60.0f, 60.0f}, 24);
+    const iron::MeshHandle groundMesh = renderer.createMesh(groundData);
+
     // World-space label anchors (slightly above the slab surface for readability).
     const iron::Vec3 kPomFlatCenter{5.0f, 0.5f, 2.0f};
     const iron::Vec3 kPomQuadCenter{9.0f, 0.5f, 2.0f};
     const iron::Vec3 kTessQuadCenter{13.0f, 0.5f, 2.0f};
+    // M50c: ground label anchor — near edge of the ground, slightly above surface.
+    const iron::Vec3 kGroundLabelPos{kGroundCenter.x, 0.5f, kGroundCenter.z + 28.0f};
 
     // --- Camera ---
     // M50a: camera repositioned to frame both POM demo quads at a grazing angle.
@@ -545,18 +559,30 @@ int main() {
     // of the scene and elevated, looking left-and-forward at the quads.
     // Use RMB + WASD to fly around and see the full PBR grid / scene as usual.
     iron::FreeFlyCamera cam;
-    // M50b: camera repositioned to frame all three demo quads (flat X=5, POM X=9,
-    // tessellated X=13). Centre of the row is X=9; camera placed further right and
-    // back so all three are visible side-by-side at a grazing angle.
-    // The M49 reflection-probe room is reachable by flying to kRoomCenter={-40,3.5,0}.
-    cam.position = {9.0f, 3.5f, 9.0f};
-    cam.yaw      = -0.05f;  // nearly straight along -Z so the row reads left→right
-    cam.pitch    = -0.35f;  // looking slightly down at the ground-level quads
+    // M50c: camera repositioned to frame the receding ground plane on startup so
+    // the LOD density gradient is the first thing seen. The 60×60 ground is at
+    // kGroundCenter={0,0,-25}, so its near edge is at Z=-25+30=-(-5)... wait:
+    // center Z=-25, half=30 → near edge at Z=-25+30=+5, far edge at Z=-55.
+    // Camera placed at Y=4 just in front of the near edge, looking along -Z (yaw≈π)
+    // with a slight downward pitch so both near+far patches are visible.
+    // The M50b 3-quad row (X=5..13, Z=2) is slightly off to the right and behind
+    // the camera; fly with RMB+WASD to reach it or the M49 probe room at X=-40.
+    cam.position = {0.0f, 4.0f, 8.0f};
+    cam.yaw      = 3.14159f;  // facing -Z (into the ground plane)
+    cam.pitch    = -0.30f;    // looking slightly downward across the surface
 
     // M50b: wireframe toggle (F2) + tessellation factor.
     bool wireframe = false;
     static float tessFactor = 48.0f;
     renderer.setTessellationFactor(tessFactor);  // apply initial value before the loop
+
+    // M50c: adaptive tessellation toggle (F3) + target-edge NDC length.
+    // Adaptive = ON by default so the receding ground demonstrates LOD gradient
+    // immediately on startup. tessTarget ~0.08 NDC ≈ ~10% of viewport height.
+    bool tessAdaptive = true;
+    static float tessTarget = 0.08f;
+    renderer.setTessellationMode(tessAdaptive);
+    renderer.setTessellationTargetEdge(tessTarget);
 
     // M41: Play/Stop mode state.
     iron::EditorState editor;
@@ -907,6 +933,11 @@ int main() {
             wireframe = !wireframe;
             renderer.setWireframe(wireframe);
         }
+        // M50c: F3 toggles adaptive vs. fixed tessellation mode.
+        if (input.keyPressed(GLFW_KEY_F3)) {
+            tessAdaptive = !tessAdaptive;
+            renderer.setTessellationMode(tessAdaptive);
+        }
         if (input.keyPressed(GLFW_KEY_ESCAPE)) {
             if (editor.isPlaying()) {
                 togglePlayMode();
@@ -1177,14 +1208,20 @@ int main() {
             ImGui::End();
         }
 
-        // M50b: Tessellation controls — factor slider + wireframe toggle.
-        // 'tessFactor' is declared outside the loop so it persists across frames.
+        // M50b/M50c: Tessellation controls — factor slider, adaptive toggle, target-edge slider.
+        // 'tessFactor' / 'tessAdaptive' / 'tessTarget' are declared outside the loop.
         {
             ImGui::Begin("Environment");
-            if (ImGui::CollapsingHeader("Tessellation (M50b)", ImGuiTreeNodeFlags_DefaultOpen)) {
+            if (ImGui::CollapsingHeader("Tessellation (M50b/c)", ImGuiTreeNodeFlags_DefaultOpen)) {
                 if (ImGui::SliderFloat("Tessellation factor", &tessFactor, 1.0f, 64.0f))
                     renderer.setTessellationFactor(tessFactor);
-                ImGui::TextDisabled("F2 = wireframe toggle (%s)", wireframe ? "ON" : "OFF");
+                if (ImGui::Checkbox("Adaptive tessellation (F3)", &tessAdaptive))
+                    renderer.setTessellationMode(tessAdaptive);
+                if (ImGui::SliderFloat("Target edge (NDC)", &tessTarget, 0.02f, 0.4f))
+                    renderer.setTessellationTargetEdge(tessTarget);
+                ImGui::TextDisabled("F2 = wireframe (%s)  F3 = adaptive (%s)",
+                                    wireframe ? "ON" : "OFF",
+                                    tessAdaptive ? "ON" : "OFF");
             }
             ImGui::End();
         }
@@ -1443,6 +1480,24 @@ int main() {
                 renderer.submit(tessDc);
             }
 
+            // M50c: large receding tessellated ground plane. Submitted every frame
+            // using the same stone material + tessShader. uvScale=12 tiles the
+            // stone across the 60-unit surface. heightScale=0.1 gives visible
+            // displacement relief on the nearby patches.
+            // model = identity: groundData vertices are already in world space
+            // (appendGrid places them at kGroundCenter).
+            if (tessShader != iron::kInvalidHandle &&
+                groundMesh  != iron::kInvalidHandle) {
+                iron::DrawCall g{};
+                g.mesh                 = groundMesh;
+                g.shader               = tessShader;
+                g.model                = iron::Mat4::identity();
+                g.material             = pomBase;
+                g.material.uvScale     = 12.0f;   // tile the stones across 60 units
+                g.material.heightScale = 0.1f;
+                renderer.submit(g);
+            }
+
             // --- HUD labels: project world-space label anchors to screen and draw
             // with ImGui foreground draw list. Drawn AFTER endFrame (inside ImGui).
             // worldToScreen helper: project a Vec3 through the current view+proj
@@ -1496,6 +1551,21 @@ int main() {
                                       {tx + ts3.x * 0.5f + 3.0f, ty + kLabelOffset + ts3.y + 2.0f},
                                       IM_COL32(0, 0, 0, 140));
                     fg->AddText({tx - ts3.x * 0.5f, ty + kLabelOffset}, kLabelCol, tessLabel);
+                }
+            }
+
+            // M50c: label for the receding ground plane (near edge).
+            if (tessShader != iron::kInvalidHandle && groundMesh != iron::kInvalidHandle) {
+                float gx, gy;
+                if (worldToViewport(kGroundLabelPos, gx, gy)) {
+                    const char* groundLabel = tessAdaptive
+                        ? "Adaptive Tessellation Ground (M50c) — F2=wire F3=fixed"
+                        : "Fixed Tessellation Ground (M50c) — F2=wire F3=adaptive";
+                    const ImVec2 tsg = ImGui::CalcTextSize(groundLabel);
+                    fg->AddRectFilled({gx - tsg.x * 0.5f - 3.0f, gy + kLabelOffset - 2.0f},
+                                      {gx + tsg.x * 0.5f + 3.0f, gy + kLabelOffset + tsg.y + 2.0f},
+                                      IM_COL32(0, 0, 0, 160));
+                    fg->AddText({gx - tsg.x * 0.5f, gy + kLabelOffset}, kLabelCol, groundLabel);
                 }
             }
         }

@@ -366,7 +366,7 @@ struct LitUbo {
     Vec4 materialParams2;     // 16  M45b — x=metallic, y=ao, z=normalScale, w spare
     Vec4 baseColorFactor;     // 16  M45c — xyz = albedo tint; w = heightScale (M50a POM; 0=off)
     Vec4 fogColor;            // 16  M15 — xyz=color, w=density
-    Vec4 lightCounts;         // 16  M15 — x=pointLightCount (as float), y/z/w padding
+    Vec4 lightCounts;         // 16  M15/M50c — x=pointLightCount; y=tessMode(0 fixed/1 adaptive); z=tessTargetEdge(NDC); w unused
     Vec4 pointPositions[16];  // 256 M15 — xyz=position, w=intensity
     Vec4 pointColors[16];     // 256 M15 — xyz=color, w=range
     Mat4 reflectionViewProj;  // 64  M17 — scene: identity; reflection: P * V * mirror
@@ -689,6 +689,8 @@ void VulkanRenderer::recordSceneDraw(VkCommandBuffer cb, const DrawCall& call) {
         ubo.reflectionParams.w = call.material.heightScale;  // displacement amount
         ubo.probeBoxMin.w      = pendingTessFactor_;           // UI tessellation factor
         ubo.baseColorFactor.w  = 0.0f;                         // POM OFF (real geometry)
+        ubo.lightCounts.y      = pendingTessAdaptive_ ? 1.0f : 0.0f;  // M50c tess mode
+        ubo.lightCounts.z      = pendingTessTargetEdge_;               // M50c target NDC edge
     }
 
     ::VkPipeline pipe = pipelines_.pipelineFor(context_, swapchain_, sh, pendingWireframe_);

@@ -56,6 +56,9 @@ public:
     // M50b — Vulkan-only; stubs.
     void setWireframe(bool) override {}
     void setTessellationFactor(float) override {}
+    // M50c — Vulkan-only; stubs.
+    void setTessellationMode(bool) override {}
+    void setTessellationTargetEdge(float) override {}
 
     // Debug drawing — drawLine captures; flushDebugLines no-op (the registry
     // doesn't call it).
