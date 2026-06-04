@@ -219,16 +219,17 @@ vec2 parallaxOcclusionUV(vec2 uv, vec3 viewTS, float heightScale) {
 
     float currentLayerDepth = 0.0;
     vec2 curUV = uv;
-    float curDepth = 1.0 - texture(uHeightMap, curUV).r;
+    // textureLod(...,0): height samples are in a loop (non-uniform control flow) — force mip 0
+    float curDepth = 1.0 - textureLod(uHeightMap, curUV, 0.0).r;
     for (int i = 0; i < POM_MAX_LAYERS + 1; ++i) {   // constant bound (GLSL requires it)
         if (currentLayerDepth >= curDepth) break;
         curUV -= deltaUV;
-        curDepth = 1.0 - texture(uHeightMap, curUV).r;
+        curDepth = 1.0 - textureLod(uHeightMap, curUV, 0.0).r;
         currentLayerDepth += layerDepth;
     }
     vec2 prevUV = curUV + deltaUV;
     float afterDepth = curDepth - currentLayerDepth;
-    float beforeDepth = (1.0 - texture(uHeightMap, prevUV).r) - (currentLayerDepth - layerDepth);
+    float beforeDepth = (1.0 - textureLod(uHeightMap, prevUV, 0.0).r) - (currentLayerDepth - layerDepth);
     float denom = afterDepth - beforeDepth;
     float weight = (abs(denom) < 1e-6) ? 0.0 : clamp(afterDepth / denom, 0.0, 1.0);
     return mix(curUV, prevUV, weight);
