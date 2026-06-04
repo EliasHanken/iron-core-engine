@@ -47,6 +47,8 @@ public:
         const std::array<const unsigned char*, 6>& faces) override;
     void setSkybox(CubemapHandle sky) override;
     CubemapHandle loadHdrSkybox(const std::string& hdrPath, int faceSize) override;
+    void setReflectionProbes(std::span<const GpuReflectionProbe>) override {}
+    void bakeReflectionProbes(std::vector<GpuReflectionProbe>&) override {}
 
     void beginFrame(Vec3 clearColor, const DirectionalLight& light,
                     std::span<const PointLight> pointLights,

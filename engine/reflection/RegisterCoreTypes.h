@@ -10,5 +10,6 @@ void registerMaterialDef(Reflection& r);
 void registerRenderHandles(Reflection& r);
 void registerCollisionShape(Reflection& r);
 void registerAudioEmitter(Reflection& r);
+void registerReflectionProbe(Reflection& r);
 
 }  // namespace iron

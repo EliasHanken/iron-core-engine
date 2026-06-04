@@ -26,6 +26,7 @@ struct Material {
     float ao          = 1.0f;
     float normalScale = 1.0f;                            // glTF normalTexture.scale
     float heightScale = 0.05f;                           // M50a — POM depth scale; 0 = POM off
+    bool excludeFromProbeCapture = false;  // M49: skip this draw when baking reflection probes (chrome objects / probe markers)
 };
 
 } // namespace iron

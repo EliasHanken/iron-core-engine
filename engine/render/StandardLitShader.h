@@ -37,6 +37,9 @@ layout(set = 0, binding = 0) uniform LitUbo {
     mat4 reflectionViewProj;  // M17 (unused in scene shader, here for layout parity)
     vec4 reflectionParams;    // M17 x=useReflectionPlane, yz=screenSize, w=0
     vec4 clipPlane;           // M17 — used only by reflection-pass shader
+    vec4 probeBoxMin;   // M49
+    vec4 probeBoxMax;   // M49
+    vec4 probeCenter;   // M49 — w = probeActive
 } u;
 
 layout(location = 0) out vec3 vWorldPos;
@@ -85,6 +88,9 @@ layout(set = 0, binding = 0) uniform LitUbo {
     mat4 reflectionViewProj;  // M17 (unused in scene shader, here for layout parity)
     vec4 reflectionParams;    // M17 x=useReflectionPlane, yz=screenSize, w=0
     vec4 clipPlane;           // M17 — used only by reflection-pass shader
+    vec4 probeBoxMin;   // M49
+    vec4 probeBoxMax;   // M49
+    vec4 probeCenter;   // M49 — w = probeActive
 } u;
 
 layout(set = 0, binding = 9) uniform BoneUbo {
@@ -144,6 +150,9 @@ layout(set = 0, binding = 0) uniform LitUbo {
     mat4 reflectionViewProj;  // M17 (unused in scene shader, here for layout parity)
     vec4 reflectionParams;    // M17 x=useReflectionPlane, yz=screenSize, w=0
     vec4 clipPlane;           // M17 — used only by reflection-pass shader
+    vec4 probeBoxMin;   // M49
+    vec4 probeBoxMax;   // M49
+    vec4 probeCenter;   // M49 — w = probeActive
 } u;
 
 layout(set = 0, binding = 1) uniform sampler2D uDiffuse;
@@ -299,6 +308,20 @@ void main() {
         vec3  kD    = (vec3(1.0) - F) * (1.0 - metallic);
         vec3  diffuseIBL  = texture(uIrradianceCube, N_).rgb * albedo;
         vec3  R           = reflect(-V, N_);
+        if (u.probeCenter.w > 0.5) {  // M49 — box-projected parallax correction
+            // M49 — box-projected parallax correction toward local geometry.
+            // Mirror the CPU math in ReflectionProbe.h: pick the slab exit plane
+            // in the ray direction per axis; a zero-direction axis gets t=+big so
+            // min() excludes it (a tiny-epsilon reciprocal would flip the sign).
+            vec3 farPlane = mix(u.probeBoxMin.xyz, u.probeBoxMax.xyz, step(0.0, R));
+            vec3 t3;
+            t3.x = (R.x != 0.0) ? (farPlane.x - vWorldPos.x) / R.x : 1e30;
+            t3.y = (R.y != 0.0) ? (farPlane.y - vWorldPos.y) / R.y : 1e30;
+            t3.z = (R.z != 0.0) ? (farPlane.z - vWorldPos.z) / R.z : 1e30;
+            float t  = min(min(t3.x, t3.y), t3.z);
+            vec3  hit = vWorldPos + R * t;
+            R = hit - u.probeCenter.xyz;
+        }
         float maxMip      = float(textureQueryLevels(uPrefiltered) - 1);
         vec3  prefiltered = textureLod(uPrefiltered, R, roughness * maxMip).rgb;
         vec2  brdf        = texture(uBrdfLut, vec2(nDotV, roughness)).rg;
