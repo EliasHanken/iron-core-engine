@@ -696,13 +696,16 @@ CubemapHandle VkSceneCapture::capture(VkContext& ctx, VkCubemapStore& cubes,
         rpBegin.pClearValues      = clears;
         vkCmdBeginRenderPass(cb, &rpBegin, VK_SUBPASS_CONTENTS_INLINE);
 
-        // Negative-height viewport convention (matches VkReflectionTarget /
-        // the scene pass) so the GL-style projection renders correctly.
+        // Positive-height viewport: unlike the on-screen scene pass, this cube is
+        // sampled by direction (samplerCube), so it must match the cubeFaceDirection
+        // texel convention — NOT the screen-presentation flip. A negative-height
+        // viewport flips every face's screen-Y, which flips the side faces' sky/
+        // ground gradient (upside-down) and mismatches them against the ±Y faces.
         VkViewport vp{};
         vp.x        = 0;
-        vp.y        = static_cast<float>(fs);
+        vp.y        = 0;
         vp.width    = static_cast<float>(fs);
-        vp.height   = -static_cast<float>(fs);
+        vp.height   = static_cast<float>(fs);
         vp.minDepth = 0.0f;
         vp.maxDepth = 1.0f;
         vkCmdSetViewport(cb, 0, 1, &vp);
