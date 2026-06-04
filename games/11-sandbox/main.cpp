@@ -1262,6 +1262,12 @@ int main() {
             call.material.uvScale         = mat->uvScale;
             call.material.reflectivity    = mat->reflectivity;
             call.material.normalScale     = mat->normalScale;
+            // M49: probe marker entities are shown only as a cyan wireframe gizmo;
+            // skip the solid box draw so neither the viewport nor probe captures
+            // see a stray box floating at the probe center.
+            if (sceneIdx >= 0 && sceneIdx < static_cast<int>(scene.entities.size()) &&
+                scene.entities[sceneIdx].probe.has_value()) continue;
+
             call.effectId              = (sceneIdx == selectedIndex) ? 1 : 0;
             renderer.submit(call);
         }
@@ -1304,6 +1310,7 @@ int main() {
             dc.material.metallic        = 1.0f;
             dc.material.roughness       = 0.03f;
             dc.material.baseColorFactor = {0.95f, 0.92f, 0.85f};  // neutral
+            dc.material.excludeFromProbeCapture = true;  // M49: chrome sphere must not self-occlude the probe
             renderer.submit(dc);
         }
 

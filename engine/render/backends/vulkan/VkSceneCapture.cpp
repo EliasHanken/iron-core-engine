@@ -455,6 +455,7 @@ CubemapHandle VkSceneCapture::capture(VkContext& ctx, VkCubemapStore& cubes,
         for (const DrawCall& call : sceneDraws) {
             if (drawn >= drawCap) break;
             if (call.material.useReflectionPlane) continue;  // skip planar reflectors
+            if (call.material.excludeFromProbeCapture) continue;  // M49: don't capture chrome/probe markers
             if (!meshes.has(call.mesh)) continue;
             ++drawn;
 
