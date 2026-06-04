@@ -243,6 +243,7 @@ CubemapHandle VkCubemapStore::createColorCube(VkContext& ctx, int faceSize) {
 
 void VkCubemapStore::destroy(VkContext& ctx, CubemapHandle h) {
     if (h == kInvalidHandle) return;
+    if (h == black_) return;  // never destroy the shared fallback
     auto it = cubemaps_.find(h);
     if (it == cubemaps_.end()) return;
     VkCubemapResource& r = it->second;
