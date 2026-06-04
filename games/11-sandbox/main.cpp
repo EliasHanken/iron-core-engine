@@ -325,6 +325,100 @@ int main() {
     iron::Log::info("sandbox: resolved %zu / %zu entities from scene",
                     resolved.size(), scene.entities.size());
 
+    // --- M49: reflection-probe demo room (runtime only, not serialized) ---
+    // A ~10×6×10 unit box-room with colour-coded walls so probe reflections
+    // are visually legible. One metallic sphere in the centre acts as the
+    // "mirror". One probe entity covers the whole room.
+    //
+    // Helper: append a box-primitive SceneEntity with given position / scale /
+    // baseColorFactor + PBR params, resolve it, and push into resolved[].
+    // Not serialized (not added via appendAndSelect → no save path needed).
+    {
+        auto addRoom = [&](const char* name,
+                           iron::Vec3 pos, iron::Vec3 scale,
+                           iron::Vec3 color,
+                           float metallic = 0.0f, float roughness = 0.7f) {
+            iron::SceneEntity ne;
+            ne.name = name;
+            ne.transform.position = pos;
+            ne.transform.scale    = scale;
+            ne.mesh.primitive     = iron::PrimitiveKind::Cube;
+            ne.material.baseColorFactor = color;
+            ne.material.metallic  = metallic;
+            ne.material.roughness = roughness;
+
+            const int idx = static_cast<int>(scene.entities.size());
+            scene.entities.push_back(ne);
+            ResolvedEntity re;
+            if (resolveEntity(scene.entities[idx], idx, re)) {
+                resolved.push_back(re);
+                iron::EntityId entity = world.create();
+                world.add<iron::Transform>(entity, scene.entities[idx].transform);
+                world.add<iron::MeshRef>(entity, scene.entities[idx].mesh);
+                world.add<iron::MaterialDef>(entity, scene.entities[idx].material);
+                world.add<iron::RenderHandles>(entity, toRenderHandles(re));
+                sceneIndexToEntity.push_back(entity);
+            } else {
+                scene.entities.pop_back();
+            }
+        };
+
+        // Room dimensions: 10 wide (X), 6 tall (Y), 10 deep (Z).
+        // Walls are 0.3 units thick; placed so their inner surface is flush.
+        constexpr float RW = 10.0f, RH = 6.0f, RD = 10.0f, T = 0.3f;
+        // Floor
+        addRoom("probe_room_floor",   {0,    -T*0.5f,    0},    {RW, T, RD},  {0.80f, 0.75f, 0.70f});
+        // Ceiling
+        addRoom("probe_room_ceiling", {0,    RH+T*0.5f,  0},    {RW, T, RD},  {0.85f, 0.85f, 0.90f});
+        // Wall +Z (back, reddish)
+        addRoom("probe_room_wall_z+", {0,    RH*0.5f,    RD*0.5f+T*0.5f}, {RW, RH, T}, {0.75f, 0.20f, 0.18f});
+        // Wall -Z (front, blueish)
+        addRoom("probe_room_wall_z-", {0,    RH*0.5f,   -RD*0.5f-T*0.5f}, {RW, RH, T}, {0.15f, 0.25f, 0.75f});
+        // Wall +X (right, greenish)
+        addRoom("probe_room_wall_x+", {RW*0.5f+T*0.5f, RH*0.5f, 0},  {T, RH, RD}, {0.15f, 0.60f, 0.20f});
+        // Wall -X (left, warm cream)
+        addRoom("probe_room_wall_x-", {-RW*0.5f-T*0.5f, RH*0.5f, 0}, {T, RH, RD}, {0.90f, 0.82f, 0.55f});
+
+        // Note: the metallic reflective sphere is submitted as a runtime DrawCall
+        // (UV sphere mesh) below in the render loop — no cube entity needed here;
+        // that avoids Z-fighting with the sphere DrawCall at the same position.
+
+        // Probe entity: wraps the room, centred at (0, RH/2, 0)
+        {
+            iron::SceneEntity ne;
+            ne.name = "probe_room_probe";
+            ne.transform.position = {0.0f, RH * 0.5f, 0.0f};
+            ne.transform.scale    = {1.0f, 1.0f, 1.0f};
+            ne.mesh.primitive     = iron::PrimitiveKind::Cube;   // placeholder (tiny, editor only)
+            ne.transform.scale    = {0.2f, 0.2f, 0.2f};
+            ne.material.baseColorFactor = {0.2f, 0.9f, 1.0f};
+            ne.probe.emplace();
+            ne.probe->halfExtents = {RW * 0.5f + T, RH * 0.5f + T, RD * 0.5f + T};
+            ne.probe->faceSize    = 128;
+
+            const int idx = static_cast<int>(scene.entities.size());
+            scene.entities.push_back(ne);
+            ResolvedEntity re;
+            if (resolveEntity(scene.entities[idx], idx, re)) {
+                resolved.push_back(re);
+                iron::EntityId entity = world.create();
+                world.add<iron::Transform>(entity, scene.entities[idx].transform);
+                world.add<iron::MeshRef>(entity, scene.entities[idx].mesh);
+                world.add<iron::MaterialDef>(entity, scene.entities[idx].material);
+                world.add<iron::RenderHandles>(entity, toRenderHandles(re));
+                sceneIndexToEntity.push_back(entity);
+            } else {
+                scene.entities.pop_back();
+            }
+        }
+        iron::Log::info("sandbox: M49 probe demo room added (%zu entities total)",
+                        scene.entities.size());
+    }
+
+    // M49: baked probe list (persists across frames; populated on Bake button press).
+    std::vector<iron::GpuReflectionProbe> bakedProbes;
+    bool bakeRequested = false;
+
     // --- M45b: PBR sphere grid (runtime only, not serialized) ---
     // 6x6 grid of unit spheres sweeping metallic (X) x roughness (Z).
     // Placed at Z=-8 so it sits clearly behind the authored demo scene content.
@@ -335,7 +429,9 @@ int main() {
 
     // --- Camera ---
     iron::FreeFlyCamera cam;
-    cam.position = {0.0f, 2.0f, 6.0f};
+    // M49: start inside the probe demo room (room goes Z -5..+5), looking
+    // toward the metallic sphere at the centre.
+    cam.position = {0.0f, 2.0f, 4.0f};
 
     // M41: Play/Stop mode state.
     iron::EditorState editor;
@@ -951,6 +1047,24 @@ int main() {
             ImGui::End();
         }
 
+        // M49: Reflection probe bake button — in its own collapsible group in
+        // the Environment panel. Pressing "Bake Reflection Probes" latches
+        // bakeRequested so the bake runs after the submit loop this same frame
+        // (sceneDraws_ is populated; bake must happen before endFrame).
+        {
+            ImGui::Begin("Environment");
+            if (ImGui::CollapsingHeader("Reflection Probes (M49)", ImGuiTreeNodeFlags_DefaultOpen)) {
+                ImGui::TextUnformatted(bakedProbes.empty()
+                    ? "Probes: not baked yet"
+                    : "Probes: baked (active)");
+                if (ImGui::Button("Bake Reflection Probes"))
+                    bakeRequested = true;
+                ImGui::SameLine();
+                ImGui::TextDisabled("(captures live scene)");
+            }
+            ImGui::End();
+        }
+
         // M41: scene-mutating actions (save / add / delete / duplicate) gated
         // on Edit mode. Inspector + Outliner remain visible/clickable but the
         // user can't modify the scene during Play.
@@ -1128,6 +1242,47 @@ int main() {
                 renderer.submit(dc);
             }
         }
+
+        // M49: high-quality UV sphere at the probe-room centre — submitted as a
+        // runtime draw (sphere mesh) on top of the cube scene entity so the
+        // box-projection parallax correction is visible on a curved surface.
+        {
+            iron::DrawCall dc{};
+            dc.mesh    = pbrSphereMesh;
+            dc.shader  = litShader;
+            dc.model   = iron::translation(iron::Vec3{0.0f, 1.5f, 0.0f})
+                       * iron::scaling(iron::Vec3{1.5f, 1.5f, 1.5f});
+            dc.material.texture      = renderer.whiteTexture();
+            dc.material.metallic     = 1.0f;
+            dc.material.roughness    = 0.05f;
+            dc.material.baseColorFactor = {0.95f, 0.92f, 0.85f};
+            renderer.submit(dc);
+        }
+
+        // M49: reflection probe bake + per-frame upload.
+        // Bake is triggered AFTER all submit() calls for this frame so that
+        // sceneDraws_ is fully populated when bakeReflectionProbes() reads it.
+        // setReflectionProbes is cheap (a span copy) and called every frame so
+        // the shader always has the current probe list even if it's empty.
+        if (bakeRequested) {
+            bakedProbes.clear();
+            for (const iron::SceneEntity& e : scene.entities) {
+                if (!e.probe) continue;
+                const iron::Vec3 c = e.transform.position;
+                const iron::Vec3 h = e.probe->halfExtents;
+                bakedProbes.push_back(iron::GpuReflectionProbe{
+                    {c.x - h.x, c.y - h.y, c.z - h.z},
+                    {c.x + h.x, c.y + h.y, c.z + h.z},
+                    c,
+                    iron::kInvalidHandle});
+            }
+            renderer.bakeReflectionProbes(bakedProbes);
+            bakeRequested = false;
+            iron::Log::info("sandbox: baked %zu reflection probe(s)",
+                            bakedProbes.size());
+        }
+        renderer.setReflectionProbes(
+            std::span<const iron::GpuReflectionProbe>(bakedProbes.data(), bakedProbes.size()));
 
         if (selectedIndex >= 0 && selectedIndex < static_cast<int>(scene.entities.size()))
             gizmo.draw(renderer, gizmoOriginFor(selectedIndex),
