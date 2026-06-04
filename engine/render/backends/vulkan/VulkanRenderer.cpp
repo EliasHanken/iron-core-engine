@@ -571,7 +571,7 @@ void VulkanRenderer::recordSceneDraw(VkCommandBuffer cb, const DrawCall& call) {
 
     VkFrameRing::Frame& f = frames_.current();
 
-    LitUbo ubo;
+    LitUbo ubo{};
     ubo.mvp      = pendingProjection_ * pendingView_ * call.model;
     ubo.model    = call.model;
     ubo.sunDir   = Vec4{pendingSunDir_.x,   pendingSunDir_.y,   pendingSunDir_.z,   0.0f};
@@ -798,7 +798,7 @@ void VulkanRenderer::recordSkinnedDraw(VkCommandBuffer cb,
     VkFrameRing::Frame& f = frames_.current();
 
     // --- 1. Build LitUbo (copied verbatim from recordSceneDraw) ---
-    LitUbo ubo;
+    LitUbo ubo{};
     ubo.mvp      = pendingProjection_ * pendingView_ * call.model;
     ubo.model    = call.model;
     ubo.sunDir   = Vec4{pendingSunDir_.x,   pendingSunDir_.y,   pendingSunDir_.z,   0.0f};
