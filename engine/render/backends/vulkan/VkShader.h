@@ -16,6 +16,8 @@ class VkContext;
 struct VkShader {
     VkShaderModule        vertexModule    = VK_NULL_HANDLE;
     VkShaderModule        fragmentModule  = VK_NULL_HANDLE;
+    VkShaderModule        tescModule      = VK_NULL_HANDLE;  // M50b — tessellation control (optional)
+    VkShaderModule        teseModule      = VK_NULL_HANDLE;  // M50b — tessellation evaluation (optional)
     VkDescriptorSetLayout setLayout       = VK_NULL_HANDLE;
     VkPipelineLayout      pipelineLayout  = VK_NULL_HANDLE;
 };
@@ -39,6 +41,13 @@ public:
                                 const std::string& fragSrc);
     const VkShader& get(ShaderHandle h) const;
     bool has(ShaderHandle h) const { return shaders_.count(h) != 0; }
+
+    // M50b — tessellated variant: vert + tesc + tese + frag. Same lit descriptor
+    // layout as create(), but adds the tessellation-evaluation stage to binding 0
+    // (UBO) and binding 13 (height map) so the tese can read them.
+    ShaderHandle createTessellated(VkContext& ctx, const std::string& vertSrc,
+                                   const std::string& tescSrc, const std::string& teseSrc,
+                                   const std::string& fragSrc);
 
     // M28 — recompile the GLSL for an existing handle and swap the shader
     // modules in place. Keeps the same descriptor-set + pipeline layout

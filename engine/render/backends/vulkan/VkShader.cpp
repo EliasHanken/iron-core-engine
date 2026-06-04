@@ -256,6 +256,127 @@ ShaderHandle VkShaderStore::createSkinned(VkContext& ctx,
     return h;
 }
 
+ShaderHandle VkShaderStore::createTessellated(VkContext& ctx,
+                                              const std::string& vertSrc,
+                                              const std::string& tescSrc,
+                                              const std::string& teseSrc,
+                                              const std::string& fragSrc) {
+    auto vspv    = compileGlsl(VK_SHADER_STAGE_VERTEX_BIT,                  vertSrc);
+    auto tescspv = compileGlsl(VK_SHADER_STAGE_TESSELLATION_CONTROL_BIT,    tescSrc);
+    auto tesespv = compileGlsl(VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT, teseSrc);
+    auto fspv    = compileGlsl(VK_SHADER_STAGE_FRAGMENT_BIT,                fragSrc);
+    if (vspv.empty() || tescspv.empty() || tesespv.empty() || fspv.empty()) {
+        Log::error("VkShaderStore::createTessellated: shader compile failed");
+        return kInvalidHandle;
+    }
+
+    VkShader s{};
+
+    auto makeModule = [&](const std::vector<std::uint32_t>& code, VkShaderModule& out) {
+        VkShaderModuleCreateInfo info{};
+        info.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
+        info.codeSize = code.size() * sizeof(std::uint32_t);
+        info.pCode = code.data();
+        VK_CHECK(vkCreateShaderModule(ctx.device(), &info, nullptr, &out));
+        return out != VK_NULL_HANDLE;
+    };
+    if (!makeModule(vspv, s.vertexModule))   return kInvalidHandle;
+    if (!makeModule(tescspv, s.tescModule)) {
+        vkDestroyShaderModule(ctx.device(), s.vertexModule, nullptr);
+        return kInvalidHandle;
+    }
+    if (!makeModule(tesespv, s.teseModule)) {
+        vkDestroyShaderModule(ctx.device(), s.tescModule,   nullptr);
+        vkDestroyShaderModule(ctx.device(), s.vertexModule, nullptr);
+        return kInvalidHandle;
+    }
+    if (!makeModule(fspv, s.fragmentModule)) {
+        vkDestroyShaderModule(ctx.device(), s.teseModule,   nullptr);
+        vkDestroyShaderModule(ctx.device(), s.tescModule,   nullptr);
+        vkDestroyShaderModule(ctx.device(), s.vertexModule, nullptr);
+        return kInvalidHandle;
+    }
+
+    // M50b — same lit descriptor set layout as create(), with TESE stage ORed into
+    // binding 0 (UBO) and binding 13 (height map) so the evaluation shader can read them.
+    // M17/M45b/M45c/M46b/M46c/M50a — descriptor set layout: UBO + 8 samplers (diffuse, normal,
+    // metallic-roughness, shadow, sky cubemap, planar reflection, AO, emissive) +
+    // binding 10 = irradiance cubemap (M46b) + binding 11 = prefiltered specular cubemap +
+    // binding 12 = BRDF integration LUT (M46c split-sum) +
+    // binding 13 = height map (M50a POM; white fallback = depth 0 = POM no-op).
+    VkDescriptorSetLayoutBinding bindings[13]{};
+    bindings[0].binding = 0;
+    bindings[0].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+    bindings[0].descriptorCount = 1;
+    bindings[0].stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT
+                           | VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT;
+    bindings[1].binding = 1;  // diffuse
+    bindings[1].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    bindings[1].descriptorCount = 1;
+    bindings[1].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+    bindings[2].binding = 2;  // normal
+    bindings[2].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    bindings[2].descriptorCount = 1;
+    bindings[2].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+    bindings[3].binding = 3;  // metallic-roughness
+    bindings[3].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    bindings[3].descriptorCount = 1;
+    bindings[3].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+    bindings[4].binding = 4;  // shadow
+    bindings[4].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    bindings[4].descriptorCount = 1;
+    bindings[4].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+    bindings[5].binding = 5;  // sky cubemap (M16)
+    bindings[5].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    bindings[5].descriptorCount = 1;
+    bindings[5].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+    bindings[6].binding = 6;  // planar reflection RTT (M17)
+    bindings[6].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    bindings[6].descriptorCount = 1;
+    bindings[6].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+    bindings[7].binding = 7;  // ambient occlusion (M45b)
+    bindings[7].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    bindings[7].descriptorCount = 1;
+    bindings[7].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+    bindings[8].binding = 8;  // emissive (M45c)
+    bindings[8].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    bindings[8].descriptorCount = 1;
+    bindings[8].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+    bindings[9].binding         = 10;   // M46b — irradiance cubemap (diffuse IBL)
+    bindings[9].descriptorType  = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    bindings[9].descriptorCount = 1;
+    bindings[9].stageFlags      = VK_SHADER_STAGE_FRAGMENT_BIT;
+    bindings[10].binding         = 11;   // M46c — prefiltered specular cubemap (split-sum)
+    bindings[10].descriptorType  = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    bindings[10].descriptorCount = 1;
+    bindings[10].stageFlags      = VK_SHADER_STAGE_FRAGMENT_BIT;
+    bindings[11].binding         = 12;   // M46c — BRDF integration LUT (split-sum)
+    bindings[11].descriptorType  = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    bindings[11].descriptorCount = 1;
+    bindings[11].stageFlags      = VK_SHADER_STAGE_FRAGMENT_BIT;
+    bindings[12].binding         = 13;   // M50a — height map (POM); M50b — also read by tese
+    bindings[12].descriptorType  = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    bindings[12].descriptorCount = 1;
+    bindings[12].stageFlags      = VK_SHADER_STAGE_FRAGMENT_BIT
+                                 | VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT;
+
+    VkDescriptorSetLayoutCreateInfo dslInfo{};
+    dslInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+    dslInfo.bindingCount = 13;
+    dslInfo.pBindings = bindings;
+    VK_CHECK(vkCreateDescriptorSetLayout(ctx.device(), &dslInfo, nullptr, &s.setLayout));
+
+    VkPipelineLayoutCreateInfo plInfo{};
+    plInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+    plInfo.setLayoutCount = 1;
+    plInfo.pSetLayouts = &s.setLayout;
+    VK_CHECK(vkCreatePipelineLayout(ctx.device(), &plInfo, nullptr, &s.pipelineLayout));
+
+    const ShaderHandle h = nextHandle_++;
+    shaders_[h] = s;
+    return h;
+}
+
 bool VkShaderStore::reload(VkContext& ctx, ShaderHandle h,
                            const std::string& vertSrc, const std::string& fragSrc) {
     auto it = shaders_.find(h);
@@ -303,6 +424,8 @@ void VkShaderStore::destroyAll(VkContext& ctx) {
         if (s.pipelineLayout) vkDestroyPipelineLayout(ctx.device(), s.pipelineLayout, nullptr);
         if (s.setLayout)      vkDestroyDescriptorSetLayout(ctx.device(), s.setLayout, nullptr);
         if (s.fragmentModule) vkDestroyShaderModule(ctx.device(), s.fragmentModule, nullptr);
+        if (s.teseModule)     vkDestroyShaderModule(ctx.device(), s.teseModule,     nullptr);  // M50b
+        if (s.tescModule)     vkDestroyShaderModule(ctx.device(), s.tescModule,     nullptr);  // M50b
         if (s.vertexModule)   vkDestroyShaderModule(ctx.device(), s.vertexModule, nullptr);
     }
     shaders_.clear();
