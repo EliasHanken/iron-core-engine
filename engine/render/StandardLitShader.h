@@ -265,7 +265,7 @@ void main() {
         vec3  kD    = (vec3(1.0) - F) * (1.0 - metallic);
         vec3  diffuseIBL  = texture(uIrradianceCube, N_).rgb * albedo;
         vec3  R           = reflect(-V, N_);
-        if (u.probeCenter.w > 0.5) {
+        if (u.probeCenter.w > 0.5) {  // M49 — box-projected parallax correction
             // M49 — box-projected parallax correction toward local geometry.
             // Mirror the CPU math in ReflectionProbe.h: pick the slab exit plane
             // in the ray direction per axis; a zero-direction axis gets t=+big so

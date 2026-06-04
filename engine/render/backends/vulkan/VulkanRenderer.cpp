@@ -297,7 +297,8 @@ void VulkanRenderer::bakeReflectionProbes(std::vector<GpuReflectionProbe>& probe
         const int faceSize = std::clamp(p.faceSize, 16, 1024);
         CubemapHandle radiance = sceneCapture_.capture(
             context_, cubemaps_, meshes_, textures_, sceneDraws_,
-            pendingSunDir_, pendingSunColor_, pendingAmbient_, p.center, faceSize);
+            pendingSunDir_, pendingSunColor_, pendingAmbient_, p.center, faceSize,
+            pendingSkybox_);
         if (radiance == kInvalidHandle) continue;
         CubemapHandle prefiltered =
             iblBaker_.bakePrefiltered(context_, cubemaps_, radiance, faceSize, kMips);
