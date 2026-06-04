@@ -438,7 +438,7 @@ int main() {
             ne.probe.emplace();
             // 4.2 > RW/2=4.0; 3.7 > RH/2=3.5; 4.2 > RD/2=4.0
             ne.probe->halfExtents = {4.2f, 3.7f, 4.2f};
-            ne.probe->faceSize    = 128;
+            ne.probe->faceSize    = 256;  // 128→256: thinner cube-face seams at wall/floor edges
 
             const int idx = static_cast<int>(scene.entities.size());
             scene.entities.push_back(ne);
