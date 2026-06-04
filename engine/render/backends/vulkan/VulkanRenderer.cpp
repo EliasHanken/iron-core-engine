@@ -278,6 +278,10 @@ void VulkanRenderer::setReflectionPlane(Vec3 normal, float d) {
 void VulkanRenderer::disableReflectionPlane() {
     reflectionPlane_.reset();
 }
+
+void VulkanRenderer::setReflectionProbes(std::span<const GpuReflectionProbe> probes) {
+    pendingProbes_.assign(probes.begin(), probes.end());
+}
 void VulkanRenderer::drawLine(Vec3 a, Vec3 b, Vec3 color) {
     debugLines_.queue(a, b, color);
 }
@@ -628,6 +632,18 @@ void VulkanRenderer::recordSceneDraw(VkCommandBuffer cb, const DrawCall& call) {
     };
     ubo.clipPlane = Vec4{0.0f, 0.0f, 0.0f, 0.0f};
 
+    // M49 — per-draw probe selection. Object position = model translation.
+    CubemapHandle drawPrefiltered = pendingPrefiltered_;  // skybox default
+    const Vec3 objPos{call.model.m[12], call.model.m[13], call.model.m[14]};
+    const int probeIdx = nearestProbeContaining(pendingProbes_, objPos);
+    if (probeIdx >= 0 && cubemaps_.has(pendingProbes_[probeIdx].prefiltered)) {
+        const GpuReflectionProbe& gp = pendingProbes_[probeIdx];
+        drawPrefiltered = gp.prefiltered;
+        ubo.probeBoxMin = Vec4{gp.boxMin.x, gp.boxMin.y, gp.boxMin.z, 0.0f};
+        ubo.probeBoxMax = Vec4{gp.boxMax.x, gp.boxMax.y, gp.boxMax.z, 0.0f};
+        ubo.probeCenter = Vec4{gp.center.x, gp.center.y, gp.center.z, 1.0f};
+    }
+
     const VkShader& sh = shaders_.get(call.shader);
     ::VkPipeline pipe = pipelines_.pipelineFor(context_, swapchain_, sh);
     vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, pipe);
@@ -709,9 +725,10 @@ void VulkanRenderer::recordSceneDraw(VkCommandBuffer cb, const DrawCall& call) {
     imgInfos[8].sampler     = irrTex.sampler;
     imgInfos[8].imageView   = irrTex.view;
     imgInfos[8].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-    // M46c — prefiltered specular (binding 11).
-    const CubemapHandle prefiltHandle = cubemaps_.has(pendingPrefiltered_)
-        ? pendingPrefiltered_ : cubemaps_.blackCubemap();
+    // M46c/M49 — prefiltered specular (binding 11); drawPrefiltered may be a
+    // probe cube (M49 per-draw selection) instead of the skybox default.
+    const CubemapHandle prefiltHandle = cubemaps_.has(drawPrefiltered)
+        ? drawPrefiltered : cubemaps_.blackCubemap();
     const auto& prefiltTex = cubemaps_.get(prefiltHandle);
     imgInfos[9].sampler     = prefiltTex.sampler;
     imgInfos[9].imageView   = prefiltTex.view;
@@ -837,6 +854,18 @@ void VulkanRenderer::recordSkinnedDraw(VkCommandBuffer cb,
     };
     ubo.clipPlane = Vec4{0.0f, 0.0f, 0.0f, 0.0f};
 
+    // M49 — per-draw probe selection. Object position = model translation.
+    CubemapHandle drawPrefiltered = pendingPrefiltered_;  // skybox default
+    const Vec3 objPos{call.model.m[12], call.model.m[13], call.model.m[14]};
+    const int probeIdx = nearestProbeContaining(pendingProbes_, objPos);
+    if (probeIdx >= 0 && cubemaps_.has(pendingProbes_[probeIdx].prefiltered)) {
+        const GpuReflectionProbe& gp = pendingProbes_[probeIdx];
+        drawPrefiltered = gp.prefiltered;
+        ubo.probeBoxMin = Vec4{gp.boxMin.x, gp.boxMin.y, gp.boxMin.z, 0.0f};
+        ubo.probeBoxMax = Vec4{gp.boxMax.x, gp.boxMax.y, gp.boxMax.z, 0.0f};
+        ubo.probeCenter = Vec4{gp.center.x, gp.center.y, gp.center.z, 1.0f};
+    }
+
     const VkDeviceSize uboOffset = frames_.allocateUbo(&ubo, sizeof(ubo));
 
     // --- 2. Build bone-matrix UBO. Pad to kMaxBonesPerSkinnedMesh with
@@ -924,9 +953,10 @@ void VulkanRenderer::recordSkinnedDraw(VkCommandBuffer cb,
     imgInfos[8].sampler     = irrTex.sampler;
     imgInfos[8].imageView   = irrTex.view;
     imgInfos[8].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-    // M46c — prefiltered specular (binding 11).
-    const CubemapHandle prefiltHandle = cubemaps_.has(pendingPrefiltered_)
-        ? pendingPrefiltered_ : cubemaps_.blackCubemap();
+    // M46c/M49 — prefiltered specular (binding 11); drawPrefiltered may be a
+    // probe cube (M49 per-draw selection) instead of the skybox default.
+    const CubemapHandle prefiltHandle = cubemaps_.has(drawPrefiltered)
+        ? drawPrefiltered : cubemaps_.blackCubemap();
     const auto& prefiltTex = cubemaps_.get(prefiltHandle);
     imgInfos[9].sampler     = prefiltTex.sampler;
     imgInfos[9].imageView   = prefiltTex.view;

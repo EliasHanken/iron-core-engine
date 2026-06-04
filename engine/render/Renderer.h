@@ -9,6 +9,7 @@
 #include "render/Material.h"
 #include "render/PostEffect.h"
 #include "render/ReflectionPlane.h"
+#include "render/ReflectionProbe.h"
 #include "render/StandardLitShader.h"
 #include "scene/Mesh.h"
 #include "asset/Skeleton.h"
@@ -17,6 +18,7 @@
 #include <array>
 #include <span>
 #include <string>
+#include <vector>
 
 namespace iron {
 
@@ -158,6 +160,15 @@ public:
     // failure (e.g. file not found, or on backends without IBL support).
     virtual CubemapHandle loadHdrSkybox(const std::string& hdrPath,
                                         int faceSize = 512) = 0;
+
+    // M49 — set the active reflection probes for this scene. Each draw selects
+    // the nearest probe whose box contains it; outside all probes, the global
+    // skybox IBL is used. Pass an empty span to disable probes.
+    virtual void setReflectionProbes(std::span<const GpuReflectionProbe> probes) = 0;
+
+    // M49 — bake (capture + prefilter) every probe. On-demand; blocks. The
+    // probe vector is updated in place with the baked prefiltered handles.
+    virtual void bakeReflectionProbes(std::vector<GpuReflectionProbe>& probes) = 0;
 
     // --- per-frame ---
     // Begins a frame: records the clear colour, the directional sun, the

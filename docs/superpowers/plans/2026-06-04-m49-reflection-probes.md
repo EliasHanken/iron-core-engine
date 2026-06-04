@@ -367,7 +367,9 @@ git commit -m "M49: VkCubemapStore per-handle destroy + color-renderable cube"
 **Files:**
 - Create: `engine/render/backends/vulkan/VkSceneCapture.h`, `engine/render/backends/vulkan/VkSceneCapture.cpp`
 
-This mirrors `VkReflectionTarget` but renders **6 times** into the 6 `faceViews` of a color cube from `VkCubemapStore::createColorCube`. Use a **simplified capture pipeline** (UBO + diffuse texture; sun-lambert + ambient), modeled on the existing reflection pipeline. The skybox is drawn first into each face so areas with no geometry show the sky.
+This mirrors `VkReflectionTarget` but renders **6 times** into the 6 `faceViews` of a color cube from `VkCubemapStore::createColorCube`. Use a **simplified capture pipeline** (UBO + diffuse texture; sun-lambert + ambient), modeled on the existing reflection pipeline.
+
+**V1 simplification (decided during execution):** the capture does NOT draw the skybox. `VkSkybox::record` requires the per-frame `VkFrameRing` UBO sub-allocator, which is unsafe to use during a blocking off-frame bake. Instead each face is cleared to a neutral sky color; empty directions in the probe cube are flat (acceptable — the visual gate is an enclosed room, and objects outside any probe still get the real skybox via the runtime fallback). Capturing the skybox into probes is a tracked follow-up. Consequently `VkSceneCapture` owns ALL its resources (its own command pool, descriptor pool, and a host-visible UBO linear allocator) and does **not** touch `VkFrameRing`.
 
 - [ ] **Step 1: Write `VkSceneCapture.h`**
 
@@ -391,12 +393,14 @@ namespace iron {
 class VkContext;
 class VkCubemapStore;
 class VkMeshStore;     // match the actual mesh-store type name used by the renderer
-class VkSkybox;
+class VkTextureStore;  // for per-draw diffuse texture + white fallback
 
 // Renders the scene's 6 cube faces from a world position into an RGBA16F cube
 // (allocated via VkCubemapStore::createColorCube). Simplified shading: sun +
-// ambient + diffuse texture, plus the skybox. Used by reflection-probe baking;
-// runs on demand (not per frame). Returns the radiance cube handle.
+// ambient + diffuse texture. Faces are cleared to a neutral sky color; the
+// skybox itself is NOT drawn in v1 (see plan note). Used by reflection-probe
+// baking; runs on demand (not per frame). Owns all its resources (command
+// pool, descriptor pool, UBO buffer) — does not touch VkFrameRing.
 class VkSceneCapture {
 public:
     bool init(VkContext& ctx);
@@ -405,7 +409,7 @@ public:
     // Captures into a NEW color cube and returns its handle. Caller owns the
     // returned handle (typically passes it to bakePrefiltered then destroys it).
     CubemapHandle capture(VkContext& ctx, VkCubemapStore& cubes, VkMeshStore& meshes,
-                          VkSkybox& skybox, CubemapHandle skyboxCube,
+                          VkTextureStore& textures,
                           const std::vector<DrawCall>& sceneDraws,
                           Vec3 sunDir, Vec3 sunColor, Vec3 ambient,
                           Vec3 position, int faceSize);
@@ -485,9 +489,8 @@ Define a matching C++ `CapUbo` struct (std140; mat4+mat4+3×vec4 = 176 bytes; `s
    - For `face` in 0..5:
      - Create a transient framebuffer binding `cubes.get(cube).faceViews[face]` + `depthView_` to `renderPass_`.
      - `vkCmdBeginRenderPass` (clear color to a neutral value, depth 1.0), set viewport/scissor to `faceSize` with the **negative-height** convention.
-     - Compute `faceVP = perspective(90°, 1.0, near, far) * cubeFaceView(position, face)` (reuse `iron::perspective` + `cubeFaceView` from `ReflectionProbe.h`; match the project's `perspective` signature/clip convention used elsewhere for Vulkan).
-     - Draw skybox first (translation-stripped) via `skybox.record(...)` if `skyboxCube` valid — confirm `VkSkybox::record` signature and that it accepts an explicit view/proj; if it reads renderer state, replicate its minimal draw here instead.
-     - Bind `pipeline_`; for each `DrawCall` in `sceneDraws` (skip `useReflectionPlane`), allocate a UBO slice + descriptor set, write `CapUbo{ faceVP*model, model, sunDir, sunColor, ambient }` and the diffuse texture (binding 1, fallback to `whiteTexture`), `vkCmdBindVertexBuffers/IndexBuffer`, `vkCmdDrawIndexed`.
+     - Compute `faceVP = perspective(radians(90), 1.0, near, far) * cubeFaceView(position, face)` (reuse `iron::perspective` + `cubeFaceView` from `ReflectionProbe.h`). The color clear value is a neutral sky color (e.g. `{0.5, 0.6, 0.7, 1}`); depth clear 1.0. (Skybox geometry is not drawn — v1.)
+     - Bind `pipeline_`; for each `DrawCall` in `sceneDraws` (skip `useReflectionPlane`, skip meshes the store doesn't have), allocate a UBO slice + descriptor set, write `CapUbo{ faceVP*model, model, sunDir, sunColor, ambient }` and the diffuse texture (binding 1, sourced from `textures.get(call.material.texture)` with `textures.whiteTexture()` fallback), `vkCmdBindVertexBuffers/IndexBuffer`, `vkCmdDrawIndexed`.
      - `vkCmdEndRenderPass`; destroy the transient framebuffer after submit.
    - End + submit + `vkQueueWaitIdle` (this is an on-demand bake, blocking is fine).
    - `return cube;`
@@ -559,10 +562,16 @@ with:
         vec3  R           = reflect(-V, N_);
         if (u.probeCenter.w > 0.5) {
             // M49 — box-projected parallax correction toward local geometry.
-            vec3 invR = 1.0 / (abs(R) < vec3(1e-6) ? vec3(1e-6) * sign(R + 1e-9) : R);
-            vec3 tMax = (mix(u.probeBoxMin.xyz, u.probeBoxMax.xyz, step(0.0, R)) - vWorldPos) * invR;
-            float t   = min(min(tMax.x, tMax.y), tMax.z);
-            vec3 hit  = vWorldPos + R * t;
+            // Mirror the CPU math in ReflectionProbe.h: pick the slab exit plane
+            // in the ray direction per axis; a zero-direction axis gets t=+big so
+            // min() excludes it (a tiny-epsilon reciprocal would flip the sign).
+            vec3 farPlane = mix(u.probeBoxMin.xyz, u.probeBoxMax.xyz, step(0.0, R));
+            vec3 t3;
+            t3.x = (R.x != 0.0) ? (farPlane.x - vWorldPos.x) / R.x : 1e30;
+            t3.y = (R.y != 0.0) ? (farPlane.y - vWorldPos.y) / R.y : 1e30;
+            t3.z = (R.z != 0.0) ? (farPlane.z - vWorldPos.z) / R.z : 1e30;
+            float t  = min(min(t3.x, t3.y), t3.z);
+            vec3  hit = vWorldPos + R * t;
             R = hit - u.probeCenter.xyz;
         }
         float maxMip      = float(textureQueryLevels(uPrefiltered) - 1);
@@ -691,7 +700,7 @@ void VulkanRenderer::bakeReflectionProbes(std::vector<GpuReflectionProbe>& probe
         const int faceSize = kFaceSize;
         // 1. Capture scene radiance into a color cube.
         CubemapHandle radiance = sceneCapture_.capture(
-            context_, cubemaps_, meshes_, skybox_, pendingSkybox_, sceneDraws_,
+            context_, cubemaps_, meshes_, textures_, sceneDraws_,
             pendingSunDir_, pendingSunColor_, pendingAmbient_, p.center, faceSize);
         if (radiance == kInvalidHandle) continue;
         // 2. Prefilter into a roughness mip-chain.

@@ -18,6 +18,7 @@
 #include "render/backends/vulkan/VkReflectionTarget.h"
 #include "render/backends/vulkan/VkPostProcess.h"
 #include "render/ReflectionPlane.h"
+#include "render/ReflectionProbe.h"
 
 #include <array>
 #include <cstdint>
@@ -72,6 +73,10 @@ public:
         const std::array<const unsigned char*, 6>& faces) override;
     void setSkybox(CubemapHandle sky) override;
     CubemapHandle loadHdrSkybox(const std::string& hdrPath, int faceSize) override;
+
+    // M49 — reflection probe API.
+    void setReflectionProbes(std::span<const GpuReflectionProbe> probes) override;
+    void bakeReflectionProbes(std::vector<GpuReflectionProbe>& probes) override { /* implemented in Task 6 */ (void)probes; }
 
     // --- per-frame ---
     void beginFrame(Vec3 clearColor, const DirectionalLight& light,
@@ -249,6 +254,9 @@ private:
     CubemapHandle  pendingIrradiance_ = kInvalidHandle;  // M46b — baked from the skybox
     CubemapHandle  pendingPrefiltered_ = kInvalidHandle;  // M46c — baked from the skybox
     CubemapHandle  lastBakedSkybox_   = kInvalidHandle;  // M46b — bake-once guard
+
+    // M49 — active reflection probes; set via setReflectionProbes.
+    std::vector<GpuReflectionProbe> pendingProbes_;
 
     // M36 — offscreen scene-color target + post-process composite pipeline.
     VkPostProcess         postProcess_;
