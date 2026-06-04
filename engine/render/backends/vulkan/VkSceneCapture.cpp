@@ -24,15 +24,16 @@ namespace iron {
 
 namespace {
 
-// std140-compatible per-draw uniform. mat4 + mat4 + 3×vec4 = 64+64+48 = 176.
+// std140-compatible per-draw uniform. mat4 + mat4 + 4×vec4 = 64+64+64 = 192.
 struct CapUbo {
     Mat4 mvp;       // faceViewProj * model
     Mat4 model;
     Vec4 sunDir;
     Vec4 sunColor;
     Vec4 ambient;
+    Vec4 baseColorFactor;  // xyz = material albedo tint (untextured materials rely on this)
 };
-static_assert(sizeof(CapUbo) == 176, "CapUbo must be 176 bytes (std140)");
+static_assert(sizeof(CapUbo) == 192, "CapUbo must be 192 bytes (std140)");
 
 // 256-byte alignment for dynamic UBO offsets — safely >= any device's
 // minUniformBufferOffsetAlignment we target. (VkContext exposes no accessor.)
@@ -57,6 +58,7 @@ layout(set=0, binding=0) uniform CapUbo {
     vec4 sunDir;
     vec4 sunColor;
     vec4 ambient;
+    vec4 baseColorFactor;
 } u;
 layout(location=0) out vec3 vN;
 layout(location=1) out vec2 vUv;
@@ -70,7 +72,7 @@ void main() {
 const char* kCaptureFrag = R"(#version 450
 layout(set=0, binding=1) uniform sampler2D uDiffuse;
 layout(set=0, binding=0) uniform CapUbo {
-    mat4 mvp; mat4 model; vec4 sunDir; vec4 sunColor; vec4 ambient;
+    mat4 mvp; mat4 model; vec4 sunDir; vec4 sunColor; vec4 ambient; vec4 baseColorFactor;
 } u;
 layout(location=0) in vec3 vN;
 layout(location=1) in vec2 vUv;
@@ -78,7 +80,9 @@ layout(location=0) out vec4 outColor;
 void main() {
     vec3 N = normalize(vN);
     float ndl = max(dot(N, -normalize(u.sunDir.xyz)), 0.0);
-    vec3 albedo = texture(uDiffuse, vUv).rgb;
+    // Untextured materials carry their color in baseColorFactor; uDiffuse is the
+    // white fallback for them, so albedo must be the product (matches the lit shader).
+    vec3 albedo = u.baseColorFactor.rgb * texture(uDiffuse, vUv).rgb;
     outColor = vec4(albedo * (u.ambient.xyz + u.sunColor.xyz * ndl), 1.0);
 }
 )";
@@ -461,6 +465,9 @@ CubemapHandle VkSceneCapture::capture(VkContext& ctx, VkCubemapStore& cubes,
             ubo.sunDir   = Vec4{sunDir.x, sunDir.y, sunDir.z, 0.0f};
             ubo.sunColor = Vec4{sunColor.x, sunColor.y, sunColor.z, 0.0f};
             ubo.ambient  = Vec4{ambient.x, ambient.y, ambient.z, 0.0f};
+            ubo.baseColorFactor = Vec4{call.material.baseColorFactor.x,
+                                       call.material.baseColorFactor.y,
+                                       call.material.baseColorFactor.z, 1.0f};
             std::memcpy(static_cast<char*>(uboMapped_) + uboOffset, &ubo, sizeof(CapUbo));
             const VkDeviceSize thisOffset = uboOffset;
             uboOffset += kUboStride;
