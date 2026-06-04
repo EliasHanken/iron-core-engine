@@ -474,10 +474,11 @@ int main() {
     // --- Camera ---
     iron::FreeFlyCamera cam;
     // M49: start inside the isolated probe demo room looking toward the
-    // mirror sphere. Camera is 4.5 units in front of kRoomCenter on +Z;
-    // yaw=0 (default) looks toward world -Z, which is exactly toward the
-    // sphere at kRoomCenter = {-40, 3.5, 0}.
-    cam.position = {-40.0f, 3.5f, 4.5f};
+    // mirror sphere. Camera is 3.3 units in front of kRoomCenter on +Z,
+    // kept inside the interior (which ends at +4 Z); yaw=0 (default) looks
+    // toward world -Z, which is exactly toward the sphere at
+    // kRoomCenter = {-40, 3.5, 0}.
+    cam.position = {-40.0f, 3.5f, 3.3f};
 
     // M41: Play/Stop mode state.
     iron::EditorState editor;
