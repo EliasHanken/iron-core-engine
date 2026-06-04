@@ -27,6 +27,7 @@ class VkTextureStore;
 // descriptor pool, UBO buffer) — does not touch VkFrameRing.
 class VkSceneCapture {
 public:
+    // Returns false on failure; caller must still call destroy() to release any partially-created objects.
     bool init(VkContext& ctx);
     void destroy(VkContext& ctx);
 

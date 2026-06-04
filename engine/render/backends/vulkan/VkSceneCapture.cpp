@@ -36,6 +36,7 @@ static_assert(sizeof(CapUbo) == 176, "CapUbo must be 176 bytes (std140)");
 
 // 256-byte alignment for dynamic UBO offsets — safely >= any device's
 // minUniformBufferOffsetAlignment we target. (VkContext exposes no accessor.)
+// Budget is cumulative across all 6 faces: up to kMaxDraws per face => kMaxSets total descriptor sets and kMaxSets*kUboStride UBO bytes.
 constexpr VkDeviceSize kUboStride   = 256;
 constexpr std::uint32_t kMaxFaces   = 6;
 constexpr std::uint32_t kMaxDraws   = 512;          // per face, before we warn+cap
@@ -192,6 +193,7 @@ bool VkSceneCapture::init(VkContext& ctx) {
     stages[1].pName  = "main";
 
     // Vertex input — match VkMesh layout (Pos, Normal, UV, Tangent = 11 floats).
+    // must match VkMesh vertex layout: Pos(3)+Normal(3)+UV(2)+Tangent(3) = 11 floats
     VkVertexInputBindingDescription bind{};
     bind.binding   = 0;
     bind.stride    = 11 * sizeof(float);
@@ -339,6 +341,11 @@ CubemapHandle VkSceneCapture::capture(VkContext& ctx, VkCubemapStore& cubes,
                                       const std::vector<DrawCall>& sceneDraws,
                                       Vec3 sunDir, Vec3 sunColor, Vec3 ambient,
                                       Vec3 position, int faceSize) {
+    if (faceSize <= 0) {
+        Log::error("VkSceneCapture::capture: invalid faceSize %d", faceSize);
+        return kInvalidHandle;
+    }
+
     const std::uint32_t fs = static_cast<std::uint32_t>(faceSize);
 
     // 1. Destination cube.
@@ -505,6 +512,10 @@ CubemapHandle VkSceneCapture::capture(VkContext& ctx, VkCubemapStore& cubes,
 
         vkCmdEndRenderPass(cb);
     }
+
+    // Flush the written UBO range on non-coherent memory (safe no-op otherwise).
+    if (uboOffset > 0)
+        vmaFlushAllocation(ctx.allocator(), uboAlloc_, 0, uboOffset);
 
     VK_CHECK(vkEndCommandBuffer(cb));
     VkSubmitInfo submit{};
