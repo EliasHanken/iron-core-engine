@@ -309,6 +309,7 @@ ShaderHandle VkShaderStore::createTessellated(VkContext& ctx,
     bindings[0].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
     bindings[0].descriptorCount = 1;
     bindings[0].stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT
+                           | VK_SHADER_STAGE_TESSELLATION_CONTROL_BIT      // tesc reads probeBoxMin.w (tess factor)
                            | VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT;
     bindings[1].binding = 1;  // diffuse
     bindings[1].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
