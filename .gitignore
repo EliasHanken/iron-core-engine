@@ -35,3 +35,6 @@ Thumbs.db
 
 # ImGui per-user layout (user-specific, not for version control)
 imgui.ini
+
+# Scratch / local working dir (never commit)
+tmp/
