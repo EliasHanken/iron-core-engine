@@ -28,6 +28,8 @@ EShLanguage toLang(VkShaderStageFlagBits stage) {
         case VK_SHADER_STAGE_VERTEX_BIT:   return EShLangVertex;
         case VK_SHADER_STAGE_FRAGMENT_BIT: return EShLangFragment;
         case VK_SHADER_STAGE_COMPUTE_BIT:  return EShLangCompute;
+        case VK_SHADER_STAGE_TESSELLATION_CONTROL_BIT:    return EShLangTessControl;
+        case VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT: return EShLangTessEvaluation;
         default:                            return EShLangVertex;
     }
 }
