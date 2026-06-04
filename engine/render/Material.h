@@ -18,12 +18,14 @@ struct Material {
     TextureHandle normalMap = kInvalidHandle;     // linear
     TextureHandle metallicRoughnessMap = kInvalidHandle;  // .g = roughness, .b = metallic (linear, glTF)
     TextureHandle aoMap = kInvalidHandle;                 // .r = ambient occlusion (linear)
+    TextureHandle heightMap = kInvalidHandle;             // linear; grayscale height field for POM (white=peak)
     TextureHandle emissiveMap = kInvalidHandle;           // sRGB; multiplies `emissive`
     Vec3 baseColorFactor{1.0f, 1.0f, 1.0f};              // albedo tint (glTF baseColorFactor)
     float metallic    = 0.0f;
     float roughness   = 0.5f;
     float ao          = 1.0f;
     float normalScale = 1.0f;                            // glTF normalTexture.scale
+    float heightScale = 0.05f;                           // M50a — POM depth scale; 0 = POM off
     bool excludeFromProbeCapture = false;  // M49: skip this draw when baking reflection probes (chrome objects / probe markers)
 };
 

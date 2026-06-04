@@ -8,6 +8,8 @@ void registerMaterialDef(Reflection& r) {
         .field("albedoPath",            &MaterialDef::albedoPath)
         .field("normalPath",            &MaterialDef::normalPath)
         .field("normalScale", &MaterialDef::normalScale, {.min = 0.0f, .max = 2.0f, .slider = true})
+        .field("heightPath",  &MaterialDef::heightPath)
+        .field("heightScale", &MaterialDef::heightScale, {.min = 0.0f, .max = 0.2f, .slider = true})
         .field("metallicRoughnessPath", &MaterialDef::metallicRoughnessPath)
         .field("aoPath",                &MaterialDef::aoPath)
         .field("emissivePath",          &MaterialDef::emissivePath)

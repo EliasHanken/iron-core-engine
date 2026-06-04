@@ -193,10 +193,10 @@ static void test_register_material_def_end_to_end() {
     iron::registerMaterialDef(r);
     CHECK(r.typeName<iron::MaterialDef>() == "MaterialDef");
     auto f = r.fieldsOf<iron::MaterialDef>();
-    CHECK(f.size() == 13);
+    CHECK(f.size() == 15);
     CHECK(f[0].name == "albedoPath");
-    CHECK(f[9].name == "emissive");
-    CHECK(f[9].type == iron::TypeId::Vec3);
+    CHECK(f[11].name == "emissive");
+    CHECK(f[11].type == iron::TypeId::Vec3);
     const iron::FieldDesc* refl = r.fieldByName<iron::MaterialDef>("reflectivity");
     CHECK(refl != nullptr);
     CHECK(refl->meta.min == 0.0f);

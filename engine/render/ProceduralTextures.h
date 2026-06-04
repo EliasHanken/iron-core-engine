@@ -1,5 +1,6 @@
 #pragma once
 
+#include <algorithm>
 #include <cmath>
 #include <vector>
 
@@ -49,6 +50,32 @@ inline std::vector<unsigned char> generateMetalSpecularMap(int size) {
         out[i + 1] = 200;
         out[i + 2] = 200;
         out[i + 3] = 255;
+    }
+    return out;
+}
+
+// Generates an RGBA8 grayscale HEIGHT map (white=peak, dark valleys) of a
+// tiling grid of rounded stones separated by deep recessed mortar lines.
+// Strong, well-defined depth so parallax/displacement reads clearly. `cells`
+// = stones across the texture. Output is `size*size*4` bytes (R=G=B=height).
+inline std::vector<unsigned char> generateStoneHeightMap(int size, int cells) {
+    std::vector<unsigned char> out(static_cast<std::size_t>(size) * size * 4);
+    const float cellPx = static_cast<float>(size) / static_cast<float>(cells);
+    for (int y = 0; y < size; ++y) {
+        for (int x = 0; x < size; ++x) {
+            // Position within the current cell, centered in [-1, 1].
+            const float cx = (std::fmod(static_cast<float>(x), cellPx) / cellPx) * 2.0f - 1.0f;
+            const float cy = (std::fmod(static_cast<float>(y), cellPx) / cellPx) * 2.0f - 1.0f;
+            const float r = std::sqrt(cx * cx + cy * cy);
+            // Rounded dome: ~1 at the center, falling to 0 toward the cell edge
+            // (the mortar gap). smoothstep gives a soft top + sharp valley.
+            float h = 1.0f - r;                  // cone
+            h = std::clamp(h, 0.0f, 1.0f);
+            h = h * h * (3.0f - 2.0f * h);       // smoothstep-ish dome
+            const unsigned char v = static_cast<unsigned char>(std::clamp(h, 0.0f, 1.0f) * 255.0f);
+            const std::size_t i = (static_cast<std::size_t>(y) * size + x) * 4;
+            out[i + 0] = v; out[i + 1] = v; out[i + 2] = v; out[i + 3] = 255;
+        }
     }
     return out;
 }

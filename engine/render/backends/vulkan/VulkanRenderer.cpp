@@ -357,7 +357,7 @@ struct LitUbo {
     Vec4 cameraPos;           // 16
     Vec4 materialParams;      // 16  x=uvScale, y=roughness, z=reflectivity, w=shadowBias
     Vec4 materialParams2;     // 16  M45b — x=metallic, y=ao, z=normalScale, w spare
-    Vec4 baseColorFactor;     // 16  M45c — xyz = albedo tint, w unused
+    Vec4 baseColorFactor;     // 16  M45c — xyz = albedo tint; w = heightScale (M50a POM; 0=off)
     Vec4 fogColor;            // 16  M15 — xyz=color, w=density
     Vec4 lightCounts;         // 16  M15 — x=pointLightCount (as float), y/z/w padding
     Vec4 pointPositions[16];  // 256 M15 — xyz=position, w=intensity
@@ -621,8 +621,10 @@ void VulkanRenderer::recordSceneDraw(VkCommandBuffer cb, const DrawCall& call) {
     };
     ubo.materialParams2 = Vec4{call.material.metallic, call.material.ao, call.material.normalScale, 0.0f};
     ubo.materialParams2.w = cubemaps_.has(pendingIrradiance_) ? 1.0f : 0.0f;  // M46b iblEnabled
+    // M50a — pack heightScale into baseColorFactor.w; 0 when no height map (POM no-op).
+    const float pomScale = textures_.has(call.material.heightMap) ? call.material.heightScale : 0.0f;
     ubo.baseColorFactor = Vec4{call.material.baseColorFactor.x, call.material.baseColorFactor.y,
-                               call.material.baseColorFactor.z, 0.0f};
+                               call.material.baseColorFactor.z, pomScale};
     ubo.fogColor = Vec4{
         pendingFog_.color.x, pendingFog_.color.y, pendingFog_.color.z,
         pendingFog_.density,
@@ -709,6 +711,10 @@ void VulkanRenderer::recordSceneDraw(VkCommandBuffer cb, const DrawCall& call) {
     const auto& emis = textures_.has(call.material.emissiveMap)
         ? textures_.get(call.material.emissiveMap)
         : textures_.get(textures_.whiteTexture());
+    // M50a — binding 13: height map (white fallback = peak => depth 0 => POM no-op).
+    const auto& height = textures_.has(call.material.heightMap)
+        ? textures_.get(call.material.heightMap)
+        : textures_.get(textures_.whiteTexture());
 
     // M16 — also bind the active skybox (or black fallback) at binding 5.
     const CubemapHandle skyHandle = cubemaps_.has(pendingSkybox_)
@@ -716,7 +722,7 @@ void VulkanRenderer::recordSceneDraw(VkCommandBuffer cb, const DrawCall& call) {
         : cubemaps_.blackCubemap();
     const auto& skyTex = cubemaps_.get(skyHandle);
 
-    VkDescriptorImageInfo imgInfos[11]{};
+    VkDescriptorImageInfo imgInfos[12]{};
     imgInfos[0].sampler     = diffuse.sampler;
     imgInfos[0].imageView   = diffuse.view;
     imgInfos[0].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
@@ -764,8 +770,12 @@ void VulkanRenderer::recordSceneDraw(VkCommandBuffer cb, const DrawCall& call) {
     imgInfos[10].sampler     = iblBaker_.brdfLutSampler();
     imgInfos[10].imageView   = iblBaker_.brdfLutView();
     imgInfos[10].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    // M50a — binding 13: height map (POM).
+    imgInfos[11].sampler     = height.sampler;
+    imgInfos[11].imageView   = height.view;
+    imgInfos[11].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 
-    VkWriteDescriptorSet writes[12]{};
+    VkWriteDescriptorSet writes[13]{};
     writes[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
     writes[0].dstSet = set;
     writes[0].dstBinding = 0;
@@ -801,7 +811,14 @@ void VulkanRenderer::recordSceneDraw(VkCommandBuffer cb, const DrawCall& call) {
     writes[11].descriptorType  = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
     writes[11].descriptorCount = 1;
     writes[11].pImageInfo      = &imgInfos[10];
-    vkUpdateDescriptorSets(context_.device(), 12, writes, 0, nullptr);
+    // M50a — binding 13: height map (POM).
+    writes[12].sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    writes[12].dstSet          = set;
+    writes[12].dstBinding      = 13;
+    writes[12].descriptorType  = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    writes[12].descriptorCount = 1;
+    writes[12].pImageInfo      = &imgInfos[11];
+    vkUpdateDescriptorSets(context_.device(), 13, writes, 0, nullptr);
 
     vkCmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_GRAPHICS,
                             sh.pipelineLayout, 0, 1, &set, 0, nullptr);
@@ -848,8 +865,10 @@ void VulkanRenderer::recordSkinnedDraw(VkCommandBuffer cb,
     };
     ubo.materialParams2 = Vec4{call.material.metallic, call.material.ao, call.material.normalScale, 0.0f};
     ubo.materialParams2.w = cubemaps_.has(pendingIrradiance_) ? 1.0f : 0.0f;  // M46b iblEnabled
+    // M50a — pack heightScale into baseColorFactor.w; 0 when no height map (POM no-op).
+    const float pomScale = textures_.has(call.material.heightMap) ? call.material.heightScale : 0.0f;
     ubo.baseColorFactor = Vec4{call.material.baseColorFactor.x, call.material.baseColorFactor.y,
-                               call.material.baseColorFactor.z, 0.0f};
+                               call.material.baseColorFactor.z, pomScale};
     ubo.fogColor = Vec4{
         pendingFog_.color.x, pendingFog_.color.y, pendingFog_.color.z,
         pendingFog_.density,
@@ -940,13 +959,17 @@ void VulkanRenderer::recordSkinnedDraw(VkCommandBuffer cb,
     const auto& emis = textures_.has(call.material.emissiveMap)
         ? textures_.get(call.material.emissiveMap)
         : textures_.get(textures_.whiteTexture());
+    // M50a — binding 13: height map (white fallback = peak => depth 0 => POM no-op).
+    const auto& height = textures_.has(call.material.heightMap)
+        ? textures_.get(call.material.heightMap)
+        : textures_.get(textures_.whiteTexture());
 
     const CubemapHandle skyHandle = cubemaps_.has(pendingSkybox_)
         ? pendingSkybox_
         : cubemaps_.blackCubemap();
     const auto& skyTex = cubemaps_.get(skyHandle);
 
-    VkDescriptorImageInfo imgInfos[11]{};
+    VkDescriptorImageInfo imgInfos[12]{};
     imgInfos[0].sampler     = diffuse.sampler;
     imgInfos[0].imageView   = diffuse.view;
     imgInfos[0].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
@@ -992,13 +1015,17 @@ void VulkanRenderer::recordSkinnedDraw(VkCommandBuffer cb,
     imgInfos[10].sampler     = iblBaker_.brdfLutSampler();
     imgInfos[10].imageView   = iblBaker_.brdfLutView();
     imgInfos[10].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    // M50a — binding 13: height map (POM).
+    imgInfos[11].sampler     = height.sampler;
+    imgInfos[11].imageView   = height.view;
+    imgInfos[11].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 
     VkDescriptorBufferInfo bonesInfo{};
     bonesInfo.buffer = f.uboBuffer;
     bonesInfo.offset = bonesOffset;
     bonesInfo.range  = sizeof(Mat4) * kMaxBonesPerSkinnedMesh;
 
-    VkWriteDescriptorSet writes[13]{};
+    VkWriteDescriptorSet writes[14]{};
     writes[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
     writes[0].dstSet = set;
     writes[0].dstBinding = 0;
@@ -1041,7 +1068,14 @@ void VulkanRenderer::recordSkinnedDraw(VkCommandBuffer cb,
     writes[12].descriptorType  = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
     writes[12].descriptorCount = 1;
     writes[12].pImageInfo      = &imgInfos[10];
-    vkUpdateDescriptorSets(context_.device(), 13, writes, 0, nullptr);
+    // M50a — binding 13: height map (POM).
+    writes[13].sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    writes[13].dstSet          = set;
+    writes[13].dstBinding      = 13;
+    writes[13].descriptorType  = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    writes[13].descriptorCount = 1;
+    writes[13].pImageInfo      = &imgInfos[11];
+    vkUpdateDescriptorSets(context_.device(), 14, writes, 0, nullptr);
 
     vkCmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_GRAPHICS,
                             sh.pipelineLayout, 0, 1, &set, 0, nullptr);

@@ -33,6 +33,8 @@ struct MaterialDef {
     std::string albedoPath;
     std::string normalPath;
     float       normalScale  = 1.0f;               // glTF normalTexture.scale
+    std::string heightPath;                         // grayscale height/displacement map (linear)
+    float       heightScale  = 0.05f;               // POM depth; 0 = POM off
     std::string metallicRoughnessPath;
     std::string aoPath;
     std::string emissivePath;                       // emissive map (sRGB)
