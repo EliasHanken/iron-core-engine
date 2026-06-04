@@ -176,6 +176,11 @@ int main() {
         return 1;
     }
 
+    // M50b: tessellated lit shader (Vulkan only; kInvalidHandle on other backends).
+    const iron::ShaderHandle tessShader = renderer.createStandardTessellatedLitShader();
+    if (tessShader == iron::kInvalidHandle)
+        iron::Log::warn("sandbox: tessellated shader unavailable; skipping the tessellation demo quad");
+
     struct ResolvedEntity {
         int              entityIndex = -1;  // index into scene.entities
         iron::MeshHandle mesh     = iron::kInvalidHandle;
@@ -481,20 +486,27 @@ int main() {
     // (linear upload) so the depth effect reads clearly.
     // The camera is framed to see both quads at a grazing angle (~45° from +Y).
     //
-    // Albedo: generateStoneHeightMap(512,6) as sRGB — stones show as light gray
+    // Albedo: generateStoneHeightMap(512,3) as sRGB — stones show as light gray
     //         domes on dark mortar, giving clear contrast for POM comparison.
-    // Height: generateStoneHeightMap(512,6) as linear — same pattern used as the
+    //         3 cells (coarse) so the tessellator (max 64×) resolves smooth
+    //         rounded domes instead of thin spiky cones.
+    // Height: generateStoneHeightMap(512,3) as linear — same pattern used as the
     //         parallax height field (white peak = raised stone, dark = mortar valley).
     //
     // Stone height data generated once, uploaded twice (sRGB for albedo, linear
     // for the height field so POM samples unmodified [0,1] values).
-    const auto pomStoneData = iron::generateStoneHeightMap(512, 6);
+    const auto pomStoneData = iron::generateStoneHeightMap(512, 3);
     // Albedo: sRGB=true so the renderer applies sRGB decode for correct colour display.
     const iron::TextureHandle pomAlbedoTex =
         renderer.createTexture(512, 512, pomStoneData.data(), /*srgb=*/true);
     // Height field: sRGB=false — linear values required; POM samples this as [0,1].
     const iron::TextureHandle pomHeightTex =
         renderer.createTexture(512, 512, pomStoneData.data(), /*srgb=*/false);
+    // Normal map: tangent-space normals derived from the same stone dome function
+    // via central-difference gradient. sRGB=false — normal maps are always linear.
+    const auto pomNormalData = iron::generateStoneNormalMap(512, 3);
+    const iron::TextureHandle pomNormalTex =
+        renderer.createTexture(512, 512, pomNormalData.data(), /*srgb=*/false);
 
     // Left quad: flat (no POM). Normal = +Y (horizontal, like a floor slab).
     // Tiny Y=0.01 offset above the scene floor to avoid z-fighting.
@@ -513,9 +525,19 @@ int main() {
                      iron::Vec3{0.0f, 1.0f, 0.0f});
     const iron::MeshHandle pomQuadMesh = renderer.createMesh(pomQuadMeshData);
 
+    // M50b: third quad — tessellation displacement. Same stone textures, same geometry.
+    // Placed at X=13 to continue the left-to-right row: flat | POM | tessellated.
+    iron::MeshData pomTessMeshData;
+    iron::appendQuad(pomTessMeshData,
+                     iron::Vec3{13.0f, 0.01f, 2.0f},
+                     iron::Vec2{2.5f, 2.5f},
+                     iron::Vec3{0.0f, 1.0f, 0.0f});
+    const iron::MeshHandle pomTessMesh = renderer.createMesh(pomTessMeshData);
+
     // World-space label anchors (slightly above the slab surface for readability).
     const iron::Vec3 kPomFlatCenter{5.0f, 0.5f, 2.0f};
     const iron::Vec3 kPomQuadCenter{9.0f, 0.5f, 2.0f};
+    const iron::Vec3 kTessQuadCenter{13.0f, 0.5f, 2.0f};
 
     // --- Camera ---
     // M50a: camera repositioned to frame both POM demo quads at a grazing angle.
@@ -523,11 +545,18 @@ int main() {
     // of the scene and elevated, looking left-and-forward at the quads.
     // Use RMB + WASD to fly around and see the full PBR grid / scene as usual.
     iron::FreeFlyCamera cam;
-    // Startup frames the M50a POM quads (X=5/9, Z=2). The M49 reflection-probe
-    // room is reachable by flying to kRoomCenter = {-40, 3.5, 0}.
-    cam.position = {7.0f, 3.0f, 7.0f};
-    cam.yaw      = -0.5f;   // looking toward +X (right) and -Z (forward)
+    // M50b: camera repositioned to frame all three demo quads (flat X=5, POM X=9,
+    // tessellated X=13). Centre of the row is X=9; camera placed further right and
+    // back so all three are visible side-by-side at a grazing angle.
+    // The M49 reflection-probe room is reachable by flying to kRoomCenter={-40,3.5,0}.
+    cam.position = {9.0f, 3.5f, 9.0f};
+    cam.yaw      = -0.05f;  // nearly straight along -Z so the row reads left→right
     cam.pitch    = -0.35f;  // looking slightly down at the ground-level quads
+
+    // M50b: wireframe toggle (F2) + tessellation factor.
+    bool wireframe = false;
+    static float tessFactor = 48.0f;
+    renderer.setTessellationFactor(tessFactor);  // apply initial value before the loop
 
     // M41: Play/Stop mode state.
     iron::EditorState editor;
@@ -873,6 +902,11 @@ int main() {
         if (input.keyPressed(GLFW_KEY_F5)) {
             togglePlayMode();
         }
+        // M50b: F2 toggles global wireframe (shows tessellation mesh subdivision).
+        if (input.keyPressed(GLFW_KEY_F2)) {
+            wireframe = !wireframe;
+            renderer.setWireframe(wireframe);
+        }
         if (input.keyPressed(GLFW_KEY_ESCAPE)) {
             if (editor.isPlaying()) {
                 togglePlayMode();
@@ -1143,6 +1177,18 @@ int main() {
             ImGui::End();
         }
 
+        // M50b: Tessellation controls — factor slider + wireframe toggle.
+        // 'tessFactor' is declared outside the loop so it persists across frames.
+        {
+            ImGui::Begin("Environment");
+            if (ImGui::CollapsingHeader("Tessellation (M50b)", ImGuiTreeNodeFlags_DefaultOpen)) {
+                if (ImGui::SliderFloat("Tessellation factor", &tessFactor, 1.0f, 64.0f))
+                    renderer.setTessellationFactor(tessFactor);
+                ImGui::TextDisabled("F2 = wireframe toggle (%s)", wireframe ? "ON" : "OFF");
+            }
+            ImGui::End();
+        }
+
         // M49: Reflection probe bake button — in its own collapsible group in
         // the Environment panel. Pressing "Bake Reflection Probes" latches
         // bakeRequested so the bake runs after the submit loop this same frame
@@ -1345,10 +1391,11 @@ int main() {
             }
         }
 
-        // --- M50a: flat-vs-POM side-by-side demo draw calls ---
+        // --- M50a/M50b: flat / POM / tessellation side-by-side demo draw calls ---
         // Left quad: flat normal mapping only (heightScale=0, POM disabled).
-        // Right quad: parallax occlusion mapping (heightScale=0.08).
-        // Both quads: stone height map used as albedo + height field, uvScale=2.
+        // Middle quad: parallax occlusion mapping (heightScale=0.08).
+        // Right quad: hardware tessellation displacement (tessShader, heightScale=0.12).
+        // All quads: stone height map used as albedo + height field, uvScale=1.
         if (pomFlatMesh  != iron::kInvalidHandle &&
             pomQuadMesh  != iron::kInvalidHandle &&
             pomAlbedoTex != iron::kInvalidHandle &&
@@ -1358,10 +1405,10 @@ int main() {
             iron::Material pomBase{};
             pomBase.texture    = pomAlbedoTex;
             pomBase.heightMap  = pomHeightTex;
-            pomBase.normalMap  = renderer.flatNormalTexture();  // flat normal — height provides depth
+            pomBase.normalMap  = pomNormalTex;  // derived from stone dome — gives correct per-texel shading
             pomBase.metallic   = 0.0f;
             pomBase.roughness  = 0.7f;
-            pomBase.uvScale    = 2.0f;
+            pomBase.uvScale    = 1.0f;
 
             // Left: flat (no POM). heightScale=0 disables POM in the lit shader.
             iron::DrawCall flatDc{};
@@ -1372,7 +1419,7 @@ int main() {
             flatDc.material.heightScale  = 0.0f;  // POM OFF
             renderer.submit(flatDc);
 
-            // Right: POM enabled. heightScale=0.08 gives clearly visible parallax depth.
+            // Middle: POM enabled. heightScale=0.08 gives clearly visible parallax depth.
             iron::DrawCall pomDc{};
             pomDc.mesh                  = pomQuadMesh;
             pomDc.shader                = litShader;
@@ -1380,6 +1427,21 @@ int main() {
             pomDc.material              = pomBase;
             pomDc.material.heightScale  = 0.08f;  // POM ON
             renderer.submit(pomDc);
+
+            // M50b — Right: tessellated displacement. Uses tessShader so the
+            // hardware tessellator subdivides the quad and the TESE displaces
+            // vertices by the height map. POM is automatically disabled for
+            // tess shaders (renderer routes heightScale → reflectionParams.w).
+            if (tessShader != iron::kInvalidHandle &&
+                pomTessMesh != iron::kInvalidHandle) {
+                iron::DrawCall tessDc{};
+                tessDc.mesh                 = pomTessMesh;
+                tessDc.shader               = tessShader;
+                tessDc.model                = iron::Mat4::identity();
+                tessDc.material             = pomBase;
+                tessDc.material.heightScale = 0.12f;  // drives vertex displacement; coarse domes resolve well → a bit more relief reads as rounded cobbles
+                renderer.submit(tessDc);
+            }
 
             // --- HUD labels: project world-space label anchors to screen and draw
             // with ImGui foreground draw list. Drawn AFTER endFrame (inside ImGui).
@@ -1422,6 +1484,19 @@ int main() {
                                   {rx + ts2.x * 0.5f + 3.0f, ry + kLabelOffset + ts2.y + 2.0f},
                                   IM_COL32(0, 0, 0, 140));
                 fg->AddText({rx - ts2.x * 0.5f, ry + kLabelOffset}, kLabelCol, pomLabel);
+            }
+
+            // M50b: label for the tessellation quad.
+            if (tessShader != iron::kInvalidHandle) {
+                float tx, ty;
+                if (worldToViewport(kTessQuadCenter, tx, ty)) {
+                    const char* tessLabel = "Tessellation";
+                    const ImVec2 ts3 = ImGui::CalcTextSize(tessLabel);
+                    fg->AddRectFilled({tx - ts3.x * 0.5f - 3.0f, ty + kLabelOffset - 2.0f},
+                                      {tx + ts3.x * 0.5f + 3.0f, ty + kLabelOffset + ts3.y + 2.0f},
+                                      IM_COL32(0, 0, 0, 140));
+                    fg->AddText({tx - ts3.x * 0.5f, ty + kLabelOffset}, kLabelCol, tessLabel);
+                }
             }
         }
 

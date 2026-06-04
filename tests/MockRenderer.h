@@ -32,6 +32,9 @@ public:
     ShaderHandle createShader(const std::string&, const std::string&) override { return kInvalidHandle; }
     SkinnedMeshHandle createSkinnedMesh(const SkinnedMeshData&) override { return kInvalidSkinnedMesh; }
     ShaderHandle createSkinnedShader(const std::string&, const std::string&) override { return kInvalidHandle; }
+    // M50b — tessellation is Vulkan-only; stub returns invalid handle.
+    ShaderHandle createTessellatedShader(const std::string&, const std::string&,
+                                          const std::string&, const std::string&) override { return kInvalidHandle; }
     bool reloadShader(ShaderHandle, const std::string&, const std::string&) override { return true; }
     void submitSkinnedDraw(const SkinnedDrawCall&) override {}
     CubemapHandle createCubemap(int, int, const std::array<const unsigned char*, 6>&) override { return kInvalidHandle; }
@@ -50,6 +53,9 @@ public:
     void setShadowBounds(Vec3, float) override {}
     void setReflectionPlane(Vec3, float) override {}
     void disableReflectionPlane() override {}
+    // M50b — Vulkan-only; stubs.
+    void setWireframe(bool) override {}
+    void setTessellationFactor(float) override {}
 
     // Debug drawing — drawLine captures; flushDebugLines no-op (the registry
     // doesn't call it).

@@ -215,6 +215,13 @@ ShaderHandle VulkanRenderer::createSkinnedShader(const std::string& vertexSrc,
     return shaders_.createSkinned(context_, vertexSrc, fragmentSrc);
 }
 
+ShaderHandle VulkanRenderer::createTessellatedShader(const std::string& vert,
+                                                      const std::string& tesc,
+                                                      const std::string& tese,
+                                                      const std::string& frag) {
+    return shaders_.createTessellated(context_, vert, tesc, tese, frag);
+}
+
 bool VulkanRenderer::reloadShader(ShaderHandle handle,
                                   const std::string& vertexSrc,
                                   const std::string& fragmentSrc) {
@@ -363,9 +370,9 @@ struct LitUbo {
     Vec4 pointPositions[16];  // 256 M15 — xyz=position, w=intensity
     Vec4 pointColors[16];     // 256 M15 — xyz=color, w=range
     Mat4 reflectionViewProj;  // 64  M17 — scene: identity; reflection: P * V * mirror
-    Vec4 reflectionParams;    // 16  M17 — x=useReflectionPlane (0/1), y=screenW, z=screenH, w=0
+    Vec4 reflectionParams;    // 16  M17 — x=useReflectionPlane (0/1), y=screenW, z=screenH, w=displacement scale (M50b)
     Vec4 clipPlane;           // 16  M17 — (normal.xyz, -d) for reflection pass; ignored in scene
-    Vec4 probeBoxMin;         // 16  M49 — xyz = probe AABB min (world); w unused
+    Vec4 probeBoxMin;         // 16  M49 — xyz = probe AABB min (world); w = tessellation factor (M50b)
     Vec4 probeBoxMax;         // 16  M49 — xyz = probe AABB max (world); w unused
     Vec4 probeCenter;         // 16  M49 — xyz = probe center; w = probeActive (0/1)
 };
@@ -674,7 +681,17 @@ void VulkanRenderer::recordSceneDraw(VkCommandBuffer cb, const DrawCall& call) {
     }
 
     const VkShader& sh = shaders_.get(call.shader);
-    ::VkPipeline pipe = pipelines_.pipelineFor(context_, swapchain_, sh);
+
+    // M50b — for tessellated draws, override tess-specific UBO fields.
+    // Must run after sh is fetched (tescModule check) and before allocateUbo.
+    const bool tessellated = (sh.tescModule != VK_NULL_HANDLE);
+    if (tessellated) {
+        ubo.reflectionParams.w = call.material.heightScale;  // displacement amount
+        ubo.probeBoxMin.w      = pendingTessFactor_;           // UI tessellation factor
+        ubo.baseColorFactor.w  = 0.0f;                         // POM OFF (real geometry)
+    }
+
+    ::VkPipeline pipe = pipelines_.pipelineFor(context_, swapchain_, sh, pendingWireframe_);
     vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, pipe);
 
     // Allocate + write descriptor set from the frame's pool.
@@ -926,7 +943,7 @@ void VulkanRenderer::recordSkinnedDraw(VkCommandBuffer cb,
 
     // --- 3. Bind pipeline + allocate descriptor set ---
     const VkShader& sh = shaders_.get(call.shader);
-    ::VkPipeline pipe = pipelines_.skinnedPipelineFor(context_, swapchain_, sh);
+    ::VkPipeline pipe = pipelines_.skinnedPipelineFor(context_, swapchain_, sh, pendingWireframe_);
     vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, pipe);
 
     VkDescriptorSetAllocateInfo dsInfo{};

@@ -210,6 +210,14 @@ bool VkContext::createLogicalDevice() {
     VkPhysicalDeviceFeatures features{};
     features.shaderClipDistance = VK_TRUE;
 
+    // M50b — tessellation (hardware tess pipeline) + fillModeNonSolid (wireframe).
+    if (supported.tessellationShader != VK_TRUE)
+        Log::error("VkContext: tessellationShader feature unsupported — M50b tessellation will fail");
+    features.tessellationShader = supported.tessellationShader;
+    if (supported.fillModeNonSolid != VK_TRUE)
+        Log::warn("VkContext: fillModeNonSolid unsupported — wireframe toggle will be a no-op");
+    features.fillModeNonSolid = supported.fillModeNonSolid;
+
     // M32 — enable wideLines (when supported) so editor gizmo / debug lines can
     // use lineWidth > 1. Falls back to 1px lines on devices without it.
     wideLines_ = (supported.wideLines == VK_TRUE);

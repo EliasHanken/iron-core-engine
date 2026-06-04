@@ -29,15 +29,15 @@ layout(set = 0, binding = 0) uniform LitUbo {
     vec4 cameraPos;
     vec4 materialParams;   // x=uvScale, y=roughness, z=reflectivity, w=shadowBias
     vec4 materialParams2;  // x=metallic, y=ao, z=normalScale, w=iblEnabled (M46b)
-    vec4 baseColorFactor;  // M45c — xyz=albedo tint, w unused
+    vec4 baseColorFactor;  // M45c — xyz=albedo tint; w=heightScale (M50a POM; unused in this stage)
     vec4 fogColor;
     vec4 lightCounts;
     vec4 pointPositions[16];
     vec4 pointColors[16];
     mat4 reflectionViewProj;  // M17 (unused in scene shader, here for layout parity)
-    vec4 reflectionParams;    // M17 x=useReflectionPlane, yz=screenSize, w=0
+    vec4 reflectionParams;    // M17 x=useReflectionPlane, yz=screenSize; w=displacement scale (M50b tess)
     vec4 clipPlane;           // M17 — used only by reflection-pass shader
-    vec4 probeBoxMin;   // M49
+    vec4 probeBoxMin;   // M49 xyz=box min; w=tessellation factor (M50b tess)
     vec4 probeBoxMax;   // M49
     vec4 probeCenter;   // M49 — w = probeActive
 } u;
@@ -80,15 +80,15 @@ layout(set = 0, binding = 0) uniform LitUbo {
     vec4 cameraPos;
     vec4 materialParams;   // x=uvScale, y=roughness, z=reflectivity, w=shadowBias
     vec4 materialParams2;  // x=metallic, y=ao, z=normalScale, w=iblEnabled (M46b)
-    vec4 baseColorFactor;  // M45c — xyz=albedo tint, w unused
+    vec4 baseColorFactor;  // M45c — xyz=albedo tint; w=heightScale (M50a POM; unused in this stage)
     vec4 fogColor;
     vec4 lightCounts;
     vec4 pointPositions[16];
     vec4 pointColors[16];
     mat4 reflectionViewProj;  // M17 (unused in scene shader, here for layout parity)
-    vec4 reflectionParams;    // M17 x=useReflectionPlane, yz=screenSize, w=0
+    vec4 reflectionParams;    // M17 x=useReflectionPlane, yz=screenSize; w=displacement scale (M50b tess)
     vec4 clipPlane;           // M17 — used only by reflection-pass shader
-    vec4 probeBoxMin;   // M49
+    vec4 probeBoxMin;   // M49 xyz=box min; w=tessellation factor (M50b tess)
     vec4 probeBoxMax;   // M49
     vec4 probeCenter;   // M49 — w = probeActive
 } u;
@@ -148,9 +148,9 @@ layout(set = 0, binding = 0) uniform LitUbo {
     vec4 pointPositions[16];
     vec4 pointColors[16];
     mat4 reflectionViewProj;  // M17 (unused in scene shader, here for layout parity)
-    vec4 reflectionParams;    // M17 x=useReflectionPlane, yz=screenSize, w=0
+    vec4 reflectionParams;    // M17 x=useReflectionPlane, yz=screenSize; w=displacement scale (M50b tess)
     vec4 clipPlane;           // M17 — used only by reflection-pass shader
-    vec4 probeBoxMin;   // M49
+    vec4 probeBoxMin;   // M49 xyz=box min; w=tessellation factor (M50b tess)
     vec4 probeBoxMax;   // M49
     vec4 probeCenter;   // M49 — w = probeActive
 } u;
@@ -353,6 +353,104 @@ void main() {
     float fogFactor = 1.0 - exp(-u.fogColor.w * distFromCamera);
     vec3 finalColor = mix(color, u.fogColor.xyz, clamp(fogFactor, 0.0, 1.0));
     outColor = vec4(finalColor, 1.0);
+}
+)GLSL";
+}
+
+// M50b — hardware tessellation shader sources.
+// standardLitTessVertSource: passthrough vertex, outputs control-point attrs
+//   in LOCAL space (no MVP) at loc 0-3 for the tesc stage.
+// standardLitTescSource: fixed-factor tesc — factor from probeBoxMin.w (min 1).
+// standardLitTeseSource: barycentric interp + GGX height displacement; emits
+//   the same lit varyings (loc 0-4) that standardLitFragSource consumes.
+
+inline const char* standardLitTessVertSource() {
+    return R"GLSL(#version 450
+layout(location = 0) in vec3 aPos;
+layout(location = 1) in vec3 aNormal;
+layout(location = 2) in vec2 aUV;
+layout(location = 3) in vec3 aTangent;
+layout(location = 0) out vec3 cpPos;
+layout(location = 1) out vec3 cpNormal;
+layout(location = 2) out vec2 cpUV;
+layout(location = 3) out vec3 cpTangent;
+void main() {
+    cpPos = aPos; cpNormal = aNormal; cpUV = aUV; cpTangent = aTangent;
+}
+)GLSL";
+}
+
+inline const char* standardLitTescSource() {
+    return R"GLSL(#version 450
+layout(vertices = 3) out;
+layout(location = 0) in vec3 cpPos[];
+layout(location = 1) in vec3 cpNormal[];
+layout(location = 2) in vec2 cpUV[];
+layout(location = 3) in vec3 cpTangent[];
+layout(set = 0, binding = 0) uniform LitUbo {
+    mat4 mvp; mat4 model; mat4 lightViewProj;
+    vec4 sunDir; vec4 sunColor; vec4 ambient; vec4 emissive; vec4 cameraPos;
+    vec4 materialParams; vec4 materialParams2; vec4 baseColorFactor;
+    vec4 fogColor; vec4 lightCounts; vec4 pointPositions[16]; vec4 pointColors[16];
+    mat4 reflectionViewProj; vec4 reflectionParams; vec4 clipPlane;
+    vec4 probeBoxMin; vec4 probeBoxMax; vec4 probeCenter;
+} u;
+layout(location = 0) out vec3 tcPos[];
+layout(location = 1) out vec3 tcNormal[];
+layout(location = 2) out vec2 tcUV[];
+layout(location = 3) out vec3 tcTangent[];
+void main() {
+    if (gl_InvocationID == 0) {
+        float f = max(u.probeBoxMin.w, 1.0);
+        gl_TessLevelInner[0] = f;
+        gl_TessLevelOuter[0] = f;
+        gl_TessLevelOuter[1] = f;
+        gl_TessLevelOuter[2] = f;
+    }
+    tcPos[gl_InvocationID]     = cpPos[gl_InvocationID];
+    tcNormal[gl_InvocationID]  = cpNormal[gl_InvocationID];
+    tcUV[gl_InvocationID]      = cpUV[gl_InvocationID];
+    tcTangent[gl_InvocationID] = cpTangent[gl_InvocationID];
+}
+)GLSL";
+}
+
+inline const char* standardLitTeseSource() {
+    return R"GLSL(#version 450
+layout(triangles, equal_spacing, ccw) in;
+layout(location = 0) in vec3 tcPos[];
+layout(location = 1) in vec3 tcNormal[];
+layout(location = 2) in vec2 tcUV[];
+layout(location = 3) in vec3 tcTangent[];
+layout(set = 0, binding = 0) uniform LitUbo {
+    mat4 mvp; mat4 model; mat4 lightViewProj;
+    vec4 sunDir; vec4 sunColor; vec4 ambient; vec4 emissive; vec4 cameraPos;
+    vec4 materialParams; vec4 materialParams2; vec4 baseColorFactor;
+    vec4 fogColor; vec4 lightCounts; vec4 pointPositions[16]; vec4 pointColors[16];
+    mat4 reflectionViewProj; vec4 reflectionParams; vec4 clipPlane;
+    vec4 probeBoxMin; vec4 probeBoxMax; vec4 probeCenter;
+} u;
+layout(set = 0, binding = 13) uniform sampler2D uHeightMap;
+layout(location = 0) out vec3 vWorldPos;
+layout(location = 1) out vec3 vNormal;
+layout(location = 2) out vec3 vTangent;
+layout(location = 3) out vec2 vUV;
+layout(location = 4) out vec4 vLightSpacePos;
+void main() {
+    vec3 bc = gl_TessCoord;
+    vec3 localPos  = bc.x * tcPos[0]     + bc.y * tcPos[1]     + bc.z * tcPos[2];
+    vec3 localNorm = normalize(bc.x * tcNormal[0]  + bc.y * tcNormal[1]  + bc.z * tcNormal[2]);
+    vec2 uv        = bc.x * tcUV[0]      + bc.y * tcUV[1]      + bc.z * tcUV[2];
+    vec3 localTan  = normalize(bc.x * tcTangent[0] + bc.y * tcTangent[1] + bc.z * tcTangent[2]);
+    float h = textureLod(uHeightMap, uv * u.materialParams.x, 0.0).r;
+    localPos += localNorm * (h * u.reflectionParams.w);
+    vec4 world = u.model * vec4(localPos, 1.0);
+    vWorldPos = world.xyz;
+    vNormal   = mat3(u.model) * localNorm;
+    vTangent  = mat3(u.model) * localTan;
+    vUV       = uv;
+    vLightSpacePos = u.lightViewProj * world;
+    gl_Position = u.mvp * vec4(localPos, 1.0);
 }
 )GLSL";
 }

@@ -40,6 +40,11 @@ public:
     SkinnedMeshHandle createSkinnedMesh(const SkinnedMeshData& data) override;
     ShaderHandle createSkinnedShader(const std::string& vertexSrc,
                                       const std::string& fragmentSrc) override;
+    // M50b — tessellation is Vulkan-only; stub returns invalid handle.
+    ShaderHandle createTessellatedShader(const std::string&, const std::string&,
+                                          const std::string&, const std::string&) override {
+        return kInvalidHandle;
+    }
     bool reloadShader(ShaderHandle, const std::string&, const std::string&) override;
     void submitSkinnedDraw(const SkinnedDrawCall& call) override;
     CubemapHandle createCubemap(
@@ -59,6 +64,9 @@ public:
     void setShadowBounds(Vec3 center, float radius) override;
     void setReflectionPlane(Vec3 normal, float d) override;
     void disableReflectionPlane() override;
+    // M50b — wireframe + tessellation are Vulkan-only; stubs.
+    void setWireframe(bool) override {}
+    void setTessellationFactor(float) override {}
 
     void drawLine(Vec3 a, Vec3 b, Vec3 color) override;
     void flushDebugLines(const Mat4& view, const Mat4& projection) override;

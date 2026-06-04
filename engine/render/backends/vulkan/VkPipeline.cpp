@@ -78,10 +78,14 @@ VkRenderPass createRenderPass(VkContext& ctx, VkFormat color, VkFormat depth) {
 
 ::VkPipeline createGraphicsPipelineImpl(
         VkContext& ctx, VkSwapchain& swap, VkRenderPass rp, const VkShader& sh,
-        const VkPipelineVertexInputStateCreateInfo& vi) {
+        const VkPipelineVertexInputStateCreateInfo& vi, bool wireframe) {
+    // Determine whether tessellation stages are present.
+    const bool tess = (sh.tescModule != VK_NULL_HANDLE);
+
     VkPipelineInputAssemblyStateCreateInfo ia{};
     ia.sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO;
-    ia.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+    ia.topology = tess ? VK_PRIMITIVE_TOPOLOGY_PATCH_LIST
+                       : VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
 
     VkPipelineViewportStateCreateInfo vp{};
     vp.sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO;
@@ -90,8 +94,11 @@ VkRenderPass createRenderPass(VkContext& ctx, VkFormat color, VkFormat depth) {
 
     VkPipelineRasterizationStateCreateInfo rs{};
     rs.sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO;
-    rs.polygonMode = VK_POLYGON_MODE_FILL;
-    rs.cullMode = VK_CULL_MODE_BACK_BIT;
+    rs.polygonMode = wireframe ? VK_POLYGON_MODE_LINE : VK_POLYGON_MODE_FILL;
+    // Tessellated/displaced surfaces are double-sided: the tese winding under the
+    // negative-height viewport leaves them back-facing from above, and a displaced
+    // heightfield is best viewed from any angle. Non-tess geometry keeps back-cull.
+    rs.cullMode = tess ? VK_CULL_MODE_NONE : VK_CULL_MODE_BACK_BIT;
     rs.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE;
     rs.lineWidth = 1.0f;
 
@@ -120,24 +127,45 @@ VkRenderPass createRenderPass(VkContext& ctx, VkFormat color, VkFormat depth) {
     dynInfo.dynamicStateCount = 2;
     dynInfo.pDynamicStates = dyn;
 
-    VkPipelineShaderStageCreateInfo stages[2]{};
-    stages[0].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
-    stages[0].stage = VK_SHADER_STAGE_VERTEX_BIT;
-    stages[0].module = sh.vertexModule;
-    stages[0].pName = "main";
-    stages[1].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
-    stages[1].stage = VK_SHADER_STAGE_FRAGMENT_BIT;
-    stages[1].module = sh.fragmentModule;
-    stages[1].pName = "main";
+    // Build the shader stage array dynamically: vert [+ tesc + tese] + frag.
+    VkPipelineShaderStageCreateInfo stages[4]{};
+    uint32_t stageCount = 0;
+    stages[stageCount].sType  = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+    stages[stageCount].stage  = VK_SHADER_STAGE_VERTEX_BIT;
+    stages[stageCount].module = sh.vertexModule;
+    stages[stageCount].pName  = "main";
+    ++stageCount;
+    if (tess) {
+        stages[stageCount].sType  = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+        stages[stageCount].stage  = VK_SHADER_STAGE_TESSELLATION_CONTROL_BIT;
+        stages[stageCount].module = sh.tescModule;
+        stages[stageCount].pName  = "main";
+        ++stageCount;
+        stages[stageCount].sType  = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+        stages[stageCount].stage  = VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT;
+        stages[stageCount].module = sh.teseModule;
+        stages[stageCount].pName  = "main";
+        ++stageCount;
+    }
+    stages[stageCount].sType  = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+    stages[stageCount].stage  = VK_SHADER_STAGE_FRAGMENT_BIT;
+    stages[stageCount].module = sh.fragmentModule;
+    stages[stageCount].pName  = "main";
+    ++stageCount;
+
+    VkPipelineTessellationStateCreateInfo ts{};
+    ts.sType = VK_STRUCTURE_TYPE_PIPELINE_TESSELLATION_STATE_CREATE_INFO;
+    ts.patchControlPoints = 3;
 
     (void)swap;
 
     VkGraphicsPipelineCreateInfo info{};
     info.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
-    info.stageCount = 2;
+    info.stageCount = stageCount;
     info.pStages = stages;
     info.pVertexInputState = &vi;
     info.pInputAssemblyState = &ia;
+    info.pTessellationState = tess ? &ts : nullptr;
     info.pViewportState = &vp;
     info.pRasterizationState = &rs;
     info.pMultisampleState = &ms;
@@ -155,7 +183,8 @@ VkRenderPass createRenderPass(VkContext& ctx, VkFormat color, VkFormat depth) {
 }
 
 ::VkPipeline createGraphicsPipeline(VkContext& ctx, VkSwapchain& swap,
-                                     VkRenderPass rp, const VkShader& sh) {
+                                     VkRenderPass rp, const VkShader& sh,
+                                     bool wireframe) {
     // Vertex input: position, normal, uv, tangent — match scene::Vertex.
     // Confirmed: iron::Vertex = { Vec3 position; Vec3 normal; Vec2 uv; Vec3 tangent; }
     VkVertexInputBindingDescription binding{};
@@ -176,14 +205,15 @@ VkRenderPass createRenderPass(VkContext& ctx, VkFormat color, VkFormat depth) {
     vi.vertexAttributeDescriptionCount = 4;
     vi.pVertexAttributeDescriptions = attrs;
 
-    return createGraphicsPipelineImpl(ctx, swap, rp, sh, vi);
+    return createGraphicsPipelineImpl(ctx, swap, rp, sh, vi, wireframe);
 }
 
 // M23 — SkinnedVertex pipeline. 6 attributes (Pos, Normal, UV, Tangent,
 // joints[uvec4], weights[vec4]) at 76-byte stride. Everything else
 // (rasterization, depth, blend, render pass) matches the static path.
 ::VkPipeline createSkinnedGraphicsPipeline(VkContext& ctx, VkSwapchain& swap,
-                                            VkRenderPass rp, const VkShader& sh) {
+                                            VkRenderPass rp, const VkShader& sh,
+                                            bool wireframe) {
     VkVertexInputBindingDescription binding{};
     binding.binding   = 0;
     binding.stride    = static_cast<std::uint32_t>(sizeof(SkinnedVertex));
@@ -204,7 +234,7 @@ VkRenderPass createRenderPass(VkContext& ctx, VkFormat color, VkFormat depth) {
     vi.vertexAttributeDescriptionCount = 6;
     vi.pVertexAttributeDescriptions = attrs;
 
-    return createGraphicsPipelineImpl(ctx, swap, rp, sh, vi);
+    return createGraphicsPipelineImpl(ctx, swap, rp, sh, vi, wireframe);
 }
 
 }  // namespace
@@ -216,12 +246,12 @@ bool VkPipeline::init(VkContext& ctx, VkSwapchain& swap) {
 }
 
 void VkPipeline::destroy(VkContext& ctx) {
-    for (auto& [sh, pipe] : pipelines_) {
-        if (pipe) vkDestroyPipeline(ctx.device(), pipe, nullptr);
+    for (auto& e : pipelines_) {
+        if (e.pipeline) vkDestroyPipeline(ctx.device(), e.pipeline, nullptr);
     }
     pipelines_.clear();
-    for (auto& [sh, pipe] : skinnedPipelines_) {
-        if (pipe) vkDestroyPipeline(ctx.device(), pipe, nullptr);
+    for (auto& e : skinnedPipelines_) {
+        if (e.pipeline) vkDestroyPipeline(ctx.device(), e.pipeline, nullptr);
     }
     skinnedPipelines_.clear();
     for (auto fb : framebuffers_) if (fb) vkDestroyFramebuffer(ctx.device(), fb, nullptr);
@@ -253,40 +283,46 @@ bool VkPipeline::recreateFramebuffers(VkContext& ctx, VkSwapchain& swap) {
 }
 
 ::VkPipeline VkPipeline::pipelineFor(VkContext& ctx, VkSwapchain& swap,
-                                      const VkShader& sh) {
-    for (const auto& [s, p] : pipelines_) {
-        if (s == &sh) return p;
+                                      const VkShader& sh, bool wireframe) {
+    for (const auto& e : pipelines_) {
+        if (e.shader == &sh && e.wireframe == wireframe) return e.pipeline;
     }
     // Built against scenePass_ — scene geometry records there, not the
     // swapchain pass (see setScenePass / VUID-02684).
-    auto p = createGraphicsPipeline(ctx, swap, scenePass_, sh);
-    pipelines_.emplace_back(&sh, p);
+    auto p = createGraphicsPipeline(ctx, swap, scenePass_, sh, wireframe);
+    pipelines_.push_back({&sh, wireframe, p});
     return p;
 }
 
 ::VkPipeline VkPipeline::skinnedPipelineFor(VkContext& ctx, VkSwapchain& swap,
-                                              const VkShader& sh) {
-    for (const auto& [s, p] : skinnedPipelines_) {
-        if (s == &sh) return p;
+                                              const VkShader& sh, bool wireframe) {
+    for (const auto& e : skinnedPipelines_) {
+        if (e.shader == &sh && e.wireframe == wireframe) return e.pipeline;
     }
-    auto p = createSkinnedGraphicsPipeline(ctx, swap, scenePass_, sh);
-    skinnedPipelines_.emplace_back(&sh, p);
+    auto p = createSkinnedGraphicsPipeline(ctx, swap, scenePass_, sh, wireframe);
+    skinnedPipelines_.push_back({&sh, wireframe, p});
     return p;
 }
 
 void VkPipeline::invalidate(VkContext& ctx, const VkShader* sh) {
-    auto dropFrom = [&](std::vector<std::pair<const VkShader*, ::VkPipeline>>& cache) {
-        for (auto it = cache.begin(); it != cache.end(); ) {
-            if (it->first == sh) {
-                if (it->second) vkDestroyPipeline(ctx.device(), it->second, nullptr);
-                it = cache.erase(it);
-            } else {
-                ++it;
-            }
+    // Drop all PipelineEntry entries for this shader.
+    for (auto it = pipelines_.begin(); it != pipelines_.end(); ) {
+        if (it->shader == sh) {
+            if (it->pipeline) vkDestroyPipeline(ctx.device(), it->pipeline, nullptr);
+            it = pipelines_.erase(it);
+        } else {
+            ++it;
         }
-    };
-    dropFrom(pipelines_);
-    dropFrom(skinnedPipelines_);
+    }
+    // Drop skinned pipeline entries for this shader.
+    for (auto it = skinnedPipelines_.begin(); it != skinnedPipelines_.end(); ) {
+        if (it->shader == sh) {
+            if (it->pipeline) vkDestroyPipeline(ctx.device(), it->pipeline, nullptr);
+            it = skinnedPipelines_.erase(it);
+        } else {
+            ++it;
+        }
+    }
 }
 
 }  // namespace iron

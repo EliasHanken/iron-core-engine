@@ -22,6 +22,17 @@ int main() {
     CHECK(!skinned.empty());
     CHECK(!frag.empty());
 
+    // M50b — tessellation sources.
+    const auto tessVert = compileGlsl(VK_SHADER_STAGE_VERTEX_BIT,
+                                      standardLitTessVertSource());
+    const auto tesc     = compileGlsl(VK_SHADER_STAGE_TESSELLATION_CONTROL_BIT,
+                                      standardLitTescSource());
+    const auto tese     = compileGlsl(VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT,
+                                      standardLitTeseSource());
+    CHECK(!tessVert.empty());
+    CHECK(!tesc.empty());
+    CHECK(!tese.empty());
+
     return iron_test_result();
 }
 

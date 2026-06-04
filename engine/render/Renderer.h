@@ -115,6 +115,14 @@ public:
     virtual ShaderHandle createSkinnedShader(const std::string& vertexSrc,
                                               const std::string& fragmentSrc) = 0;
 
+    // M50b — create a tessellated shader (vert + tesc + tese + frag). The
+    // tesc/tese stages use the lit descriptor-set layout (same as createShader).
+    // Vulkan-only; OpenGL and Mock backends return kInvalidHandle.
+    virtual ShaderHandle createTessellatedShader(const std::string& vert,
+                                                  const std::string& tesc,
+                                                  const std::string& tese,
+                                                  const std::string& frag) = 0;
+
     // Convenience: create the engine's canonical standard lit shader (M45a).
     // Concrete — delegates to the backend's createShader with engine-owned GLSL.
     // Vulkan-only sources; the frozen OpenGL backend's games keep inline GLSL 330.
@@ -123,6 +131,11 @@ public:
     }
     ShaderHandle createStandardSkinnedLitShader() {
         return createSkinnedShader(standardSkinnedLitVertSource(), standardLitFragSource());
+    }
+    // M50b — convenience: engine-owned tessellated lit shader.
+    ShaderHandle createStandardTessellatedLitShader() {
+        return createTessellatedShader(standardLitTessVertSource(), standardLitTescSource(),
+                                       standardLitTeseSource(), standardLitFragSource());
     }
 
     // M28 — hot-reload: replace the GLSL behind an existing shader handle.
@@ -189,6 +202,11 @@ public:
     // shadow map must cover. A game calls this once with bounds enclosing its
     // scene.
     virtual void setShadowBounds(Vec3 center, float radius) = 0;
+
+    // M50b — toggle global wireframe (line polygon mode) for scene geometry.
+    virtual void setWireframe(bool enable) = 0;
+    // M50b — fixed tessellation factor (subdivision level) for tessellated draws.
+    virtual void setTessellationFactor(float factor) = 0;
 
     // Sets the world-space reflection plane. The renderer will run an extra
     // planar reflection pass per frame using a camera mirrored across this
