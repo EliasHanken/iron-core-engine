@@ -95,7 +95,10 @@ VkRenderPass createRenderPass(VkContext& ctx, VkFormat color, VkFormat depth) {
     VkPipelineRasterizationStateCreateInfo rs{};
     rs.sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO;
     rs.polygonMode = wireframe ? VK_POLYGON_MODE_LINE : VK_POLYGON_MODE_FILL;
-    rs.cullMode = VK_CULL_MODE_BACK_BIT;
+    // Tessellated/displaced surfaces are double-sided: the tese winding under the
+    // negative-height viewport leaves them back-facing from above, and a displaced
+    // heightfield is best viewed from any angle. Non-tess geometry keeps back-cull.
+    rs.cullMode = tess ? VK_CULL_MODE_NONE : VK_CULL_MODE_BACK_BIT;
     rs.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE;
     rs.lineWidth = 1.0f;
 
