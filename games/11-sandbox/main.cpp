@@ -19,6 +19,7 @@
 #include "render/Light.h"
 #include "render/Material.h"
 #include "render/ProceduralSky.h"
+#include "render/ProceduralTextures.h"
 #include "render/RenderHandles.h"
 #include "render/Renderer.h"
 #include "render/RendererFactory.h"
@@ -334,9 +335,58 @@ int main() {
     const iron::Vec3 kPbrGridOrigin{-3.25f, 2.0f, -8.0f};  // centered on X, elevated, behind scene
     const float kPbrGridSpacing = 1.3f;
 
+    // --- M50a: flat-vs-POM side-by-side demo ---
+    // Two horizontal quads (normal=+Y) side by side to the right of the main
+    // scene content, at Y=0 (ground level), X=+5 (flat) and X=+9 (POM).
+    // Both use the same stone height map as albedo (sRGB upload) and height map
+    // (linear upload) so the depth effect reads clearly.
+    // The camera is framed to see both quads at a grazing angle (~45° from +Y).
+    //
+    // Albedo: generateStoneHeightMap(512,6) as sRGB — stones show as light gray
+    //         domes on dark mortar, giving clear contrast for POM comparison.
+    // Height: generateStoneHeightMap(512,6) as linear — same pattern used as the
+    //         parallax height field (white peak = raised stone, dark = mortar valley).
+    //
+    // Stone height data generated once, uploaded twice (sRGB for albedo, linear
+    // for the height field so POM samples unmodified [0,1] values).
+    const auto pomStoneData = iron::generateStoneHeightMap(512, 6);
+    // Albedo: sRGB=true so the renderer applies sRGB decode for correct colour display.
+    const iron::TextureHandle pomAlbedoTex =
+        renderer.createTexture(512, 512, pomStoneData.data(), /*srgb=*/true);
+    // Height field: sRGB=false — linear values required; POM samples this as [0,1].
+    const iron::TextureHandle pomHeightTex =
+        renderer.createTexture(512, 512, pomStoneData.data(), /*srgb=*/false);
+
+    // Left quad: flat (no POM). Normal = +Y (horizontal, like a floor slab).
+    // Tiny Y=0.01 offset above the scene floor to avoid z-fighting.
+    iron::MeshData pomFlatMeshData;
+    iron::appendQuad(pomFlatMeshData,
+                     iron::Vec3{5.0f, 0.01f, 2.0f},
+                     iron::Vec2{2.5f, 2.5f},
+                     iron::Vec3{0.0f, 1.0f, 0.0f});
+    const iron::MeshHandle pomFlatMesh = renderer.createMesh(pomFlatMeshData);
+
+    // Right quad: POM enabled. Same geometry and surface — only heightScale differs.
+    iron::MeshData pomQuadMeshData;
+    iron::appendQuad(pomQuadMeshData,
+                     iron::Vec3{9.0f, 0.01f, 2.0f},
+                     iron::Vec2{2.5f, 2.5f},
+                     iron::Vec3{0.0f, 1.0f, 0.0f});
+    const iron::MeshHandle pomQuadMesh = renderer.createMesh(pomQuadMeshData);
+
+    // World-space label anchors (slightly above the slab surface for readability).
+    const iron::Vec3 kPomFlatCenter{5.0f, 0.5f, 2.0f};
+    const iron::Vec3 kPomQuadCenter{9.0f, 0.5f, 2.0f};
+
     // --- Camera ---
+    // M50a: camera repositioned to frame both POM demo quads at a grazing angle.
+    // The quads are at X=5 and X=9, Z=2, Y=0. Camera is positioned to the right
+    // of the scene and elevated, looking left-and-forward at the quads.
+    // Use RMB + WASD to fly around and see the full PBR grid / scene as usual.
     iron::FreeFlyCamera cam;
-    cam.position = {0.0f, 2.0f, 6.0f};
+    cam.position = {7.0f, 3.0f, 7.0f};
+    cam.yaw      = -0.5f;   // looking toward +X (right) and -Z (forward)
+    cam.pitch    = -0.35f;  // looking slightly down at the ground-level quads
 
     // M41: Play/Stop mode state.
     iron::EditorState editor;
@@ -1108,6 +1158,86 @@ int main() {
                 dc.model    = iron::translation(pos);
                 dc.material = m;
                 renderer.submit(dc);
+            }
+        }
+
+        // --- M50a: flat-vs-POM side-by-side demo draw calls ---
+        // Left quad: flat normal mapping only (heightScale=0, POM disabled).
+        // Right quad: parallax occlusion mapping (heightScale=0.08).
+        // Both quads: stone height map used as albedo + height field, uvScale=2.
+        if (pomFlatMesh  != iron::kInvalidHandle &&
+            pomQuadMesh  != iron::kInvalidHandle &&
+            pomAlbedoTex != iron::kInvalidHandle &&
+            pomHeightTex != iron::kInvalidHandle) {
+
+            // Shared material base: stone albedo, PBR dielectric, moderate roughness.
+            iron::Material pomBase{};
+            pomBase.texture    = pomAlbedoTex;
+            pomBase.heightMap  = pomHeightTex;
+            pomBase.normalMap  = renderer.flatNormalTexture();  // flat normal — height provides depth
+            pomBase.metallic   = 0.0f;
+            pomBase.roughness  = 0.7f;
+            pomBase.uvScale    = 2.0f;
+
+            // Left: flat (no POM). heightScale=0 disables POM in the lit shader.
+            iron::DrawCall flatDc{};
+            flatDc.mesh                  = pomFlatMesh;
+            flatDc.shader                = litShader;
+            flatDc.model                 = iron::Mat4::identity();
+            flatDc.material              = pomBase;
+            flatDc.material.heightScale  = 0.0f;  // POM OFF
+            renderer.submit(flatDc);
+
+            // Right: POM enabled. heightScale=0.08 gives clearly visible parallax depth.
+            iron::DrawCall pomDc{};
+            pomDc.mesh                  = pomQuadMesh;
+            pomDc.shader                = litShader;
+            pomDc.model                 = iron::Mat4::identity();
+            pomDc.material              = pomBase;
+            pomDc.material.heightScale  = 0.08f;  // POM ON
+            renderer.submit(pomDc);
+
+            // --- HUD labels: project world-space label anchors to screen and draw
+            // with ImGui foreground draw list. Drawn AFTER endFrame (inside ImGui).
+            // worldToScreen helper: project a Vec3 through the current view+proj
+            // into viewport pixel coordinates. Returns false if behind near plane.
+            const iron::Mat4 vp = proj * view;
+            auto worldToViewport = [&](const iron::Vec3& wp, float& sx, float& sy) -> bool {
+                const iron::Vec4 clip = vp * iron::Vec4{wp.x, wp.y, wp.z, 1.0f};
+                if (clip.w <= 0.0f) return false;
+                const float ndcX = clip.x / clip.w;
+                const float ndcY = clip.y / clip.w;
+                const float ndcZ = clip.z / clip.w;
+                if (ndcZ < -1.0f || ndcZ > 1.0f) return false;
+                // Vulkan NDC: Y increases downward in clip space, but the viewport
+                // image is composed with Y=0 at the top — match that convention.
+                sx = viewport.rectMin.x + (ndcX *  0.5f + 0.5f) * viewport.size.x;
+                sy = viewport.rectMin.y + (ndcY * -0.5f + 0.5f) * viewport.size.y;
+                return true;
+            };
+
+            ImDrawList* fg = ImGui::GetForegroundDrawList();
+            const ImU32 kLabelCol = IM_COL32(255, 240, 80, 230);  // yellow-white, easy to read
+            constexpr float kLabelOffset = 10.0f;  // pixels below projected point
+
+            float lx, ly;
+            if (worldToViewport(kPomFlatCenter, lx, ly)) {
+                const char* flatLabel = "Normal map (flat)";
+                const ImVec2 ts = ImGui::CalcTextSize(flatLabel);
+                fg->AddRectFilled({lx - ts.x * 0.5f - 3.0f, ly + kLabelOffset - 2.0f},
+                                  {lx + ts.x * 0.5f + 3.0f, ly + kLabelOffset + ts.y + 2.0f},
+                                  IM_COL32(0, 0, 0, 140));
+                fg->AddText({lx - ts.x * 0.5f, ly + kLabelOffset}, kLabelCol, flatLabel);
+            }
+
+            float rx, ry;
+            if (worldToViewport(kPomQuadCenter, rx, ry)) {
+                const char* pomLabel  = "Parallax Occlusion";
+                const ImVec2 ts2 = ImGui::CalcTextSize(pomLabel);
+                fg->AddRectFilled({rx - ts2.x * 0.5f - 3.0f, ry + kLabelOffset - 2.0f},
+                                  {rx + ts2.x * 0.5f + 3.0f, ry + kLabelOffset + ts2.y + 2.0f},
+                                  IM_COL32(0, 0, 0, 140));
+                fg->AddText({rx - ts2.x * 0.5f, ry + kLabelOffset}, kLabelCol, pomLabel);
             }
         }
 
