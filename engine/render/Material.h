@@ -18,6 +18,7 @@ struct Material {
     TextureHandle normalMap = kInvalidHandle;     // linear
     TextureHandle metallicRoughnessMap = kInvalidHandle;  // .g = roughness, .b = metallic (linear, glTF)
     TextureHandle aoMap = kInvalidHandle;                 // .r = ambient occlusion (linear)
+    TextureHandle heightMap = kInvalidHandle;             // linear; grayscale height field for POM (white=peak)
     TextureHandle emissiveMap = kInvalidHandle;           // sRGB; multiplies `emissive`
     Vec3 baseColorFactor{1.0f, 1.0f, 1.0f};              // albedo tint (glTF baseColorFactor)
     float metallic    = 0.0f;

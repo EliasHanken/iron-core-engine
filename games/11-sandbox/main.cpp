@@ -282,6 +282,7 @@ int main() {
         out.material.normalMap            = resolveTexture(e.material.normalPath,            renderer.flatNormalTexture(), /*srgb=*/false);
         out.material.metallicRoughnessMap = resolveTexture(e.material.metallicRoughnessPath, iron::kInvalidHandle,         /*srgb=*/false);
         out.material.aoMap                = resolveTexture(e.material.aoPath,                iron::kInvalidHandle,         /*srgb=*/false);
+        out.material.heightMap            = resolveTexture(e.material.heightPath,            iron::kInvalidHandle,         /*srgb=*/false);
         out.material.emissiveMap          = resolveTexture(e.material.emissivePath,          iron::kInvalidHandle,         /*srgb=*/true);
         // Scalars/factors: always read from the MaterialDef (source of truth).
         out.material.metallic        = e.material.metallic;
