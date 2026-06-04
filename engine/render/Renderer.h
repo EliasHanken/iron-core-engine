@@ -207,6 +207,10 @@ public:
     virtual void setWireframe(bool enable) = 0;
     // M50b — fixed tessellation factor (subdivision level) for tessellated draws.
     virtual void setTessellationFactor(float factor) = 0;
+    // M50c — true = distance-adaptive (screen-space) tessellation; false = fixed/uniform.
+    virtual void setTessellationMode(bool adaptive) = 0;
+    // M50c — adaptive target edge length in NDC units (smaller = denser).
+    virtual void setTessellationTargetEdge(float ndc) = 0;
 
     // Sets the world-space reflection plane. The renderer will run an extra
     // planar reflection pass per frame using a camera mirrored across this

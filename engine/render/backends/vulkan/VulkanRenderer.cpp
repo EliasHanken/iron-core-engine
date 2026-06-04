@@ -689,6 +689,8 @@ void VulkanRenderer::recordSceneDraw(VkCommandBuffer cb, const DrawCall& call) {
         ubo.reflectionParams.w = call.material.heightScale;  // displacement amount
         ubo.probeBoxMin.w      = pendingTessFactor_;           // UI tessellation factor
         ubo.baseColorFactor.w  = 0.0f;                         // POM OFF (real geometry)
+        ubo.lightCounts.y      = pendingTessAdaptive_ ? 1.0f : 0.0f;  // M50c tess mode
+        ubo.lightCounts.z      = pendingTessTargetEdge_;               // M50c target NDC edge
     }
 
     ::VkPipeline pipe = pipelines_.pipelineFor(context_, swapchain_, sh, pendingWireframe_);

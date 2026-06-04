@@ -67,6 +67,9 @@ public:
     // M50b — wireframe + tessellation are Vulkan-only; stubs.
     void setWireframe(bool) override {}
     void setTessellationFactor(float) override {}
+    // M50c — Vulkan-only; stubs.
+    void setTessellationMode(bool) override {}
+    void setTessellationTargetEdge(float) override {}
 
     void drawLine(Vec3 a, Vec3 b, Vec3 color) override;
     void flushDebugLines(const Mat4& view, const Mat4& projection) override;

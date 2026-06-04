@@ -99,6 +99,9 @@ public:
     // M50b — wireframe + tessellation factor.
     void setWireframe(bool e) override { pendingWireframe_ = e; }
     void setTessellationFactor(float f) override { pendingTessFactor_ = f; }
+    // M50c — adaptive mode + target NDC edge length.
+    void setTessellationMode(bool adaptive) override { pendingTessAdaptive_ = adaptive; }
+    void setTessellationTargetEdge(float ndc) override { pendingTessTargetEdge_ = ndc; }
 
     // --- debug ---
     void drawLine(Vec3 a, Vec3 b, Vec3 color) override;
@@ -339,6 +342,9 @@ private:
     // M50b — wireframe toggle + tessellation factor for tessellated draws.
     bool       pendingWireframe_    = false;
     float      pendingTessFactor_   = 16.0f;
+    // M50c — adaptive tessellation mode + target NDC edge length.
+    bool       pendingTessAdaptive_    = false;
+    float      pendingTessTargetEdge_  = 0.08f;
 };
 
 }  // namespace iron
