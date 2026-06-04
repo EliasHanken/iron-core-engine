@@ -486,14 +486,16 @@ int main() {
     // (linear upload) so the depth effect reads clearly.
     // The camera is framed to see both quads at a grazing angle (~45° from +Y).
     //
-    // Albedo: generateStoneHeightMap(512,6) as sRGB — stones show as light gray
+    // Albedo: generateStoneHeightMap(512,3) as sRGB — stones show as light gray
     //         domes on dark mortar, giving clear contrast for POM comparison.
-    // Height: generateStoneHeightMap(512,6) as linear — same pattern used as the
+    //         3 cells (coarse) so the tessellator (max 64×) resolves smooth
+    //         rounded domes instead of thin spiky cones.
+    // Height: generateStoneHeightMap(512,3) as linear — same pattern used as the
     //         parallax height field (white peak = raised stone, dark = mortar valley).
     //
     // Stone height data generated once, uploaded twice (sRGB for albedo, linear
     // for the height field so POM samples unmodified [0,1] values).
-    const auto pomStoneData = iron::generateStoneHeightMap(512, 6);
+    const auto pomStoneData = iron::generateStoneHeightMap(512, 3);
     // Albedo: sRGB=true so the renderer applies sRGB decode for correct colour display.
     const iron::TextureHandle pomAlbedoTex =
         renderer.createTexture(512, 512, pomStoneData.data(), /*srgb=*/true);
@@ -502,7 +504,7 @@ int main() {
         renderer.createTexture(512, 512, pomStoneData.data(), /*srgb=*/false);
     // Normal map: tangent-space normals derived from the same stone dome function
     // via central-difference gradient. sRGB=false — normal maps are always linear.
-    const auto pomNormalData = iron::generateStoneNormalMap(512, 6);
+    const auto pomNormalData = iron::generateStoneNormalMap(512, 3);
     const iron::TextureHandle pomNormalTex =
         renderer.createTexture(512, 512, pomNormalData.data(), /*srgb=*/false);
 
@@ -1392,8 +1394,8 @@ int main() {
         // --- M50a/M50b: flat / POM / tessellation side-by-side demo draw calls ---
         // Left quad: flat normal mapping only (heightScale=0, POM disabled).
         // Middle quad: parallax occlusion mapping (heightScale=0.08).
-        // Right quad: hardware tessellation displacement (tessShader, heightScale=0.08).
-        // All quads: stone height map used as albedo + height field, uvScale=2.
+        // Right quad: hardware tessellation displacement (tessShader, heightScale=0.12).
+        // All quads: stone height map used as albedo + height field, uvScale=1.
         if (pomFlatMesh  != iron::kInvalidHandle &&
             pomQuadMesh  != iron::kInvalidHandle &&
             pomAlbedoTex != iron::kInvalidHandle &&
@@ -1406,7 +1408,7 @@ int main() {
             pomBase.normalMap  = pomNormalTex;  // derived from stone dome — gives correct per-texel shading
             pomBase.metallic   = 0.0f;
             pomBase.roughness  = 0.7f;
-            pomBase.uvScale    = 2.0f;
+            pomBase.uvScale    = 1.0f;
 
             // Left: flat (no POM). heightScale=0 disables POM in the lit shader.
             iron::DrawCall flatDc{};
@@ -1437,7 +1439,7 @@ int main() {
                 tessDc.shader               = tessShader;
                 tessDc.model                = iron::Mat4::identity();
                 tessDc.material             = pomBase;
-                tessDc.material.heightScale = 0.08f;  // drives vertex displacement
+                tessDc.material.heightScale = 0.12f;  // drives vertex displacement; coarse domes resolve well → a bit more relief reads as rounded cobbles
                 renderer.submit(tessDc);
             }
 
