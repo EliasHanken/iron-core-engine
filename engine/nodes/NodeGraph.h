@@ -76,6 +76,7 @@ public:
     void   connect(NodeId fromNode, std::string fromPort,
                    NodeId toNode, std::string toPort);
     void   setLiteral(NodeId node, std::string port, NodeValue value);
+    void   adoptNode(Node n);   // insert a fully-formed node (used by IO on load)
 
     const Node* node(NodeId id) const;
     Node*       node(NodeId id);

@@ -2,6 +2,7 @@
 #include "nodes/NodeRegistry.h"
 #include "nodes/BuiltinNodes.h"
 #include "nodes/GraphEvaluator.h"
+#include "nodes/NodeGraphIO.h"
 #include "test_framework.h"
 
 #include <string>
@@ -214,6 +215,57 @@ int main() {
         ctx.maxSteps = 100;
         run(g, reg, ctx);   // must return, not hang
         CHECK(true);
+    }
+
+    // JSON round-trip: build -> toJson -> fromJson -> re-run gives same output.
+    {
+        NodeRegistry reg; registerBuiltinNodes(reg);
+        Graph g;
+        const NodeId entry = g.addNode("Entry");
+        const NodeId set = g.addNode("SetOutput");
+        g.setLiteral(set, "key", NodeValue::S("v"));
+        g.setLiteral(set, "value", NodeValue::F(42.0f));
+        g.connect(entry, "then", set, "in");
+
+        const nlohmann::json j = toJson(g);
+        const auto g2 = fromJson(j, reg);
+        CHECK(g2.has_value());
+        CHECK(g2->nodes().size() == 2);
+        CHECK(g2->connections().size() == 1);
+
+        RunContext ctx;
+        run(*g2, reg, ctx);
+        CHECK_NEAR(ctx.outputs.at("v").asFloat(), 42.0f);
+    }
+
+    // Author a graph as text (the AI path) and run it.
+    {
+        NodeRegistry reg; registerBuiltinNodes(reg);
+        const char* text = R"JSON(
+        {
+          "nodes": [
+            {"id":1,"type":"Entry"},
+            {"id":2,"type":"SetOutput","literals":{
+                "key":{"type":"String","value":"ai"},
+                "value":{"type":"Float","value":99.0}}}
+          ],
+          "connections": [
+            {"from":{"node":1,"port":"then"},"to":{"node":2,"port":"in"}}
+          ]
+        })JSON";
+        const auto g = fromJson(nlohmann::json::parse(text), reg);
+        CHECK(g.has_value());
+        RunContext ctx;
+        run(*g, reg, ctx);
+        CHECK_NEAR(ctx.outputs.at("ai").asFloat(), 99.0f);
+    }
+
+    // Unknown node type fails the load loudly.
+    {
+        NodeRegistry reg; registerBuiltinNodes(reg);
+        const char* text = R"JSON({"nodes":[{"id":1,"type":"Bogus"}],"connections":[]})JSON";
+        const auto g = fromJson(nlohmann::json::parse(text), reg);
+        CHECK(!g.has_value());
     }
 
     return iron_test_result();

@@ -129,6 +129,8 @@ NodeId Graph::addNode(std::string typeName) {
     return nodes_.back().id;
 }
 
+void Graph::adoptNode(Node n) { nodes_.push_back(std::move(n)); }
+
 void Graph::connect(NodeId fromNode, std::string fromPort,
                     NodeId toNode, std::string toPort) {
     conns_.push_back(Connection{fromNode, std::move(fromPort),
