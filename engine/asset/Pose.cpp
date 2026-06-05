@@ -122,6 +122,7 @@ void samplePose(const Skeleton& skeleton, const AnimationClip& clip,
         if (ch.samplerIndex < 0 ||
             static_cast<std::size_t>(ch.samplerIndex) >= clip.samplers.size()) continue;
         const AnimationSampler& s = clip.samplers[ch.samplerIndex];
+        if (s.inputs.empty()) continue;  // no keyframes — preserve bind-pose seed
         switch (ch.path) {
             case AnimationPath::Translation:
                 out.bones[ch.targetBone].translation = sampleVec3(s, time);

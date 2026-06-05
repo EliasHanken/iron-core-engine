@@ -1,3 +1,4 @@
+#include "asset/Animation.h"
 #include "asset/Pose.h"
 #include "asset/Skeleton.h"
 #include "math/Mat4.h"
@@ -46,6 +47,33 @@ int main() {
         CHECK_NEAR(p.bones[0].translation.x, 1.0f);
         CHECK_NEAR(p.bones[0].translation.y, 2.0f);
         CHECK_NEAR(p.bones[0].translation.z, 3.0f);
+    }
+
+    // samplePose preserves the bind-pose seed for an empty (failed-load)
+    // sampler instead of overwriting translation/scale with zeros.
+    {
+        Skeleton sk;
+        Bone root;
+        root.parentIndex = -1;
+        root.localBindTransform = composeTRS(Vec3{4, 5, 6}, Quat::identity(),
+                                             Vec3{1, 1, 1});
+        root.inverseBindMatrix = Mat4::identity();
+        sk.bones.push_back(root);
+
+        AnimationClip clip;
+        clip.samplers.emplace_back();  // empty sampler (no keyframes)
+        AnimationChannel ch;
+        ch.targetBone = 0;
+        ch.path = AnimationPath::Translation;
+        ch.samplerIndex = 0;
+        clip.channels.push_back(ch);
+
+        Pose p;
+        samplePose(sk, clip, 0.0f, p);
+        CHECK(p.bones.size() == 1);
+        CHECK_NEAR(p.bones[0].translation.x, 4.0f);
+        CHECK_NEAR(p.bones[0].translation.y, 5.0f);
+        CHECK_NEAR(p.bones[0].translation.z, 6.0f);
     }
 
     return iron_test_result();
