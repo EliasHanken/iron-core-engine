@@ -29,6 +29,7 @@ add_library(ironcore STATIC
   asset/GltfLoader.cpp
   asset/AnimationPlayer.cpp
   asset/Pose.cpp
+  asset/PoseBlend.cpp
   asset/CharacterAnimator.cpp
   audio/AudioEngine.cpp
   game/Collision.cpp
