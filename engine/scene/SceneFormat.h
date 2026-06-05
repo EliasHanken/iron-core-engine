@@ -58,6 +58,7 @@ struct SceneEntity {
     std::optional<CollisionShape>    collision;  // M42 — absent = no collider
     std::optional<AudioEmitter>      audio;      // M42 — absent = no emitter
     std::optional<ReflectionProbeDef> probe;     // M49 — absent = no probe
+    std::string logicGraph;   // M55 — serialized node graph (empty = none)
 };
 
 // A complete authored scene: placed entities + global lighting/environment.
