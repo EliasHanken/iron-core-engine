@@ -1,6 +1,7 @@
 #include "nodes/GraphEditorModel.h"
 #include "nodes/NodeRegistry.h"
 #include "nodes/BuiltinNodes.h"
+#include "nodes/NodeContext.h"
 #include "test_framework.h"
 
 using namespace iron;
@@ -77,6 +78,46 @@ int main() {
         CHECK_NEAR(m2.lastRun().outputs.at("v").asFloat(), 5.0f);
 
         CHECK(!m2.loadFromJson(nlohmann::json::parse(R"({"nodes":[{"id":1,"type":"Bogus"}]})")));
+    }
+
+    // exec output cardinality: a second target replaces the first.
+    {
+        GraphEditorModel m(&reg);
+        const NodeId entry = m.addNode("Entry", 0, 0);
+        const NodeId s1 = m.addNode("SetOutput", 0, 0);
+        const NodeId s2 = m.addNode("SetOutput", 0, 0);
+        CHECK(m.connect(entry, "then", s1, "in"));
+        CHECK(m.connect(entry, "then", s2, "in"));   // replaces
+        CHECK(!m.graph().incoming(s1, "in").has_value());
+        CHECK(m.graph().incoming(s2, "in").has_value());
+        CHECK(m.graph().outgoing(entry, "then")->toNode == s2);
+    }
+
+    // direct disconnect on the model removes the wire + dirties.
+    {
+        GraphEditorModel m(&reg);
+        const NodeId entry = m.addNode("Entry", 0, 0);
+        const NodeId set = m.addNode("SetOutput", 0, 0);
+        CHECK(m.connect(entry, "then", set, "in"));
+        m.clearDirty();
+        m.disconnect(set, "in");
+        CHECK(!m.graph().incoming(set, "in").has_value());
+        CHECK(m.dirty());
+    }
+
+    // int<->float compatibility via a local registry with an Int input port.
+    {
+        NodeRegistry localReg;
+        localReg.registerType({"IntSink", "Test",
+            { PortDesc{"in", PortType::Int, PortDir::In} },
+            [](NodeContext&) {} });
+        localReg.registerType({"FloatSrc", "Test",
+            { PortDesc{"out", PortType::Float, PortDir::Out} },
+            [](NodeContext&) {} });
+        GraphEditorModel m(&localReg);
+        const NodeId src = m.addNode("FloatSrc", 0, 0);
+        const NodeId snk = m.addNode("IntSink", 0, 0);
+        CHECK(m.connect(src, "out", snk, "in"));   // Float Out -> Int In: accepted
     }
 
     return iron_test_result();
