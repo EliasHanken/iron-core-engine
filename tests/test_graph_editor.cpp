@@ -120,5 +120,22 @@ int main() {
         CHECK(m.connect(src, "out", snk, "in"));   // Float Out -> Int In: accepted
     }
 
+    // setNodePosition updates editorX/Y + dirties; positions round-trip JSON.
+    {
+        GraphEditorModel m(&reg);
+        const NodeId n = m.addNode("Const", 0, 0);
+        m.clearDirty();
+        m.setNodePosition(n, 123.0f, 45.0f);
+        CHECK(m.dirty());
+        CHECK_NEAR(m.graph().node(n)->editorX, 123.0f);
+        CHECK_NEAR(m.graph().node(n)->editorY, 45.0f);
+
+        const nlohmann::json j = m.toJson();
+        GraphEditorModel m2(&reg);
+        CHECK(m2.loadFromJson(j));
+        CHECK_NEAR(m2.graph().node(n)->editorX, 123.0f);
+        CHECK_NEAR(m2.graph().node(n)->editorY, 45.0f);
+    }
+
     return iron_test_result();
 }

@@ -4,6 +4,8 @@ add_library(imgui_node_editor STATIC
   imgui_node_editor_api.cpp
   imgui_canvas.cpp
   crude_json.cpp
+  utilities/widgets.cpp
+  utilities/drawing.cpp
 )
 target_include_directories(imgui_node_editor PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 find_package(imgui CONFIG REQUIRED)

@@ -25,6 +25,11 @@ public:
     // the action the user requested this frame (host performs the assign/load).
     Action draw(GraphEditorModel& model, const char* targetName, bool targetHasGraph);
 
+    // Forget which nodes have been positioned, so the next draw re-applies every
+    // node's saved editorX/editorY to the canvas. Call after the host replaces
+    // the model's graph (e.g. Load-from-entity) so persisted positions take hold.
+    void resetPlacement() { placed_.clear(); }
+
 private:
     ax::NodeEditor::EditorContext* ctx_ = nullptr;
     char savePath_[256] = "node_graph.json";

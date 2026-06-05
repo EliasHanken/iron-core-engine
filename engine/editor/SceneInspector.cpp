@@ -11,11 +11,20 @@
 namespace iron {
 
 bool SceneInspector::draw(const Reflection& reflection,
-                          SceneEntity& e,
+                          SceneEntity* entity,
                           GizmoSpace& space,
                           EffectKind& effectKind) {
     bool changed = false;
+    // Submit the window EVERY frame, selection or not. Begin-ing it only when an
+    // entity is selected makes it newly-appear on selection, and ImGui focuses a
+    // freshly-submitted window — yanking the user off whatever panel they were in.
     ImGui::Begin("Inspector");
+    if (!entity) {
+        ImGui::TextDisabled("(no entity selected)");
+        ImGui::End();
+        return false;
+    }
+    SceneEntity& e = *entity;
 
     ImGui::Text("Name: %s", e.name.empty() ? "(unnamed)" : e.name.c_str());
 

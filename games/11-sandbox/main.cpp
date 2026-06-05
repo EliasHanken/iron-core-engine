@@ -1119,8 +1119,11 @@ int main() {
 
             // Latch delete/duplicate edges here (lockstep with input), consumed
             // once in render(). Suppressed while ImGui owns the keyboard (e.g.
-            // typing in the glTF path field).
-            if (!imgui.wantsKeyboard()) {
+            // typing in the glTF path field) and gated to the focused Viewport so
+            // deleting a node in the Node Editor doesn't also delete the selected
+            // scene entity (the node editor handles its own delete). viewport.focused
+            // is last frame's value — fine for a held-focus check.
+            if (!imgui.wantsKeyboard() && viewport.focused) {
                 if (input.keyPressed(GLFW_KEY_DELETE)) wantDeleteShortcut = true;
                 else if (input.keyDown(GLFW_KEY_LEFT_CONTROL) &&
                          input.keyPressed(GLFW_KEY_D))
@@ -1199,10 +1202,14 @@ int main() {
                 ImGuiID center = dockId;
                 ImGuiID left  = ImGui::DockBuilderSplitNode(center, ImGuiDir_Left,  0.18f, nullptr, &center);
                 ImGuiID right = ImGui::DockBuilderSplitNode(center, ImGuiDir_Right, 0.24f, nullptr, &center);
+                // M56: dock the Node Editor in a bottom split under the Viewport
+                // (split center down first so the Viewport keeps the upper area).
+                ImGuiID bottom = ImGui::DockBuilderSplitNode(center, ImGuiDir_Down, 0.35f, nullptr, &center);
                 ImGui::DockBuilderDockWindow("Viewport",       center);
                 ImGui::DockBuilderDockWindow("Scene Outliner", left);
                 ImGui::DockBuilderDockWindow("Environment",    left);
                 ImGui::DockBuilderDockWindow("Inspector",      right);
+                ImGui::DockBuilderDockWindow("Node Editor",    bottom);
                 ImGui::DockBuilderFinish(dockId);
             }
         }
@@ -1246,10 +1253,15 @@ int main() {
         }
 
         const iron::SceneOutliner::Result outRes = outliner.draw(scene, selectedIndex);
-        if (selectedIndex >= 0 && selectedIndex < static_cast<int>(scene.entities.size())) {
+        {
+            // Always submit the Inspector window (even with no selection) so it
+            // doesn't newly-appear on select and steal focus to its tab.
+            const bool inspValid = selectedIndex >= 0 &&
+                                   selectedIndex < static_cast<int>(scene.entities.size());
             iron::GizmoSpace sp = gizmo.space();
             iron::EffectKind ek = selectionEffect;
-            inspector.draw(reflection, scene.entities[selectedIndex], sp, ek);
+            inspector.draw(reflection,
+                           inspValid ? &scene.entities[selectedIndex] : nullptr, sp, ek);
             gizmo.setSpace(sp);  // Inspector may flip it; setSpace is a no-op mid-drag
             if (ek != selectionEffect) {
                 selectionEffect = ek;
@@ -1277,7 +1289,9 @@ int main() {
             } else if (selValid && act == iron::NodeGraphPanel::Action::LoadFromEntity) {
                 auto parsed = nlohmann::json::parse(
                     scene.entities[selectedIndex].logicGraph, nullptr, false);
-                if (!parsed.is_discarded()) graphModel.loadFromJson(parsed);
+                if (!parsed.is_discarded() && graphModel.loadFromJson(parsed))
+                    nodeGraphPanel.resetPlacement();  // re-apply saved node positions
+
             }
         }
 
