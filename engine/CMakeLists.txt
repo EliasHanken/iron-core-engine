@@ -28,6 +28,9 @@ add_library(ironcore STATIC
   physics/CharacterController.cpp
   asset/GltfLoader.cpp
   asset/AnimationPlayer.cpp
+  asset/Pose.cpp
+  asset/PoseBlend.cpp
+  asset/Ik.cpp
   asset/CharacterAnimator.cpp
   audio/AudioEngine.cpp
   game/Collision.cpp

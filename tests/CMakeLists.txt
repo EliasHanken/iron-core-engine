@@ -21,6 +21,10 @@ target_compile_definitions(test_gltf_loader PRIVATE
   IRON_REPO_ROOT="${CMAKE_SOURCE_DIR}")
 iron_add_test(test_animation_player test_animation_player.cpp)
 iron_add_test(test_character_animator test_character_animator.cpp)
+iron_add_test(test_pose test_pose.cpp)
+iron_add_test(test_pose_blend test_pose_blend.cpp)
+iron_add_test(test_two_bone_ik test_two_bone_ik.cpp)
+iron_add_test(test_look_at test_look_at.cpp)
 iron_add_test(test_audio_engine test_audio_engine.cpp)
 target_compile_definitions(test_audio_engine PRIVATE
   IRON_REPO_ROOT="${CMAKE_SOURCE_DIR}")
