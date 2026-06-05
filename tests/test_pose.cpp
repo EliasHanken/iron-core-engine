@@ -76,5 +76,60 @@ int main() {
         CHECK_NEAR(p.bones[0].translation.z, 6.0f);
     }
 
+    // samplePose drives a bone's translation from a clip, then posePalette
+    // produces global * inverseBind (identity inverseBind => global).
+    {
+        Skeleton sk;
+        Bone root;
+        root.parentIndex = -1;
+        root.localBindTransform = Mat4::identity();
+        root.inverseBindMatrix = Mat4::identity();
+        sk.bones.push_back(root);
+
+        AnimationClip clip;
+        clip.name = "slide";
+        clip.duration = 1.0f;
+        AnimationSampler s;
+        s.inputs = {0.0f, 1.0f};
+        s.outputs = {0, 0, 0,  10, 0, 0};
+        s.interpolation = AnimationInterpolation::Linear;
+        clip.samplers.push_back(s);
+        AnimationChannel ch;
+        ch.targetBone = 0;
+        ch.path = AnimationPath::Translation;
+        ch.samplerIndex = 0;
+        clip.channels.push_back(ch);
+
+        Pose pose;
+        samplePose(sk, clip, 0.5f, pose);
+        CHECK_NEAR(pose.bones[0].translation.x, 5.0f);
+
+        std::array<Mat4, 1> palette{};
+        posePalette(sk, pose, palette);
+        CHECK_NEAR(palette[0].at(0, 3), 5.0f);
+    }
+
+    // composeGlobals concatenates a parent translation into a child.
+    {
+        Skeleton sk;
+        Bone root;
+        root.parentIndex = -1;
+        root.localBindTransform = composeTRS(Vec3{10, 0, 0}, Quat::identity(), Vec3{1, 1, 1});
+        root.inverseBindMatrix = Mat4::identity();
+        Bone child;
+        child.parentIndex = 0;
+        child.localBindTransform = composeTRS(Vec3{1, 0, 0}, Quat::identity(), Vec3{1, 1, 1});
+        child.inverseBindMatrix = Mat4::identity();
+        sk.bones.push_back(root);
+        sk.bones.push_back(child);
+
+        Pose pose;
+        bindPose(sk, pose);
+        std::array<Mat4, 2> globals{};
+        composeGlobals(sk, pose, globals);
+        CHECK_NEAR(globals[0].at(0, 3), 10.0f);
+        CHECK_NEAR(globals[1].at(0, 3), 11.0f);  // 10 (parent) + 1 (child)
+    }
+
     return iron_test_result();
 }
