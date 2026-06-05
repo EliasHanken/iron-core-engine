@@ -34,6 +34,8 @@ add_library(ironcore STATIC
   asset/CharacterAnimator.cpp
   asset/AnimationStateMachine.cpp
   nodes/NodeGraph.cpp
+  nodes/NodeRegistry.cpp
+  nodes/BuiltinNodes.cpp
   audio/AudioEngine.cpp
   game/Collision.cpp
   render/RendererFactory.cpp

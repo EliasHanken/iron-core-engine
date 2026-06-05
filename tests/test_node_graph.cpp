@@ -1,4 +1,6 @@
 #include "nodes/NodeGraph.h"
+#include "nodes/NodeRegistry.h"
+#include "nodes/BuiltinNodes.h"
 #include "test_framework.h"
 
 #include <string>
@@ -69,6 +71,34 @@ int main() {
 
         CHECK(!g.incoming(b, "nope").has_value());
         CHECK(g.node(999) == nullptr);
+    }
+
+    // Registry + catalog introspection (the AI contract).
+    {
+        NodeRegistry reg;
+        registerBuiltinNodes(reg);
+
+        CHECK(reg.find("Branch") != nullptr);
+        CHECK(reg.find("Nonexistent") == nullptr);
+        CHECK(reg.all().size() == 7);
+
+        const auto cat = catalogToJson(reg);
+        CHECK(cat.is_array());
+        CHECK(cat.size() == 7);
+        bool foundBranch = false;
+        for (const auto& n : cat) {
+            if (n["typeName"] == "Branch") {
+                foundBranch = true;
+                bool hasCond = false, hasTrue = false;
+                for (const auto& p : n["ports"]) {
+                    if (p["name"] == "cond" && p["type"] == "Bool" && p["dir"] == "in") hasCond = true;
+                    if (p["name"] == "true" && p["type"] == "Exec" && p["dir"] == "out") hasTrue = true;
+                }
+                CHECK(hasCond);
+                CHECK(hasTrue);
+            }
+        }
+        CHECK(foundBranch);
     }
 
     return iron_test_result();
