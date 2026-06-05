@@ -81,7 +81,11 @@ void NodeGraphPanel::draw(GraphEditorModel& model) {
         ImGui::TextUnformatted("Add:");
         for (const NodeTypeDesc* t : model.registry()->all()) {
             ImGui::SameLine();
-            if (ImGui::SmallButton(t->typeName.c_str())) model.addNode(t->typeName, 40.0f, 40.0f);
+            if (ImGui::SmallButton(t->typeName.c_str())) {
+                model.addNode(t->typeName, spawnX_, spawnY_);
+                spawnX_ += 30.0f; spawnY_ += 30.0f;
+                if (spawnX_ > 400.0f) { spawnX_ = 40.0f; spawnY_ = 40.0f; }
+            }
         }
     }
     // Outputs readout
@@ -94,6 +98,11 @@ void NodeGraphPanel::draw(GraphEditorModel& model) {
     for (const Node& n : model.graph().nodes()) {
         const NodeTypeDesc* t = model.registry() ? model.registry()->find(n.typeName) : nullptr;
         if (!t) continue;
+        if (placed_.find(n.id) == placed_.end()) {
+            ed::SetNodePosition(ed::NodeId(static_cast<std::uintptr_t>(n.id)),
+                                ImVec2(n.editorX, n.editorY));
+            placed_.insert(n.id);
+        }
         ed::BeginNode(ed::NodeId(static_cast<std::uintptr_t>(n.id)));
         ImGui::TextUnformatted(n.typeName.c_str());
         for (int i = 0; i < static_cast<int>(t->ports.size()); ++i) {

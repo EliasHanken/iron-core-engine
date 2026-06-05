@@ -1,5 +1,7 @@
 #pragma once
 
+#include <unordered_set>
+
 namespace ax { namespace NodeEditor { struct EditorContext; } }
 
 namespace iron {
@@ -20,6 +22,9 @@ public:
 private:
     ax::NodeEditor::EditorContext* ctx_ = nullptr;
     char savePath_[256] = "node_graph.json";
+    float spawnX_ = 40.0f;
+    float spawnY_ = 40.0f;
+    std::unordered_set<unsigned int> placed_;   // NodeId already positioned on the canvas
 };
 
 }  // namespace iron
