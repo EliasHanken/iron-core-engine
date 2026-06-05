@@ -73,6 +73,14 @@ void GraphEditorModel::setLiteral(NodeId id, std::string port, NodeValue value) 
     dirty_ = true;
 }
 
+void GraphEditorModel::setNodePosition(NodeId id, float x, float y) {
+    if (Node* n = graph_.node(id)) {
+        n->editorX = x;
+        n->editorY = y;
+        dirty_ = true;
+    }
+}
+
 void GraphEditorModel::run() {
     lastRun_ = RunContext{};
     if (registry_) iron::run(graph_, *registry_, lastRun_);

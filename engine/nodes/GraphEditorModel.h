@@ -30,6 +30,8 @@ public:
                    NodeId toNode, std::string toPort);
     void   disconnect(NodeId toNode, std::string toPort);
     void   setLiteral(NodeId id, std::string port, NodeValue value);
+    // Update a node's editor canvas position (persisted in toJson). Dirties.
+    void setNodePosition(NodeId id, float x, float y);
 
     void   run();                         // executes via the M53 evaluator
     const RunContext& lastRun() const { return lastRun_; }
