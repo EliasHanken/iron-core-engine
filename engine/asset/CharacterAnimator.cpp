@@ -21,11 +21,28 @@ void CharacterAnimator::setClipForState(std::string state,
     clips_[std::move(state)] = clip;
 }
 
+void CharacterAnimator::setBlendSpaceForState(std::string state,
+                                              BlendSpace1D space) {
+    blendSpaces_[std::move(state)] = std::move(space);
+}
+
+void CharacterAnimator::setBlendParam(float param) {
+    blendParam_ = param;
+}
+
 bool CharacterAnimator::isKnownState(std::string_view state) const {
-    return clips_.count(std::string(state)) > 0;
+    return clips_.count(std::string(state)) > 0 ||
+           blendSpaces_.count(std::string(state)) > 0;
 }
 
 float CharacterAnimator::stateDuration(std::string_view state) const {
+    auto bs = blendSpaces_.find(std::string(state));
+    if (bs != blendSpaces_.end()) {
+        for (const auto& s : bs->second.samples) {
+            if (s.second && s.second->duration > 0.0f) return s.second->duration;
+        }
+        return 0.0f;
+    }
     auto it = clips_.find(std::string(state));
     if (it == clips_.end() || !it->second) return 0.0f;
     return it->second->duration;
@@ -33,6 +50,11 @@ float CharacterAnimator::stateDuration(std::string_view state) const {
 
 void CharacterAnimator::sampleState(std::string_view state, float time,
                                     Pose& out) const {
+    auto bs = blendSpaces_.find(std::string(state));
+    if (bs != blendSpaces_.end()) {
+        sampleBlendSpace(*skeleton_, bs->second, blendParam_, time, out);
+        return;
+    }
     auto it = clips_.find(std::string(state));
     if (it == clips_.end() || !it->second) {
         if (skeleton_) bindPose(*skeleton_, out);

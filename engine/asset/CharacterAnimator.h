@@ -2,6 +2,7 @@
 
 #include "asset/Animation.h"
 #include "asset/Pose.h"
+#include "asset/PoseBlend.h"
 #include "asset/Skeleton.h"
 #include "math/Mat4.h"
 
@@ -19,6 +20,12 @@ class CharacterAnimator {
 public:
     void setSkeleton(const Skeleton* skeleton);
     void setClipForState(std::string state, const AnimationClip* clip);
+
+    // Register a 1D blend space under a state name (takes precedence over a
+    // single clip registered under the same name). Stored by value.
+    void setBlendSpaceForState(std::string state, BlendSpace1D space);
+    // Drive the active blend space (e.g. movement speed).
+    void setBlendParam(float param);
 
     // Hard cut (fade time 0).
     void switchTo(std::string_view state);
@@ -42,6 +49,8 @@ protected:
 
     const Skeleton* skeleton_ = nullptr;
     std::unordered_map<std::string, const AnimationClip*> clips_;
+    std::unordered_map<std::string, BlendSpace1D> blendSpaces_;
+    float blendParam_ = 0.0f;
     std::string currentState_;
     float       time_ = 0.0f;
 

@@ -1,5 +1,6 @@
 #include "asset/Animation.h"
 #include "asset/CharacterAnimator.h"
+#include "asset/PoseBlend.h"
 #include "asset/Skeleton.h"
 #include "math/Mat4.h"
 #include "math/Quaternion.h"
@@ -9,6 +10,7 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <utility>
 
 using namespace iron;
 
@@ -229,6 +231,40 @@ int main() {
         // is gone and the value is finite, not the all-zero / untouched garbage.
         CHECK(out[0].at(0, 3) != -999.0f);
         CHECK(std::isfinite(out[0].at(0, 3)));
+    }
+
+    // Blend-space state: param drives the blended output.
+    {
+        const Skeleton sk = makeTrivialSkeleton();
+        const AnimationClip walk = makeTranslateClip("walk");  // x:0->10
+        AnimationClip still;
+        still.name = "still";
+        still.duration = 1.0f;
+        AnimationSampler ss;
+        ss.inputs = {0.0f, 1.0f};
+        ss.outputs = {0, 0, 0, 0, 0, 0};
+        ss.interpolation = AnimationInterpolation::Linear;
+        still.samplers.push_back(ss);
+        AnimationChannel sc;
+        sc.targetBone = 0; sc.path = AnimationPath::Translation; sc.samplerIndex = 0;
+        still.channels.push_back(sc);
+
+        BlendSpace1D space;
+        space.add(0.0f, &still);   // param 0 -> x stays 0
+        space.add(1.0f, &walk);    // param 1 -> x up to 10
+
+        CharacterAnimator a;
+        a.setSkeleton(&sk);
+        a.setBlendSpaceForState("locomotion", std::move(space));
+        a.switchTo("locomotion");
+        a.setBlendParam(0.5f);
+        a.update(1.0f);            // time wraps to 0 at duration 1
+        a.setBlendParam(0.5f);
+        a.update(0.5f);           // time 0.5
+        std::array<Mat4, 1> out{};
+        a.evaluate(out);
+        // blendSpace(param 0.5): blend(still x=0, walk x=5) = 2.5
+        CHECK_NEAR(out[0].at(0, 3), 2.5f);
     }
 
     return iron_test_result();
