@@ -1119,8 +1119,11 @@ int main() {
 
             // Latch delete/duplicate edges here (lockstep with input), consumed
             // once in render(). Suppressed while ImGui owns the keyboard (e.g.
-            // typing in the glTF path field).
-            if (!imgui.wantsKeyboard()) {
+            // typing in the glTF path field) and gated to the focused Viewport so
+            // deleting a node in the Node Editor doesn't also delete the selected
+            // scene entity (the node editor handles its own delete). viewport.focused
+            // is last frame's value — fine for a held-focus check.
+            if (!imgui.wantsKeyboard() && viewport.focused) {
                 if (input.keyPressed(GLFW_KEY_DELETE)) wantDeleteShortcut = true;
                 else if (input.keyDown(GLFW_KEY_LEFT_CONTROL) &&
                          input.keyPressed(GLFW_KEY_D))
