@@ -6,6 +6,7 @@
 
 #include <imgui.h>
 #include <imgui_node_editor.h>
+#include "utilities/widgets.h"
 
 #include <nlohmann/json.hpp>
 
@@ -49,6 +50,36 @@ int findPortIndex(const GraphEditorModel& m, NodeId node, const std::string& por
     for (int i = 0; i < static_cast<int>(t->ports.size()); ++i)
         if (t->ports[i].name == port && (t->ports[i].dir == PortDir::Out) == wantOut) return i;
     return -1;
+}
+
+ImColor pinColor(PortType t) {
+    switch (t) {
+        case PortType::Exec:   return ImColor(255, 255, 255);
+        case PortType::Bool:   return ImColor(220,  48,  48);
+        case PortType::Int:    return ImColor( 68, 201, 156);
+        case PortType::Float:  return ImColor(147, 226,  74);
+        case PortType::Vec2:
+        case PortType::Vec3:
+        case PortType::Vec4:   return ImColor(245, 201,   0);
+        case PortType::String: return ImColor(218,  60, 156);
+    }
+    return ImColor(255, 255, 255);
+}
+
+ImColor headerColor(const std::string& category) {
+    if (category == "Event")     return ImColor(150,  45,  45);
+    if (category == "Flow")      return ImColor( 60,  60,  90);
+    if (category == "Math")      return ImColor( 45, 120,  60);
+    if (category == "Transform") return ImColor(135,  90,  30);
+    if (category == "Variable")  return ImColor(105,  45, 135);
+    if (category == "Value")     return ImColor( 30, 105, 120);
+    if (category == "Sink")      return ImColor( 90,  90,  90);
+    return ImColor( 75,  75,  75);
+}
+
+ax::Widgets::IconType iconFor(PortType t) {
+    return t == PortType::Exec ? ax::Widgets::IconType::Flow
+                               : ax::Widgets::IconType::Circle;
 }
 
 }  // namespace
@@ -132,23 +163,34 @@ NodeGraphPanel::Action NodeGraphPanel::draw(GraphEditorModel& model, const char*
             placed_.insert(n.id);
         }
         ed::BeginNode(ed::NodeId(static_cast<std::uintptr_t>(n.id)));
-        ImGui::TextUnformatted(n.typeName.c_str());
+        ImGui::PushID(static_cast<int>(n.id));
+
+        // Header: colored title row (per-category tint).
+        ImGui::TextColored(headerColor(t->category).Value, "%s", t->typeName.c_str());
+        ImGui::Dummy(ImVec2(0.0f, 2.0f));
+
+        const float iconSz = 16.0f;
+
+        // Left column: inputs (icon + label + inline literal for unconnected data).
+        ImGui::BeginGroup();
         for (int i = 0; i < static_cast<int>(t->ports.size()); ++i) {
             const PortDesc& p = t->ports[i];
-            const bool isOut = p.dir == PortDir::Out;
-            ed::BeginPin(ed::PinId(pinId(n.id, i, isOut)),
-                         isOut ? ed::PinKind::Output : ed::PinKind::Input);
-            ImGui::Text("%s%s", isOut ? "" : "-> ", p.name.c_str());
+            if (p.dir != PortDir::In) continue;
+            const bool connected = model.graph().incoming(n.id, p.name).has_value();
+            ed::BeginPin(ed::PinId(pinId(n.id, i, false)), ed::PinKind::Input);
+            ax::Widgets::Icon(ImVec2(iconSz, iconSz), iconFor(p.type), connected,
+                              pinColor(p.type).Value, ImColor(32, 32, 32, 255).Value);
+            ImGui::SameLine(0.0f, 4.0f);
+            ImGui::TextUnformatted(p.name.c_str());
             ed::EndPin();
-            if (!isOut && p.type != PortType::Exec &&
-                !model.graph().incoming(n.id, p.name).has_value()) {
+            if (p.type != PortType::Exec && !connected) {
                 ImGui::SameLine();
                 const Node* nn = model.graph().node(n.id);
                 auto it = nn->literals.find(p.name);
                 const std::string wid = "##" + p.name + std::to_string(n.id);
                 if (p.type == PortType::Float || p.type == PortType::Int) {
                     float val = (it != nn->literals.end()) ? it->second.asFloat() : 0.0f;
-                    ImGui::SetNextItemWidth(70);
+                    ImGui::SetNextItemWidth(60);
                     if (ImGui::DragFloat(wid.c_str(), &val, 0.1f))
                         model.setLiteral(n.id, p.name, NodeValue::F(val));
                 } else if (p.type == PortType::Bool) {
@@ -159,12 +201,31 @@ NodeGraphPanel::Action NodeGraphPanel::draw(GraphEditorModel& model, const char*
                     char buf[128];
                     std::string s = (it != nn->literals.end()) ? it->second.asString() : "";
                     std::snprintf(buf, sizeof(buf), "%s", s.c_str());
-                    ImGui::SetNextItemWidth(90);
+                    ImGui::SetNextItemWidth(80);
                     if (ImGui::InputText(wid.c_str(), buf, sizeof(buf)))
                         model.setLiteral(n.id, p.name, NodeValue::S(buf));
                 }
             }
         }
+        ImGui::EndGroup();
+
+        ImGui::SameLine(0.0f, 24.0f);   // column gap
+
+        // Right column: outputs (label + icon).
+        ImGui::BeginGroup();
+        for (int i = 0; i < static_cast<int>(t->ports.size()); ++i) {
+            const PortDesc& p = t->ports[i];
+            if (p.dir != PortDir::Out) continue;
+            ed::BeginPin(ed::PinId(pinId(n.id, i, true)), ed::PinKind::Output);
+            ImGui::TextUnformatted(p.name.c_str());
+            ImGui::SameLine(0.0f, 4.0f);
+            ax::Widgets::Icon(ImVec2(iconSz, iconSz), iconFor(p.type), true,
+                              pinColor(p.type).Value, ImColor(32, 32, 32, 255).Value);
+            ed::EndPin();
+        }
+        ImGui::EndGroup();
+
+        ImGui::PopID();
         ed::EndNode();
     }
 
