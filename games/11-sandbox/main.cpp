@@ -1262,11 +1262,21 @@ int main() {
         environment.draw(scene);
 
         // M54: node-editor panel (opens its own "Node Editor" window; docks like the rest).
-        // M55: returns true the frame "Assign to entity" is clicked — store the
-        // edited graph onto the selected entity's logicGraph field.
-        if (nodeGraphPanel.draw(graphModel)) {
-            if (selectedIndex >= 0 && selectedIndex < (int)scene.entities.size())
+        // M55: entity-aware — show the selected entity as the target, with Assign
+        // (write graph back) and Load-from-entity (pull the entity's graph in).
+        {
+            const bool selValid = selectedIndex >= 0 &&
+                                  selectedIndex < (int)scene.entities.size();
+            const char* selName = selValid ? scene.entities[selectedIndex].name.c_str() : nullptr;
+            const bool selHasGraph = selValid && !scene.entities[selectedIndex].logicGraph.empty();
+            const auto act = nodeGraphPanel.draw(graphModel, selName, selHasGraph);
+            if (selValid && act == iron::NodeGraphPanel::Action::Assign) {
                 scene.entities[selectedIndex].logicGraph = graphModel.toJson().dump();
+            } else if (selValid && act == iron::NodeGraphPanel::Action::LoadFromEntity) {
+                auto parsed = nlohmann::json::parse(
+                    scene.entities[selectedIndex].logicGraph, nullptr, false);
+                graphModel.loadFromJson(parsed);
+            }
         }
 
         // M47: bloom tuning knobs — appended to the Environment panel so all
