@@ -121,13 +121,13 @@ int main() {
         g.setLiteral(setv, "value", NodeValue::F(1.0f));
         g.setLiteral(getv, "name", NodeValue::S("flag"));
         g.setLiteral(out, "key", NodeValue::S("flag"));
-        g.connect(tick, "then", tr, "in");
-        g.connect(tr, "then", setv, "in");      // chain past Translate
-        // read the var back via a Sequence so SetOutput runs after SetVar
+        // OnTick -> Sequence{ 0: Translate -> SetVar,  1: SetOutput(read var) }.
+        // The Translate->SetVar wire is the thing under test (exec chains past
+        // Translate via its new "then" output).
         const NodeId seq = g.addNode("Sequence");
-        g.disconnect(tick, "then");
         g.connect(tick, "then", seq, "in");
         g.connect(seq, "0", tr, "in");
+        g.connect(tr, "then", setv, "in");      // chain: Translate -> SetVar
         g.connect(seq, "1", out, "in");
         g.connect(getv, "value", out, "value");
 
