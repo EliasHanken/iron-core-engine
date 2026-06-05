@@ -1,5 +1,4 @@
 #include "asset/Animation.h"
-#include "asset/AnimationPlayer.h"
 #include "asset/CharacterAnimator.h"
 #include "asset/Skeleton.h"
 #include "math/Mat4.h"
@@ -203,6 +202,33 @@ int main() {
         std::array<Mat4, 1> out{};
         a.evaluate(out);
         CHECK_NEAR(out[0].at(0, 3), 5.0f);  // pure run, no blend
+    }
+
+    // Regression: two faded switchTo calls with NO evaluate between them must
+    // not leave the palette uninitialized. Before the fix, the second switchTo
+    // froze a default-constructed (0-bone) lastPose_, so blendPose produced a
+    // 0-bone pose and posePalette wrote nothing -> caller's palette untouched.
+    {
+        const Skeleton sk = makeTrivialSkeleton();
+        const AnimationClip walk = makeTranslateClip("walk");
+        const AnimationClip run  = makeTranslateClip("run");
+        CharacterAnimator a;
+        a.setSkeleton(&sk);
+        a.setClipForState("walk", &walk);
+        a.setClipForState("run",  &run);
+        a.switchTo("walk");
+        a.update(0.1f);
+        a.switchTo("run", 1.0f);   // start a fade; no evaluate yet
+        a.switchTo("walk", 1.0f);  // retarget mid-fade BEFORE any evaluate
+        a.update(0.5f);
+        // Sentinel: if evaluate writes nothing, this identity stays untouched.
+        std::array<Mat4, 1> out{};
+        out[0].at(0, 3) = -999.0f;
+        a.evaluate(out);
+        // The palette must have been written (real bone count): the sentinel
+        // is gone and the value is finite, not the all-zero / untouched garbage.
+        CHECK(out[0].at(0, 3) != -999.0f);
+        CHECK(std::isfinite(out[0].at(0, 3)));
     }
 
     return iron_test_result();

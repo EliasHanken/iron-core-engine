@@ -71,9 +71,15 @@ void CharacterAnimator::switchTo(std::string_view state, float fadeTime) {
     }
 
     if (fading_) {
-        // Mid-fade: freeze the in-progress blended pose as the new source.
+        // Mid-fade: freeze the in-progress blended pose as the new source. If
+        // no pose has been evaluated yet (lastPose_ empty), fall back to the
+        // current state's pose so the frozen source has the right bone count.
         prevFrozen_ = true;
-        prevFrozenPose_ = lastPose_;
+        if (lastPose_.bones.empty()) {
+            sampleState(currentState_, time_, prevFrozenPose_);
+        } else {
+            prevFrozenPose_ = lastPose_;
+        }
     } else {
         prevFrozen_ = false;
         prevState_ = currentState_;
