@@ -1,6 +1,7 @@
 #pragma once
 
 #include "asset/Animation.h"
+#include "asset/Ik.h"
 #include "asset/Pose.h"
 #include "asset/PoseBlend.h"
 #include "asset/Skeleton.h"
@@ -10,6 +11,7 @@
 #include <string>
 #include <string_view>
 #include <unordered_map>
+#include <vector>
 
 namespace iron {
 
@@ -26,6 +28,19 @@ public:
     void setBlendSpaceForState(std::string state, BlendSpace1D space);
     // Drive the active blend space (e.g. movement speed).
     void setBlendParam(float param);
+
+    // Configure a two-bone IK chain (returns a handle). Target is supplied per
+    // frame via setIKTarget. weight in [0,1] blends the solve in/out.
+    int  addTwoBoneIK(int rootBone, int midBone, int endBone, Vec3 pole,
+                      float weight);
+    void setIKTarget(int handle, Vec3 worldTarget);
+    void setIKWeight(int handle, float weight);
+
+    // Configure a look-at on a single bone. forwardAxis is the bone's local
+    // forward (in bone space); maxAngle clamps the turn. Returns a handle.
+    int  addLookAt(int bone, Vec3 forwardAxis, float maxAngle, float weight);
+    void setLookAtTarget(int handle, Vec3 worldTarget);
+    void setLookAtWeight(int handle, float weight);
 
     // Hard cut (fade time 0).
     void switchTo(std::string_view state);
@@ -47,10 +62,32 @@ protected:
     float stateDuration(std::string_view state) const;
     bool  isKnownState(std::string_view state) const;
 
+    // Apply all configured IK solvers to global bone transforms in place.
+    void applyIK(std::span<Mat4> globals) const;
+
     const Skeleton* skeleton_ = nullptr;
     std::unordered_map<std::string, const AnimationClip*> clips_;
     std::unordered_map<std::string, BlendSpace1D> blendSpaces_;
     float blendParam_ = 0.0f;
+
+    struct TwoBoneIK {
+        int  root, mid, end;
+        Vec3 pole;
+        Vec3 target{0, 0, 0};
+        float weight = 1.0f;
+        bool hasTarget = false;
+    };
+    struct LookAt {
+        int  bone;
+        Vec3 forwardAxis;
+        float maxAngle;
+        Vec3 target{0, 0, 0};
+        float weight = 1.0f;
+        bool hasTarget = false;
+    };
+    std::vector<TwoBoneIK> twoBoneIK_;
+    std::vector<LookAt>    lookAts_;
+
     std::string currentState_;
     float       time_ = 0.0f;
 

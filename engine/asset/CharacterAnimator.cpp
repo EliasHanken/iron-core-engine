@@ -2,11 +2,32 @@
 
 #include "asset/PoseBlend.h"
 #include "core/Log.h"
+#include "math/Vec.h"
 
 #include <algorithm>
 #include <cmath>
+#include <vector>
 
 namespace iron {
+
+namespace {
+
+// World position (translation column) of a global transform.
+Vec3 originOf(const Mat4& m) {
+    return Vec3{m.at(0, 3), m.at(1, 3), m.at(2, 3)};
+}
+
+// Pivot-rotate `g` about world point `p` by quaternion `q`:  T(p) * R(q) * T(-p) * g.
+Mat4 pivotRotate(const Mat4& g, Vec3 p, const Quat& q) {
+    Mat4 piv = q.toMat4();
+    const Vec4 rp = piv * Vec4{p.x, p.y, p.z, 1.0f};  // R*p (no translation in piv)
+    piv.at(0, 3) = p.x - rp.x;
+    piv.at(1, 3) = p.y - rp.y;
+    piv.at(2, 3) = p.z - rp.z;
+    return piv * g;
+}
+
+}  // namespace
 
 void CharacterAnimator::setSkeleton(const Skeleton* skeleton) {
     skeleton_ = skeleton;
@@ -28,6 +49,89 @@ void CharacterAnimator::setBlendSpaceForState(std::string state,
 
 void CharacterAnimator::setBlendParam(float param) {
     blendParam_ = param;
+}
+
+int CharacterAnimator::addTwoBoneIK(int rootBone, int midBone, int endBone,
+                                    Vec3 pole, float weight) {
+    twoBoneIK_.push_back(TwoBoneIK{rootBone, midBone, endBone, pole,
+                                   Vec3{0, 0, 0}, weight, false});
+    return static_cast<int>(twoBoneIK_.size()) - 1;
+}
+void CharacterAnimator::setIKTarget(int handle, Vec3 worldTarget) {
+    if (handle < 0 || handle >= static_cast<int>(twoBoneIK_.size())) return;
+    twoBoneIK_[handle].target = worldTarget;
+    twoBoneIK_[handle].hasTarget = true;
+}
+void CharacterAnimator::setIKWeight(int handle, float weight) {
+    if (handle < 0 || handle >= static_cast<int>(twoBoneIK_.size())) return;
+    twoBoneIK_[handle].weight = weight;
+}
+int CharacterAnimator::addLookAt(int bone, Vec3 forwardAxis, float maxAngle,
+                                 float weight) {
+    lookAts_.push_back(LookAt{bone, forwardAxis, maxAngle, Vec3{0, 0, 0},
+                              weight, false});
+    return static_cast<int>(lookAts_.size()) - 1;
+}
+void CharacterAnimator::setLookAtTarget(int handle, Vec3 worldTarget) {
+    if (handle < 0 || handle >= static_cast<int>(lookAts_.size())) return;
+    lookAts_[handle].target = worldTarget;
+    lookAts_[handle].hasTarget = true;
+}
+void CharacterAnimator::setLookAtWeight(int handle, float weight) {
+    if (handle < 0 || handle >= static_cast<int>(lookAts_.size())) return;
+    lookAts_[handle].weight = weight;
+}
+
+void CharacterAnimator::applyIK(std::span<Mat4> globals) const {
+    if (!skeleton_) return;
+    const int n = static_cast<int>(std::min(globals.size(),
+                                            skeleton_->bones.size()));
+
+    // returns true if `bone` is `ancestor` or a descendant of it.
+    auto inSubtree = [&](int bone, int ancestor) {
+        for (int b = bone; b >= 0; b = skeleton_->bones[b].parentIndex) {
+            if (b == ancestor) return true;
+        }
+        return false;
+    };
+
+    // Two-bone IK first (gross pose), then look-at (fine aim).
+    for (const auto& ik : twoBoneIK_) {
+        if (!ik.hasTarget || ik.weight <= 0.0f) continue;
+        if (ik.root < 0 || ik.mid < 0 || ik.end < 0 ||
+            ik.root >= n || ik.mid >= n || ik.end >= n) continue;
+        const Vec3 root = originOf(globals[ik.root]);
+        const Vec3 mid  = originOf(globals[ik.mid]);
+        const Vec3 end  = originOf(globals[ik.end]);
+        const TwoBoneIKResult r = solveTwoBoneIK(root, mid, end, ik.target, ik.pole);
+        const Quat rootD = slerp(Quat::identity(), r.rootDelta,
+                                 std::clamp(ik.weight, 0.0f, 1.0f));
+        const Quat midD  = slerp(Quat::identity(), r.midDelta,
+                                 std::clamp(ik.weight, 0.0f, 1.0f));
+        // Rotate the root subtree about the root, then the mid subtree about
+        // the (rotated) mid position.
+        for (int b = 0; b < n; ++b)
+            if (inSubtree(b, ik.root)) globals[b] = pivotRotate(globals[b], root, rootD);
+        const Vec3 midAfter = originOf(globals[ik.mid]);
+        for (int b = 0; b < n; ++b)
+            if (inSubtree(b, ik.mid)) globals[b] = pivotRotate(globals[b], midAfter, midD);
+    }
+
+    for (const auto& la : lookAts_) {
+        if (!la.hasTarget || la.weight <= 0.0f) continue;
+        if (la.bone < 0 || la.bone >= n) continue;
+        const Vec3 pos = originOf(globals[la.bone]);
+        // Current world forward = global rotation applied to the local axis.
+        const Vec4 fwd4 = globals[la.bone] * Vec4{la.forwardAxis.x,
+                                                  la.forwardAxis.y,
+                                                  la.forwardAxis.z, 0.0f};
+        const Vec3 worldForward{fwd4.x, fwd4.y, fwd4.z};
+        const Quat full = solveLookAt(pos, worldForward, la.target, la.maxAngle);
+        const Quat d = slerp(Quat::identity(), full,
+                             std::clamp(la.weight, 0.0f, 1.0f));
+        for (int b = 0; b < n; ++b)
+            if (inSubtree(b, la.bone)) globals[b] = pivotRotate(globals[b], pos, d);
+    }
 }
 
 bool CharacterAnimator::isKnownState(std::string_view state) const {
@@ -156,7 +260,12 @@ void CharacterAnimator::evaluate(std::span<Mat4> out) const {
     }
 
     lastPose_ = pose;
-    posePalette(*skeleton_, pose, out);
+
+    const std::size_t n = std::min(out.size(), skeleton_->bones.size());
+    std::vector<Mat4> globals(n);
+    composeGlobals(*skeleton_, pose, globals);
+    applyIK(globals);
+    globalsToPalette(*skeleton_, globals, out);
 }
 
 }  // namespace iron
