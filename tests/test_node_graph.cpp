@@ -326,5 +326,22 @@ int main() {
         CHECK(g.connections().empty());
     }
 
+    // A custom isEntry node (not named "Entry") drives the run.
+    {
+        NodeRegistry reg; registerBuiltinNodes(reg);
+        reg.registerType({"MyStart", "Flow",
+            { PortDesc{"then", PortType::Exec, PortDir::Out} },
+            [](NodeContext& c) { c.fire("then"); }, true});
+        Graph g;
+        const NodeId s = g.addNode("MyStart");
+        const NodeId set = g.addNode("SetOutput");
+        g.setLiteral(set, "key", NodeValue::S("k"));
+        g.setLiteral(set, "value", NodeValue::F(3.0f));
+        g.connect(s, "then", set, "in");
+        RunContext ctx;
+        run(g, reg, ctx);
+        CHECK_NEAR(ctx.outputs.at("k").asFloat(), 3.0f);
+    }
+
     return iron_test_result();
 }

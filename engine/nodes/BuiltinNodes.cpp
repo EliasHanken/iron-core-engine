@@ -13,7 +13,7 @@ void registerBuiltinNodes(NodeRegistry& r) {
     // Entry: kicks off control flow.
     r.registerType({"Entry", "Flow",
         { P{"then", PortType::Exec, Out} },
-        [](NodeContext& c) { c.fire("then"); }});
+        [](NodeContext& c) { c.fire("then"); }, true});
 
     // Branch: fire "true" or "false" based on the bool input.
     r.registerType({"Branch", "Flow",
