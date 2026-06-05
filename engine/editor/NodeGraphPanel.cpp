@@ -229,6 +229,15 @@ NodeGraphPanel::Action NodeGraphPanel::draw(GraphEditorModel& model, const char*
         ed::EndNode();
     }
 
+    // M56: sync live canvas positions back into the model so drags persist
+    // through Save/Assign (loadFromJson + placed_ restore them). Only write on
+    // change to avoid needlessly dirtying the model every frame.
+    for (const Node& n : model.graph().nodes()) {
+        const ImVec2 pos = ed::GetNodePosition(ed::NodeId(static_cast<std::uintptr_t>(n.id)));
+        if (pos.x != n.editorX || pos.y != n.editorY)
+            model.setNodePosition(n.id, pos.x, pos.y);
+    }
+
     const auto& conns = model.graph().connections();
     for (std::size_t i = 0; i < conns.size(); ++i) {
         const Connection& c = conns[i];

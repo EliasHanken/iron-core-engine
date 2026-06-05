@@ -1199,10 +1199,14 @@ int main() {
                 ImGuiID center = dockId;
                 ImGuiID left  = ImGui::DockBuilderSplitNode(center, ImGuiDir_Left,  0.18f, nullptr, &center);
                 ImGuiID right = ImGui::DockBuilderSplitNode(center, ImGuiDir_Right, 0.24f, nullptr, &center);
+                // M56: dock the Node Editor in a bottom split under the Viewport
+                // (split center down first so the Viewport keeps the upper area).
+                ImGuiID bottom = ImGui::DockBuilderSplitNode(center, ImGuiDir_Down, 0.35f, nullptr, &center);
                 ImGui::DockBuilderDockWindow("Viewport",       center);
                 ImGui::DockBuilderDockWindow("Scene Outliner", left);
                 ImGui::DockBuilderDockWindow("Environment",    left);
                 ImGui::DockBuilderDockWindow("Inspector",      right);
+                ImGui::DockBuilderDockWindow("Node Editor",    bottom);
                 ImGui::DockBuilderFinish(dockId);
             }
         }
