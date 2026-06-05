@@ -678,6 +678,14 @@ int main(int argc, char** argv) {
     // animator. unordered_map nodes are stable across rehash, so
     // &playerAnimators[pid] stays valid for the state machine to hold.
     std::unordered_map<std::uint32_t, iron::AnimationStateMachine> playerStateMachines;
+    // M52 visual-gate tuning — per-peer damped locomotion speed (smooths the
+    // blend-space param so the gait eases between idle/walk/run instead of
+    // snapping when the networked velocity jumps).
+    std::unordered_map<std::uint32_t, float>                 playerAnimSpeed;
+    // M52 — per-peer smoothed look-at weight, eased to 0 when the viewer leaves
+    // the fox's frontal vision so the head returns to idle instead of over-
+    // twisting to track someone directly behind it.
+    std::unordered_map<std::uint32_t, float>                 playerLookWeight;
     std::unordered_map<std::uint32_t, iron::Vec3>             playerPrevPos;
     // M51 — per-peer look-at IK handle (head tracks the local viewer's eye).
     std::unordered_map<std::uint32_t, int>                   playerLookAtHandles;
@@ -933,6 +941,8 @@ int main(int argc, char** argv) {
         // M25 — release per-peer skinned-character animation state.
         playerAnimators.erase(pid);
         playerStateMachines.erase(pid);
+        playerAnimSpeed.erase(pid);
+        playerLookWeight.erase(pid);
         playerPrevPos.erase(pid);
         // M51 — release the per-peer head look-at IK handle.
         playerLookAtHandles.erase(pid);
@@ -2123,9 +2133,15 @@ int main(int argc, char** argv) {
                 // local viewer, clamped to ~70deg, weight 0.85.
                 if (foxHeadBone >= 0) {
                     // b_Head_05's local +X is the snout/forward axis (maps to
-                    // model ~+Z); +Z would aim the head sideways. ~70deg clamp.
+                    // model ~+Z); +Z would aim the head sideways. Weight 1.0 +
+                    // an effectively-unclamped angle (pi) so the look-at fully
+                    // OVERRIDES the "Survey" idle clip's built-in head-turn.
+                    // The clamp budgets from the *animated* head pose, so any
+                    // smaller cap lets Survey's ~90deg swing eat the budget and
+                    // the head drifts away on the idle's ~3.4s cycle. pi keeps
+                    // the snout locked on you regardless of the idle motion.
                     int h = animIt->second.addLookAt(
-                        foxHeadBone, iron::Vec3{1.0f, 0.0f, 0.0f}, 1.22f, 0.85f);
+                        foxHeadBone, iron::Vec3{1.0f, 0.0f, 0.0f}, 3.14159265f, 1.0f);
                     playerLookAtHandles[pid] = h;
                 }
                 // M52 — drive transitions declaratively via a state machine.
@@ -2136,9 +2152,9 @@ int main(int argc, char** argv) {
                 smSetup.addState("idle");
                 smSetup.bindBlendParam("locomotion", "speed");
                 smSetup.setEntryState("locomotion");
-                const int toAir = smSetup.addTransition("locomotion", "idle", 0.15f);
+                const int toAir = smSetup.addTransition("locomotion", "idle", 0.2f);
                 smSetup.whenBool(toAir, "grounded", false);
-                const int toGround = smSetup.addTransition("idle", "locomotion", 0.15f);
+                const int toGround = smSetup.addTransition("idle", "locomotion", 0.2f);
                 smSetup.whenBool(toGround, "grounded", true);
             }
 
@@ -2159,7 +2175,12 @@ int main(int argc, char** argv) {
             // cross-fades into the speed-driven locomotion blend space.
             auto& anim = animIt->second;
             iron::AnimationStateMachine& sm = playerStateMachines.at(pid);
-            sm.setFloat("speed", speed);
+            // Damp the blend-space speed param so the gait pose eases between
+            // idle/walk/run instead of snapping when networked velocity jumps.
+            float& animSpeed = playerAnimSpeed[pid];
+            constexpr float kSpeedDamp = 9.0f;  // ~0.11s smoothing
+            animSpeed += (speed - animSpeed) * std::min(1.0f, frameDt * kSpeedDamp);
+            sm.setFloat("speed", animSpeed);
             sm.setBool("grounded", grounded);
 
             // M25 fixup — facing comes from the networked look yaw (not from
@@ -2184,9 +2205,29 @@ int main(int argc, char** argv) {
                 const iron::Vec4 e4 =
                     invModel * iron::Vec4{eye.x, eye.y, eye.z, 1.0f};
                 anim.setLookAtTarget(lh->second, iron::Vec3{e4.x, e4.y, e4.z});
+
+                // Frontal-vision cone: only track while the viewer is in the
+                // fox's front ~180deg (model forward is +Z, so e4.z>0 == ahead).
+                // `frontness` is cos(horizontal angle from forward); fade the
+                // look-at weight to 0 across a soft band around 90deg, then damp
+                // it over time so the head eases back to the idle pose behind us.
+                const float horizLen = std::sqrt(e4.x * e4.x + e4.z * e4.z);
+                const float frontness = (horizLen > 1e-3f) ? e4.z / horizLen : 1.0f;
+                const float targetW = std::clamp((frontness + 0.15f) / 0.30f, 0.0f, 1.0f);
+                float& lookW = playerLookWeight[pid];
+                lookW += (targetW - lookW) * std::min(1.0f, frameDt * 6.0f);
+                anim.setLookAtWeight(lh->second, lookW);
             }
 
-            sm.update(frameDt);
+            // Scale locomotion playback by speed so the stride matches ground
+            // travel (kills foot-slide / "run looks slow"). Idle plays near 1x.
+            // kLocoRefSpeed + the clamp are visual-tuning knobs.
+            float animRate = 1.0f;
+            if (sm.currentState() == "locomotion") {
+                constexpr float kLocoRefSpeed = 2.5f;  // speed at which 1x looks right
+                animRate = std::clamp(animSpeed / kLocoRefSpeed, 0.8f, 1.8f);
+            }
+            sm.update(frameDt * animRate);
 
             std::array<iron::Mat4, iron::kMaxBonesPerSkinnedMesh> bones;
             for (auto& m : bones) m = iron::Mat4::identity();
