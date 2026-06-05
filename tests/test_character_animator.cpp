@@ -7,6 +7,7 @@
 #include "math/Vec.h"
 #include "test_framework.h"
 
+#include <algorithm>
 #include <array>
 #include <cmath>
 
@@ -134,6 +135,74 @@ int main() {
         CHECK_NEAR(out[0].at(2, 2), 1.0f);
         CHECK_NEAR(out[0].at(0, 3), 0.0f);
         CHECK(a.currentState() == "jump");
+    }
+
+    // Cross-fade with fadeTime 0 behaves as a hard cut (matches Test 3).
+    {
+        const Skeleton sk = makeTrivialSkeleton();
+        const AnimationClip walk = makeTranslateClip("walk");
+        const AnimationClip run  = makeTranslateClip("run");
+        CharacterAnimator a;
+        a.setSkeleton(&sk);
+        a.setClipForState("walk", &walk);
+        a.setClipForState("run",  &run);
+        a.switchTo("walk");
+        a.update(0.5f);
+        a.switchTo("run", 0.0f);  // explicit hard cut
+        std::array<Mat4, 1> out{};
+        a.evaluate(out);
+        CHECK_NEAR(out[0].at(0, 3), 0.0f);
+    }
+
+    // Mid-fade blends between previous and new pose. walk holds x=0 at t=0;
+    // run drives x: blend at fade weight 0.5 with run at its own time.
+    {
+        const Skeleton sk = makeTrivialSkeleton();
+        // "stand": bone stays at x=0 (no channel drift at t=0).
+        AnimationClip stand;
+        stand.name = "stand";
+        stand.duration = 1.0f;
+        AnimationSampler ss;
+        ss.inputs = {0.0f, 1.0f};
+        ss.outputs = {0, 0, 0,  0, 0, 0};  // x stays 0
+        ss.interpolation = AnimationInterpolation::Linear;
+        stand.samplers.push_back(ss);
+        AnimationChannel sc;
+        sc.targetBone = 0; sc.path = AnimationPath::Translation; sc.samplerIndex = 0;
+        stand.channels.push_back(sc);
+
+        const AnimationClip run = makeTranslateClip("run");  // x: 0 -> 10 over 1s
+
+        CharacterAnimator a;
+        a.setSkeleton(&sk);
+        a.setClipForState("stand", &stand);
+        a.setClipForState("run", &run);
+        a.switchTo("stand");
+        a.update(0.1f);             // settle in stand
+        a.switchTo("run", 1.0f);    // begin a 1s fade; run time starts at 0
+        a.update(0.5f);             // fade weight 0.5; run time 0.5 -> x=5
+        std::array<Mat4, 1> out{};
+        a.evaluate(out);
+        // blend(prev stand x=0, cur run x=5, w=0.5) = 2.5
+        CHECK_NEAR(out[0].at(0, 3), 2.5f);
+    }
+
+    // After the fade completes, only the new state drives the pose.
+    {
+        const Skeleton sk = makeTrivialSkeleton();
+        const AnimationClip stand = makeTranslateClip("a");  // x:0->10 (named "a")
+        const AnimationClip run   = makeTranslateClip("b");
+        CharacterAnimator a;
+        a.setSkeleton(&sk);
+        a.setClipForState("stand", &stand);
+        a.setClipForState("run", &run);
+        a.switchTo("stand");
+        a.update(0.2f);
+        a.switchTo("run", 0.5f);
+        a.update(0.5f);   // fade fully elapses; run time 0.5 -> x=5
+        std::array<Mat4, 1> out{};
+        a.evaluate(out);
+        CHECK_NEAR(out[0].at(0, 3), 5.0f);  // pure run, no blend
     }
 
     return iron_test_result();
