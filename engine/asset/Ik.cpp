@@ -66,4 +66,23 @@ TwoBoneIKResult solveTwoBoneIK(Vec3 root, Vec3 mid, Vec3 end,
     return TwoBoneIKResult{midPos, endPos, rootDelta, midDelta};
 }
 
+Quat solveLookAt(Vec3 bonePos, Vec3 currentForward, Vec3 target,
+                 float maxAngleRad) {
+    const Vec3 toTarget = target - bonePos;
+    if (length(toTarget) < 1e-5f || length(currentForward) < 1e-5f) {
+        return Quat::identity();
+    }
+    const Vec3 desired = normalize(toTarget);
+    const Vec3 cur = normalize(currentForward);
+    const float d = std::clamp(dot(cur, desired), -1.0f, 1.0f);
+    const float angle = std::acos(d);
+    if (angle <= maxAngleRad || angle < 1e-5f) {
+        return rotationFromTo(cur, desired);
+    }
+    Vec3 axis = cross(cur, desired);
+    if (length(axis) < 1e-5f) return Quat::identity();
+    axis = normalize(axis);
+    return Quat::fromAxisAngle(axis, maxAngleRad);
+}
+
 }  // namespace iron

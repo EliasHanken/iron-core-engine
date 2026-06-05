@@ -26,4 +26,11 @@ Quat rotationFromTo(Vec3 from, Vec3 to);
 TwoBoneIKResult solveTwoBoneIK(Vec3 root, Vec3 mid, Vec3 end,
                                Vec3 target, Vec3 pole);
 
+// Look-at: a world-space rotation that turns `currentForward` (the bone's
+// current world forward direction) toward `target` as seen from `bonePos`,
+// limited to at most `maxAngleRad`. Identity when degenerate (coincident
+// target or zero forward).
+Quat solveLookAt(Vec3 bonePos, Vec3 currentForward, Vec3 target,
+                 float maxAngleRad);
+
 }  // namespace iron
