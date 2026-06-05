@@ -48,6 +48,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cctype>
 #include <chrono>
 #include <cmath>
 #include <cstdio>
@@ -416,6 +417,19 @@ int main(int argc, char** argv) {
     const iron::AnimationClip* foxRunClip  =
         foxModel ? foxModel->findClip("Run")    : nullptr;
 
+    // M51: locate the fox head/neck bone for the look-at IK (by name; -1 disables).
+    int foxHeadBone = -1;
+    if (foxModel && foxModel->skinnedMesh) {
+        const auto& bones = foxModel->skinnedMesh->skeleton.bones;
+        for (std::size_t i = 0; i < bones.size(); ++i) {
+            std::string n = bones[i].name;
+            for (auto& c : n) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+            if (n.find("head") != std::string::npos) { foxHeadBone = static_cast<int>(i); break; }
+            if (n.find("neck") != std::string::npos) foxHeadBone = static_cast<int>(i);
+        }
+        iron::Log::info("net-shooter: fox head/neck bone index = %d", foxHeadBone);
+    }
+
     const bool foxReady = foxMesh != iron::kInvalidSkinnedMesh &&
                           foxShader != iron::kInvalidHandle &&
                           foxIdleClip && foxWalkClip && foxRunClip;
@@ -660,6 +674,8 @@ int main(int argc, char** argv) {
     // M25 — per-peer skinned-character state (lazy: created on first sight).
     std::unordered_map<std::uint32_t, iron::CharacterAnimator> playerAnimators;
     std::unordered_map<std::uint32_t, iron::Vec3>             playerPrevPos;
+    // M51 — per-peer look-at IK handle (head tracks the local viewer's eye).
+    std::unordered_map<std::uint32_t, int>                   playerLookAtHandles;
 
     // M27 — per-peer footstep timing + variant RNG. The xorshift seed is
     // initialized from pid so different peers don't lockstep into the same
@@ -2086,45 +2102,84 @@ int main(int argc, char** argv) {
             auto [animIt, inserted] = playerAnimators.try_emplace(pid);
             if (inserted) {
                 animIt->second.setSkeleton(&foxModel->skinnedMesh->skeleton);
+                // M51 — speed-driven 1D gait blend space (takes precedence over
+                // a same-named clip). Samples are added only for non-null clips.
+                iron::BlendSpace1D gait;
+                if (foxIdleClip) gait.add(0.0f, foxIdleClip);
+                if (foxWalkClip) gait.add(2.5f, foxWalkClip);
+                if (foxRunClip)  gait.add(6.0f, foxRunClip);
+                animIt->second.setBlendSpaceForState("locomotion", gait);
+                // Idle drives the in-air (frozen) state.
                 animIt->second.setClipForState("idle", foxIdleClip);
-                animIt->second.setClipForState("walk", foxWalkClip);
-                animIt->second.setClipForState("run",  foxRunClip);
+                // M51 — head/neck look-at IK: remote foxes turn to face the
+                // local viewer, clamped to ~70deg, weight 0.7. forwardAxis +Z is
+                // a GUESS pending the visual gate.
+                if (foxHeadBone >= 0) {
+                    int h = animIt->second.addLookAt(
+                        foxHeadBone, iron::Vec3{0.0f, 0.0f, 1.0f}, 1.22f, 0.7f);
+                    playerLookAtHandles[pid] = h;
+                }
             }
 
             // Horizontal speed (ignore vertical velocity — jumping doesn't change anim).
             const float speed = std::sqrt(velocity.x * velocity.x + velocity.z * velocity.z);
 
-            // State selection:
-            //   * in the air -> idle (fox has no jump anim; frozen-pose looks better
-            //     than walking through air)
-            //   * grounded + moving slowly -> idle
-            //   * grounded + moving -> walk
-            //   * grounded + sprinting -> run
-            const char* state =
+            // Discrete footstep state (footsteps downstream depend on these exact
+            // thresholds + the "idle"/"walk"/"run" return contract — do NOT change):
+            //   * in the air -> idle (fox has no jump anim)
+            //   * grounded + slow -> idle ; moving -> walk ; sprinting -> run
+            const char* footstepState =
                   !grounded         ? "idle"
                 : speed < 0.3f      ? "idle"
                 : speed < 2.5f      ? "walk"
                 :                     "run";
-            animIt->second.switchTo(state);
-            animIt->second.update(frameDt);
+
+            // M51 — drive the animation: in-air freezes on idle; grounded
+            // cross-fades into the speed-driven locomotion blend space.
+            auto& anim = animIt->second;
+            if (!grounded) {
+                anim.switchTo("idle", 0.15f);
+            } else {
+                anim.switchTo("locomotion", 0.15f);
+                anim.setBlendParam(speed);
+            }
+
+            // M25 fixup — facing comes from the networked look yaw (not from
+            // velocity), so the fox tracks the player's aim even when standing
+            // still and doesn't moonwalk while running forward.
+            // Fox.glb is authored at cm scale (~79 units = 1 fox-height); rescale to m.
+            // Compute the model matrix ONCE, before evaluate(): the look-at target
+            // must be set pre-evaluate (evaluate runs the IK), and we reuse this
+            // same matrix for the draw call below (no drift / double-compute).
+            constexpr float kFoxScale = 0.01f;
+            const iron::Mat4 foxModelMat =
+                  iron::translation(pos)
+                * iron::rotationY(yawRadians + 3.14159265f)
+                * iron::scaling(iron::Vec3{kFoxScale, kFoxScale, kFoxScale});
+
+            // M51 — point the head at the local viewer's eye. setLookAtTarget
+            // expects the target in the skeleton's GLOBAL (model/skeleton-local)
+            // space, so transform the world-space eye through inverse(model).
+            auto lh = playerLookAtHandles.find(pid);
+            if (lh != playerLookAtHandles.end()) {
+                const iron::Mat4 invModel = iron::inverse(foxModelMat);
+                const iron::Vec4 e4 =
+                    invModel * iron::Vec4{eye.x, eye.y, eye.z, 1.0f};
+                anim.setLookAtTarget(lh->second, iron::Vec3{e4.x, e4.y, e4.z});
+            }
+
+            anim.update(frameDt);
 
             std::array<iron::Mat4, iron::kMaxBonesPerSkinnedMesh> bones;
             for (auto& m : bones) m = iron::Mat4::identity();
             const std::size_t n = foxModel->skinnedMesh->skeleton.bones.size();
-            animIt->second.evaluate(std::span<iron::Mat4>(bones.data(),
-                                                          std::min(n, bones.size())));
+            anim.evaluate(std::span<iron::Mat4>(bones.data(),
+                                                std::min(n, bones.size())));
 
             iron::SkinnedDrawCall call;
             call.skinnedMesh  = foxMesh;
             call.shader       = foxShader;
-            // Fox.glb is authored at cm scale (~79 units = 1 fox-height); rescale to m.
-            constexpr float kFoxScale = 0.01f;
-            // M25 fixup — facing comes from the networked look yaw (not from
-            // velocity), so the fox tracks the player's aim even when standing
-            // still and doesn't moonwalk while running forward.
-            call.model        = iron::translation(pos)
-                              * iron::rotationY(yawRadians + 3.14159265f)
-                              * iron::scaling(iron::Vec3{kFoxScale, kFoxScale, kFoxScale});
+            call.model        = foxModelMat;
             call.material.texture     = renderer.whiteTexture();
             call.material.normalMap   = renderer.flatNormalTexture();
             // M45b: specularMap removed (PBR).
@@ -2132,7 +2187,7 @@ int main(int argc, char** argv) {
             call.boneMatrices = std::span<const iron::Mat4>(bones.data(),
                                                             std::min(n, bones.size()));
             renderer.submitSkinnedDraw(call);
-            return std::string_view{state};
+            return std::string_view{footstepState};
         };
 
         // M27 — emit a randomized footstep variant if the per-peer cadence
