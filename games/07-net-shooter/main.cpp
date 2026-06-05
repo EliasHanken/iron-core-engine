@@ -12,6 +12,7 @@
 #include "Messages.h"
 #include "RocketLauncher.h"
 
+#include "asset/AnimationStateMachine.h"
 #include "asset/CharacterAnimator.h"
 #include "asset/GltfLoader.h"
 #include "audio/AudioEngine.h"
@@ -673,6 +674,10 @@ int main(int argc, char** argv) {
 
     // M25 — per-peer skinned-character state (lazy: created on first sight).
     std::unordered_map<std::uint32_t, iron::CharacterAnimator> playerAnimators;
+    // M52 — per-peer state machine layering declarative transitions over the
+    // animator. unordered_map nodes are stable across rehash, so
+    // &playerAnimators[pid] stays valid for the state machine to hold.
+    std::unordered_map<std::uint32_t, iron::AnimationStateMachine> playerStateMachines;
     std::unordered_map<std::uint32_t, iron::Vec3>             playerPrevPos;
     // M51 — per-peer look-at IK handle (head tracks the local viewer's eye).
     std::unordered_map<std::uint32_t, int>                   playerLookAtHandles;
@@ -927,6 +932,7 @@ int main(int argc, char** argv) {
         remotes.erase(pid);
         // M25 — release per-peer skinned-character animation state.
         playerAnimators.erase(pid);
+        playerStateMachines.erase(pid);
         playerPrevPos.erase(pid);
         // M51 — release the per-peer head look-at IK handle.
         playerLookAtHandles.erase(pid);
@@ -2122,6 +2128,18 @@ int main(int argc, char** argv) {
                         foxHeadBone, iron::Vec3{1.0f, 0.0f, 0.0f}, 1.22f, 0.85f);
                     playerLookAtHandles[pid] = h;
                 }
+                // M52 — drive transitions declaratively via a state machine.
+                auto [smIt, smInserted] = playerStateMachines.try_emplace(
+                    pid, &animIt->second);
+                iron::AnimationStateMachine& smSetup = smIt->second;
+                smSetup.addState("locomotion");
+                smSetup.addState("idle");
+                smSetup.bindBlendParam("locomotion", "speed");
+                smSetup.setEntryState("locomotion");
+                const int toAir = smSetup.addTransition("locomotion", "idle", 0.15f);
+                smSetup.whenBool(toAir, "grounded", false);
+                const int toGround = smSetup.addTransition("idle", "locomotion", 0.15f);
+                smSetup.whenBool(toGround, "grounded", true);
             }
 
             // Horizontal speed (ignore vertical velocity — jumping doesn't change anim).
@@ -2140,12 +2158,9 @@ int main(int argc, char** argv) {
             // M51 — drive the animation: in-air freezes on idle; grounded
             // cross-fades into the speed-driven locomotion blend space.
             auto& anim = animIt->second;
-            if (!grounded) {
-                anim.switchTo("idle", 0.15f);
-            } else {
-                anim.switchTo("locomotion", 0.15f);
-                anim.setBlendParam(speed);
-            }
+            iron::AnimationStateMachine& sm = playerStateMachines.at(pid);
+            sm.setFloat("speed", speed);
+            sm.setBool("grounded", grounded);
 
             // M25 fixup — facing comes from the networked look yaw (not from
             // velocity), so the fox tracks the player's aim even when standing
@@ -2171,13 +2186,13 @@ int main(int argc, char** argv) {
                 anim.setLookAtTarget(lh->second, iron::Vec3{e4.x, e4.y, e4.z});
             }
 
-            anim.update(frameDt);
+            sm.update(frameDt);
 
             std::array<iron::Mat4, iron::kMaxBonesPerSkinnedMesh> bones;
             for (auto& m : bones) m = iron::Mat4::identity();
             const std::size_t n = foxModel->skinnedMesh->skeleton.bones.size();
-            anim.evaluate(std::span<iron::Mat4>(bones.data(),
-                                                std::min(n, bones.size())));
+            sm.evaluate(std::span<iron::Mat4>(bones.data(),
+                                              std::min(n, bones.size())));
 
             iron::SkinnedDrawCall call;
             call.skinnedMesh  = foxMesh;
