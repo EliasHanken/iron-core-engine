@@ -19,3 +19,4 @@ add_library(ironcore_editor STATIC
 # appears in this module's public headers.
 target_link_libraries(ironcore_editor PUBLIC ironcore)
 target_link_libraries(ironcore_editor PRIVATE imgui::imgui)
+target_link_libraries(ironcore_editor PRIVATE imgui_node_editor)
