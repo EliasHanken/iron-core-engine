@@ -260,7 +260,8 @@ void CharacterAnimator::evaluate(std::span<Mat4> out) const {
 
     lastPose_ = pose;
 
-    const std::size_t n = std::min(out.size(), skeleton_->bones.size());
+    const std::size_t n = std::min({out.size(), skeleton_->bones.size(),
+                                    pose.bones.size()});
     std::vector<Mat4> globals(n);
     composeGlobals(*skeleton_, pose, globals);
     applyIK(globals);

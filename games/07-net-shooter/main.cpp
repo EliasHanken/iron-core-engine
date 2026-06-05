@@ -928,6 +928,8 @@ int main(int argc, char** argv) {
         // M25 — release per-peer skinned-character animation state.
         playerAnimators.erase(pid);
         playerPrevPos.erase(pid);
+        // M51 — release the per-peer head look-at IK handle.
+        playerLookAtHandles.erase(pid);
         // M27 — release per-peer footstep timing + RNG state.
         playerLastFootstepAtSec.erase(pid);
         playerFootstepRng.erase(pid);
@@ -2112,8 +2114,7 @@ int main(int argc, char** argv) {
                 // Idle drives the in-air (frozen) state.
                 animIt->second.setClipForState("idle", foxIdleClip);
                 // M51 — head/neck look-at IK: remote foxes turn to face the
-                // local viewer, clamped to ~70deg, weight 0.7. forwardAxis +Z is
-                // a GUESS pending the visual gate.
+                // local viewer, clamped to ~70deg, weight 0.85.
                 if (foxHeadBone >= 0) {
                     // b_Head_05's local +X is the snout/forward axis (maps to
                     // model ~+Z); +Z would aim the head sideways. ~70deg clamp.
