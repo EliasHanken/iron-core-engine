@@ -637,14 +637,16 @@ int main() {
             const iron::SceneEntity& e = scene.entities[i];
             // M55: build a LogicGraph component on the World entity from the
             // serialized graph (if any) so tickLogicGraphs runs it in Play.
-            // Parse with allow_exceptions=false → fromJson returns nullopt on a
-            // malformed string → silently skipped (no throw).
+            // allow_exceptions=false: a malformed string yields a discarded
+            // value (guarded below) so nothing throws into the frame.
             if (!e.logicGraph.empty() &&
                 i < static_cast<int>(sceneIndexToEntity.size())) {
                 auto parsed = nlohmann::json::parse(e.logicGraph, nullptr, false);
-                if (auto pg = iron::fromJson(parsed, nodeRegistry)) {
-                    iron::LogicGraph lg; lg.graph = std::move(*pg);
-                    world.add<iron::LogicGraph>(sceneIndexToEntity[i], std::move(lg));
+                if (!parsed.is_discarded()) {
+                    if (auto pg = iron::fromJson(parsed, nodeRegistry)) {
+                        iron::LogicGraph lg; lg.graph = std::move(*pg);
+                        world.add<iron::LogicGraph>(sceneIndexToEntity[i], std::move(lg));
+                    }
                 }
             }
             if (e.collision) {
@@ -1275,7 +1277,7 @@ int main() {
             } else if (selValid && act == iron::NodeGraphPanel::Action::LoadFromEntity) {
                 auto parsed = nlohmann::json::parse(
                     scene.entities[selectedIndex].logicGraph, nullptr, false);
-                graphModel.loadFromJson(parsed);
+                if (!parsed.is_discarded()) graphModel.loadFromJson(parsed);
             }
         }
 
