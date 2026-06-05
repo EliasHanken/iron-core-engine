@@ -30,4 +30,9 @@ struct BlendSpace1D {
 void sampleBlendSpace(const Skeleton& skeleton, const BlendSpace1D& space,
                       float param, float time, Pose& out);
 
+// The effective (blended) duration of the two bracketing clips at `param`,
+// used to drive a normalized playback phase. Clamps to the ends; single
+// sample -> that clip's duration; empty/null -> 0.
+float blendSpaceDuration(const BlendSpace1D& space, float param);
+
 }  // namespace iron

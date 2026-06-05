@@ -143,10 +143,7 @@ bool CharacterAnimator::isKnownState(std::string_view state) const {
 float CharacterAnimator::stateDuration(std::string_view state) const {
     auto bs = blendSpaces_.find(std::string(state));
     if (bs != blendSpaces_.end()) {
-        for (const auto& s : bs->second.samples) {
-            if (s.second && s.second->duration > 0.0f) return s.second->duration;
-        }
-        return 0.0f;
+        return blendSpaceDuration(bs->second, blendParam_);
     }
     auto it = clips_.find(std::string(state));
     if (it == clips_.end() || !it->second) return 0.0f;
