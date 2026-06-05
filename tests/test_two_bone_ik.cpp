@@ -49,5 +49,20 @@ int main() {
         CHECK_NEAR(v.y, 1.0f);
     }
 
+    // rotationFromTo parallel: same direction -> identity.
+    {
+        const Quat q = rotationFromTo(Vec3{1, 0, 0}, Vec3{2, 0, 0});
+        const Vec3 v = q.rotate(Vec3{1, 0, 0});
+        CHECK_NEAR(v.x, 1.0f);
+        CHECK_NEAR(v.y, 0.0f);
+        CHECK_NEAR(v.z, 0.0f);
+    }
+    // rotationFromTo anti-parallel: opposite direction -> 180 deg (x flips).
+    {
+        const Quat q = rotationFromTo(Vec3{1, 0, 0}, Vec3{-1, 0, 0});
+        const Vec3 v = q.rotate(Vec3{1, 0, 0});
+        CHECK_NEAR(v.x, -1.0f);
+    }
+
     return iron_test_result();
 }

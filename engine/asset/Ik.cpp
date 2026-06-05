@@ -29,6 +29,12 @@ TwoBoneIKResult solveTwoBoneIK(Vec3 root, Vec3 mid, Vec3 end,
     const float lab = length(mid - root);  // root -> mid bone length
     const float lcb = length(end - mid);   // mid -> end bone length
 
+    // Degenerate zero-length bone: no valid triangle. Return inputs unchanged
+    // with identity deltas (avoids std::clamp(lo>hi) UB and divide-by-zero).
+    if (lab < eps || lcb < eps) {
+        return TwoBoneIKResult{mid, end, Quat::identity(), Quat::identity()};
+    }
+
     // Direction to target and clamped reach.
     const Vec3 toTarget = target - root;
     float lat = length(toTarget);
