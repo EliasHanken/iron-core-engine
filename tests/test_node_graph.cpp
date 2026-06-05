@@ -288,5 +288,43 @@ int main() {
         CHECK(!g2.has_value());
     }
 
+    // Graph mutation: removeNode drops the node and its incident connections.
+    {
+        Graph g;
+        const NodeId a = g.addNode("Const");
+        const NodeId b = g.addNode("Add");
+        const NodeId c = g.addNode("SetOutput");
+        g.connect(a, "out", b, "a");
+        g.connect(b, "result", c, "value");
+        CHECK(g.connections().size() == 2);
+
+        g.removeNode(b);
+        CHECK(g.node(b) == nullptr);
+        CHECK(g.nodes().size() == 2);
+        CHECK(g.connections().empty());   // both touched b
+    }
+    // disconnect removes only the targeted input's connection.
+    {
+        Graph g;
+        const NodeId a = g.addNode("Const");
+        const NodeId b = g.addNode("Add");
+        g.connect(a, "out", b, "a");
+        g.connect(a, "out", b, "b");
+        g.disconnect(b, "a");
+        CHECK(!g.incoming(b, "a").has_value());
+        CHECK(g.incoming(b, "b").has_value());
+        CHECK(g.connections().size() == 1);
+    }
+    // removeOutgoing removes the connection leaving a given output.
+    {
+        Graph g;
+        const NodeId a = g.addNode("Entry");
+        const NodeId b = g.addNode("SetOutput");
+        g.connect(a, "then", b, "in");
+        g.removeOutgoing(a, "then");
+        CHECK(!g.outgoing(a, "then").has_value());
+        CHECK(g.connections().empty());
+    }
+
     return iron_test_result();
 }

@@ -40,6 +40,10 @@
 #include "editor/SceneOutliner.h"
 #include "editor/ViewGizmo.h"
 #include "editor/ViewportInput.h"
+#include "nodes/NodeRegistry.h"
+#include "nodes/BuiltinNodes.h"
+#include "nodes/GraphEditorModel.h"
+#include "editor/NodeGraphPanel.h"
 #include "render/backends/vulkan/VulkanRenderer.h"
 #include "math/Aabb.h"
 #include "audio/AudioEmitter.h"
@@ -736,6 +740,34 @@ int main() {
     iron::SceneOutliner    outliner;
     iron::SceneInspector   inspector;
     iron::EnvironmentPanel environment;
+
+    // M54: node-editor panel + its graph model (built-in node types registered).
+    iron::NodeRegistry nodeRegistry;
+    iron::registerBuiltinNodes(nodeRegistry);
+    iron::GraphEditorModel graphModel(&nodeRegistry);
+    iron::NodeGraphPanel nodeGraphPanel;
+    // M54: seed a runnable demo so the Node Editor opens with something real:
+    //   Entry -> Branch(Compare 7 > 5) -> true: SetOutput("r", 1) / false: ("r", 0)
+    // Pressing Run shows "r = 1.000"; Save writes a meaningful node_graph.json.
+    {
+        const iron::NodeId e   = graphModel.addNode("Entry", 40.0f, 40.0f);
+        const iron::NodeId cmp = graphModel.addNode("Compare", 40.0f, 150.0f);
+        const iron::NodeId br  = graphModel.addNode("Branch", 300.0f, 60.0f);
+        const iron::NodeId st  = graphModel.addNode("SetOutput", 540.0f, 40.0f);
+        const iron::NodeId sf  = graphModel.addNode("SetOutput", 540.0f, 170.0f);
+        graphModel.setLiteral(cmp, "a", iron::NodeValue::F(7.0f));
+        graphModel.setLiteral(cmp, "b", iron::NodeValue::F(5.0f));
+        graphModel.setLiteral(cmp, "op", iron::NodeValue::S(">"));
+        graphModel.setLiteral(st, "key", iron::NodeValue::S("r"));
+        graphModel.setLiteral(st, "value", iron::NodeValue::F(1.0f));
+        graphModel.setLiteral(sf, "key", iron::NodeValue::S("r"));
+        graphModel.setLiteral(sf, "value", iron::NodeValue::F(0.0f));
+        graphModel.connect(e, "then", br, "in");
+        graphModel.connect(cmp, "result", br, "cond");
+        graphModel.connect(br, "true", st, "in");
+        graphModel.connect(br, "false", sf, "in");
+        graphModel.clearDirty();
+    }
     int  selectedIndex = scene.entities.empty() ? -1 : 0;
     bool prevLook = false;  // was the camera capturing last frame?
     iron::Gizmo gizmo;
@@ -1171,6 +1203,9 @@ int main() {
             }
         }
         environment.draw(scene);
+
+        // M54: node-editor panel (opens its own "Node Editor" window; docks like the rest).
+        nodeGraphPanel.draw(graphModel);
 
         // M47: bloom tuning knobs — appended to the Environment panel so all
         // rendering controls live in one place. Static locals match the renderer

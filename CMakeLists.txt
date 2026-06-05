@@ -80,6 +80,8 @@ add_subdirectory(engine)
 
 # Editor module (Unreal-style): only built under Vulkan; only editor hosts link it.
 if (IRON_RENDER_BACKEND STREQUAL "vulkan")
+    # imgui-node-editor is editor-only; declare it before the editor links it.
+    add_subdirectory(third_party/imgui-node-editor)
     add_subdirectory(engine/editor)
 endif()
 

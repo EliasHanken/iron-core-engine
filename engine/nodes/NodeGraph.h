@@ -75,6 +75,12 @@ public:
     NodeId addNode(std::string typeName);
     void   connect(NodeId fromNode, std::string fromPort,
                    NodeId toNode, std::string toPort);
+    // Remove a node and every connection incident to it.
+    void removeNode(NodeId id);
+    // Remove the (single) connection feeding input (toNode, toPort), if present.
+    void disconnect(NodeId toNode, std::string_view toPort);
+    // Remove the connection leaving output (fromNode, fromPort), if present.
+    void removeOutgoing(NodeId fromNode, std::string_view fromPort);
     void   setLiteral(NodeId node, std::string port, NodeValue value);
     void   adoptNode(Node n);   // insert a fully-formed node (used by IO on load)
 
