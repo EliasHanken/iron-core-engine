@@ -9,6 +9,7 @@ add_library(ironcore_editor STATIC
   SceneOutliner.cpp
   SceneInspector.cpp
   EnvironmentPanel.cpp
+  NodeGraphPanel.cpp
   ReflectionInspector.cpp
   ViewGizmo.cpp
   EditorState.cpp
