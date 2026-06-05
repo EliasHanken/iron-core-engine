@@ -10,7 +10,7 @@ class World;
 // RunContext::domainContext (as a void*) by the runtime each tick.
 struct GameContext {
     World*   world = nullptr;
-    EntityId self;             // the entity owning the running graph
+    EntityId self = {};        // the entity owning the running graph
     float    time = 0.0f;      // elapsed Play seconds
     float    deltaTime = 0.0f;
 };

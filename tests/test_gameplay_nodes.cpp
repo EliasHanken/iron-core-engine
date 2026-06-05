@@ -106,5 +106,37 @@ int main() {
         CHECK(true);
     }
 
+    // Action nodes chain: OnTick -> Translate -> SetVar both run.
+    {
+        World w; EntityId e = w.create(); w.add<Transform>(e, Transform{});
+        NodeRegistry reg = makeReg();
+        Graph g;
+        const NodeId tick = g.addNode("OnTick");
+        const NodeId tr   = g.addNode("Translate");
+        const NodeId setv = g.addNode("SetVar");
+        const NodeId getv = g.addNode("GetVar");
+        const NodeId out  = g.addNode("SetOutput");
+        g.setLiteral(tr, "delta", NodeValue::V3(Vec3{3, 0, 0}));
+        g.setLiteral(setv, "name", NodeValue::S("flag"));
+        g.setLiteral(setv, "value", NodeValue::F(1.0f));
+        g.setLiteral(getv, "name", NodeValue::S("flag"));
+        g.setLiteral(out, "key", NodeValue::S("flag"));
+        g.connect(tick, "then", tr, "in");
+        g.connect(tr, "then", setv, "in");      // chain past Translate
+        // read the var back via a Sequence so SetOutput runs after SetVar
+        const NodeId seq = g.addNode("Sequence");
+        g.disconnect(tick, "then");
+        g.connect(tick, "then", seq, "in");
+        g.connect(seq, "0", tr, "in");
+        g.connect(seq, "1", out, "in");
+        g.connect(getv, "value", out, "value");
+
+        GameContext gc{&w, e, 0.0f, 0.1f};
+        RunContext ctx; ctx.domainContext = &gc;
+        run(g, reg, ctx);
+        CHECK_NEAR(w.get<Transform>(e)->position.x, 3.0f);   // Translate ran
+        CHECK_NEAR(ctx.outputs.at("flag").asFloat(), 1.0f);   // SetVar ran (via tr->then)
+    }
+
     return iron_test_result();
 }

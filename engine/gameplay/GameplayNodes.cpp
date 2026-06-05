@@ -44,16 +44,20 @@ void registerGameplayNodes(NodeRegistry& r) {
         }});
 
     r.registerType({"SetPosition", "Transform",
-        { P{"in", PortType::Exec, In}, P{"pos", PortType::Vec3, In} },
+        { P{"in", PortType::Exec, In}, P{"pos", PortType::Vec3, In},
+          P{"then", PortType::Exec, Out} },
         [](NodeContext& c) {
             if (Transform* t = selfTransform(c)) t->position = c.in("pos").asVec3();
+            c.fire("then");
         }});
 
     r.registerType({"Translate", "Transform",
-        { P{"in", PortType::Exec, In}, P{"delta", PortType::Vec3, In} },
+        { P{"in", PortType::Exec, In}, P{"delta", PortType::Vec3, In},
+          P{"then", PortType::Exec, Out} },
         [](NodeContext& c) {
             if (Transform* t = selfTransform(c))
                 t->position = t->position + c.in("delta").asVec3();
+            c.fire("then");
         }});
 
     r.registerType({"MakeVec3", "Math",
@@ -97,9 +101,10 @@ void registerGameplayNodes(NodeRegistry& r) {
 
     r.registerType({"SetVar", "Variable",
         { P{"in", PortType::Exec, In}, P{"name", PortType::String, In},
-          P{"value", PortType::Float, In} },
+          P{"value", PortType::Float, In}, P{"then", PortType::Exec, Out} },
         [](NodeContext& c) {
             c.run().vars[c.in("name").asString()] = c.in("value");
+            c.fire("then");
         }});
 }
 
