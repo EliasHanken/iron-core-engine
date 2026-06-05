@@ -2115,8 +2115,10 @@ int main(int argc, char** argv) {
                 // local viewer, clamped to ~70deg, weight 0.7. forwardAxis +Z is
                 // a GUESS pending the visual gate.
                 if (foxHeadBone >= 0) {
+                    // b_Head_05's local +X is the snout/forward axis (maps to
+                    // model ~+Z); +Z would aim the head sideways. ~70deg clamp.
                     int h = animIt->second.addLookAt(
-                        foxHeadBone, iron::Vec3{0.0f, 0.0f, 1.0f}, 1.22f, 0.7f);
+                        foxHeadBone, iron::Vec3{1.0f, 0.0f, 0.0f}, 1.22f, 0.85f);
                     playerLookAtHandles[pid] = h;
                 }
             }
