@@ -89,7 +89,8 @@ void CharacterAnimator::applyIK(std::span<Mat4> globals) const {
 
     // returns true if `bone` is `ancestor` or a descendant of it.
     auto inSubtree = [&](int bone, int ancestor) {
-        for (int b = bone; b >= 0; b = skeleton_->bones[b].parentIndex) {
+        for (int b = bone, steps = 0; b >= 0 && steps < n;
+             b = skeleton_->bones[b].parentIndex, ++steps) {
             if (b == ancestor) return true;
         }
         return false;
@@ -156,6 +157,7 @@ void CharacterAnimator::sampleState(std::string_view state, float time,
                                     Pose& out) const {
     auto bs = blendSpaces_.find(std::string(state));
     if (bs != blendSpaces_.end()) {
+        if (!skeleton_) { out.bones.clear(); return; }
         sampleBlendSpace(*skeleton_, bs->second, blendParam_, time, out);
         return;
     }
