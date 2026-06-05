@@ -17,7 +17,9 @@ public:
     NodeGraphPanel(const NodeGraphPanel&) = delete;
     NodeGraphPanel& operator=(const NodeGraphPanel&) = delete;
 
-    void draw(GraphEditorModel& model);   // opens its own ImGui window
+    // Opens its own ImGui window. Returns true the frame the "Assign to entity"
+    // button is clicked (M55: assign the edited graph to the selected entity).
+    bool draw(GraphEditorModel& model);
 
 private:
     ax::NodeEditor::EditorContext* ctx_ = nullptr;

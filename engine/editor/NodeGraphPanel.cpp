@@ -56,7 +56,7 @@ int findPortIndex(const GraphEditorModel& m, NodeId node, const std::string& por
 NodeGraphPanel::NodeGraphPanel() { ctx_ = ed::CreateEditor(); }
 NodeGraphPanel::~NodeGraphPanel() { if (ctx_) ed::DestroyEditor(ctx_); }
 
-void NodeGraphPanel::draw(GraphEditorModel& model) {
+bool NodeGraphPanel::draw(GraphEditorModel& model) {
     ImGui::Begin("Node Editor");
 
     if (ImGui::Button("Run")) model.run();
@@ -78,6 +78,10 @@ void NodeGraphPanel::draw(GraphEditorModel& model) {
             }
         }
     }
+    // M55: assign the current graph to the selected entity (host handles the wiring).
+    bool assignClicked = false;
+    ImGui::SameLine();
+    if (ImGui::Button("Assign to entity")) assignClicked = true;
     // Palette
     if (model.registry()) {
         ImGui::TextUnformatted("Add:");
@@ -204,6 +208,7 @@ void NodeGraphPanel::draw(GraphEditorModel& model) {
     ed::End();
     ed::SetCurrentEditor(nullptr);
     ImGui::End();
+    return assignClicked;
 }
 
 }  // namespace iron
