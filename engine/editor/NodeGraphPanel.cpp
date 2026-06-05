@@ -56,7 +56,7 @@ int findPortIndex(const GraphEditorModel& m, NodeId node, const std::string& por
 NodeGraphPanel::NodeGraphPanel() { ctx_ = ed::CreateEditor(); }
 NodeGraphPanel::~NodeGraphPanel() { if (ctx_) ed::DestroyEditor(ctx_); }
 
-void NodeGraphPanel::draw(GraphEditorModel& model) {
+NodeGraphPanel::Action NodeGraphPanel::draw(GraphEditorModel& model, const char* targetName, bool targetHasGraph) {
     ImGui::Begin("Node Editor");
 
     if (ImGui::Button("Run")) model.run();
@@ -78,6 +78,21 @@ void NodeGraphPanel::draw(GraphEditorModel& model) {
             }
         }
     }
+    // M55: entity-aware target readout + load/assign (host handles the wiring).
+    Action action = Action::None;
+    ImGui::SameLine();
+    ImGui::TextDisabled("|");
+    ImGui::SameLine();
+    if (targetName) ImGui::Text("Entity: %s", targetName);
+    else            ImGui::TextDisabled("Entity: (none selected)");
+    ImGui::SameLine();
+    ImGui::BeginDisabled(!targetName || !targetHasGraph);
+    if (ImGui::Button("Load from entity")) action = Action::LoadFromEntity;
+    ImGui::EndDisabled();
+    ImGui::SameLine();
+    ImGui::BeginDisabled(!targetName);
+    if (ImGui::Button("Assign to entity")) action = Action::Assign;
+    ImGui::EndDisabled();
     // Palette
     if (model.registry()) {
         ImGui::TextUnformatted("Add:");
@@ -204,6 +219,7 @@ void NodeGraphPanel::draw(GraphEditorModel& model) {
     ed::End();
     ed::SetCurrentEditor(nullptr);
     ImGui::End();
+    return action;
 }
 
 }  // namespace iron

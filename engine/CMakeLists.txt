@@ -39,6 +39,8 @@ add_library(ironcore STATIC
   nodes/GraphEvaluator.cpp
   nodes/NodeGraphIO.cpp
   nodes/GraphEditorModel.cpp
+  gameplay/GameplayNodes.cpp
+  gameplay/LogicRuntime.cpp
   audio/AudioEngine.cpp
   game/Collision.cpp
   render/RendererFactory.cpp

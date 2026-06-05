@@ -17,6 +17,9 @@ struct RunContext {
     // recurses per exec step), so keep it well under what a 1 MB stack allows.
     // 1000 is ample for v1 graphs; an iterative evaluator can lift this later.
     int maxSteps = 1000;
+    // Opaque per-domain context (gameplay sets a GameContext*, shaders/VFX
+    // their own). nullptr when running headless / in the editor preview.
+    void* domainContext = nullptr;
 };
 
 // The only interface a node function sees. The evaluator implements it.

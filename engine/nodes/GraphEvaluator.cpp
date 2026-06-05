@@ -118,7 +118,8 @@ RunContext& Ctx::run() { return ev_.ctx(); }
 void run(const Graph& graph, const NodeRegistry& registry, RunContext& ctx) {
     NodeId entry = 0;
     for (const Node& n : graph.nodes()) {
-        if (n.typeName == "Entry") { entry = n.id; break; }
+        const NodeTypeDesc* t = registry.find(n.typeName);
+        if (t && t->isEntry) { entry = n.id; break; }
     }
     if (entry == 0) {
         Log::warn("GraphEvaluator: no Entry node; nothing to run");

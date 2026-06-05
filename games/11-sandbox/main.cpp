@@ -43,6 +43,10 @@
 #include "nodes/NodeRegistry.h"
 #include "nodes/BuiltinNodes.h"
 #include "nodes/GraphEditorModel.h"
+#include "nodes/NodeGraphIO.h"
+#include "gameplay/GameplayNodes.h"
+#include "gameplay/LogicGraph.h"
+#include "gameplay/LogicRuntime.h"
 #include "editor/NodeGraphPanel.h"
 #include "render/backends/vulkan/VulkanRenderer.h"
 #include "math/Aabb.h"
@@ -173,6 +177,14 @@ int main() {
         return 1;
     }
     iron::SceneFile scene = *sceneOpt;  // mutable: the editor edits this in place
+
+    // M54/M55: node registry — built-in nodes + gameplay logic nodes. Declared
+    // here (before the Play-mode spawnRuntime lambda) so that lambda can parse
+    // each entity's serialized logicGraph against it. graphModel / NodeGraphPanel
+    // are constructed later but reference this same registry.
+    iron::NodeRegistry nodeRegistry;
+    iron::registerBuiltinNodes(nodeRegistry);
+    iron::registerGameplayNodes(nodeRegistry);   // M55: gameplay logic nodes
 
     const iron::ShaderHandle litShader = renderer.createStandardLitShader();
     if (litShader == iron::kInvalidHandle) {
@@ -590,6 +602,9 @@ int main() {
 
     // M41: Play/Stop mode state.
     iron::EditorState editor;
+    // M55: play-time clock for logic graphs (OnTick.time / .dt). Reset on Play.
+    float playTime = 0.0f;
+    float playDt   = 0.0f;
     iron::PhysicsWorld physics;
     if (!physics.init()) {
         iron::Log::error("sandbox: PhysicsWorld init failed");
@@ -620,6 +635,20 @@ int main() {
     auto spawnRuntime = [&]() {
         for (int i = 0; i < static_cast<int>(scene.entities.size()); ++i) {
             const iron::SceneEntity& e = scene.entities[i];
+            // M55: build a LogicGraph component on the World entity from the
+            // serialized graph (if any) so tickLogicGraphs runs it in Play.
+            // allow_exceptions=false: a malformed string yields a discarded
+            // value (guarded below) so nothing throws into the frame.
+            if (!e.logicGraph.empty() &&
+                i < static_cast<int>(sceneIndexToEntity.size())) {
+                auto parsed = nlohmann::json::parse(e.logicGraph, nullptr, false);
+                if (!parsed.is_discarded()) {
+                    if (auto pg = iron::fromJson(parsed, nodeRegistry)) {
+                        iron::LogicGraph lg; lg.graph = std::move(*pg);
+                        world.add<iron::LogicGraph>(sceneIndexToEntity[i], std::move(lg));
+                    }
+                }
+            }
             if (e.collision) {
                 const iron::CollisionShape& cs = *e.collision;
                 const iron::Vec3 p = e.transform.position;
@@ -680,6 +709,8 @@ int main() {
             editScene = scene;
             editWorld = world;
             editCam   = cam;
+            playTime  = 0.0f;   // M55: restart the logic clock each Play
+            playDt    = 0.0f;
             editor.setMode(iron::EditorState::Mode::Play);
             spawnRuntime();
             iron::Log::info("sandbox: Edit -> Play");
@@ -741,9 +772,7 @@ int main() {
     iron::SceneInspector   inspector;
     iron::EnvironmentPanel environment;
 
-    // M54: node-editor panel + its graph model (built-in node types registered).
-    iron::NodeRegistry nodeRegistry;
-    iron::registerBuiltinNodes(nodeRegistry);
+    // M54: node-editor panel + its graph model (nodeRegistry built above).
     iron::GraphEditorModel graphModel(&nodeRegistry);
     iron::NodeGraphPanel nodeGraphPanel;
     // M54: seed a runnable demo so the Node Editor opens with something real:
@@ -768,6 +797,31 @@ int main() {
         graphModel.connect(br, "false", sf, "in");
         graphModel.clearDirty();
     }
+
+    // M55 demo: make the first entity bob on Y via a node graph.
+    // OnTick.time -> Mul(*2) -> Sin -> MakeVec3.y; GetPosition.x/z preserved.
+    // SetPosition writes the new pose into the entity's World Transform each tick.
+    if (!scene.entities.empty()) {
+        iron::GraphEditorModel demo(&nodeRegistry);
+        const auto tick = demo.addNode("OnTick", 40, 40);
+        const auto mt   = demo.addNode("Mul", 40, 140);
+        const auto sn   = demo.addNode("Sin", 240, 140);
+        const auto getp = demo.addNode("GetPosition", 40, 260);
+        const auto br   = demo.addNode("BreakVec3", 240, 260);
+        const auto mk   = demo.addNode("MakeVec3", 460, 200);
+        const auto setp = demo.addNode("SetPosition", 680, 60);
+        demo.setLiteral(mt, "b", iron::NodeValue::F(2.0f));
+        demo.connect(tick, "time", mt, "a");
+        demo.connect(mt, "result", sn, "x");
+        demo.connect(getp, "pos", br, "v");
+        demo.connect(br, "x", mk, "x");
+        demo.connect(sn, "result", mk, "y");
+        demo.connect(br, "z", mk, "z");
+        demo.connect(mk, "v", setp, "pos");
+        demo.connect(tick, "then", setp, "in");
+        scene.entities[0].logicGraph = demo.toJson().dump();
+    }
+
     int  selectedIndex = scene.entities.empty() ? -1 : 0;
     bool prevLook = false;  // was the camera capturing last frame?
     iron::Gizmo gizmo;
@@ -940,6 +994,11 @@ int main() {
         // in setRender then propagates it to the renderer). Static bodies and
         // non-collider entities are untouched. Snapshot restores all of this on Stop.
         if (editor.isPlaying()) {
+            // M55: advance the logic clock; the actual tickLogicGraphs runs in
+            // setRender (after the scene->World transform mirror) so logic-driven
+            // poses aren't clobbered by that mirror this frame.
+            playTime += t.deltaSeconds;
+            playDt    = t.deltaSeconds;
             physics.step(t.deltaSeconds);
             for (auto& [idx, body] : playBodies) {
                 if (idx < 0 || idx >= static_cast<int>(scene.entities.size())) continue;
@@ -1205,7 +1264,22 @@ int main() {
         environment.draw(scene);
 
         // M54: node-editor panel (opens its own "Node Editor" window; docks like the rest).
-        nodeGraphPanel.draw(graphModel);
+        // M55: entity-aware — show the selected entity as the target, with Assign
+        // (write graph back) and Load-from-entity (pull the entity's graph in).
+        {
+            const bool selValid = selectedIndex >= 0 &&
+                                  selectedIndex < (int)scene.entities.size();
+            const char* selName = selValid ? scene.entities[selectedIndex].name.c_str() : nullptr;
+            const bool selHasGraph = selValid && !scene.entities[selectedIndex].logicGraph.empty();
+            const auto act = nodeGraphPanel.draw(graphModel, selName, selHasGraph);
+            if (selValid && act == iron::NodeGraphPanel::Action::Assign) {
+                scene.entities[selectedIndex].logicGraph = graphModel.toJson().dump();
+            } else if (selValid && act == iron::NodeGraphPanel::Action::LoadFromEntity) {
+                auto parsed = nlohmann::json::parse(
+                    scene.entities[selectedIndex].logicGraph, nullptr, false);
+                if (!parsed.is_discarded()) graphModel.loadFromJson(parsed);
+            }
+        }
 
         // M47: bloom tuning knobs — appended to the Environment panel so all
         // rendering controls live in one place. Static locals match the renderer
@@ -1381,6 +1455,12 @@ int main() {
             }
             // MeshRef does not change at runtime in v1; skip.
         }
+
+        // M55: run entity logic graphs AFTER the scene->World transform mirror so
+        // a graph that writes the World Transform (e.g. SetPosition bob) isn't
+        // overwritten by the mirror, and BEFORE submit so the new pose is drawn.
+        if (editor.isPlaying())
+            iron::tickLogicGraphs(world, nodeRegistry, playTime, playDt);
 
         // --- scene render ---
         const iron::Mat4 view = cam.viewMatrix();

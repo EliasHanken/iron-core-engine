@@ -241,5 +241,25 @@ int main() {
         fs::remove(path);
     }
 
+    // M55: logicGraph string round-trips through save/load.
+    {
+        iron::SceneFile s;
+        iron::SceneEntity e;
+        e.name = "scripted";
+        e.logicGraph = R"({"nodes":[{"id":1,"type":"OnTick"}],"connections":[]})";
+        s.entities.push_back(e);
+
+        const iron::Reflection r = makeReflectionRegistry();
+        const std::string path = tempScenePath("iron_scene_logicgraph.json");
+        CHECK(iron::saveSceneFile(r, s, path));
+        const auto loaded = iron::loadSceneFile(r, path);
+        CHECK(loaded.has_value());
+        CHECK(loaded->entities.size() == 1u);
+        if (loaded.has_value() && loaded->entities.size() == 1u) {
+            CHECK(loaded->entities[0].logicGraph == e.logicGraph);
+        }
+        fs::remove(path);
+    }
+
     return iron_test_result();
 }

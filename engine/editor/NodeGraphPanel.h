@@ -17,7 +17,13 @@ public:
     NodeGraphPanel(const NodeGraphPanel&) = delete;
     NodeGraphPanel& operator=(const NodeGraphPanel&) = delete;
 
-    void draw(GraphEditorModel& model);   // opens its own ImGui window
+    enum class Action { None, Assign, LoadFromEntity };
+
+    // Opens its own ImGui window.
+    // `targetName` = the selected scene entity's name (nullptr if none selected);
+    // `targetHasGraph` = whether that entity already has a logic graph. Returns
+    // the action the user requested this frame (host performs the assign/load).
+    Action draw(GraphEditorModel& model, const char* targetName, bool targetHasGraph);
 
 private:
     ax::NodeEditor::EditorContext* ctx_ = nullptr;

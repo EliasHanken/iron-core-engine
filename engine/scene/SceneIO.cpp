@@ -40,6 +40,7 @@ json entityToJson(const Reflection& r, const SceneEntity& e) {
     if (e.collision) j["collision"] = componentToJson(r, *e.collision);
     if (e.audio)     j["audio"]     = componentToJson(r, *e.audio);
     if (e.probe)     j["probe"]     = componentToJson(r, *e.probe);
+    if (!e.logicGraph.empty()) j["logicGraph"] = e.logicGraph;
     return j;
 }
 
@@ -61,6 +62,7 @@ SceneEntity entityFromJson(const Reflection& r, const json& j) {
         e.probe = ReflectionProbeDef{};
         componentFromJson(r, *e.probe, j["probe"]);
     }
+    readString(j, "logicGraph", e.logicGraph);
     return e;
 }
 

@@ -2,6 +2,7 @@
 
 #include "world/Entity.h"
 
+#include <cstddef>
 #include <cstdint>
 #include <vector>
 
@@ -42,6 +43,12 @@ public:
     }
 
     size_t size() const { return dense_.size(); }
+
+    // Iterate live (entity, component) pairs. f: void(EntityId, T&).
+    template <class F>
+    void forEach(F&& f) {
+        for (std::size_t i = 0; i < dense_.size(); ++i) f(denseEntities_[i], dense_[i]);
+    }
 
     void remove(EntityId e) {
         if (e.index >= sparse_.size()) return;
