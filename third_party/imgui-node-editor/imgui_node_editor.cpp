@@ -560,7 +560,13 @@ static void ImDrawList_AddBezierWithArrows(ImDrawList* drawList, const ImCubicBe
 
         ImDrawList_PathBezierOffset(drawList, half_thickness, curve.P3, curve.P2, curve.P1, curve.P0);
 
+        // ImGui 1.92.8 swapped PathStroke's (thickness, flags) order and moved
+        // ImDrawFlags_Closed to 1<<9; the legacy `true` is now an invalid flag bit.
+#if IMGUI_VERSION_NUM >= 19280
+        drawList->PathStroke(color, strokeThickness, ImDrawFlags_Closed);
+#else
         drawList->PathStroke(color, true, strokeThickness);
+#endif
     }
 }
 

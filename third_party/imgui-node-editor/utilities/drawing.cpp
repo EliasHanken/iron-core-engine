@@ -73,7 +73,14 @@ void ax::Drawing::DrawIcon(ImDrawList* drawList, const ImVec2& a, const ImVec2& 
             if (innerColor & 0xFF000000)
                 drawList->AddConvexPolyFilled(drawList->_Path.Data, drawList->_Path.Size, innerColor);
 
+            // ImGui 1.92.8 swapped PathStroke's (thickness, flags) order and moved
+            // ImDrawFlags_Closed to 1<<9, so the legacy `true` (==old Closed==1) is
+            // now an invalid flag bit and trips the InvalidMask assert.
+#if IMGUI_VERSION_NUM >= 19280
+            drawList->PathStroke(color, 2.0f * outline_scale, ImDrawFlags_Closed);
+#else
             drawList->PathStroke(color, true, 2.0f * outline_scale);
+#endif
         }
         else
             drawList->PathFillConvex(color);
@@ -239,7 +246,14 @@ void ax::Drawing::DrawIcon(ImDrawList* drawList, const ImVec2& a, const ImVec2& 
                 if (innerColor & 0xFF000000)
                     drawList->AddConvexPolyFilled(drawList->_Path.Data, drawList->_Path.Size, innerColor);
 
-                drawList->PathStroke(color, true, 2.0f * outline_scale);
+                // ImGui 1.92.8 swapped PathStroke's (thickness, flags) order and moved
+            // ImDrawFlags_Closed to 1<<9, so the legacy `true` (==old Closed==1) is
+            // now an invalid flag bit and trips the InvalidMask assert.
+#if IMGUI_VERSION_NUM >= 19280
+            drawList->PathStroke(color, 2.0f * outline_scale, ImDrawFlags_Closed);
+#else
+            drawList->PathStroke(color, true, 2.0f * outline_scale);
+#endif
             }
         }
         else
