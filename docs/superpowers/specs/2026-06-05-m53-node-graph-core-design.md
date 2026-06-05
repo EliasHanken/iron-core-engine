@@ -70,7 +70,7 @@ New directory `engine/nodes/`. Everything is headless (`ironcore`, no renderer/e
 - `Entry` — ports: `[out exec "then"]`. evaluate: `fire("then")`.
 - `Branch` — `[in exec "in", in Bool "cond", out exec "true", out exec "false"]`. evaluate: `fire(in("cond").asBool() ? "true" : "false")`.
 - `Sequence` — `[in exec "in", out exec "0", out exec "1"]` (two outs for v1). evaluate: fire "0" then "1" in order (the evaluator supports a node firing multiple exec-outs sequentially).
-- `Const` — `[out Float "value"]` with a literal default (a Const just outputs its literal). (One Const-Float for v1; trivially extended to other types.)
+- `Const` — `[in Float "value", out Float "out"]`: forwards its literal-defaulted `value` input to `out`. (Modeling the value as a literal-defaulted *input* keeps every node uniform — in/out only — and lets `value` optionally be driven by a connection. One Const-Float for v1; trivially extended to other types.)
 - `Compare` — `[in Float "a", in Float "b", out Bool "result"]` + a literal `op` (string: ">","<",">=","<=","==") read from `literals`. evaluate: `out("result", compare(a,b,op))`.
 - `Add` — `[in Float "a", in Float "b", out Float "result"]`. evaluate: `out("result", a+b)`.
 - `SetOutput` — `[in exec "in", in String "key", in <value> "value"]` → writes `run().outputs[key] = value`. (v1: value port is Float; the sink records a float by key.)

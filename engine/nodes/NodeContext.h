@@ -13,7 +13,10 @@ namespace iron {
 struct RunContext {
     std::unordered_map<std::string, NodeValue> vars;
     std::unordered_map<std::string, NodeValue> outputs;
-    int maxSteps = 10000;
+    // Exec-walk budget. Bounds cycles AND caps recursion depth (the evaluator
+    // recurses per exec step), so keep it well under what a 1 MB stack allows.
+    // 1000 is ample for v1 graphs; an iterative evaluator can lift this later.
+    int maxSteps = 1000;
 };
 
 // The only interface a node function sees. The evaluator implements it.
