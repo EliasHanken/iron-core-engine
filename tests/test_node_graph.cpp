@@ -1,11 +1,45 @@
 #include "nodes/NodeGraph.h"
 #include "nodes/NodeRegistry.h"
 #include "nodes/BuiltinNodes.h"
+#include "nodes/GraphEvaluator.h"
 #include "test_framework.h"
 
 #include <string>
 
 using namespace iron;
+
+namespace {
+// Build: Entry -> Branch(cond = Compare(a,b,op)) -> SetOutput(key,val).
+// Returns outputs["r"] after a run.
+float runBranchProgram(float a, float b, const char* op,
+                       float trueVal, float falseVal) {
+    NodeRegistry reg; registerBuiltinNodes(reg);
+    Graph g;
+    const NodeId entry = g.addNode("Entry");
+    const NodeId cmp   = g.addNode("Compare");
+    const NodeId br    = g.addNode("Branch");
+    const NodeId setT  = g.addNode("SetOutput");
+    const NodeId setF  = g.addNode("SetOutput");
+
+    g.setLiteral(cmp, "a", NodeValue::F(a));
+    g.setLiteral(cmp, "b", NodeValue::F(b));
+    g.setLiteral(cmp, "op", NodeValue::S(op));
+    g.connect(cmp, "result", br, "cond");
+    g.connect(entry, "then", br, "in");
+
+    g.setLiteral(setT, "key", NodeValue::S("r"));
+    g.setLiteral(setT, "value", NodeValue::F(trueVal));
+    g.setLiteral(setF, "key", NodeValue::S("r"));
+    g.setLiteral(setF, "value", NodeValue::F(falseVal));
+    g.connect(br, "true", setT, "in");
+    g.connect(br, "false", setF, "in");
+
+    RunContext ctx;
+    run(g, reg, ctx);
+    auto it = ctx.outputs.find("r");
+    return it == ctx.outputs.end() ? -999.0f : it->second.asFloat();
+}
+}  // namespace
 
 int main() {
     // NodeValue type + coercion.
@@ -99,6 +133,87 @@ int main() {
             }
         }
         CHECK(foundBranch);
+    }
+
+    // Exec + data: true branch (7 > 5) writes 1.0; false branch writes 0.0.
+    {
+        CHECK_NEAR(runBranchProgram(7, 5, ">", 1.0f, 0.0f), 1.0f);
+        CHECK_NEAR(runBranchProgram(2, 5, ">", 1.0f, 0.0f), 0.0f);
+    }
+
+    // Pure data pull: Add(Const 5, Const 3) -> SetOutput -> 8.
+    {
+        NodeRegistry reg; registerBuiltinNodes(reg);
+        Graph g;
+        const NodeId entry = g.addNode("Entry");
+        const NodeId c5 = g.addNode("Const");
+        const NodeId c3 = g.addNode("Const");
+        const NodeId add = g.addNode("Add");
+        const NodeId set = g.addNode("SetOutput");
+        g.setLiteral(c5, "value", NodeValue::F(5.0f));
+        g.setLiteral(c3, "value", NodeValue::F(3.0f));
+        g.connect(c5, "out", add, "a");
+        g.connect(c3, "out", add, "b");
+        g.connect(add, "result", set, "value");
+        g.setLiteral(set, "key", NodeValue::S("sum"));
+        g.connect(entry, "then", set, "in");
+
+        RunContext ctx;
+        run(g, reg, ctx);
+        CHECK_NEAR(ctx.outputs.at("sum").asFloat(), 8.0f);
+    }
+
+    // Literal default used when an input is unconnected: Add(Const 10, b=4).
+    {
+        NodeRegistry reg; registerBuiltinNodes(reg);
+        Graph g;
+        const NodeId entry = g.addNode("Entry");
+        const NodeId c10 = g.addNode("Const");
+        const NodeId add = g.addNode("Add");
+        const NodeId set = g.addNode("SetOutput");
+        g.setLiteral(c10, "value", NodeValue::F(10.0f));
+        g.connect(c10, "out", add, "a");
+        g.setLiteral(add, "b", NodeValue::F(4.0f));   // unconnected -> literal
+        g.connect(add, "result", set, "value");
+        g.setLiteral(set, "key", NodeValue::S("x"));
+        g.connect(entry, "then", set, "in");
+
+        RunContext ctx;
+        run(g, reg, ctx);
+        CHECK_NEAR(ctx.outputs.at("x").asFloat(), 14.0f);
+    }
+
+    // Sequence runs both outputs in order.
+    {
+        NodeRegistry reg; registerBuiltinNodes(reg);
+        Graph g;
+        const NodeId entry = g.addNode("Entry");
+        const NodeId seq = g.addNode("Sequence");
+        const NodeId s0 = g.addNode("SetOutput");
+        const NodeId s1 = g.addNode("SetOutput");
+        g.connect(entry, "then", seq, "in");
+        g.connect(seq, "0", s0, "in");
+        g.connect(seq, "1", s1, "in");
+        g.setLiteral(s0, "key", NodeValue::S("a")); g.setLiteral(s0, "value", NodeValue::F(1.0f));
+        g.setLiteral(s1, "key", NodeValue::S("b")); g.setLiteral(s1, "value", NodeValue::F(2.0f));
+        RunContext ctx;
+        run(g, reg, ctx);
+        CHECK_NEAR(ctx.outputs.at("a").asFloat(), 1.0f);
+        CHECK_NEAR(ctx.outputs.at("b").asFloat(), 2.0f);
+    }
+
+    // Infinite-loop guard: a Sequence wired back into itself halts (no hang).
+    {
+        NodeRegistry reg; registerBuiltinNodes(reg);
+        Graph g;
+        const NodeId entry = g.addNode("Entry");
+        const NodeId seq = g.addNode("Sequence");
+        g.connect(entry, "then", seq, "in");
+        g.connect(seq, "0", seq, "in");  // cycle
+        RunContext ctx;
+        ctx.maxSteps = 100;
+        run(g, reg, ctx);   // must return, not hang
+        CHECK(true);
     }
 
     return iron_test_result();
