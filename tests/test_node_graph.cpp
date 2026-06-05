@@ -268,5 +268,25 @@ int main() {
         CHECK(!g.has_value());
     }
 
+    // Malformed-but-valid JSON must fail safe (nullopt), never throw.
+    {
+        NodeRegistry reg; registerBuiltinNodes(reg);
+        // connection missing "port" in "from"
+        const char* bad1 = R"JSON({
+            "nodes":[{"id":1,"type":"Entry"},{"id":2,"type":"SetOutput"}],
+            "connections":[{"from":{"node":1},"to":{"node":2,"port":"in"}}]
+        })JSON";
+        const auto g1 = fromJson(nlohmann::json::parse(bad1), reg);
+        CHECK(!g1.has_value());
+
+        // wrong-typed node id in a connection
+        const char* bad2 = R"JSON({
+            "nodes":[{"id":1,"type":"Entry"}],
+            "connections":[{"from":{"node":"x","port":"then"},"to":{"node":1,"port":"in"}}]
+        })JSON";
+        const auto g2 = fromJson(nlohmann::json::parse(bad2), reg);
+        CHECK(!g2.has_value());
+    }
+
     return iron_test_result();
 }

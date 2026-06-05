@@ -25,40 +25,45 @@ nlohmann::json toJson(const Graph& graph) {
 }
 
 std::optional<Graph> fromJson(const nlohmann::json& j, const NodeRegistry& registry) {
-    Graph g;
-    NodeId maxId = 0;
-    if (j.contains("nodes")) {
-        for (const auto& jn : j.at("nodes")) {
-            const std::string type = jn.value("type", "");
-            if (!registry.find(type)) {
-                Log::warn("NodeGraphIO: unknown node type '%s' on load; failing",
-                          type.c_str());
-                return std::nullopt;
-            }
-            Node n;
-            n.id = jn.value("id", 0u);
-            n.typeName = type;
-            n.editorX = jn.value("x", 0.0f);
-            n.editorY = jn.value("y", 0.0f);
-            if (jn.contains("literals")) {
-                for (auto it = jn.at("literals").begin(); it != jn.at("literals").end(); ++it) {
-                    n.literals[it.key()] = valueFromJson(it.value());
+    try {
+        Graph g;
+        NodeId maxId = 0;
+        if (j.contains("nodes")) {
+            for (const auto& jn : j.at("nodes")) {
+                const std::string type = jn.value("type", "");
+                if (!registry.find(type)) {
+                    Log::warn("NodeGraphIO: unknown node type '%s' on load; failing",
+                              type.c_str());
+                    return std::nullopt;
                 }
+                Node n;
+                n.id = jn.value("id", 0u);
+                n.typeName = type;
+                n.editorX = jn.value("x", 0.0f);
+                n.editorY = jn.value("y", 0.0f);
+                if (jn.contains("literals")) {
+                    for (auto it = jn.at("literals").begin(); it != jn.at("literals").end(); ++it) {
+                        n.literals[it.key()] = valueFromJson(it.value());
+                    }
+                }
+                maxId = std::max(maxId, n.id);
+                g.adoptNode(std::move(n));
             }
-            maxId = std::max(maxId, n.id);
-            g.adoptNode(std::move(n));
         }
-    }
-    g.setNextId(maxId + 1);
-    if (j.contains("connections")) {
-        for (const auto& jc : j.at("connections")) {
-            g.connect(jc.at("from").at("node").get<NodeId>(),
-                      jc.at("from").at("port").get<std::string>(),
-                      jc.at("to").at("node").get<NodeId>(),
-                      jc.at("to").at("port").get<std::string>());
+        g.setNextId(maxId + 1);
+        if (j.contains("connections")) {
+            for (const auto& jc : j.at("connections")) {
+                g.connect(jc.at("from").at("node").get<NodeId>(),
+                          jc.at("from").at("port").get<std::string>(),
+                          jc.at("to").at("node").get<NodeId>(),
+                          jc.at("to").at("port").get<std::string>());
+            }
         }
+        return g;
+    } catch (const nlohmann::json::exception& e) {
+        Log::warn("NodeGraphIO: malformed graph JSON; load failed: %s", e.what());
+        return std::nullopt;
     }
-    return g;
 }
 
 }  // namespace iron

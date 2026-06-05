@@ -1,5 +1,7 @@
 #include "nodes/NodeGraph.h"
 
+#include "core/Log.h"
+
 #include <array>
 
 namespace iron {
@@ -129,7 +131,13 @@ NodeId Graph::addNode(std::string typeName) {
     return nodes_.back().id;
 }
 
-void Graph::adoptNode(Node n) { nodes_.push_back(std::move(n)); }
+void Graph::adoptNode(Node n) {
+    if (node(n.id)) {
+        Log::warn("Graph::adoptNode: duplicate node id %u; ignoring", n.id);
+        return;
+    }
+    nodes_.push_back(std::move(n));
+}
 
 void Graph::connect(NodeId fromNode, std::string fromPort,
                     NodeId toNode, std::string toPort) {
