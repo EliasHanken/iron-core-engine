@@ -216,10 +216,11 @@ NodeGraphPanel::Action NodeGraphPanel::draw(GraphEditorModel& model, const char*
         for (int i = 0; i < static_cast<int>(t->ports.size()); ++i) {
             const PortDesc& p = t->ports[i];
             if (p.dir != PortDir::Out) continue;
+            const bool outConnected = model.graph().outgoing(n.id, p.name).has_value();
             ed::BeginPin(ed::PinId(pinId(n.id, i, true)), ed::PinKind::Output);
             ImGui::TextUnformatted(p.name.c_str());
             ImGui::SameLine(0.0f, 4.0f);
-            ax::Widgets::Icon(ImVec2(iconSz, iconSz), iconFor(p.type), true,
+            ax::Widgets::Icon(ImVec2(iconSz, iconSz), iconFor(p.type), outConnected,
                               pinColor(p.type).Value, ImColor(32, 32, 32, 255).Value);
             ed::EndPin();
         }

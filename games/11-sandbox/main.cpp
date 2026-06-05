@@ -1286,7 +1286,9 @@ int main() {
             } else if (selValid && act == iron::NodeGraphPanel::Action::LoadFromEntity) {
                 auto parsed = nlohmann::json::parse(
                     scene.entities[selectedIndex].logicGraph, nullptr, false);
-                if (!parsed.is_discarded()) graphModel.loadFromJson(parsed);
+                if (!parsed.is_discarded() && graphModel.loadFromJson(parsed))
+                    nodeGraphPanel.resetPlacement();  // re-apply saved node positions
+
             }
         }
 
