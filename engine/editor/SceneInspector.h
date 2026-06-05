@@ -13,9 +13,11 @@ class  Reflection;
 // picker) stay hand-rolled — they are not entity data.
 class SceneInspector {
 public:
-    // Returns true if any entity field changed this frame.
+    // Returns true if any entity field changed this frame. `entity` may be null
+    // (no selection) — the window is still submitted every frame (with a
+    // placeholder) so it never newly-appears on selection and steals focus.
     bool draw(const Reflection& reflection,
-              SceneEntity& entity,
+              SceneEntity* entity,
               GizmoSpace& space,
               EffectKind& effectKind);
 };

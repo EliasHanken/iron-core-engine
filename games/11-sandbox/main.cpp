@@ -1250,10 +1250,15 @@ int main() {
         }
 
         const iron::SceneOutliner::Result outRes = outliner.draw(scene, selectedIndex);
-        if (selectedIndex >= 0 && selectedIndex < static_cast<int>(scene.entities.size())) {
+        {
+            // Always submit the Inspector window (even with no selection) so it
+            // doesn't newly-appear on select and steal focus to its tab.
+            const bool inspValid = selectedIndex >= 0 &&
+                                   selectedIndex < static_cast<int>(scene.entities.size());
             iron::GizmoSpace sp = gizmo.space();
             iron::EffectKind ek = selectionEffect;
-            inspector.draw(reflection, scene.entities[selectedIndex], sp, ek);
+            inspector.draw(reflection,
+                           inspValid ? &scene.entities[selectedIndex] : nullptr, sp, ek);
             gizmo.setSpace(sp);  // Inspector may flip it; setSpace is a no-op mid-drag
             if (ek != selectionEffect) {
                 selectionEffect = ek;
