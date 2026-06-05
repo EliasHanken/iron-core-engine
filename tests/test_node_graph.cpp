@@ -23,13 +23,26 @@ int main() {
         CHECK(!portTypeFromName("Nope").has_value());
     }
 
-    // valueToJson/valueFromJson round-trip (scalar + vector).
+    // valueToJson/valueFromJson round-trip across all value types.
     {
-        const NodeValue a = NodeValue::F(2.5f);
-        CHECK_NEAR(valueFromJson(valueToJson(a)).asFloat(), 2.5f);
-        const NodeValue b = NodeValue::V3(Vec3{1, 2, 3});
-        const Vec3 r = valueFromJson(valueToJson(b)).asVec3();
-        CHECK_NEAR(r.x, 1.0f); CHECK_NEAR(r.y, 2.0f); CHECK_NEAR(r.z, 3.0f);
+        CHECK(valueFromJson(valueToJson(NodeValue::B(true))).asBool() == true);
+        CHECK(valueFromJson(valueToJson(NodeValue::I(7))).asInt() == 7);
+        CHECK_NEAR(valueFromJson(valueToJson(NodeValue::F(2.5f))).asFloat(), 2.5f);
+        CHECK(valueFromJson(valueToJson(NodeValue::S("hi"))).asString() == std::string("hi"));
+        const Vec2 v2 = valueFromJson(valueToJson(NodeValue::V2(Vec2{1, 2}))).asVec2();
+        CHECK_NEAR(v2.x, 1.0f); CHECK_NEAR(v2.y, 2.0f);
+        const Vec3 v3 = valueFromJson(valueToJson(NodeValue::V3(Vec3{1, 2, 3}))).asVec3();
+        CHECK_NEAR(v3.x, 1.0f); CHECK_NEAR(v3.y, 2.0f); CHECK_NEAR(v3.z, 3.0f);
+        const Vec4 v4 = valueFromJson(valueToJson(NodeValue::V4(Vec4{1, 2, 3, 4}))).asVec4();
+        CHECK_NEAR(v4.x, 1.0f); CHECK_NEAR(v4.w, 4.0f);
+
+        // zeroValue sanity.
+        CHECK_NEAR(zeroValue(PortType::Float).asFloat(), 0.0f);
+        CHECK(zeroValue(PortType::Bool).asBool() == false);
+
+        // Malformed author JSON must NOT throw -> falls back to a zero value.
+        const NodeValue bad = valueFromJson(nlohmann::json::parse(R"({"type":"Float"})"));
+        CHECK_NEAR(bad.asFloat(), 0.0f);
     }
 
     // Graph build + queries.

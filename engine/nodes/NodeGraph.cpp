@@ -10,7 +10,8 @@ constexpr std::array<const char*, 8> kPortTypeNames = {
 }
 
 const char* portTypeName(PortType t) {
-    return kPortTypeNames[static_cast<std::size_t>(t)];
+    const std::size_t i = static_cast<std::size_t>(t);
+    return i < kPortTypeNames.size() ? kPortTypeNames[i] : "Unknown";
 }
 
 std::optional<PortType> portTypeFromName(std::string_view name) {
@@ -101,16 +102,21 @@ nlohmann::json valueToJson(const NodeValue& val) {
 NodeValue valueFromJson(const nlohmann::json& j) {
     const auto t = portTypeFromName(j.value("type", "Exec"));
     if (!t) return NodeValue{};
-    const auto& val = j.contains("value") ? j.at("value") : nlohmann::json();
-    switch (*t) {
-        case PortType::Bool:   return NodeValue::B(val.get<bool>());
-        case PortType::Int:    return NodeValue::I(val.get<int>());
-        case PortType::Float:  return NodeValue::F(val.get<float>());
-        case PortType::String: return NodeValue::S(val.get<std::string>());
-        case PortType::Vec2:   return NodeValue::V2(Vec2{val[0], val[1]});
-        case PortType::Vec3:   return NodeValue::V3(Vec3{val[0], val[1], val[2]});
-        case PortType::Vec4:   return NodeValue::V4(Vec4{val[0], val[1], val[2], val[3]});
-        case PortType::Exec:   return NodeValue{};
+    if (!j.contains("value") || j.at("value").is_null()) return zeroValue(*t);
+    const auto& val = j.at("value");
+    try {
+        switch (*t) {
+            case PortType::Bool:   return NodeValue::B(val.get<bool>());
+            case PortType::Int:    return NodeValue::I(val.get<int>());
+            case PortType::Float:  return NodeValue::F(val.get<float>());
+            case PortType::String: return NodeValue::S(val.get<std::string>());
+            case PortType::Vec2:   return NodeValue::V2(Vec2{val[0], val[1]});
+            case PortType::Vec3:   return NodeValue::V3(Vec3{val[0], val[1], val[2]});
+            case PortType::Vec4:   return NodeValue::V4(Vec4{val[0], val[1], val[2], val[3]});
+            case PortType::Exec:   return NodeValue{};
+        }
+    } catch (const nlohmann::json::exception&) {
+        return zeroValue(*t);
     }
     return NodeValue{};
 }
