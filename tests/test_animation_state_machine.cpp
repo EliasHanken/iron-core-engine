@@ -157,5 +157,169 @@ int main() {
         CHECK_NEAR(out[0].at(0, 3), 2.5f);
     }
 
+    // AND-combined conditions: BOTH must hold.
+    {
+        const Skeleton sk = makeTrivialSkeleton();
+        const AnimationClip a = makeStillClip("a");
+        const AnimationClip b = makeStillClip("b");
+        CharacterAnimator anim;
+        anim.setSkeleton(&sk);
+        anim.setClipForState("a", &a);
+        anim.setClipForState("b", &b);
+
+        AnimationStateMachine sm(&anim);
+        sm.addState("a");
+        sm.addState("b");
+        sm.setEntryState("a");
+        const int t = sm.addTransition("a", "b", 0.0f);
+        sm.whenFloatAbove(t, "speed", 2.5f);
+        sm.whenBool(t, "armed", true);
+
+        sm.setFloat("speed", 3.0f);
+        sm.setBool("armed", false);
+        sm.update(0.0f);
+        CHECK(sm.currentState() == "a");
+        sm.setBool("armed", true);
+        sm.update(0.0f);
+        CHECK(sm.currentState() == "b");
+    }
+
+    // kAnyState transition fires regardless of the current state.
+    {
+        const Skeleton sk = makeTrivialSkeleton();
+        const AnimationClip a   = makeStillClip("a");
+        const AnimationClip hit = makeStillClip("hit");
+        CharacterAnimator anim;
+        anim.setSkeleton(&sk);
+        anim.setClipForState("a", &a);
+        anim.setClipForState("hit", &hit);
+
+        AnimationStateMachine sm(&anim);
+        sm.addState("a");
+        sm.addState("hit");
+        sm.setEntryState("a");
+        const int t = sm.addTransition(std::string(AnimationStateMachine::kAnyState),
+                                       "hit", 0.0f);
+        sm.whenBool(t, "hit", true);
+
+        sm.setBool("hit", true);
+        sm.update(0.0f);
+        CHECK(sm.currentState() == "hit");
+    }
+
+    // Registration order breaks ties: the first ready transition wins, one fires.
+    {
+        const Skeleton sk = makeTrivialSkeleton();
+        const AnimationClip a = makeStillClip("a");
+        const AnimationClip b = makeStillClip("b");
+        const AnimationClip c = makeStillClip("c");
+        CharacterAnimator anim;
+        anim.setSkeleton(&sk);
+        anim.setClipForState("a", &a);
+        anim.setClipForState("b", &b);
+        anim.setClipForState("c", &c);
+
+        AnimationStateMachine sm(&anim);
+        sm.addState("a");
+        sm.addState("b");
+        sm.addState("c");
+        sm.setEntryState("a");
+        const int t1 = sm.addTransition("a", "b", 0.0f);
+        sm.whenBool(t1, "go", true);
+        const int t2 = sm.addTransition("a", "c", 0.0f);
+        sm.whenBool(t2, "go", true);
+
+        sm.setBool("go", true);
+        sm.update(0.0f);
+        CHECK(sm.currentState() == "b");
+    }
+
+    // A transition whose target is the current state never fires.
+    {
+        const Skeleton sk = makeTrivialSkeleton();
+        const AnimationClip a = makeStillClip("a");
+        CharacterAnimator anim;
+        anim.setSkeleton(&sk);
+        anim.setClipForState("a", &a);
+
+        AnimationStateMachine sm(&anim);
+        sm.addState("a");
+        sm.setEntryState("a");
+        const int t = sm.addTransition("a", "a", 0.0f);
+        sm.whenBool(t, "go", true);
+        sm.setBool("go", true);
+        sm.update(0.0f);
+        CHECK(sm.currentState() == "a");
+    }
+
+    // A conditionless transition fires as soon as `from` is current.
+    {
+        const Skeleton sk = makeTrivialSkeleton();
+        const AnimationClip a = makeStillClip("a");
+        const AnimationClip b = makeStillClip("b");
+        CharacterAnimator anim;
+        anim.setSkeleton(&sk);
+        anim.setClipForState("a", &a);
+        anim.setClipForState("b", &b);
+
+        AnimationStateMachine sm(&anim);
+        sm.addState("a");
+        sm.addState("b");
+        sm.setEntryState("a");
+        sm.addTransition("a", "b", 0.0f);
+        sm.update(0.0f);
+        CHECK(sm.currentState() == "b");
+    }
+
+    // FloatBelow transition.
+    {
+        const Skeleton sk = makeTrivialSkeleton();
+        const AnimationClip run  = makeStillClip("run");
+        const AnimationClip idle = makeStillClip("idle");
+        CharacterAnimator anim;
+        anim.setSkeleton(&sk);
+        anim.setClipForState("run", &run);
+        anim.setClipForState("idle", &idle);
+
+        AnimationStateMachine sm(&anim);
+        sm.addState("run");
+        sm.addState("idle");
+        sm.setEntryState("run");
+        const int t = sm.addTransition("run", "idle", 0.0f);
+        sm.whenFloatBelow(t, "speed", 0.3f);
+
+        sm.setFloat("speed", 1.0f);
+        sm.update(0.0f);
+        CHECK(sm.currentState() == "run");
+        sm.setFloat("speed", 0.1f);
+        sm.update(0.0f);
+        CHECK(sm.currentState() == "idle");
+    }
+
+    // Fade time is passed through to the animator's cross-fade.
+    {
+        const Skeleton sk = makeTrivialSkeleton();
+        const AnimationClip stand = makeStillClip("stand");
+        const AnimationClip run   = makeTranslateClip("run");
+        CharacterAnimator anim;
+        anim.setSkeleton(&sk);
+        anim.setClipForState("stand", &stand);
+        anim.setClipForState("run", &run);
+
+        AnimationStateMachine sm(&anim);
+        sm.addState("stand");
+        sm.addState("run");
+        sm.setEntryState("stand");
+        const int t = sm.addTransition("stand", "run", 1.0f);
+        sm.whenBool(t, "go", true);
+
+        sm.update(0.1f);
+        sm.setBool("go", true);
+        sm.update(0.5f);
+        std::array<Mat4, 1> out{};
+        sm.evaluate(out);
+        CHECK_NEAR(out[0].at(0, 3), 2.5f);
+    }
+
     return iron_test_result();
 }
