@@ -70,7 +70,9 @@ void NodeGraphPanel::draw(GraphEditorModel& model) {
         std::ifstream f(savePath_);
         if (f) {
             try {
-                nlohmann::json j; f >> j; model.loadFromJson(j);
+                nlohmann::json j; f >> j;
+                if (model.loadFromJson(j))
+                    placed_.clear();   // re-place restored nodes from their saved positions
             } catch (const std::exception&) {
                 // malformed file: ignore, leave graph unchanged
             }
@@ -179,11 +181,17 @@ void NodeGraphPanel::draw(GraphEditorModel& model) {
     ed::EndCreate();
 
     if (ed::BeginDelete()) {
+        // Snapshot connections BEFORE any disconnect: model.disconnect mutates
+        // the graph's vector, which would otherwise shift the link-id->index
+        // mapping for later links deleted in this same block (e.g. deleting a
+        // node with multiple incoming wires).
+        const std::vector<Connection> connSnapshot = model.graph().connections();
         ed::LinkId lid;
         while (ed::QueryDeletedLink(&lid)) {
             if (ed::AcceptDeletedItem()) {
                 const std::size_t idx = static_cast<std::size_t>(lid.Get()) - 1;
-                if (idx < conns.size()) model.disconnect(conns[idx].toNode, conns[idx].toPort);
+                if (idx < connSnapshot.size())
+                    model.disconnect(connSnapshot[idx].toNode, connSnapshot[idx].toPort);
             }
         }
         ed::NodeId nid;
