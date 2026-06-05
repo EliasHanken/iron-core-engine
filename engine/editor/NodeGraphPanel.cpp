@@ -88,9 +88,20 @@ void NodeGraphPanel::draw(GraphEditorModel& model) {
             }
         }
     }
-    // Outputs readout
-    for (const auto& kv : model.lastRun().outputs)
-        ImGui::Text("%s = %.3f", kv.first.c_str(), kv.second.asFloat());
+    // Outputs readout (the visible result of Run).
+    ImGui::Separator();
+    ImGui::TextUnformatted("Run outputs:");
+    if (model.lastRun().outputs.empty()) {
+        ImGui::SameLine();
+        ImGui::TextDisabled("(none yet - wire Entry -> ... -> SetOutput, then Run)");
+    } else {
+        for (const auto& kv : model.lastRun().outputs) {
+            ImGui::SameLine();
+            ImGui::TextColored(ImVec4(0.4f, 1.0f, 0.5f, 1.0f), "%s = %.3f",
+                               kv.first.c_str(), kv.second.asFloat());
+        }
+    }
+    ImGui::Separator();
 
     ed::SetCurrentEditor(ctx_);
     ed::Begin("canvas");
