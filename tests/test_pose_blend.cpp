@@ -1,5 +1,8 @@
+#include "asset/Animation.h"
 #include "asset/Pose.h"
 #include "asset/PoseBlend.h"
+#include "asset/Skeleton.h"
+#include "math/Mat4.h"
 #include "math/Quaternion.h"
 #include "math/Vec.h"
 #include "test_framework.h"
@@ -13,6 +16,30 @@ Pose makePose(Vec3 t, Quat r, Vec3 s) {
     Pose p;
     p.bones.push_back(BoneLocal{t, r, s});
     return p;
+}
+Skeleton oneBoneSkeleton() {
+    Skeleton sk;
+    Bone b;
+    b.parentIndex = -1;
+    b.localBindTransform = Mat4::identity();
+    b.inverseBindMatrix = Mat4::identity();
+    sk.bones.push_back(b);
+    return sk;
+}
+AnimationClip slideClip(float endX) {
+    AnimationClip c;
+    c.duration = 1.0f;
+    AnimationSampler s;
+    s.inputs = {0.0f, 1.0f};
+    s.outputs = {0, 0, 0, endX, 0, 0};
+    s.interpolation = AnimationInterpolation::Linear;
+    c.samplers.push_back(s);
+    AnimationChannel ch;
+    ch.targetBone = 0;
+    ch.path = AnimationPath::Translation;
+    ch.samplerIndex = 0;
+    c.channels.push_back(ch);
+    return c;
 }
 }  // namespace
 
@@ -54,6 +81,32 @@ int main() {
         blendPose(a, b, 2.0f, hi);
         CHECK_NEAR(lo.bones[0].translation.x, 0.0f);
         CHECK_NEAR(hi.bones[0].translation.x, 10.0f);
+    }
+
+    {
+        const Skeleton sk = oneBoneSkeleton();
+        const AnimationClip walk = slideClip(0.0f);   // at param 0, bone x stays 0
+        const AnimationClip run  = slideClip(10.0f);  // at param 1, bone x -> 10 at t=1
+
+        BlendSpace1D space;
+        space.add(1.0f, &run);   // add out of order on purpose
+        space.add(0.0f, &walk);
+        CHECK(space.samples.size() == 2);
+        CHECK_NEAR(space.samples[0].first, 0.0f);  // sorted ascending
+
+        Pose out;
+        // midpoint param at t=1: blend of x=0 and x=10 -> x=5
+        sampleBlendSpace(sk, space, 0.5f, 1.0f, out);
+        CHECK_NEAR(out.bones[0].translation.x, 5.0f);
+        // param below range clamps to walk (x=0)
+        sampleBlendSpace(sk, space, -3.0f, 1.0f, out);
+        CHECK_NEAR(out.bones[0].translation.x, 0.0f);
+        // param above range clamps to run (x=10)
+        sampleBlendSpace(sk, space, 5.0f, 1.0f, out);
+        CHECK_NEAR(out.bones[0].translation.x, 10.0f);
+        // exact hit on run param
+        sampleBlendSpace(sk, space, 1.0f, 1.0f, out);
+        CHECK_NEAR(out.bones[0].translation.x, 10.0f);
     }
 
     return iron_test_result();
