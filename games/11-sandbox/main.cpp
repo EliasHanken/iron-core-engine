@@ -40,6 +40,10 @@
 #include "editor/SceneOutliner.h"
 #include "editor/ViewGizmo.h"
 #include "editor/ViewportInput.h"
+#include "nodes/NodeRegistry.h"
+#include "nodes/BuiltinNodes.h"
+#include "nodes/GraphEditorModel.h"
+#include "editor/NodeGraphPanel.h"
 #include "render/backends/vulkan/VulkanRenderer.h"
 #include "math/Aabb.h"
 #include "audio/AudioEmitter.h"
@@ -736,6 +740,12 @@ int main() {
     iron::SceneOutliner    outliner;
     iron::SceneInspector   inspector;
     iron::EnvironmentPanel environment;
+
+    // M54: node-editor panel + its graph model (built-in node types registered).
+    iron::NodeRegistry nodeRegistry;
+    iron::registerBuiltinNodes(nodeRegistry);
+    iron::GraphEditorModel graphModel(&nodeRegistry);
+    iron::NodeGraphPanel nodeGraphPanel;
     int  selectedIndex = scene.entities.empty() ? -1 : 0;
     bool prevLook = false;  // was the camera capturing last frame?
     iron::Gizmo gizmo;
@@ -1171,6 +1181,9 @@ int main() {
             }
         }
         environment.draw(scene);
+
+        // M54: node-editor panel (opens its own "Node Editor" window; docks like the rest).
+        nodeGraphPanel.draw(graphModel);
 
         // M47: bloom tuning knobs — appended to the Environment panel so all
         // rendering controls live in one place. Static locals match the renderer
