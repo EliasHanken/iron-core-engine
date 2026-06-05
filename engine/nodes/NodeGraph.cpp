@@ -2,6 +2,7 @@
 
 #include "core/Log.h"
 
+#include <algorithm>
 #include <array>
 
 namespace iron {
@@ -143,6 +144,33 @@ void Graph::connect(NodeId fromNode, std::string fromPort,
                     NodeId toNode, std::string toPort) {
     conns_.push_back(Connection{fromNode, std::move(fromPort),
                                 toNode, std::move(toPort)});
+}
+
+void Graph::removeNode(NodeId id) {
+    nodes_.erase(std::remove_if(nodes_.begin(), nodes_.end(),
+                                [&](const Node& n) { return n.id == id; }),
+                 nodes_.end());
+    conns_.erase(std::remove_if(conns_.begin(), conns_.end(),
+                                [&](const Connection& c) {
+                                    return c.fromNode == id || c.toNode == id;
+                                }),
+                 conns_.end());
+}
+
+void Graph::disconnect(NodeId toNode, std::string_view toPort) {
+    conns_.erase(std::remove_if(conns_.begin(), conns_.end(),
+                                [&](const Connection& c) {
+                                    return c.toNode == toNode && c.toPort == toPort;
+                                }),
+                 conns_.end());
+}
+
+void Graph::removeOutgoing(NodeId fromNode, std::string_view fromPort) {
+    conns_.erase(std::remove_if(conns_.begin(), conns_.end(),
+                                [&](const Connection& c) {
+                                    return c.fromNode == fromNode && c.fromPort == fromPort;
+                                }),
+                 conns_.end());
 }
 
 void Graph::setLiteral(NodeId node, std::string port, NodeValue value) {
