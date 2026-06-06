@@ -333,6 +333,34 @@ NodeGraphPanel::Action NodeGraphPanel::draw(GraphEditorModel& model, const char*
                                     ImDrawFlags_RoundCornersTop);
             bg->AddRectFilled(a, b, IM_COL32(0, 0, 0, 55), rounding, ImDrawFlags_RoundCornersTop);
             bg->AddLine(ImVec2(a.x, b.y), ImVec2(b.x, b.y), IM_COL32(0, 0, 0, 120), 1.0f);
+
+            // M61: glassy sheen — a faint top-down highlight over the whole node
+            // body + a bright top inner edge, for the UE5 glass look. Use the
+            // node's screen rect (contentMin/Max +/- padding), consistent with
+            // the header band above.
+            const ImVec2 nMin(contentMin.x - pad.x, contentMin.y - pad.y);
+            const ImVec2 nMax(contentMax.x + pad.z, contentMax.y + pad.w);
+            const float  sheenH = (nMax.y - nMin.y) * 0.33f;
+            bg->AddRectFilledMultiColor(nMin, ImVec2(nMax.x, nMin.y + sheenH),
+                                        IM_COL32(255, 255, 255, 12), IM_COL32(255, 255, 255, 12),
+                                        IM_COL32(255, 255, 255, 0),  IM_COL32(255, 255, 255, 0));
+            bg->AddLine(ImVec2(nMin.x + rounding, nMin.y + 1.0f),
+                        ImVec2(nMax.x - rounding, nMin.y + 1.0f), IM_COL32(255, 255, 255, 30), 1.0f);
+
+            // M61: dev-only striped tag along the node's bottom edge.
+            if (t->devOnly) {
+                const float stripeH = 6.0f;
+                const ImVec2 sMin(nMin.x, nMax.y - stripeH);
+                const ImVec2 sMax(nMax.x, nMax.y);
+                bg->AddRectFilled(sMin, sMax, IM_COL32(20, 20, 20, 255), rounding, ImDrawFlags_RoundCornersBottom);
+                bg->PushClipRect(sMin, sMax, true);
+                const float step = 10.0f;
+                for (float x = sMin.x - stripeH; x < sMax.x; x += step)
+                    bg->AddQuadFilled(ImVec2(x, sMax.y), ImVec2(x + stripeH, sMin.y),
+                                      ImVec2(x + stripeH + 4.0f, sMin.y), ImVec2(x + 4.0f, sMax.y),
+                                      IM_COL32(225, 190, 0, 200));
+                bg->PopClipRect();
+            }
         }
     }
 
