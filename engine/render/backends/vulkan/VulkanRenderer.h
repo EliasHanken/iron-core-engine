@@ -60,6 +60,11 @@ public:
     TextureHandle whiteTexture() const override;
     TextureHandle flatNormalTexture() const override;
     TextureHandle noSpecularTexture() const override;
+    // Engine-internal: resolve a texture handle's VkImageView + VkSampler (both
+    // already in SHADER_READ_ONLY_OPTIMAL). Used by ImGuiLayer to bind a
+    // small RGBA8 texture as an ImGui texture id. Returns false if unknown.
+    bool textureViewSampler(TextureHandle h, VkImageView& view,
+                            VkSampler& sampler) const;
     ShaderHandle createShader(const std::string& vertexSrc,
                               const std::string& fragmentSrc) override;
     // M23 — skinned mesh + draw API (Vulkan-only).

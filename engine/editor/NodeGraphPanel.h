@@ -41,6 +41,11 @@ public:
     // the host to route Ctrl+Z/Y to the graph history vs the scene history.
     bool focused() const { return focused_; }
 
+    // M59: ImGui texture id (void* / VkDescriptorSet) of the white gloss-ramp
+    // used as the UE4-style header gradient. The host registers it once after
+    // ImGuiLayer::init() and passes it here. nullptr => plain category band.
+    void setHeaderTexture(void* tex) { headerTex_ = tex; }
+
 private:
     ax::NodeEditor::EditorContext* ctx_ = nullptr;
     char savePath_[256] = "node_graph.json";
@@ -50,6 +55,7 @@ private:
     std::unordered_set<std::uint32_t> placedComments_;                    // comment id already positioned
     std::unordered_map<std::uint32_t, float> commentOffX_, commentOffY_;  // node-vs-group size delta, measured once
     bool focused_ = false;            // ImGui::IsWindowFocused() at last draw
+    void* headerTex_ = nullptr;       // M59: header gradient texture id (set by host)
 };
 
 }  // namespace iron

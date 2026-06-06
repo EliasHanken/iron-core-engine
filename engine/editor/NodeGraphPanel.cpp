@@ -290,12 +290,15 @@ NodeGraphPanel::Action NodeGraphPanel::draw(GraphEditorModel& model, const char*
             const float  rounding = ed::GetStyle().NodeRounding;
             const ImVec2 a(contentMin.x - pad.x, contentMin.y - pad.y);
             const ImVec2 b(contentMax.x + pad.z, titleBottom + 3.0f);
-            // Category-colored band (rounded top), then a top-down white gloss
-            // gradient for the blueprint "sheen", then a dark separator under it.
+            // M59: category-colored band (rounded top), then the UE4 gloss-ramp
+            // texture multiplied over it for a smooth top-down gradient, then a
+            // dark separator under it. Falls back to the plain band if no texture.
             bg->AddRectFilled(a, b, headerColor(t->category), rounding, ImDrawFlags_RoundCornersTop);
-            bg->AddRectFilledMultiColor(a, b,
-                IM_COL32(255, 255, 255, 55), IM_COL32(255, 255, 255, 55),
-                IM_COL32(255, 255, 255,  0), IM_COL32(255, 255, 255,  0));
+            if (headerTex_)
+                bg->AddImageRounded(reinterpret_cast<ImTextureID>(headerTex_),
+                                    a, b, ImVec2(0, 0), ImVec2(1, 1),
+                                    IM_COL32(255, 255, 255, 255), rounding,
+                                    ImDrawFlags_RoundCornersTop);
             bg->AddLine(ImVec2(a.x, b.y), ImVec2(b.x, b.y), ImColor(0, 0, 0, 110), 1.0f);
         }
     }
