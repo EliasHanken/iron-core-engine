@@ -84,7 +84,22 @@ ax::Widgets::IconType iconFor(PortType t) {
 
 }  // namespace
 
-NodeGraphPanel::NodeGraphPanel() { ctx_ = ed::CreateEditor(); }
+NodeGraphPanel::NodeGraphPanel() {
+    ctx_ = ed::CreateEditor();
+    // M58: soften the node cards to match the blueprint example.
+    ed::SetCurrentEditor(ctx_);
+    ed::Style& st = ed::GetStyle();
+    st.NodeRounding    = 8.0f;
+    st.NodeBorderWidth = 1.5f;
+    // Dark canvas (stock is a washed mid-grey 60,60,70) so the node cards pop.
+    st.Colors[ed::StyleColor_Bg]         = ImColor(24, 24, 28, 255);
+    st.Colors[ed::StyleColor_Grid]       = ImColor(255, 255, 255, 16);
+    // UE4 look: the card sits a touch LIGHTER than the dark canvas with a subtle
+    // light outline, so white text reads crisp and the card stands out.
+    st.Colors[ed::StyleColor_NodeBg]     = ImColor(43, 43, 50, 255);
+    st.Colors[ed::StyleColor_NodeBorder] = ImColor(255, 255, 255, 70);
+    ed::SetCurrentEditor(nullptr);
+}
 NodeGraphPanel::~NodeGraphPanel() { if (ctx_) ed::DestroyEditor(ctx_); }
 
 NodeGraphPanel::Action NodeGraphPanel::draw(GraphEditorModel& model, const char* targetName, bool targetHasGraph) {
@@ -104,7 +119,7 @@ NodeGraphPanel::Action NodeGraphPanel::draw(GraphEditorModel& model, const char*
             try {
                 nlohmann::json j; f >> j;
                 if (model.loadFromJson(j))
-                    placed_.clear();   // re-place restored nodes from their saved positions
+                    resetPlacement();   // re-place restored nodes + comments from their saved positions
             } catch (const std::exception&) {
                 // malformed file: ignore, leave graph unchanged
             }
@@ -136,6 +151,12 @@ NodeGraphPanel::Action NodeGraphPanel::draw(GraphEditorModel& model, const char*
                 if (spawnX_ > 400.0f) { spawnX_ = 40.0f; spawnY_ = 40.0f; }
             }
         }
+        ImGui::SameLine();
+        if (ImGui::SmallButton("+ Comment")) {
+            model.addComment(spawnX_, spawnY_, 240.0f, 160.0f, "Comment");
+            spawnX_ += 30.0f; spawnY_ += 30.0f;
+            if (spawnX_ > 400.0f) { spawnX_ = 40.0f; spawnY_ = 40.0f; }
+        }
     }
     // Outputs readout (the visible result of Run).
     ImGui::Separator();
@@ -155,6 +176,33 @@ NodeGraphPanel::Action NodeGraphPanel::draw(GraphEditorModel& model, const char*
     ed::SetCurrentEditor(ctx_);
     ed::Begin("canvas");
 
+    // M58: comment editor-ids live in a high-bit namespace so they never collide
+    // with node ids, pin ids (node<<8|...), or link ids (i+1).
+    auto commentEd = [](std::uint32_t id) -> std::uintptr_t {
+        return (std::uintptr_t{1} << 62) | id;
+    };
+
+    for (const Comment& c : model.comments()) {
+        const ed::NodeId cid(commentEd(c.id));
+        if (placedComments_.find(c.id) == placedComments_.end()) {
+            ed::SetNodePosition(cid, ImVec2(c.x, c.y));
+            placedComments_.insert(c.id);
+        }
+        ed::PushStyleColor(ed::StyleColor_NodeBg,     ImColor(60, 60, 75, 80).Value);
+        ed::PushStyleColor(ed::StyleColor_NodeBorder, ImColor(130, 130, 160, 180).Value);
+        ed::BeginNode(cid);
+        ImGui::PushID(static_cast<int>(c.id) ^ 0x4000);
+        char buf[128];
+        std::snprintf(buf, sizeof(buf), "%s", c.title.c_str());
+        ImGui::SetNextItemWidth(c.w > 48.0f ? c.w - 16.0f : 96.0f);
+        if (ImGui::InputText("##ctitle", buf, sizeof(buf)))
+            model.setCommentTitle(c.id, buf);
+        ed::Group(ImVec2(c.w, c.h));
+        ImGui::PopID();
+        ed::EndNode();
+        ed::PopStyleColor(2);
+    }
+
     for (const Node& n : model.graph().nodes()) {
         const NodeTypeDesc* t = model.registry() ? model.registry()->find(n.typeName) : nullptr;
         if (!t) continue;
@@ -165,9 +213,11 @@ NodeGraphPanel::Action NodeGraphPanel::draw(GraphEditorModel& model, const char*
         }
         ed::BeginNode(ed::NodeId(static_cast<std::uintptr_t>(n.id)));
         ImGui::PushID(static_cast<int>(n.id));
+        ImGui::BeginGroup();   // M58: wrap content for reliable screen-space bounds
 
-        // Header: colored title row (per-category tint).
-        ImGui::TextColored(headerColor(t->category).Value, "%s", t->typeName.c_str());
+        // Header: white title; the colored band is drawn behind it after EndNode.
+        ImGui::TextColored(ImVec4(1.0f, 1.0f, 1.0f, 1.0f), "%s", t->typeName.c_str());
+        const float titleBottom = ImGui::GetItemRectMax().y;
         ImGui::Dummy(ImVec2(0.0f, 2.0f));
 
         const float iconSz = 16.0f;
@@ -227,8 +277,27 @@ NodeGraphPanel::Action NodeGraphPanel::draw(GraphEditorModel& model, const char*
         }
         ImGui::EndGroup();
 
+        ImGui::EndGroup();   // M58: close the content group
+        const ImVec2 contentMin = ImGui::GetItemRectMin();
+        const ImVec2 contentMax = ImGui::GetItemRectMax();
         ImGui::PopID();
         ed::EndNode();
+
+        // M58: filled category-colored header band behind the white title.
+        if (ImDrawList* bg = ed::GetNodeBackgroundDrawList(
+                ed::NodeId(static_cast<std::uintptr_t>(n.id)))) {
+            const ImVec4 pad      = ed::GetStyle().NodePadding;   // x=left y=top z=right w=bottom
+            const float  rounding = ed::GetStyle().NodeRounding;
+            const ImVec2 a(contentMin.x - pad.x, contentMin.y - pad.y);
+            const ImVec2 b(contentMax.x + pad.z, titleBottom + 3.0f);
+            // Category-colored band (rounded top), then a top-down white gloss
+            // gradient for the blueprint "sheen", then a dark separator under it.
+            bg->AddRectFilled(a, b, headerColor(t->category), rounding, ImDrawFlags_RoundCornersTop);
+            bg->AddRectFilledMultiColor(a, b,
+                IM_COL32(255, 255, 255, 55), IM_COL32(255, 255, 255, 55),
+                IM_COL32(255, 255, 255,  0), IM_COL32(255, 255, 255,  0));
+            bg->AddLine(ImVec2(a.x, b.y), ImVec2(b.x, b.y), ImColor(0, 0, 0, 110), 1.0f);
+        }
     }
 
     // M56: sync live canvas positions back into the model so drags persist
@@ -238,6 +307,23 @@ NodeGraphPanel::Action NodeGraphPanel::draw(GraphEditorModel& model, const char*
         const ImVec2 pos = ed::GetNodePosition(ed::NodeId(static_cast<std::uintptr_t>(n.id)));
         if (pos.x != n.editorX || pos.y != n.editorY)
             model.setNodePosition(n.id, pos.x, pos.y);
+    }
+
+    // M58: persist comment move/resize. GetNodeSize includes the title row +
+    // padding, so subtract a once-measured offset to recover the group size.
+    for (const Comment& c : model.comments()) {
+        const ed::NodeId cid(commentEd(c.id));
+        const ImVec2 pos = ed::GetNodePosition(cid);
+        const ImVec2 sz  = ed::GetNodeSize(cid);
+        if (commentOffX_.find(c.id) == commentOffX_.end()) {
+            commentOffX_[c.id] = sz.x - c.w;   // node-size overhead vs group size
+            commentOffY_[c.id] = sz.y - c.h;
+        }
+        const float w = sz.x - commentOffX_[c.id];
+        const float h = sz.y - commentOffY_[c.id];
+        if (pos.x != c.x || pos.y != c.y || w != c.w || h != c.h)
+            model.setCommentRect(c.id, pos.x, pos.y,
+                                 w > 32.0f ? w : 32.0f, h > 32.0f ? h : 32.0f);
     }
 
     const auto& conns = model.graph().connections();
@@ -283,7 +369,18 @@ NodeGraphPanel::Action NodeGraphPanel::draw(GraphEditorModel& model, const char*
         }
         ed::NodeId nid;
         while (ed::QueryDeletedNode(&nid)) {
-            if (ed::AcceptDeletedItem()) model.deleteNode(static_cast<NodeId>(nid.Get()));
+            if (ed::AcceptDeletedItem()) {
+                const std::uintptr_t raw = nid.Get();
+                if (raw & (std::uintptr_t{1} << 62)) {
+                    const std::uint32_t cidRaw = static_cast<std::uint32_t>(raw & 0xFFFFFFFFu);
+                    model.deleteComment(cidRaw);
+                    placedComments_.erase(cidRaw);
+                    commentOffX_.erase(cidRaw);
+                    commentOffY_.erase(cidRaw);
+                } else {
+                    model.deleteNode(static_cast<NodeId>(raw));
+                }
+            }
         }
     }
     ed::EndDelete();

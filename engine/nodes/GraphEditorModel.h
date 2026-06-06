@@ -13,6 +13,14 @@ namespace iron {
 
 class NodeRegistry;
 
+// Editor-only annotation: a movable/resizable labeled backdrop region grouping
+// nodes visually. NOT part of the executable Graph — the evaluator never sees it.
+struct Comment {
+    std::uint32_t id = 0;
+    float x = 0.0f, y = 0.0f, w = 240.0f, h = 160.0f;
+    std::string title = "Comment";
+};
+
 // Headless editing state over a NodeGraph: validated edit ops, selection, a
 // dirty flag, and the last run's outputs. The visual panel is a thin driver of
 // this; everything here is unit-tested. Non-owning registry (must outlive).
@@ -32,6 +40,13 @@ public:
     void   setLiteral(NodeId id, std::string port, NodeValue value);
     // Update a node's editor canvas position (persisted in toJson). Dirties.
     void setNodePosition(NodeId id, float x, float y);
+
+    // M58: comment/group regions (editor-only; serialized under "comments").
+    std::uint32_t addComment(float x, float y, float w, float h, std::string title);
+    void deleteComment(std::uint32_t id);
+    void setCommentRect(std::uint32_t id, float x, float y, float w, float h);
+    void setCommentTitle(std::uint32_t id, std::string title);
+    const std::vector<Comment>& comments() const { return comments_; }
 
     void   run();                         // executes via the M53 evaluator
     const RunContext& lastRun() const { return lastRun_; }
@@ -58,6 +73,8 @@ private:
     RunContext lastRun_;
     NodeId selected_ = 0;
     bool dirty_ = false;
+    std::vector<Comment> comments_;
+    std::uint32_t nextCommentId_ = 1;
 };
 
 }  // namespace iron

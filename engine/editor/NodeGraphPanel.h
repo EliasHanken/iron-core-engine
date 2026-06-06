@@ -1,5 +1,7 @@
 #pragma once
 
+#include <cstdint>
+#include <unordered_map>
 #include <unordered_set>
 
 namespace ax { namespace NodeEditor { struct EditorContext; } }
@@ -25,10 +27,15 @@ public:
     // the action the user requested this frame (host performs the assign/load).
     Action draw(GraphEditorModel& model, const char* targetName, bool targetHasGraph);
 
-    // Forget which nodes have been positioned, so the next draw re-applies every
-    // node's saved editorX/editorY to the canvas. Call after the host replaces
-    // the model's graph (e.g. Load-from-entity) so persisted positions take hold.
-    void resetPlacement() { placed_.clear(); }
+    // Forget which nodes/comments have been positioned, so the next draw re-applies
+    // every node's and comment's saved position. Call after the host replaces the
+    // model's graph (Load-from-entity, undo/redo) so persisted positions take hold.
+    void resetPlacement() {
+        placed_.clear();
+        placedComments_.clear();
+        commentOffX_.clear();
+        commentOffY_.clear();
+    }
 
     // Whether the "Node Editor" window was focused on the last draw(). Used by
     // the host to route Ctrl+Z/Y to the graph history vs the scene history.
@@ -40,6 +47,8 @@ private:
     float spawnX_ = 40.0f;
     float spawnY_ = 40.0f;
     std::unordered_set<unsigned int> placed_;   // NodeId already positioned on the canvas
+    std::unordered_set<std::uint32_t> placedComments_;                    // comment id already positioned
+    std::unordered_map<std::uint32_t, float> commentOffX_, commentOffY_;  // node-vs-group size delta, measured once
     bool focused_ = false;            // ImGui::IsWindowFocused() at last draw
 };
 

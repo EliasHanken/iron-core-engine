@@ -2,6 +2,7 @@
 #include "nodes/NodeRegistry.h"
 #include "nodes/BuiltinNodes.h"
 #include "nodes/NodeContext.h"
+#include "nodes/NodeGraphIO.h"   // iron::fromJson (runtime-tolerance check)
 #include "test_framework.h"
 
 using namespace iron;
@@ -135,6 +136,75 @@ int main() {
         CHECK(m2.loadFromJson(j));
         CHECK_NEAR(m2.graph().node(n)->editorX, 123.0f);
         CHECK_NEAR(m2.graph().node(n)->editorY, 45.0f);
+    }
+
+    // M58: comments — add / mutate / delete + dirty + JSON round-trip.
+    {
+        GraphEditorModel m(&reg);
+        const std::uint32_t id = m.addComment(10, 20, 200, 100, "Update UI");
+        CHECK(m.comments().size() == 1u);
+        CHECK(m.comments()[0].id == id);
+        CHECK_NEAR(m.comments()[0].x, 10.0f);
+        CHECK(m.comments()[0].title == "Update UI");
+        CHECK(m.dirty());
+
+        m.clearDirty();
+        m.setCommentRect(id, 11, 22, 210, 110);
+        CHECK(m.dirty());
+        CHECK_NEAR(m.comments()[0].w, 210.0f);
+
+        m.clearDirty();
+        m.setCommentTitle(id, "Renamed");
+        CHECK(m.dirty());
+        CHECK(m.comments()[0].title == "Renamed");
+
+        // no-op edits must NOT re-dirty (protects M57 undo coalescing).
+        m.clearDirty();
+        m.setCommentTitle(id, "Renamed");           // same value
+        CHECK(!m.dirty());
+        m.setCommentRect(id, 11, 22, 210, 110);     // same value as last set
+        CHECK(!m.dirty());
+
+        GraphEditorModel m2(&reg);
+        CHECK(m2.loadFromJson(m.toJson()));
+        CHECK(m2.comments().size() == 1u);
+        CHECK(m2.comments()[0].id == id);
+        CHECK(m2.comments()[0].title == "Renamed");
+        CHECK_NEAR(m2.comments()[0].h, 110.0f);
+
+        m.clearDirty();
+        m.deleteComment(id);
+        CHECK(m.comments().empty());
+        CHECK(m.dirty());
+    }
+
+    // M58: multiple comments — delete isolation + id stability after load+add.
+    {
+        GraphEditorModel m(&reg);
+        const std::uint32_t a = m.addComment(0, 0, 100, 100, "A");
+        const std::uint32_t b = m.addComment(50, 50, 100, 100, "B");
+        CHECK(a != b);
+        m.deleteComment(a);
+        CHECK(m.comments().size() == 1u);
+        CHECK(m.comments()[0].id == b);          // only A removed, B intact
+        CHECK(m.comments()[0].title == "B");
+
+        // After a round-trip, a fresh addComment must not collide with loaded ids.
+        GraphEditorModel m2(&reg);
+        CHECK(m2.loadFromJson(m.toJson()));
+        const std::uint32_t c = m2.addComment(10, 10, 80, 80, "C");
+        CHECK(c != b);                           // nextCommentId_ restored past b
+    }
+
+    // M58: runtime tolerance — the executable loader ignores "comments".
+    {
+        GraphEditorModel m(&reg);
+        m.addNode("Entry", 0, 0);
+        m.addComment(0, 0, 100, 100, "note");
+        const nlohmann::json j = m.toJson();
+        CHECK(j.contains("comments"));
+        auto g = iron::fromJson(j, reg);   // the Play-mode path
+        CHECK(g.has_value());              // comments don't break executable load
     }
 
     return iron_test_result();
