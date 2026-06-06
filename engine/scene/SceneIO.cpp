@@ -107,7 +107,7 @@ std::optional<SceneFile> sceneFromJsonString(const Reflection& reflection,
     json root;
     try {
         root = json::parse(jsonStr);
-    } catch (const json::parse_error& e) {
+    } catch (const json::exception& e) {
         Log::error("SceneIO: parse error: %s", e.what());
         return std::nullopt;
     }

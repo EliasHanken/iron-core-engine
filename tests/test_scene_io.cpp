@@ -279,6 +279,7 @@ int main() {
         CHECK(back->entities.size() == 1u);
         CHECK(back->entities[0].name == "undo_probe");
         CHECK_NEAR(back->entities[0].transform.position.x, 1.0f);
+        CHECK_NEAR(back->entities[0].transform.position.y, 2.0f);
         CHECK_NEAR(back->entities[0].transform.position.z, 3.0f);
         CHECK_NEAR(back->entities[0].material.metallic, 0.25f);
 
