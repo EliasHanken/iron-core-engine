@@ -84,7 +84,17 @@ ax::Widgets::IconType iconFor(PortType t) {
 
 }  // namespace
 
-NodeGraphPanel::NodeGraphPanel() { ctx_ = ed::CreateEditor(); }
+NodeGraphPanel::NodeGraphPanel() {
+    ctx_ = ed::CreateEditor();
+    // M58: soften the node cards to match the blueprint example.
+    ed::SetCurrentEditor(ctx_);
+    ed::Style& st = ed::GetStyle();
+    st.NodeRounding    = 6.0f;
+    st.NodeBorderWidth = 1.0f;
+    st.Colors[ed::StyleColor_NodeBg]     = ImColor(40, 40, 48, 255);
+    st.Colors[ed::StyleColor_NodeBorder] = ImColor(0, 0, 0, 160);
+    ed::SetCurrentEditor(nullptr);
+}
 NodeGraphPanel::~NodeGraphPanel() { if (ctx_) ed::DestroyEditor(ctx_); }
 
 NodeGraphPanel::Action NodeGraphPanel::draw(GraphEditorModel& model, const char* targetName, bool targetHasGraph) {
@@ -165,9 +175,11 @@ NodeGraphPanel::Action NodeGraphPanel::draw(GraphEditorModel& model, const char*
         }
         ed::BeginNode(ed::NodeId(static_cast<std::uintptr_t>(n.id)));
         ImGui::PushID(static_cast<int>(n.id));
+        ImGui::BeginGroup();   // M58: wrap content for reliable screen-space bounds
 
-        // Header: colored title row (per-category tint).
-        ImGui::TextColored(headerColor(t->category).Value, "%s", t->typeName.c_str());
+        // Header: white title; the colored band is drawn behind it after EndNode.
+        ImGui::TextColored(ImVec4(1.0f, 1.0f, 1.0f, 1.0f), "%s", t->typeName.c_str());
+        const float titleBottom = ImGui::GetItemRectMax().y;
         ImGui::Dummy(ImVec2(0.0f, 2.0f));
 
         const float iconSz = 16.0f;
@@ -227,8 +239,22 @@ NodeGraphPanel::Action NodeGraphPanel::draw(GraphEditorModel& model, const char*
         }
         ImGui::EndGroup();
 
+        ImGui::EndGroup();   // M58: close the content group
+        const ImVec2 contentMin = ImGui::GetItemRectMin();
+        const ImVec2 contentMax = ImGui::GetItemRectMax();
         ImGui::PopID();
         ed::EndNode();
+
+        // M58: filled category-colored header band behind the white title.
+        if (ImDrawList* bg = ed::GetNodeBackgroundDrawList(
+                ed::NodeId(static_cast<std::uintptr_t>(n.id)))) {
+            const ImVec4 pad      = ed::GetStyle().NodePadding;   // x=left y=top z=right w=bottom
+            const float  rounding = ed::GetStyle().NodeRounding;
+            const ImVec2 a(contentMin.x - pad.x, contentMin.y - pad.y);
+            const ImVec2 b(contentMax.x + pad.z, titleBottom + 2.0f);
+            bg->AddRectFilled(a, b, headerColor(t->category), rounding, ImDrawFlags_RoundCornersTop);
+            bg->AddLine(ImVec2(a.x, b.y), ImVec2(b.x, b.y), ImColor(0, 0, 0, 90), 1.0f);
+        }
     }
 
     // M56: sync live canvas positions back into the model so drags persist
