@@ -1,5 +1,7 @@
 #pragma once
 
+#include <cstdint>
+#include <unordered_map>
 #include <unordered_set>
 
 namespace ax { namespace NodeEditor { struct EditorContext; } }
@@ -40,6 +42,8 @@ private:
     float spawnX_ = 40.0f;
     float spawnY_ = 40.0f;
     std::unordered_set<unsigned int> placed_;   // NodeId already positioned on the canvas
+    std::unordered_set<std::uint32_t> placedComments_;                    // comment id already positioned
+    std::unordered_map<std::uint32_t, float> commentOffX_, commentOffY_;  // node-vs-group size delta, measured once
     bool focused_ = false;            // ImGui::IsWindowFocused() at last draw
 };
 

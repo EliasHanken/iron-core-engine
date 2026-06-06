@@ -146,6 +146,12 @@ NodeGraphPanel::Action NodeGraphPanel::draw(GraphEditorModel& model, const char*
                 if (spawnX_ > 400.0f) { spawnX_ = 40.0f; spawnY_ = 40.0f; }
             }
         }
+        ImGui::SameLine();
+        if (ImGui::SmallButton("+ Comment")) {
+            model.addComment(spawnX_, spawnY_, 240.0f, 160.0f, "Comment");
+            spawnX_ += 30.0f; spawnY_ += 30.0f;
+            if (spawnX_ > 400.0f) { spawnX_ = 40.0f; spawnY_ = 40.0f; }
+        }
     }
     // Outputs readout (the visible result of Run).
     ImGui::Separator();
@@ -164,6 +170,33 @@ NodeGraphPanel::Action NodeGraphPanel::draw(GraphEditorModel& model, const char*
 
     ed::SetCurrentEditor(ctx_);
     ed::Begin("canvas");
+
+    // M58: comment editor-ids live in a high-bit namespace so they never collide
+    // with node ids, pin ids (node<<8|...), or link ids (i+1).
+    auto commentEd = [](std::uint32_t id) -> std::uintptr_t {
+        return (std::uintptr_t{1} << 62) | id;
+    };
+
+    for (const Comment& c : model.comments()) {
+        const ed::NodeId cid(commentEd(c.id));
+        if (placedComments_.find(c.id) == placedComments_.end()) {
+            ed::SetNodePosition(cid, ImVec2(c.x, c.y));
+            placedComments_.insert(c.id);
+        }
+        ed::PushStyleColor(ed::StyleColor_NodeBg,     ImColor(60, 60, 75, 80).Value);
+        ed::PushStyleColor(ed::StyleColor_NodeBorder, ImColor(130, 130, 160, 180).Value);
+        ed::BeginNode(cid);
+        ImGui::PushID(static_cast<int>(c.id) ^ 0x4000);
+        char buf[128];
+        std::snprintf(buf, sizeof(buf), "%s", c.title.c_str());
+        ImGui::SetNextItemWidth(c.w > 48.0f ? c.w - 16.0f : 96.0f);
+        if (ImGui::InputText("##ctitle", buf, sizeof(buf)))
+            model.setCommentTitle(c.id, buf);
+        ed::Group(ImVec2(c.w, c.h));
+        ImGui::PopID();
+        ed::EndNode();
+        ed::PopStyleColor(2);
+    }
 
     for (const Node& n : model.graph().nodes()) {
         const NodeTypeDesc* t = model.registry() ? model.registry()->find(n.typeName) : nullptr;
@@ -266,6 +299,23 @@ NodeGraphPanel::Action NodeGraphPanel::draw(GraphEditorModel& model, const char*
             model.setNodePosition(n.id, pos.x, pos.y);
     }
 
+    // M58: persist comment move/resize. GetNodeSize includes the title row +
+    // padding, so subtract a once-measured offset to recover the group size.
+    for (const Comment& c : model.comments()) {
+        const ed::NodeId cid(commentEd(c.id));
+        const ImVec2 pos = ed::GetNodePosition(cid);
+        const ImVec2 sz  = ed::GetNodeSize(cid);
+        if (commentOffX_.find(c.id) == commentOffX_.end()) {
+            commentOffX_[c.id] = sz.x - c.w;   // node-size overhead vs group size
+            commentOffY_[c.id] = sz.y - c.h;
+        }
+        const float w = sz.x - commentOffX_[c.id];
+        const float h = sz.y - commentOffY_[c.id];
+        if (pos.x != c.x || pos.y != c.y || w != c.w || h != c.h)
+            model.setCommentRect(c.id, pos.x, pos.y,
+                                 w > 32.0f ? w : 32.0f, h > 32.0f ? h : 32.0f);
+    }
+
     const auto& conns = model.graph().connections();
     for (std::size_t i = 0; i < conns.size(); ++i) {
         const Connection& c = conns[i];
@@ -309,7 +359,16 @@ NodeGraphPanel::Action NodeGraphPanel::draw(GraphEditorModel& model, const char*
         }
         ed::NodeId nid;
         while (ed::QueryDeletedNode(&nid)) {
-            if (ed::AcceptDeletedItem()) model.deleteNode(static_cast<NodeId>(nid.Get()));
+            if (ed::AcceptDeletedItem()) {
+                const std::uintptr_t raw = nid.Get();
+                if (raw & (std::uintptr_t{1} << 62)) {
+                    const std::uint32_t cidRaw = static_cast<std::uint32_t>(raw & 0xFFFFFFFFu);
+                    model.deleteComment(cidRaw);
+                    placedComments_.erase(cidRaw);
+                } else {
+                    model.deleteNode(static_cast<NodeId>(raw));
+                }
+            }
         }
     }
     ed::EndDelete();
