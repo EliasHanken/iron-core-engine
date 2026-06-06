@@ -302,27 +302,16 @@ bool drawViewGizmo(FreeFlyCamera& cam, Vec3 pivot, float size, float margin,
         anchorSize = ImGui::GetMainViewport()->Size;
     }
 
-    // Small overlay window — sized to JUST the gizmo + Iso button so WASD
-    // stays free outside the corner.
-    constexpr float kButtonHeight = 26.0f;
-    constexpr float kPad          = 6.0f;
-    const float windowW = size + kPad * 2.0f;
-    const float windowH = size + kPad * 2.0f + kButtonHeight + 4.0f;
-    ImGui::SetNextWindowPos({anchorPos.x + anchorSize.x - windowW - margin,
-                             anchorPos.y + margin});
-    ImGui::SetNextWindowSize({windowW, windowH});
-    ImGui::SetNextWindowBgAlpha(0.0f);
-    constexpr ImGuiWindowFlags kOverlayFlags =
-        ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoNav |
-        ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoBringToFrontOnFocus |
-        ImGuiWindowFlags_NoFocusOnAppearing | ImGuiWindowFlags_NoBackground |
-        ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoScrollbar |
-        ImGuiWindowFlags_NoScrollWithMouse;
-    ImGui::Begin("##viewgizmo_overlay", nullptr, kOverlayFlags);
-
-    const ImVec2 windowOrigin = ImGui::GetWindowPos();
-    const ImVec2 gizmoCenter{windowOrigin.x + kPad + size * 0.5f,
-                             windowOrigin.y + kPad + size * 0.5f};
+    // Draw the gizmo DIRECTLY into the CURRENT window (the Viewport panel) — NOT a
+    // separate overlay window. A separate floating overlay gets z-ordered BEHIND
+    // the docked Viewport under ImGui 1.92.8's docking, so its content never
+    // appears even though the window is created at the right place (confirmed by
+    // diagnostics). Drawing into the Viewport window's own draw list (after its
+    // image) keeps the gizmo on top, and its input items stay live because the
+    // Viewport is the top-most window at that screen position. Caller MUST invoke
+    // this while the Viewport window is current (inside its Begin/End).
+    const ImVec2 gizmoCenter{anchorPos.x + anchorSize.x - margin - size * 0.5f,
+                             anchorPos.y + margin + size * 0.5f};
     const float  gizmoRadius   = size * 0.36f;     // axis tip distance from center
     const float  handleRadius  = size * 0.10f;     // hit + draw radius per handle
 
@@ -346,9 +335,10 @@ bool drawViewGizmo(FreeFlyCamera& cam, Vec3 pivot, float size, float margin,
     std::sort(drawables.begin(), drawables.end(),
               [](const Drawable& a, const Drawable& b) { return a.depth > b.depth; });
 
-    // Invisible button covers the whole gizmo area for input handling.
-    const ImVec2 buttonOrigin{windowOrigin.x + kPad,
-                              windowOrigin.y + kPad};
+    // Invisible button covers the whole gizmo area for input handling, placed in
+    // the current (Viewport) window via absolute screen position.
+    const ImVec2 buttonOrigin{gizmoCenter.x - size * 0.5f,
+                              gizmoCenter.y - size * 0.5f};
     ImGui::SetCursorScreenPos(buttonOrigin);
     ImGui::InvisibleButton("##viewgizmo_hit", ImVec2(size, size));
     const bool  hovered    = ImGui::IsItemHovered();
@@ -448,7 +438,8 @@ bool drawViewGizmo(FreeFlyCamera& cam, Vec3 pivot, float size, float margin,
     // Iso button — uses the same pivot the gizmo orbits around. Capture the
     // pre-click iso state so Push/Pop pair stays balanced even if the click
     // flips isoMode mid-block.
-    ImGui::SetCursorPos({kPad + size * 0.25f, kPad + size + 4.0f});
+    ImGui::SetCursorScreenPos({gizmoCenter.x - size * 0.25f,
+                               gizmoCenter.y + size * 0.5f + 4.0f});
     const bool wasIsoActive = isoMode;
     if (wasIsoActive) {
         ImGui::PushStyleColor(ImGuiCol_Button,
@@ -471,7 +462,6 @@ bool drawViewGizmo(FreeFlyCamera& cam, Vec3 pivot, float size, float margin,
     }
     if (wasIsoActive) ImGui::PopStyleColor();
 
-    ImGui::End();
     return changed;
 }
 

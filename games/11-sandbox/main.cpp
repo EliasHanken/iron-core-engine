@@ -2022,15 +2022,15 @@ int main() {
             const ImVec2 mp  = ImGui::GetMousePos();
             viewport.mousePx = iron::Vec2{mp.x, mp.y};
             viewport.mouseValid = true;
+            // M40 view-gizmo: drawn INSIDE the Viewport window (into its own draw
+            // list, after the image, with input items in this top-most window) so
+            // it's on top + interactive. A separate overlay window got z-ordered
+            // behind the docked viewport under ImGui 1.92.8 docking.
+            drawViewGizmo(cam, viewPivotFor(selectedIndex), 150.0f, 20.0f,
+                          viewport.rectMin, viewport.size);
         }
         ImGui::End();
         imgui.endDockspace();
-        // M40 view-gizmo: drawn as a true top-level overlay AFTER endDockspace()
-        // — when NO window (not even the dockspace host) is active — so ImGui
-        // doesn't z-order it behind the viewport image (a 1.92.8 nested-window
-        // change hid it). Anchored to the viewport panel rect captured above.
-        drawViewGizmo(cam, viewPivotFor(selectedIndex), 150.0f, 20.0f,
-                      viewport.rectMin, viewport.size);
         imgui.render();   // enqueues the UI overlay into the scene pass tail
         renderer.endFrame();
         app.window().swapBuffers();
