@@ -313,58 +313,59 @@ NodeGraphPanel::Action NodeGraphPanel::draw(GraphEditorModel& model, const char*
         ImGui::EndGroup();
 
         ImGui::EndGroup();   // M58: close the content group
-        const ImVec2 contentMin = ImGui::GetItemRectMin();
-        const ImVec2 contentMax = ImGui::GetItemRectMax();
         ImGui::PopID();
         ed::EndNode();
 
-        // M58: filled category-colored header band behind the white title.
+        // M58/M61: node decorations (header band, glass, dev tag) drawn into the
+        // node background list, CLIPPED to the node's exact screen card rect so
+        // nothing overhangs the rounded edges (contentMin/Max ± padding only
+        // ESTIMATED the card and overshot at the top).
         if (ImDrawList* bg = ed::GetNodeBackgroundDrawList(
                 ed::NodeId(static_cast<std::uintptr_t>(n.id)))) {
-            const ImVec4 pad      = ed::GetStyle().NodePadding;   // x=left y=top z=right w=bottom
+            const ed::NodeId nid(static_cast<std::uintptr_t>(n.id));
             const float  rounding = ed::GetStyle().NodeRounding;
-            const ImVec2 a(contentMin.x - pad.x, contentMin.y - pad.y);
-            const ImVec2 b(contentMax.x + pad.z, headerBottom + 3.0f);
-            // M59/M61: category-colored band (rounded top), then the UE4 gloss-ramp
-            // texture multiplied over it at lowered alpha for a translucent top-down
-            // gradient, then a subtle dark contrast overlay so the title/subtitle
-            // pop, then a dark separator under it. Falls back to the plain band.
+            const ImVec2 npos = ed::GetNodePosition(nid);
+            const ImVec2 nsz  = ed::GetNodeSize(nid);
+            const ImVec2 cardMin = ed::CanvasToScreen(npos);
+            const ImVec2 cardMax = ed::CanvasToScreen(ImVec2(npos.x + nsz.x, npos.y + nsz.y));
+            bg->PushClipRect(cardMin, cardMax, true);   // never overhang the card
+
+            // Header band: flush with the card top/sides, ending below the subtitle.
+            const ImVec2 a(cardMin.x, cardMin.y);
+            const ImVec2 b(cardMax.x, headerBottom + 3.0f);
             bg->AddRectFilled(a, b, headerColor(t->category), rounding, ImDrawFlags_RoundCornersTop);
             if (headerTex_)
-                bg->AddImageRounded(reinterpret_cast<ImTextureID>(headerTex_),
-                                    a, b, ImVec2(0, 0), ImVec2(1, 1),
-                                    IM_COL32(255, 255, 255, 150), rounding,
-                                    ImDrawFlags_RoundCornersTop);
+                bg->AddImageRounded(reinterpret_cast<ImTextureID>(headerTex_), a, b,
+                                    ImVec2(0, 0), ImVec2(1, 1), IM_COL32(255, 255, 255, 150),
+                                    rounding, ImDrawFlags_RoundCornersTop);
             bg->AddRectFilled(a, b, IM_COL32(0, 0, 0, 55), rounding, ImDrawFlags_RoundCornersTop);
             bg->AddLine(ImVec2(a.x, b.y), ImVec2(b.x, b.y), IM_COL32(0, 0, 0, 120), 1.0f);
 
-            // M61: glassy sheen — a faint top-down highlight over the whole node
-            // body + a bright top inner edge, for the UE5 glass look. Use the
-            // node's screen rect (contentMin/Max +/- padding), consistent with
-            // the header band above.
-            const ImVec2& nMin = a;   // node screen top-left (same as the header band's `a`)
-            const ImVec2 nMax(contentMax.x + pad.z, contentMax.y + pad.w);
-            const float  sheenH = (nMax.y - nMin.y) * 0.33f;
-            bg->AddRectFilledMultiColor(nMin, ImVec2(nMax.x, nMin.y + sheenH),
-                                        IM_COL32(255, 255, 255, 12), IM_COL32(255, 255, 255, 12),
+            // M61: glass — a top-down sheen over the upper card, a bright top edge,
+            // and a faint bottom inner shadow for depth (the UE5 glassy look).
+            const float h = cardMax.y - cardMin.y;
+            bg->AddRectFilledMultiColor(cardMin, ImVec2(cardMax.x, cardMin.y + h * 0.45f),
+                                        IM_COL32(255, 255, 255, 26), IM_COL32(255, 255, 255, 26),
                                         IM_COL32(255, 255, 255, 0),  IM_COL32(255, 255, 255, 0));
-            bg->AddLine(ImVec2(nMin.x + rounding, nMin.y + 1.0f),
-                        ImVec2(nMax.x - rounding, nMin.y + 1.0f), IM_COL32(255, 255, 255, 30), 1.0f);
+            bg->AddRectFilledMultiColor(ImVec2(cardMin.x, cardMax.y - h * 0.30f), cardMax,
+                                        IM_COL32(0, 0, 0, 0),  IM_COL32(0, 0, 0, 0),
+                                        IM_COL32(0, 0, 0, 70), IM_COL32(0, 0, 0, 70));
+            bg->AddLine(ImVec2(cardMin.x + rounding, cardMin.y + 1.0f),
+                        ImVec2(cardMax.x - rounding, cardMin.y + 1.0f), IM_COL32(255, 255, 255, 55), 1.0f);
 
-            // M61: dev-only striped tag along the node's bottom edge.
+            // M61: dev-only striped tag along the card's bottom edge.
             if (t->devOnly) {
                 const float stripeH = 6.0f;
-                const ImVec2 sMin(nMin.x, nMax.y - stripeH);
-                const ImVec2 sMax(nMax.x, nMax.y);
+                const ImVec2 sMin(cardMin.x, cardMax.y - stripeH);
+                const ImVec2 sMax(cardMax.x, cardMax.y);
                 bg->AddRectFilled(sMin, sMax, IM_COL32(20, 20, 20, 255), rounding, ImDrawFlags_RoundCornersBottom);
-                bg->PushClipRect(sMin, sMax, true);
                 const float step = 10.0f;
                 for (float x = sMin.x - stripeH; x < sMax.x; x += step)
                     bg->AddQuadFilled(ImVec2(x, sMax.y), ImVec2(x + stripeH, sMin.y),
                                       ImVec2(x + stripeH + 4.0f, sMin.y), ImVec2(x + 4.0f, sMax.y),
                                       IM_COL32(225, 190, 0, 200));
-                bg->PopClipRect();
             }
+            bg->PopClipRect();
         }
     }
 
