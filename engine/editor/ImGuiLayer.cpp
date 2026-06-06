@@ -19,26 +19,26 @@ namespace iron {
 
 namespace {
 
-// --- Iron editor dark theme (deep charcoal + subtle blue). Tweak here. ---
-const ImVec4 kBgWindow     = ImColor( 27,  27,  30, 255);  // #1b1b1e
-const ImVec4 kBgChild      = ImColor( 24,  24,  27, 255);  // #18181b
-const ImVec4 kBgPopup      = ImColor( 30,  30,  34, 255);  // #1e1e22
-const ImVec4 kBgTitle      = ImColor( 36,  36,  40, 255);  // #242428
-const ImVec4 kBgPanel      = ImColor( 46,  46,  52, 255);  // #2e2e34
-const ImVec4 kFrame        = ImColor( 42,  42,  48, 255);  // #2a2a30
-const ImVec4 kFrameHover   = ImColor( 52,  52,  60, 255);  // #34343c
-const ImVec4 kFrameActive  = ImColor( 61,  61,  70, 255);  // #3d3d46
-const ImVec4 kButton       = ImColor( 46,  46,  54, 255);  // #2e2e36
-const ImVec4 kButtonHover  = ImColor( 58,  58,  68, 255);  // #3a3a44
+// --- Iron editor dark theme (near-black + subtle blue). Tweak here. ---
+const ImVec4 kBgWindow     = ImColor( 18,  18,  20, 255);  // #121214
+const ImVec4 kBgChild      = ImColor( 13,  13,  15, 255);  // #0d0d0f
+const ImVec4 kBgPopup      = ImColor( 22,  22,  25, 255);  // #161619
+const ImVec4 kBgTitle      = ImColor( 26,  26,  30, 255);  // #1a1a1e
+const ImVec4 kBgPanel      = ImColor( 34,  34,  40, 255);  // #222228
+const ImVec4 kFrame        = ImColor( 30,  30,  35, 255);  // #1e1e23
+const ImVec4 kFrameHover   = ImColor( 41,  41,  48, 255);  // #292930
+const ImVec4 kFrameActive  = ImColor( 51,  51,  60, 255);  // #33333c
+const ImVec4 kButton       = ImColor( 34,  34,  40, 255);  // #222228
+const ImVec4 kButtonHover  = ImColor( 47,  47,  55, 255);  // #2f2f37
 const ImVec4 kAccent       = ImColor( 61, 126, 170, 255);  // #3d7eaa
 const ImVec4 kAccentBright = ImColor( 74, 144, 194, 255);  // #4a90c2
 const ImVec4 kAccentDim    = ImColor( 61, 126, 170, 110);  // accent @ low alpha
 const ImVec4 kText         = ImColor(226, 226, 228, 255);  // #e2e2e4
 const ImVec4 kTextDim      = ImColor(110, 110, 118, 255);  // #6e6e76
-const ImVec4 kBorder       = ImColor( 58,  58,  66, 255);  // #3a3a42
-const ImVec4 kScrollGrab   = ImColor( 58,  58,  68, 255);
-const ImVec4 kScrollGrabHv = ImColor( 74,  74,  86, 255);
-const ImVec4 kDimBg        = ImColor(  0,   0,   0, 120);  // modal dim
+const ImVec4 kBorder       = ImColor( 46,  46,  54, 255);  // #2e2e36
+const ImVec4 kScrollGrab   = ImColor( 46,  46,  54, 255);
+const ImVec4 kScrollGrabHv = ImColor( 64,  64,  74, 255);
+const ImVec4 kDimBg        = ImColor(  0,   0,   0, 140);  // modal dim
 
 void applyIronDarkTheme(ImGuiStyle& s) {
     ImVec4* c = s.Colors;
