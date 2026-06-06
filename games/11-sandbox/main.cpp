@@ -70,6 +70,7 @@
 #include <span>
 #include <string>
 #include <unordered_map>
+#include <utility>
 #include <vector>
 
 namespace {
@@ -214,6 +215,12 @@ int main() {
     iron::MeshHandle cubeMesh  = iron::kInvalidHandle;
     iron::MeshHandle planeMesh = iron::kInvalidHandle;
 
+    // M57: host-side resolve caches keyed by asset path, so rebuildDerivedFromScene
+    // (run on every undo/redo) reuses GPU resources instead of re-reading glTF +
+    // textures from disk and leaking the old handles. Mirrors the cube/plane cache.
+    std::unordered_map<std::string, std::pair<iron::MeshHandle, iron::Aabb>> gltfCache;
+    std::unordered_map<std::string, iron::TextureHandle> textureCache;  // key = srgb-prefixed path
+
     auto primitiveMesh = [&](iron::PrimitiveKind kind) -> iron::MeshHandle {
         if (kind == iron::PrimitiveKind::Cube) {
             if (cubeMesh == iron::kInvalidHandle)
@@ -235,7 +242,15 @@ int main() {
                                iron::TextureHandle fallback,
                                bool srgb = true) -> iron::TextureHandle {
         if (path.empty()) return fallback;
-        iron::TextureHandle t = renderer.loadTexture(path, srgb);
+        const std::string key = (srgb ? "s:" : "l:") + path;
+        auto it = textureCache.find(key);
+        iron::TextureHandle t;
+        if (it != textureCache.end()) {
+            t = it->second;
+        } else {
+            t = renderer.loadTexture(path, srgb);
+            textureCache.emplace(key, t);
+        }
         return (t == iron::kInvalidHandle) ? fallback : t;
     };
 
@@ -257,42 +272,53 @@ int main() {
                 out.localBounds = iron::Aabb{iron::Vec3{-0.5f, -0.01f, -0.5f}, iron::Vec3{0.5f, 0.01f, 0.5f}};
 
         } else if (!e.mesh.gltfPath.empty()) {
-            const std::string fullPath = exeDir + "/" + e.mesh.gltfPath;
-            const auto gltfModel = iron::loadGltfModel(fullPath);
-            if (!gltfModel) {
-                iron::Log::warn("sandbox: entity '%s' gltf '%s' failed to load",
-                                e.name.c_str(), fullPath.c_str());
-                return false;
-            }
-            out.mesh = renderer.createMesh(gltfModel->mesh);
-            out.localBounds = iron::meshBounds(gltfModel->mesh);
+            auto cit = gltfCache.find(e.mesh.gltfPath);
+            if (cit != gltfCache.end()) {
+                // Cache hit: reuse the uploaded mesh + bounds. Material was seeded
+                // on the first resolve and persists in the scene, so skip seeding.
+                out.mesh        = cit->second.first;
+                out.localBounds = cit->second.second;
+            } else {
+                const std::string fullPath = exeDir + "/" + e.mesh.gltfPath;
+                const auto gltfModel = iron::loadGltfModel(fullPath);
+                if (!gltfModel) {
+                    iron::Log::warn("sandbox: entity '%s' gltf '%s' failed to load",
+                                    e.name.c_str(), fullPath.c_str());
+                    return false;
+                }
+                out.mesh = renderer.createMesh(gltfModel->mesh);
+                out.localBounds = iron::meshBounds(gltfModel->mesh);
 
-            // Import the glTF material into the editable MaterialDef ONCE (only fills
-            // fields the user/scene hasn't set), so the Inspector shows what was
-            // imported and every field stays live-editable.
-            if (e.material.albedoPath.empty())
-                e.material.albedoPath            = gltfModel->materialPaths.albedo;
-            if (e.material.normalPath.empty())
-                e.material.normalPath            = gltfModel->materialPaths.normal;
-            if (e.material.metallicRoughnessPath.empty())
-                e.material.metallicRoughnessPath = gltfModel->materialPaths.metalRoughness;
-            if (e.material.aoPath.empty())
-                e.material.aoPath                = gltfModel->materialPaths.occlusion;
-            if (e.material.emissivePath.empty())
-                e.material.emissivePath          = gltfModel->materialPaths.emissive;
-            // Factors: seed when at the MaterialDef defaults (metallic 0, roughness 0.5,
-            // baseColor {1,1,1}, emissive {0,0,0}). Mirrors the existing override sentinels.
-            if (e.material.metallic == 0.0f && e.material.roughness == 0.5f) {
-                e.material.metallic  = gltfModel->metallicFactor;
-                e.material.roughness = gltfModel->roughnessFactor;
+                // Import the glTF material into the editable MaterialDef ONCE (only fills
+                // fields the user/scene hasn't set), so the Inspector shows what was
+                // imported and every field stays live-editable.
+                if (e.material.albedoPath.empty())
+                    e.material.albedoPath            = gltfModel->materialPaths.albedo;
+                if (e.material.normalPath.empty())
+                    e.material.normalPath            = gltfModel->materialPaths.normal;
+                if (e.material.metallicRoughnessPath.empty())
+                    e.material.metallicRoughnessPath = gltfModel->materialPaths.metalRoughness;
+                if (e.material.aoPath.empty())
+                    e.material.aoPath                = gltfModel->materialPaths.occlusion;
+                if (e.material.emissivePath.empty())
+                    e.material.emissivePath          = gltfModel->materialPaths.emissive;
+                // Factors: seed when at the MaterialDef defaults (metallic 0, roughness 0.5,
+                // baseColor {1,1,1}, emissive {0,0,0}). Mirrors the existing override sentinels.
+                if (e.material.metallic == 0.0f && e.material.roughness == 0.5f) {
+                    e.material.metallic  = gltfModel->metallicFactor;
+                    e.material.roughness = gltfModel->roughnessFactor;
+                }
+                if (e.material.baseColorFactor.x == 1.0f && e.material.baseColorFactor.y == 1.0f &&
+                    e.material.baseColorFactor.z == 1.0f)
+                    e.material.baseColorFactor = gltfModel->baseColorFactor;
+                if (iron::dot(e.material.emissive, e.material.emissive) == 0.0f)
+                    e.material.emissive = gltfModel->emissiveFactor;
+                if (e.material.normalScale == 1.0f)
+                    e.material.normalScale = gltfModel->normalScale;
+
+                gltfCache.emplace(e.mesh.gltfPath,
+                                  std::make_pair(out.mesh, out.localBounds));
             }
-            if (e.material.baseColorFactor.x == 1.0f && e.material.baseColorFactor.y == 1.0f &&
-                e.material.baseColorFactor.z == 1.0f)
-                e.material.baseColorFactor = gltfModel->baseColorFactor;
-            if (iron::dot(e.material.emissive, e.material.emissive) == 0.0f)
-                e.material.emissive = gltfModel->emissiveFactor;
-            if (e.material.normalScale == 1.0f)
-                e.material.normalScale = gltfModel->normalScale;
 
         } else {
             iron::Log::warn("sandbox: entity '%s' has no mesh", e.name.c_str());
