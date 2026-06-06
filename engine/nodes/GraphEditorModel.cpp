@@ -36,28 +36,14 @@ void GraphEditorModel::deleteNode(NodeId id) {
     dirty_ = true;
 }
 
-namespace {
-bool dataCompatible(PortType a, PortType b) {
-    if (a == b) return true;
-    const bool aNum = (a == PortType::Int || a == PortType::Float);
-    const bool bNum = (b == PortType::Int || b == PortType::Float);
-    return aNum && bNum;
-}
-}  // namespace
-
 bool GraphEditorModel::connect(NodeId fromNode, std::string fromPort,
                                NodeId toNode, std::string toPort) {
     const PortDesc* from = portOf(fromNode, fromPort);
     const PortDesc* to   = portOf(toNode, toPort);
     if (!from || !to) return false;
-    if (from->dir != PortDir::Out || to->dir != PortDir::In) return false;
+    if (!portsCompatible(*from, *to)) return false;
 
-    const bool fromExec = from->type == PortType::Exec;
-    const bool toExec   = to->type == PortType::Exec;
-    if (fromExec != toExec) return false;                 // exec<->data mismatch
-    if (!fromExec && !dataCompatible(from->type, to->type)) return false;
-
-    if (fromExec) {
+    if (from->type == PortType::Exec) {
         graph_.removeOutgoing(fromNode, fromPort);        // exec out: one target
     } else {
         graph_.disconnect(toNode, toPort);                // data in: one source
@@ -65,6 +51,21 @@ bool GraphEditorModel::connect(NodeId fromNode, std::string fromPort,
     graph_.connect(fromNode, std::move(fromPort), toNode, std::move(toPort));
     dirty_ = true;
     return true;
+}
+
+std::vector<NodeCreation> GraphEditorModel::compatibleCreations(PortType srcType,
+                                                                PortDir srcDir) const {
+    std::vector<NodeCreation> out;
+    if (!registry_) return out;
+    const PortDesc src{"", srcType, srcDir};
+    for (const NodeTypeDesc* t : registry_->all()) {
+        for (const PortDesc& p : t->ports) {
+            const bool ok = (srcDir == PortDir::Out) ? portsCompatible(src, p)
+                                                     : portsCompatible(p, src);
+            if (ok) { out.push_back({t->typeName, p.name}); break; }  // first match per type
+        }
+    }
+    return out;
 }
 
 void GraphEditorModel::disconnect(NodeId toNode, std::string toPort) {
