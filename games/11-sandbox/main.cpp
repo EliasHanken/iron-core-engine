@@ -1540,6 +1540,11 @@ int main() {
             // Apply a requested undo/redo to the focused document.
             if (wantUndo || wantRedo) {
                 if (nodeFocused) {
+                    // Flush an open txn so a mid-interaction undo is a proper step.
+                    if (graphDoc.txnOpen) {
+                        graphDoc.hist.commit(graphDoc.pendingBefore);
+                        graphDoc.txnOpen = false;
+                    }
                     const std::string cur = graphModel.toJson().dump();
                     auto restored = wantRedo ? graphDoc.hist.redo(cur)
                                              : graphDoc.hist.undo(cur);
@@ -1553,6 +1558,11 @@ int main() {
                         }
                     }
                 } else {
+                    // Flush an open txn so a mid-interaction undo is a proper step.
+                    if (sceneDoc.txnOpen) {
+                        sceneDoc.hist.commit(sceneDoc.pendingBefore);
+                        sceneDoc.txnOpen = false;
+                    }
                     const std::string cur = iron::sceneToJsonString(reflection, scene);
                     auto restored = wantRedo ? sceneDoc.hist.redo(cur)
                                              : sceneDoc.hist.undo(cur);
