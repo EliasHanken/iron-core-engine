@@ -12,8 +12,6 @@
 
 namespace iron {
 
-class NodeRegistry;
-
 // Editor-only annotation: a movable/resizable labeled backdrop region grouping
 // nodes visually. NOT part of the executable Graph — the evaluator never sees it.
 struct Comment {

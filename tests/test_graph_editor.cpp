@@ -242,6 +242,21 @@ int main() {
         }
         CHECK(hasBranch);
         CHECK(!hasConst);
+
+        // In-source direction (dragging from an input pin): offered types must
+        // have an OUTPUT that can feed a Float input. Verify each connects into
+        // an Add node's Float input "a".
+        const auto fromFloatIn = m.compatibleCreations(PortType::Float, PortDir::In);
+        CHECK(!fromFloatIn.empty());
+        bool inHasConst = false;
+        const NodeId sink = m.addNode("Add", 0, 0);   // Add has Float In "a"
+        for (const auto& cr : fromFloatIn) {
+            if (cr.typeName == "Const") inHasConst = true;
+            const NodeId n = m.addNode(cr.typeName, 0, 0);
+            CHECK(m.connect(n, cr.targetPort, sink, "a"));   // offered Out -> Float In
+            m.deleteNode(n);
+        }
+        CHECK(inHasConst);
     }
 
     return iron_test_result();
