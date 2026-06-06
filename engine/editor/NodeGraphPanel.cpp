@@ -394,7 +394,18 @@ NodeGraphPanel::Action NodeGraphPanel::draw(GraphEditorModel& model, const char*
             ctxMenuPin_ = static_cast<unsigned long long>(ctxPin.Get());
             ImGui::OpenPopup("##pin_ctx");
         } else if (ed::ShowLinkContextMenu(&ctxLink)) {
-            ctxMenuLink_ = static_cast<unsigned long long>(ctxLink.Get());
+            // Capture the link's target {toNode,toPort} NOW (stable) rather than
+            // re-indexing connections() when the user clicks Delete (the vector
+            // may shift before then).
+            const std::size_t idx = static_cast<std::size_t>(ctxLink.Get()) - 1;
+            const auto& cs = model.graph().connections();
+            if (idx < cs.size()) {
+                ctxMenuLinkToNode_ = cs[idx].toNode;
+                ctxMenuLinkToPort_ = cs[idx].toPort;
+            } else {
+                ctxMenuLinkToNode_ = 0;
+                ctxMenuLinkToPort_.clear();
+            }
             ImGui::OpenPopup("##link_ctx");
         } else if (ed::ShowBackgroundContextMenu()) {
             const ImVec2 cp = ed::ScreenToCanvas(ImGui::GetMousePos());
@@ -470,11 +481,8 @@ NodeGraphPanel::Action NodeGraphPanel::draw(GraphEditorModel& model, const char*
         ImGui::EndPopup();
     }
     if (ImGui::BeginPopup("##link_ctx")) {
-        if (ImGui::MenuItem("Delete link")) {
-            const std::size_t idx = static_cast<std::size_t>(ctxMenuLink_) - 1;
-            const auto& cs = model.graph().connections();
-            if (idx < cs.size()) model.disconnect(cs[idx].toNode, cs[idx].toPort);
-        }
+        if (!ctxMenuLinkToPort_.empty() && ImGui::MenuItem("Delete link"))
+            model.disconnect(ctxMenuLinkToNode_, ctxMenuLinkToPort_);
         ImGui::EndPopup();
     }
     ed::Resume();
