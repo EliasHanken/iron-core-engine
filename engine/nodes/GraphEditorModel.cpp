@@ -73,6 +73,11 @@ void GraphEditorModel::disconnect(NodeId toNode, std::string toPort) {
     dirty_ = true;
 }
 
+void GraphEditorModel::disconnectOutgoing(NodeId fromNode, std::string fromPort) {
+    graph_.removeOutgoing(fromNode, fromPort);
+    dirty_ = true;
+}
+
 void GraphEditorModel::setLiteral(NodeId id, std::string port, NodeValue value) {
     graph_.setLiteral(id, std::move(port), std::move(value));
     dirty_ = true;

@@ -58,6 +58,8 @@ private:
     void* headerTex_ = nullptr;       // M59: header gradient texture id (set by host)
     unsigned long long pendingCreatePin_ = 0;   // source pin id for the drag-create popup (0 = none)
     float pendingCreateX_ = 0.0f, pendingCreateY_ = 0.0f;  // canvas drop position
+    unsigned long long ctxMenuNode_ = 0, ctxMenuPin_ = 0, ctxMenuLink_ = 0;
+    float ctxMenuBgX_ = 0.0f, ctxMenuBgY_ = 0.0f;
 };
 
 }  // namespace iron

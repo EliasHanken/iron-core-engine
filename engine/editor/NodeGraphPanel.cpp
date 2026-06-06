@@ -140,24 +140,6 @@ NodeGraphPanel::Action NodeGraphPanel::draw(GraphEditorModel& model, const char*
     ImGui::BeginDisabled(!targetName);
     if (ImGui::Button("Assign to entity")) action = Action::Assign;
     ImGui::EndDisabled();
-    // Palette
-    if (model.registry()) {
-        ImGui::TextUnformatted("Add:");
-        for (const NodeTypeDesc* t : model.registry()->all()) {
-            ImGui::SameLine();
-            if (ImGui::SmallButton(t->typeName.c_str())) {
-                model.addNode(t->typeName, spawnX_, spawnY_);
-                spawnX_ += 30.0f; spawnY_ += 30.0f;
-                if (spawnX_ > 400.0f) { spawnX_ = 40.0f; spawnY_ = 40.0f; }
-            }
-        }
-        ImGui::SameLine();
-        if (ImGui::SmallButton("+ Comment")) {
-            model.addComment(spawnX_, spawnY_, 240.0f, 160.0f, "Comment");
-            spawnX_ += 30.0f; spawnY_ += 30.0f;
-            if (spawnX_ > 400.0f) { spawnX_ = 40.0f; spawnY_ = 40.0f; }
-        }
-    }
     // Outputs readout (the visible result of Run).
     ImGui::Separator();
     ImGui::TextUnformatted("Run outputs:");
@@ -402,6 +384,26 @@ NodeGraphPanel::Action NodeGraphPanel::draw(GraphEditorModel& model, const char*
     }
     ed::EndDelete();
 
+    {
+        ed::NodeId ctxNode = 0; ed::PinId ctxPin = 0; ed::LinkId ctxLink = 0;
+        ed::Suspend();
+        if (ed::ShowNodeContextMenu(&ctxNode)) {
+            ctxMenuNode_ = static_cast<unsigned long long>(ctxNode.Get());
+            ImGui::OpenPopup("##node_ctx");
+        } else if (ed::ShowPinContextMenu(&ctxPin)) {
+            ctxMenuPin_ = static_cast<unsigned long long>(ctxPin.Get());
+            ImGui::OpenPopup("##pin_ctx");
+        } else if (ed::ShowLinkContextMenu(&ctxLink)) {
+            ctxMenuLink_ = static_cast<unsigned long long>(ctxLink.Get());
+            ImGui::OpenPopup("##link_ctx");
+        } else if (ed::ShowBackgroundContextMenu()) {
+            const ImVec2 cp = ed::ScreenToCanvas(ImGui::GetMousePos());
+            ctxMenuBgX_ = cp.x; ctxMenuBgY_ = cp.y;
+            ImGui::OpenPopup("##bg_ctx");
+        }
+        ed::Resume();
+    }
+
     ed::End();
 
     // M59: render the drag-from-pin create popup outside the canvas.
@@ -421,6 +423,57 @@ NodeGraphPanel::Action NodeGraphPanel::draw(GraphEditorModel& model, const char*
                     else                         model.connect(nn, c.targetPort, pn, pp);
                 }
             }
+        }
+        ImGui::EndPopup();
+    }
+
+    // M59: right-click context menus (background / node / pin / link).
+    if (ImGui::BeginPopup("##bg_ctx")) {
+        if (model.registry() && ImGui::BeginMenu("Add Node")) {
+            for (const NodeTypeDesc* t : model.registry()->all())
+                if (ImGui::MenuItem(t->typeName.c_str()))
+                    model.addNode(t->typeName, ctxMenuBgX_, ctxMenuBgY_);
+            ImGui::EndMenu();
+        }
+        if (ImGui::MenuItem("Add Comment"))
+            model.addComment(ctxMenuBgX_, ctxMenuBgY_, 240.0f, 160.0f, "Comment");
+        ImGui::EndPopup();
+    }
+    if (ImGui::BeginPopup("##node_ctx")) {
+        const std::uintptr_t raw = static_cast<std::uintptr_t>(ctxMenuNode_);
+        if (raw & (std::uintptr_t{1} << 62)) {   // comment id namespace
+            if (ImGui::MenuItem("Delete Comment")) {
+                const std::uint32_t cid = static_cast<std::uint32_t>(raw & 0xFFFFFFFFu);
+                model.deleteComment(cid);
+                placedComments_.erase(cid); commentOffX_.erase(cid); commentOffY_.erase(cid);
+            }
+        } else {
+            const NodeId nid = static_cast<NodeId>(raw);
+            if (ImGui::MenuItem("Delete")) model.deleteNode(nid);
+            if (ImGui::MenuItem("Duplicate")) {
+                if (const Node* src = model.graph().node(nid)) {
+                    const NodeId dup = model.addNode(src->typeName,
+                                                     src->editorX + 30.0f, src->editorY + 30.0f);
+                    for (const auto& kv : src->literals) model.setLiteral(dup, kv.first, kv.second);
+                }
+            }
+        }
+        ImGui::EndPopup();
+    }
+    if (ImGui::BeginPopup("##pin_ctx")) {
+        NodeId pn; std::string pp;
+        const PortDesc* sp = resolvePin(model, static_cast<std::uintptr_t>(ctxMenuPin_), pn, pp);
+        if (sp && ImGui::MenuItem("Break links")) {
+            if (sp->dir == PortDir::In) model.disconnect(pn, pp);
+            else                        model.disconnectOutgoing(pn, pp);
+        }
+        ImGui::EndPopup();
+    }
+    if (ImGui::BeginPopup("##link_ctx")) {
+        if (ImGui::MenuItem("Delete link")) {
+            const std::size_t idx = static_cast<std::size_t>(ctxMenuLink_) - 1;
+            const auto& cs = model.graph().connections();
+            if (idx < cs.size()) model.disconnect(cs[idx].toNode, cs[idx].toPort);
         }
         ImGui::EndPopup();
     }

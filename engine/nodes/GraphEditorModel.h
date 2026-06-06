@@ -43,6 +43,8 @@ public:
     bool   connect(NodeId fromNode, std::string fromPort,
                    NodeId toNode, std::string toPort);
     void   disconnect(NodeId toNode, std::string toPort);
+    // Break the connection leaving an output pin (fromNode, fromPort), if any.
+    void disconnectOutgoing(NodeId fromNode, std::string fromPort);
     void   setLiteral(NodeId id, std::string port, NodeValue value);
     // Update a node's editor canvas position (persisted in toJson). Dirties.
     void setNodePosition(NodeId id, float x, float y);
