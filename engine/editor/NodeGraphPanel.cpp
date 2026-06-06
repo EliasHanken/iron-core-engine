@@ -89,10 +89,13 @@ NodeGraphPanel::NodeGraphPanel() {
     // M58: soften the node cards to match the blueprint example.
     ed::SetCurrentEditor(ctx_);
     ed::Style& st = ed::GetStyle();
-    st.NodeRounding    = 6.0f;
-    st.NodeBorderWidth = 1.0f;
-    st.Colors[ed::StyleColor_NodeBg]     = ImColor(40, 40, 48, 255);
-    st.Colors[ed::StyleColor_NodeBorder] = ImColor(0, 0, 0, 160);
+    st.NodeRounding    = 8.0f;
+    st.NodeBorderWidth = 1.5f;
+    // Near-black charcoal body (high contrast for white text) + a subtle LIGHT
+    // outline, matching the blueprint example. Slight translucency lets the grid
+    // show through faintly.
+    st.Colors[ed::StyleColor_NodeBg]     = ImColor(26, 26, 32, 248);
+    st.Colors[ed::StyleColor_NodeBorder] = ImColor(200, 200, 215, 90);
     ed::SetCurrentEditor(nullptr);
 }
 NodeGraphPanel::~NodeGraphPanel() { if (ctx_) ed::DestroyEditor(ctx_); }
@@ -284,9 +287,14 @@ NodeGraphPanel::Action NodeGraphPanel::draw(GraphEditorModel& model, const char*
             const ImVec4 pad      = ed::GetStyle().NodePadding;   // x=left y=top z=right w=bottom
             const float  rounding = ed::GetStyle().NodeRounding;
             const ImVec2 a(contentMin.x - pad.x, contentMin.y - pad.y);
-            const ImVec2 b(contentMax.x + pad.z, titleBottom + 2.0f);
+            const ImVec2 b(contentMax.x + pad.z, titleBottom + 3.0f);
+            // Category-colored band (rounded top), then a top-down white gloss
+            // gradient for the blueprint "sheen", then a dark separator under it.
             bg->AddRectFilled(a, b, headerColor(t->category), rounding, ImDrawFlags_RoundCornersTop);
-            bg->AddLine(ImVec2(a.x, b.y), ImVec2(b.x, b.y), ImColor(0, 0, 0, 90), 1.0f);
+            bg->AddRectFilledMultiColor(a, b,
+                IM_COL32(255, 255, 255, 55), IM_COL32(255, 255, 255, 55),
+                IM_COL32(255, 255, 255,  0), IM_COL32(255, 255, 255,  0));
+            bg->AddLine(ImVec2(a.x, b.y), ImVec2(b.x, b.y), ImColor(0, 0, 0, 110), 1.0f);
         }
     }
 
