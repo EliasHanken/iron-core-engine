@@ -1545,11 +1545,12 @@ int main() {
                                              : graphDoc.hist.undo(cur);
                     if (restored) {
                         auto parsed = nlohmann::json::parse(*restored, nullptr, false);
-                        if (!parsed.is_discarded() && graphModel.loadFromJson(parsed))
+                        if (!parsed.is_discarded() && graphModel.loadFromJson(parsed)) {
                             nodeGraphPanel.resetPlacement();
-                        graphDoc.last    = graphModel.toJson().dump();
-                        graphDoc.txnOpen = false;
-                        graphModel.clearDirty();
+                            graphDoc.last    = graphModel.toJson().dump();
+                            graphDoc.txnOpen = false;
+                            graphModel.clearDirty();
+                        }
                     }
                 } else {
                     const std::string cur = iron::sceneToJsonString(reflection, scene);
@@ -1557,9 +1558,12 @@ int main() {
                                              : sceneDoc.hist.undo(cur);
                     if (restored) {
                         auto s = iron::sceneFromJsonString(reflection, *restored);
-                        if (s) { scene = *s; rebuildDerivedFromScene(); }
-                        sceneDoc.last    = iron::sceneToJsonString(reflection, scene);
-                        sceneDoc.txnOpen = false;
+                        if (s) {
+                            scene = *s;
+                            rebuildDerivedFromScene();
+                            sceneDoc.last    = iron::sceneToJsonString(reflection, scene);
+                            sceneDoc.txnOpen = false;
+                        }
                     }
                 }
             }
@@ -1568,8 +1572,13 @@ int main() {
             // plausible (keeps idle cost ~zero); the graph is cheap so we key it
             // off the model's dirty flag (set by every model mutation, incl.
             // node-position drags) or an already-open txn.
-            const bool anyMouseDown = ImGui::IsAnyMouseDown();
-            const bool sceneStable  = !anyMouseDown && !gizmo.dragging();
+            const bool anyMouseDown  = ImGui::IsAnyMouseDown();
+            // A focused/editing widget (InputText, InputInt, an in-progress
+            // DragFloat/slider, ColorEdit, …) counts as an interaction in flight,
+            // so a multi-keystroke field edit collapses into ONE undo entry
+            // instead of one-per-character.
+            const bool anyItemActive = ImGui::IsAnyItemActive();
+            const bool sceneStable  = !anyMouseDown && !gizmo.dragging() && !anyItemActive;
             const bool sceneSignal  = inspectorChanged || gizmo.dragging() ||
                                       structuralEdit || sceneDoc.txnOpen;
             if (sceneSignal) {
@@ -1580,10 +1589,12 @@ int main() {
             const bool graphSignal = graphModel.dirty() || graphDoc.txnOpen;
             if (graphSignal) {
                 const std::string cur = graphModel.toJson().dump();
-                tickDoc(graphDoc, cur, !anyMouseDown);
+                tickDoc(graphDoc, cur, !anyMouseDown && !anyItemActive);
                 graphModel.clearDirty();
             }
         }
+        // Always clear: the latch is only set in Edit mode, so this is a no-op
+        // in Play, but it defends against a buffered press leaking across modes.
         wantUndo = false;
         wantRedo = false;
 
