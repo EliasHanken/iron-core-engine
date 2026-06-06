@@ -29,8 +29,8 @@ public:
     // Given the document's CURRENT serialized state, return the snapshot to
     // restore to, and record `current` on the opposite stack. Returns nullopt
     // (no-op) when the relevant stack is empty.
-    std::optional<std::string> undo(const std::string& current);
-    std::optional<std::string> redo(const std::string& current);
+    std::optional<std::string> undo(std::string current);
+    std::optional<std::string> redo(std::string current);
 
     void clear();
 

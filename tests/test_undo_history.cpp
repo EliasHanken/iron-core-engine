@@ -63,5 +63,18 @@ int main() {
         CHECK(*r == "after");
     }
 
+    // clear() empties both stacks.
+    {
+        UndoHistory h;
+        h.commit("A");
+        h.commit("B");
+        (void)h.undo("C");   // undo_ still holds "A"; redo_ now holds "C"
+        CHECK(h.canUndo());
+        CHECK(h.canRedo());
+        h.clear();
+        CHECK(!h.canUndo());
+        CHECK(!h.canRedo());
+    }
+
     return iron_test_result();
 }
