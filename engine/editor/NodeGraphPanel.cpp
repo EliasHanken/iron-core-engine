@@ -91,13 +91,13 @@ NodeGraphPanel::NodeGraphPanel() {
     ed::Style& st = ed::GetStyle();
     st.NodeRounding    = 8.0f;
     st.NodeBorderWidth = 1.5f;
-    // Dark canvas (stock is a washed mid-grey 60,60,70) so the node cards pop.
-    st.Colors[ed::StyleColor_Bg]         = ImColor(13, 13, 15, 255);   // = theme kBgChild (near-black)
-    st.Colors[ed::StyleColor_Grid]       = ImColor(255, 255, 255, 12); // subtle grid
-    // UE4 look: the card sits a touch LIGHTER than the dark canvas with a subtle
-    // light outline, so white text reads crisp and the card stands out.
-    st.Colors[ed::StyleColor_NodeBg]     = ImColor(40, 40, 48, 255);   // lifts above panel charcoal
-    st.Colors[ed::StyleColor_NodeBorder] = ImColor(255, 255, 255, 60); // light, slightly softer
+    // UE5 relationship: a MEDIUM-dark canvas with NODES that are DARKER + slightly
+    // transparent — the grid faintly shows through, so cards read as recessed dark
+    // panels rather than light cards.
+    st.Colors[ed::StyleColor_Bg]         = ImColor(30, 30, 35, 255);   // medium-dark canvas
+    st.Colors[ed::StyleColor_Grid]       = ImColor(255, 255, 255, 14); // subtle grid
+    st.Colors[ed::StyleColor_NodeBg]     = ImColor(14, 14, 16, 232);   // near-black, ~91% opaque (darker than canvas)
+    st.Colors[ed::StyleColor_NodeBorder] = ImColor(255, 255, 255, 55); // subtle light outline
     ed::SetCurrentEditor(nullptr);
 }
 NodeGraphPanel::~NodeGraphPanel() { if (ctx_) ed::DestroyEditor(ctx_); }
