@@ -61,6 +61,7 @@ private:
     std::uint32_t ctxMenuLinkToNode_ = 0;   // captured at link-ctx open (stable, not a stale index)
     std::string   ctxMenuLinkToPort_;
     float ctxMenuBgX_ = 0.0f, ctxMenuBgY_ = 0.0f;
+    char createSearch_[64] = "";   // search text for the create menu
 };
 
 }  // namespace iron

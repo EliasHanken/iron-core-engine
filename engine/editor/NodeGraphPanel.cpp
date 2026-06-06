@@ -15,6 +15,7 @@
 #include <cstdio>
 #include <fstream>
 #include <string>
+#include <vector>
 
 namespace ed = ax::NodeEditor;
 
@@ -93,6 +94,34 @@ const char* nodeCategoryIcon(const std::string& category) {
 ax::Widgets::IconType iconFor(PortType t) {
     return t == PortType::Exec ? ax::Widgets::IconType::Flow
                                : ax::Widgets::IconType::Circle;
+}
+
+// Renders the search box + grouped create list; returns the chosen type name
+// ("" = nothing chosen this frame). searchBuf persists across frames (a panel member).
+std::string drawCreateList(GraphEditorModel& model, char* searchBuf, std::size_t searchCap,
+                           const std::vector<std::string>* allowedTypeNames) {
+    std::string chosen;
+    if (!model.registry()) return chosen;
+    ImGui::SetNextItemWidth(220.0f);
+    if (ImGui::IsWindowAppearing()) ImGui::SetKeyboardFocusHere();
+    ImGui::InputTextWithHint("##create_search", "Search...", searchBuf, searchCap);
+    ImGui::Separator();
+    const auto groups = buildCreateList(*model.registry(), searchBuf, allowedTypeNames);
+    if (groups.empty()) { ImGui::TextDisabled("(no matches)"); return chosen; }
+    const bool searching = searchBuf[0] != '\0';
+    for (const NodeCreateGroup& g : groups) {
+        if (!ImGui::CollapsingHeader(g.category.c_str(),
+                searching ? ImGuiTreeNodeFlags_DefaultOpen : ImGuiTreeNodeFlags_None))
+            continue;
+        for (const NodeTypeDesc* t : g.types) {
+            ImGui::PushID(t->typeName.c_str());
+            const std::string label = std::string(nodeCategoryIcon(t->category)) + "  " + t->typeName;
+            if (ImGui::MenuItem(label.c_str())) chosen = t->typeName;
+            if (!t->subtitle.empty()) { ImGui::SameLine(); ImGui::TextDisabled("  %s", t->subtitle.c_str()); }
+            ImGui::PopID();
+        }
+    }
+    return chosen;
 }
 
 }  // namespace
@@ -357,6 +386,7 @@ NodeGraphPanel::Action NodeGraphPanel::draw(GraphEditorModel& model, const char*
                 pendingCreatePin_ = static_cast<unsigned long long>(newNodePin.Get());
                 pendingCreateX_   = canvasPos.x;
                 pendingCreateY_   = canvasPos.y;
+                createSearch_[0] = '\0';
                 ed::Suspend();
                 ImGui::OpenPopup("##create_node_popup");
                 ed::Resume();
@@ -423,6 +453,7 @@ NodeGraphPanel::Action NodeGraphPanel::draw(GraphEditorModel& model, const char*
         } else if (ed::ShowBackgroundContextMenu()) {
             const ImVec2 cp = ed::ScreenToCanvas(ImGui::GetMousePos());
             ctxMenuBgX_ = cp.x; ctxMenuBgY_ = cp.y;
+            createSearch_[0] = '\0';
             ImGui::OpenPopup("##bg_ctx");
         }
         ed::Resume();
@@ -435,18 +466,22 @@ NodeGraphPanel::Action NodeGraphPanel::draw(GraphEditorModel& model, const char*
     ed::Suspend();
     if (ImGui::BeginPopup("##create_node_popup")) {
         ImGui::TextDisabled("Create node");
-        ImGui::Separator();
         NodeId pn; std::string pp;
         const PortDesc* sp = resolvePin(model, static_cast<std::uintptr_t>(pendingCreatePin_), pn, pp);
         if (sp) {
             const auto options = model.compatibleCreations(sp->type, sp->dir);
-            if (options.empty()) ImGui::TextDisabled("(no compatible nodes)");
-            for (const auto& c : options) {
-                if (ImGui::MenuItem(c.typeName.c_str())) {
-                    const NodeId nn = model.addNode(c.typeName, pendingCreateX_, pendingCreateY_);
-                    if (sp->dir == PortDir::Out) model.connect(pn, pp, nn, c.targetPort);
-                    else                         model.connect(nn, c.targetPort, pn, pp);
-                }
+            std::vector<std::string> allowedNames;
+            allowedNames.reserve(options.size());
+            for (const auto& o : options) allowedNames.push_back(o.typeName);
+            const std::string pick = drawCreateList(model, createSearch_, sizeof(createSearch_), &allowedNames);
+            if (!pick.empty()) {
+                std::string targetPort;
+                for (const auto& o : options) if (o.typeName == pick) { targetPort = o.targetPort; break; }
+                const NodeId nn = model.addNode(pick, pendingCreateX_, pendingCreateY_);
+                if (sp->dir == PortDir::Out) model.connect(pn, pp, nn, targetPort);
+                else                         model.connect(nn, targetPort, pn, pp);
+                createSearch_[0] = '\0';
+                ImGui::CloseCurrentPopup();
             }
         }
         ImGui::EndPopup();
@@ -454,12 +489,14 @@ NodeGraphPanel::Action NodeGraphPanel::draw(GraphEditorModel& model, const char*
 
     // M59: right-click context menus (background / node / pin / link).
     if (ImGui::BeginPopup("##bg_ctx")) {
-        if (model.registry() && ImGui::BeginMenu("Add Node")) {
-            for (const NodeTypeDesc* t : model.registry()->all())
-                if (ImGui::MenuItem(t->typeName.c_str()))
-                    model.addNode(t->typeName, ctxMenuBgX_, ctxMenuBgY_);
-            ImGui::EndMenu();
+        ImGui::TextDisabled("Add node");
+        const std::string pick = drawCreateList(model, createSearch_, sizeof(createSearch_), nullptr);
+        if (!pick.empty()) {
+            model.addNode(pick, ctxMenuBgX_, ctxMenuBgY_);
+            createSearch_[0] = '\0';
+            ImGui::CloseCurrentPopup();
         }
+        ImGui::Separator();
         if (ImGui::MenuItem("Add Comment"))
             model.addComment(ctxMenuBgX_, ctxMenuBgY_, 240.0f, 160.0f, "Comment");
         ImGui::EndPopup();
