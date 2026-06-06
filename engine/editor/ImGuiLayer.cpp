@@ -1,8 +1,11 @@
 #include "editor/ImGuiLayer.h"
 
 #include "core/Log.h"
+#include "core/Platform.h"   // iron::executableDir()
 #include "core/Window.h"
 #include "render/backends/vulkan/VulkanRenderer.h"
+
+#include <string>
 
 #include <vulkan/vulkan.h>
 
@@ -46,6 +49,22 @@ bool ImGuiLayer::init(Window& window, Renderer& renderer) {
     ImGui::CreateContext();
     ImGui::GetIO().ConfigFlags |= ImGuiConfigFlags_DockingEnable;
     ImGui::StyleColorsDark();
+
+    // M58: crisp UI font (Roboto-Medium, Apache-2.0), copied next to the exe with
+    // the rest of the assets. Fallback to the built-in bitmap font if it's missing
+    // so the editor never fails to start.
+    {
+        ImGuiIO& io = ImGui::GetIO();
+        ImFontConfig cfg;
+        cfg.OversampleH = 2;
+        cfg.OversampleV = 2;
+        const std::string fontPath = executableDir() + "/assets/fonts/Roboto-Medium.ttf";
+        ImFont* f = io.Fonts->AddFontFromFileTTF(fontPath.c_str(), 16.0f, &cfg);
+        if (!f) {
+            io.Fonts->AddFontDefault();
+            Log::warn("ImGuiLayer: font '%s' not found; using default", fontPath.c_str());
+        }
+    }
 
     // install_callbacks=true is safe: iron::Input is poll-based (it never
     // installs GLFW callbacks), and ImGui chains to any pre-existing ones.
