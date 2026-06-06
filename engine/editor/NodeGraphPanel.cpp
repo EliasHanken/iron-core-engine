@@ -353,6 +353,20 @@ NodeGraphPanel::Action NodeGraphPanel::draw(GraphEditorModel& model, const char*
                 }
             }
         }
+        // M59: drag from a pin onto empty canvas -> open a type-compatible
+        // create menu and auto-wire the new node to the dragged pin.
+        ed::PinId newNodePin = 0;
+        if (ed::QueryNewNode(&newNodePin)) {
+            if (ed::AcceptNewItem()) {
+                const ImVec2 canvasPos = ed::ScreenToCanvas(ImGui::GetMousePos());
+                pendingCreatePin_ = static_cast<unsigned long long>(newNodePin.Get());
+                pendingCreateX_   = canvasPos.x;
+                pendingCreateY_   = canvasPos.y;
+                ed::Suspend();
+                ImGui::OpenPopup("##create_node_popup");
+                ed::Resume();
+            }
+        }
     }
     ed::EndCreate();
 
@@ -389,6 +403,29 @@ NodeGraphPanel::Action NodeGraphPanel::draw(GraphEditorModel& model, const char*
     ed::EndDelete();
 
     ed::End();
+
+    // M59: render the drag-from-pin create popup outside the canvas.
+    ed::Suspend();
+    if (ImGui::BeginPopup("##create_node_popup")) {
+        ImGui::TextDisabled("Create node");
+        ImGui::Separator();
+        NodeId pn; std::string pp;
+        const PortDesc* sp = resolvePin(model, static_cast<std::uintptr_t>(pendingCreatePin_), pn, pp);
+        if (sp) {
+            const auto options = model.compatibleCreations(sp->type, sp->dir);
+            if (options.empty()) ImGui::TextDisabled("(no compatible nodes)");
+            for (const auto& c : options) {
+                if (ImGui::MenuItem(c.typeName.c_str())) {
+                    const NodeId nn = model.addNode(c.typeName, pendingCreateX_, pendingCreateY_);
+                    if (sp->dir == PortDir::Out) model.connect(pn, pp, nn, c.targetPort);
+                    else                         model.connect(nn, c.targetPort, pn, pp);
+                }
+            }
+        }
+        ImGui::EndPopup();
+    }
+    ed::Resume();
+
     ed::SetCurrentEditor(nullptr);
     ImGui::End();
     return action;

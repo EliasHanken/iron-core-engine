@@ -56,6 +56,8 @@ private:
     std::unordered_map<std::uint32_t, float> commentOffX_, commentOffY_;  // node-vs-group size delta, measured once
     bool focused_ = false;            // ImGui::IsWindowFocused() at last draw
     void* headerTex_ = nullptr;       // M59: header gradient texture id (set by host)
+    unsigned long long pendingCreatePin_ = 0;   // source pin id for the drag-create popup (0 = none)
+    float pendingCreateX_ = 0.0f, pendingCreateY_ = 0.0f;  // canvas drop position
 };
 
 }  // namespace iron
