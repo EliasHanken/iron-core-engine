@@ -89,6 +89,7 @@ NodeGraphPanel::~NodeGraphPanel() { if (ctx_) ed::DestroyEditor(ctx_); }
 
 NodeGraphPanel::Action NodeGraphPanel::draw(GraphEditorModel& model, const char* targetName, bool targetHasGraph) {
     ImGui::Begin("Node Editor");
+    focused_ = ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows);
 
     if (ImGui::Button("Run")) model.run();
     ImGui::SameLine();
