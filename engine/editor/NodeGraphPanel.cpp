@@ -116,8 +116,12 @@ std::string drawCreateList(GraphEditorModel& model, char* searchBuf, std::size_t
         for (const NodeTypeDesc* t : g.types) {
             ImGui::PushID(t->typeName.c_str());
             const std::string label = std::string(nodeCategoryIcon(t->category)) + "  " + t->typeName;
-            if (ImGui::MenuItem(label.c_str())) chosen = t->typeName;
-            if (!t->subtitle.empty()) { ImGui::SameLine(); ImGui::TextDisabled("  %s", t->subtitle.c_str()); }
+            // Subtitle goes in MenuItem's shortcut slot: right-aligned + dimmed +
+            // part of the selectable row (so it tracks the hover highlight and
+            // clips within the popup, unlike a SameLine TextDisabled).
+            if (ImGui::MenuItem(label.c_str(),
+                                t->subtitle.empty() ? nullptr : t->subtitle.c_str()))
+                chosen = t->typeName;
             ImGui::PopID();
         }
     }
@@ -338,7 +342,7 @@ NodeGraphPanel::Action NodeGraphPanel::draw(GraphEditorModel& model, const char*
             // body + a bright top inner edge, for the UE5 glass look. Use the
             // node's screen rect (contentMin/Max +/- padding), consistent with
             // the header band above.
-            const ImVec2 nMin(contentMin.x - pad.x, contentMin.y - pad.y);
+            const ImVec2& nMin = a;   // node screen top-left (same as the header band's `a`)
             const ImVec2 nMax(contentMax.x + pad.z, contentMax.y + pad.w);
             const float  sheenH = (nMax.y - nMin.y) * 0.33f;
             bg->AddRectFilledMultiColor(nMin, ImVec2(nMax.x, nMin.y + sheenH),
@@ -520,6 +524,10 @@ NodeGraphPanel::Action NodeGraphPanel::draw(GraphEditorModel& model, const char*
                 createSearch_[0] = '\0';
                 ImGui::CloseCurrentPopup();
             }
+        } else {
+            // Source pin vanished (e.g. undo deleted its node while the popup was
+            // open) — don't leave a blank popup; close it.
+            ImGui::CloseCurrentPopup();
         }
         ImGui::EndPopup();
     }
