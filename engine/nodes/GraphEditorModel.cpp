@@ -5,6 +5,7 @@
 #include "nodes/NodeRegistry.h"
 
 #include <algorithm>   // std::remove_if, std::max
+#include <cmath>       // std::fabs
 #include <utility>     // std::move
 
 namespace iron {
@@ -101,9 +102,12 @@ void GraphEditorModel::deleteComment(std::uint32_t id) {
 }
 
 void GraphEditorModel::setCommentRect(std::uint32_t id, float x, float y, float w, float h) {
+    constexpr float kTol = 0.5f;   // half a pixel; avoids per-frame dirtying from
+                                   // sub-pixel float drift in the panel's size math
     for (Comment& c : comments_) {
         if (c.id != id) continue;
-        if (c.x != x || c.y != y || c.w != w || c.h != h) {
+        if (std::fabs(c.x - x) > kTol || std::fabs(c.y - y) > kTol ||
+            std::fabs(c.w - w) > kTol || std::fabs(c.h - h) > kTol) {
             c.x = x; c.y = y; c.w = w; c.h = h;
             dirty_ = true;
         }

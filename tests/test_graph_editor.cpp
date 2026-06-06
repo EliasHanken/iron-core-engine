@@ -158,6 +158,13 @@ int main() {
         CHECK(m.dirty());
         CHECK(m.comments()[0].title == "Renamed");
 
+        // no-op edits must NOT re-dirty (protects M57 undo coalescing).
+        m.clearDirty();
+        m.setCommentTitle(id, "Renamed");           // same value
+        CHECK(!m.dirty());
+        m.setCommentRect(id, 11, 22, 210, 110);     // same value as last set
+        CHECK(!m.dirty());
+
         GraphEditorModel m2(&reg);
         CHECK(m2.loadFromJson(m.toJson()));
         CHECK(m2.comments().size() == 1u);
@@ -169,6 +176,24 @@ int main() {
         m.deleteComment(id);
         CHECK(m.comments().empty());
         CHECK(m.dirty());
+    }
+
+    // M58: multiple comments — delete isolation + id stability after load+add.
+    {
+        GraphEditorModel m(&reg);
+        const std::uint32_t a = m.addComment(0, 0, 100, 100, "A");
+        const std::uint32_t b = m.addComment(50, 50, 100, 100, "B");
+        CHECK(a != b);
+        m.deleteComment(a);
+        CHECK(m.comments().size() == 1u);
+        CHECK(m.comments()[0].id == b);          // only A removed, B intact
+        CHECK(m.comments()[0].title == "B");
+
+        // After a round-trip, a fresh addComment must not collide with loaded ids.
+        GraphEditorModel m2(&reg);
+        CHECK(m2.loadFromJson(m.toJson()));
+        const std::uint32_t c = m2.addComment(10, 10, 80, 80, "C");
+        CHECK(c != b);                           // nextCommentId_ restored past b
     }
 
     // M58: runtime tolerance — the executable loader ignores "comments".
