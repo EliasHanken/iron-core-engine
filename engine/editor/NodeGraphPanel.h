@@ -30,12 +30,17 @@ public:
     // the model's graph (e.g. Load-from-entity) so persisted positions take hold.
     void resetPlacement() { placed_.clear(); }
 
+    // Whether the "Node Editor" window was focused on the last draw(). Used by
+    // the host to route Ctrl+Z/Y to the graph history vs the scene history.
+    bool focused() const { return focused_; }
+
 private:
     ax::NodeEditor::EditorContext* ctx_ = nullptr;
     char savePath_[256] = "node_graph.json";
     float spawnX_ = 40.0f;
     float spawnY_ = 40.0f;
     std::unordered_set<unsigned int> placed_;   // NodeId already positioned on the canvas
+    bool focused_ = false;            // ImGui::IsWindowFocused() at last draw
 };
 
 }  // namespace iron

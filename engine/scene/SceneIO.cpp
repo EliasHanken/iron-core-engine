@@ -6,6 +6,7 @@
 #include <nlohmann/json.hpp>
 
 #include <fstream>
+#include <iterator>
 
 namespace iron {
 
@@ -68,9 +69,7 @@ SceneEntity entityFromJson(const Reflection& r, const json& j) {
 
 }  // namespace
 
-bool saveSceneFile(const Reflection& reflection,
-                   const SceneFile& scene,
-                   const std::string& path) {
+std::string sceneToJsonString(const Reflection& reflection, const SceneFile& scene) {
     json root = json::object();
     root["clearColor"] = toJson(scene.clearColor);
 
@@ -100,28 +99,16 @@ bool saveSceneFile(const Reflection& reflection,
     for (const auto& e : scene.entities) ents.push_back(entityToJson(reflection, e));
     root["entities"] = ents;
 
-    std::ofstream f(path);
-    if (!f) {
-        Log::error("SceneIO: cannot open '%s' for writing", path.c_str());
-        return false;
-    }
-    f << root.dump(2);
-    return true;
+    return root.dump();
 }
 
-std::optional<SceneFile> loadSceneFile(const Reflection& reflection,
-                                       const std::string& path) {
-    std::ifstream f(path);
-    if (!f) {
-        Log::error("SceneIO: cannot open '%s'", path.c_str());
-        return std::nullopt;
-    }
-
+std::optional<SceneFile> sceneFromJsonString(const Reflection& reflection,
+                                             const std::string& jsonStr) {
     json root;
     try {
-        f >> root;
-    } catch (const json::parse_error& e) {
-        Log::error("SceneIO: parse error in '%s': %s", path.c_str(), e.what());
+        root = json::parse(jsonStr);
+    } catch (const json::exception& e) {
+        Log::error("SceneIO: parse error: %s", e.what());
         return std::nullopt;
     }
 
@@ -155,6 +142,33 @@ std::optional<SceneFile> loadSceneFile(const Reflection& reflection,
         }
     }
     return scene;
+}
+
+bool saveSceneFile(const Reflection& reflection,
+                   const SceneFile& scene,
+                   const std::string& path) {
+    std::ofstream f(path);
+    if (!f) {
+        Log::error("SceneIO: cannot open '%s' for writing", path.c_str());
+        return false;
+    }
+    // Re-indent for the human-diffable on-disk file (the string serializer is
+    // compact); schema is defined once, in sceneToJsonString.
+    json root = json::parse(sceneToJsonString(reflection, scene));
+    f << root.dump(2);
+    return true;
+}
+
+std::optional<SceneFile> loadSceneFile(const Reflection& reflection,
+                                       const std::string& path) {
+    std::ifstream f(path);
+    if (!f) {
+        Log::error("SceneIO: cannot open '%s'", path.c_str());
+        return std::nullopt;
+    }
+    std::string contents((std::istreambuf_iterator<char>(f)),
+                         std::istreambuf_iterator<char>());
+    return sceneFromJsonString(reflection, contents);
 }
 
 }  // namespace iron

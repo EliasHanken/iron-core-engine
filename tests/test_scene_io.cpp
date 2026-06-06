@@ -261,5 +261,31 @@ int main() {
         fs::remove(path);
     }
 
+    // In-memory string round-trip (M57): toJsonString -> fromJsonString
+    // preserves entity name + transform + a material factor.
+    {
+        const Reflection r = makeReflectionRegistry();
+        SceneFile s;
+        SceneEntity e;
+        e.name = "undo_probe";
+        e.transform.position = {1.0f, 2.0f, 3.0f};
+        e.material.metallic = 0.25f;
+        s.entities.push_back(e);
+
+        const std::string json = sceneToJsonString(r, s);
+        CHECK(!json.empty());
+        auto back = sceneFromJsonString(r, json);
+        CHECK(back.has_value());
+        CHECK(back->entities.size() == 1u);
+        CHECK(back->entities[0].name == "undo_probe");
+        CHECK_NEAR(back->entities[0].transform.position.x, 1.0f);
+        CHECK_NEAR(back->entities[0].transform.position.y, 2.0f);
+        CHECK_NEAR(back->entities[0].transform.position.z, 3.0f);
+        CHECK_NEAR(back->entities[0].material.metallic, 0.25f);
+
+        // Malformed input -> nullopt.
+        CHECK(!sceneFromJsonString(r, "{ not json").has_value());
+    }
+
     return iron_test_result();
 }

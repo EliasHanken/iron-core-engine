@@ -23,4 +23,14 @@ bool saveSceneFile(const Reflection& reflection,
                    const SceneFile& scene,
                    const std::string& path);
 
+// Serialize a scene to a JSON string (same schema as saveSceneFile, compact —
+// no pretty-print, since this feeds the undo stack, not a human-diffable file).
+std::string sceneToJsonString(const Reflection& reflection, const SceneFile& scene);
+
+// Parse a scene from a JSON string. Returns nullopt on malformed JSON (logs via
+// Log::error). Missing optional fields fall back to struct defaults — identical
+// semantics to loadSceneFile, minus the file I/O.
+std::optional<SceneFile> sceneFromJsonString(const Reflection& reflection,
+                                             const std::string& json);
+
 }  // namespace iron

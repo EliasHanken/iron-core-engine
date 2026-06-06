@@ -48,6 +48,7 @@
 #include "gameplay/LogicGraph.h"
 #include "gameplay/LogicRuntime.h"
 #include "editor/NodeGraphPanel.h"
+#include "editor/UndoHistory.h"
 #include "render/backends/vulkan/VulkanRenderer.h"
 #include "math/Aabb.h"
 #include "audio/AudioEmitter.h"
@@ -69,6 +70,7 @@
 #include <span>
 #include <string>
 #include <unordered_map>
+#include <utility>
 #include <vector>
 
 namespace {
@@ -213,6 +215,12 @@ int main() {
     iron::MeshHandle cubeMesh  = iron::kInvalidHandle;
     iron::MeshHandle planeMesh = iron::kInvalidHandle;
 
+    // M57: host-side resolve caches keyed by asset path, so rebuildDerivedFromScene
+    // (run on every undo/redo) reuses GPU resources instead of re-reading glTF +
+    // textures from disk and leaking the old handles. Mirrors the cube/plane cache.
+    std::unordered_map<std::string, std::pair<iron::MeshHandle, iron::Aabb>> gltfCache;
+    std::unordered_map<std::string, iron::TextureHandle> textureCache;  // key = srgb-prefixed path
+
     auto primitiveMesh = [&](iron::PrimitiveKind kind) -> iron::MeshHandle {
         if (kind == iron::PrimitiveKind::Cube) {
             if (cubeMesh == iron::kInvalidHandle)
@@ -234,7 +242,15 @@ int main() {
                                iron::TextureHandle fallback,
                                bool srgb = true) -> iron::TextureHandle {
         if (path.empty()) return fallback;
-        iron::TextureHandle t = renderer.loadTexture(path, srgb);
+        const std::string key = (srgb ? "s:" : "l:") + path;
+        auto it = textureCache.find(key);
+        iron::TextureHandle t;
+        if (it != textureCache.end()) {
+            t = it->second;
+        } else {
+            t = renderer.loadTexture(path, srgb);
+            textureCache.emplace(key, t);
+        }
         return (t == iron::kInvalidHandle) ? fallback : t;
     };
 
@@ -256,42 +272,53 @@ int main() {
                 out.localBounds = iron::Aabb{iron::Vec3{-0.5f, -0.01f, -0.5f}, iron::Vec3{0.5f, 0.01f, 0.5f}};
 
         } else if (!e.mesh.gltfPath.empty()) {
-            const std::string fullPath = exeDir + "/" + e.mesh.gltfPath;
-            const auto gltfModel = iron::loadGltfModel(fullPath);
-            if (!gltfModel) {
-                iron::Log::warn("sandbox: entity '%s' gltf '%s' failed to load",
-                                e.name.c_str(), fullPath.c_str());
-                return false;
-            }
-            out.mesh = renderer.createMesh(gltfModel->mesh);
-            out.localBounds = iron::meshBounds(gltfModel->mesh);
+            auto cit = gltfCache.find(e.mesh.gltfPath);
+            if (cit != gltfCache.end()) {
+                // Cache hit: reuse the uploaded mesh + bounds. Material was seeded
+                // on the first resolve and persists in the scene, so skip seeding.
+                out.mesh        = cit->second.first;
+                out.localBounds = cit->second.second;
+            } else {
+                const std::string fullPath = exeDir + "/" + e.mesh.gltfPath;
+                const auto gltfModel = iron::loadGltfModel(fullPath);
+                if (!gltfModel) {
+                    iron::Log::warn("sandbox: entity '%s' gltf '%s' failed to load",
+                                    e.name.c_str(), fullPath.c_str());
+                    return false;
+                }
+                out.mesh = renderer.createMesh(gltfModel->mesh);
+                out.localBounds = iron::meshBounds(gltfModel->mesh);
 
-            // Import the glTF material into the editable MaterialDef ONCE (only fills
-            // fields the user/scene hasn't set), so the Inspector shows what was
-            // imported and every field stays live-editable.
-            if (e.material.albedoPath.empty())
-                e.material.albedoPath            = gltfModel->materialPaths.albedo;
-            if (e.material.normalPath.empty())
-                e.material.normalPath            = gltfModel->materialPaths.normal;
-            if (e.material.metallicRoughnessPath.empty())
-                e.material.metallicRoughnessPath = gltfModel->materialPaths.metalRoughness;
-            if (e.material.aoPath.empty())
-                e.material.aoPath                = gltfModel->materialPaths.occlusion;
-            if (e.material.emissivePath.empty())
-                e.material.emissivePath          = gltfModel->materialPaths.emissive;
-            // Factors: seed when at the MaterialDef defaults (metallic 0, roughness 0.5,
-            // baseColor {1,1,1}, emissive {0,0,0}). Mirrors the existing override sentinels.
-            if (e.material.metallic == 0.0f && e.material.roughness == 0.5f) {
-                e.material.metallic  = gltfModel->metallicFactor;
-                e.material.roughness = gltfModel->roughnessFactor;
+                // Import the glTF material into the editable MaterialDef ONCE (only fills
+                // fields the user/scene hasn't set), so the Inspector shows what was
+                // imported and every field stays live-editable.
+                if (e.material.albedoPath.empty())
+                    e.material.albedoPath            = gltfModel->materialPaths.albedo;
+                if (e.material.normalPath.empty())
+                    e.material.normalPath            = gltfModel->materialPaths.normal;
+                if (e.material.metallicRoughnessPath.empty())
+                    e.material.metallicRoughnessPath = gltfModel->materialPaths.metalRoughness;
+                if (e.material.aoPath.empty())
+                    e.material.aoPath                = gltfModel->materialPaths.occlusion;
+                if (e.material.emissivePath.empty())
+                    e.material.emissivePath          = gltfModel->materialPaths.emissive;
+                // Factors: seed when at the MaterialDef defaults (metallic 0, roughness 0.5,
+                // baseColor {1,1,1}, emissive {0,0,0}). Mirrors the existing override sentinels.
+                if (e.material.metallic == 0.0f && e.material.roughness == 0.5f) {
+                    e.material.metallic  = gltfModel->metallicFactor;
+                    e.material.roughness = gltfModel->roughnessFactor;
+                }
+                if (e.material.baseColorFactor.x == 1.0f && e.material.baseColorFactor.y == 1.0f &&
+                    e.material.baseColorFactor.z == 1.0f)
+                    e.material.baseColorFactor = gltfModel->baseColorFactor;
+                if (iron::dot(e.material.emissive, e.material.emissive) == 0.0f)
+                    e.material.emissive = gltfModel->emissiveFactor;
+                if (e.material.normalScale == 1.0f)
+                    e.material.normalScale = gltfModel->normalScale;
+
+                gltfCache.emplace(e.mesh.gltfPath,
+                                  std::make_pair(out.mesh, out.localBounds));
             }
-            if (e.material.baseColorFactor.x == 1.0f && e.material.baseColorFactor.y == 1.0f &&
-                e.material.baseColorFactor.z == 1.0f)
-                e.material.baseColorFactor = gltfModel->baseColorFactor;
-            if (iron::dot(e.material.emissive, e.material.emissive) == 0.0f)
-                e.material.emissive = gltfModel->emissiveFactor;
-            if (e.material.normalScale == 1.0f)
-                e.material.normalScale = gltfModel->normalScale;
 
         } else {
             iron::Log::warn("sandbox: entity '%s' has no mesh", e.name.c_str());
@@ -695,6 +722,39 @@ int main() {
         playVoices.clear();
     };
 
+    // M54: node-editor panel + its graph model (nodeRegistry built above).
+    // Declared here (before togglePlayMode) so that lambda — which snapshots the
+    // graph for M57 undo/redo — can reference it. Seeded with a demo graph below.
+    iron::GraphEditorModel graphModel(&nodeRegistry);
+    iron::NodeGraphPanel nodeGraphPanel;
+
+    // --- M57: undo/redo ---------------------------------------------------
+    // One snapshot stack per document (scene + node graph). `last` is the last
+    // serialized state we observed; a transaction opens when the live state
+    // first differs from `last`, and commits (one undo entry) when the document
+    // is stable and the user isn't mid-interaction — so a whole drag = 1 entry.
+    struct DocHistory {
+        iron::UndoHistory hist{100};
+        std::string last;            // last-seen serialized state
+        std::string pendingBefore;   // snapshot captured when the txn opened
+        bool        txnOpen = false;
+    };
+    DocHistory sceneDoc;
+    DocHistory graphDoc;
+
+    // Advance one document's coalescing state. `cur` = current serialized state;
+    // `stable` = document settled AND no interaction in flight.
+    auto tickDoc = [](DocHistory& d, const std::string& cur, bool stable) {
+        if (cur != d.last) {
+            if (!d.txnOpen) { d.pendingBefore = d.last; d.txnOpen = true; }
+            d.last = cur;
+        }
+        if (d.txnOpen && stable) {
+            d.hist.commit(d.pendingBefore);
+            d.txnOpen = false;
+        }
+    };
+
     auto togglePlayMode = [&]() {
         if (editor.isPlaying()) {
             // Play → Edit: tear down runtime bodies/voices, restore snapshot.
@@ -703,6 +763,12 @@ int main() {
             world = editWorld;
             cam   = editCam;
             editor.setMode(iron::EditorState::Mode::Edit);
+            // M57: drop any Play-mode history and re-baseline from the restored
+            // scene/graph so the first Edit-mode change opens a fresh txn.
+            sceneDoc.hist.clear(); graphDoc.hist.clear();
+            sceneDoc.txnOpen = false; graphDoc.txnOpen = false;
+            sceneDoc.last = iron::sceneToJsonString(reflection, scene);
+            graphDoc.last = graphModel.toJson().dump();
             iron::Log::info("sandbox: Play -> Edit");
         } else {
             // Edit → Play: snapshot, spawn runtime bodies/voices from authored components.
@@ -713,6 +779,9 @@ int main() {
             playDt    = 0.0f;
             editor.setMode(iron::EditorState::Mode::Play);
             spawnRuntime();
+            // M57: undo/redo is Edit-mode only; drop any in-flight history.
+            sceneDoc.hist.clear(); graphDoc.hist.clear();
+            sceneDoc.txnOpen = false; graphDoc.txnOpen = false;
             iron::Log::info("sandbox: Edit -> Play");
         }
     };
@@ -772,9 +841,6 @@ int main() {
     iron::SceneInspector   inspector;
     iron::EnvironmentPanel environment;
 
-    // M54: node-editor panel + its graph model (nodeRegistry built above).
-    iron::GraphEditorModel graphModel(&nodeRegistry);
-    iron::NodeGraphPanel nodeGraphPanel;
     // M54: seed a runnable demo so the Node Editor opens with something real:
     //   Entry -> Branch(Compare 7 > 5) -> true: SetOutput("r", 1) / false: ("r", 0)
     // Pressing Run shows "r = 1.000"; Save writes a meaningful node_graph.json.
@@ -835,6 +901,8 @@ int main() {
     // the next input update — spawning a pile of duplicates.
     bool wantDeleteShortcut    = false;
     bool wantDuplicateShortcut = false;
+    bool wantUndo = false;
+    bool wantRedo = false;
 
     // Gizmo origin = the entity's transform pivot. It's rotation-stable (the
     // pivot IS the rotation center, so the gizmo stays put while the object spins
@@ -962,6 +1030,33 @@ int main() {
             iron::Log::warn("sandbox: add failed; entity not added");
         }
     };
+
+    // M57: rebuild ALL derived state (World + resolved + index map) from the
+    // current scene.entities. Used by undo/redo restore. Mirrors the startup
+    // resolve loop exactly, including its skip-on-failed-resolve behavior.
+    auto rebuildDerivedFromScene = [&]() {
+        for (iron::EntityId e : sceneIndexToEntity) world.destroy(e);
+        sceneIndexToEntity.clear();
+        resolved.clear();
+        for (int ei = 0; ei < static_cast<int>(scene.entities.size()); ++ei) {
+            ResolvedEntity re;
+            if (!resolveEntity(scene.entities[ei], ei, re)) continue;
+            resolved.push_back(re);
+            const iron::SceneEntity& se = scene.entities[ei];
+            iron::EntityId entity = world.create();
+            world.add<iron::Transform>(entity, se.transform);
+            world.add<iron::MeshRef>(entity, se.mesh);
+            world.add<iron::MaterialDef>(entity, se.material);
+            world.add<iron::RenderHandles>(entity, toRenderHandles(re));
+            sceneIndexToEntity.push_back(entity);
+        }
+        if (selectedIndex >= static_cast<int>(scene.entities.size()))
+            selectedIndex = -1;
+    };
+
+    // M57: baseline snapshots (after all startup entities + the seeded graph).
+    sceneDoc.last = iron::sceneToJsonString(reflection, scene);
+    graphDoc.last = graphModel.toJson().dump();
 
     // --- Main loop ---
     app.setUpdate([&](const iron::FrameTime& t) {
@@ -1130,6 +1225,20 @@ int main() {
                     wantDuplicateShortcut = true;
             }
 
+            // M57: latch undo/redo (Edit mode only). Suppressed while ImGui owns
+            // the keyboard (typing in a field). Ctrl+Z = undo, Ctrl+Shift+Z /
+            // Ctrl+Y = redo. Not gated on viewport.focused — undo works whether
+            // the Viewport or the Node Editor is focused; routing (scene vs
+            // graph) is decided in render() by which panel is focused.
+            if (!imgui.wantsKeyboard() && input.keyDown(GLFW_KEY_LEFT_CONTROL)) {
+                if (input.keyPressed(GLFW_KEY_Z)) {
+                    if (input.keyDown(GLFW_KEY_LEFT_SHIFT)) wantRedo = true;
+                    else                                    wantUndo = true;
+                } else if (input.keyPressed(GLFW_KEY_Y)) {
+                    wantRedo = true;
+                }
+            }
+
             // Unclamped window->viewport-local mouse. Used for the pick/gizmo ray so
             // an in-progress gizmo drag that travels past the panel edge keeps a
             // correct ray direction (the cursor isn't captured during gizmo drags).
@@ -1188,6 +1297,10 @@ int main() {
         // --- editor UI ---
         imgui.beginFrame();
         imgui.beginDockspace();
+
+        // M57: per-frame undo/redo signals (reset every frame).
+        bool inspectorChanged   = false;
+        bool structuralEdit     = false;   // an add/delete/duplicate ran this frame
 
         // M43b: one-time default dock layout. DockBuilderGetNode == nullptr means
         // no layout exists yet (fresh — no imgui.ini), so a stale imgui.ini wins.
@@ -1260,7 +1373,7 @@ int main() {
                                    selectedIndex < static_cast<int>(scene.entities.size());
             iron::GizmoSpace sp = gizmo.space();
             iron::EffectKind ek = selectionEffect;
-            inspector.draw(reflection,
+            inspectorChanged = inspector.draw(reflection,
                            inspValid ? &scene.entities[selectedIndex] : nullptr, sp, ek);
             gizmo.setSpace(sp);  // Inspector may flip it; setSpace is a no-op mid-drag
             if (ek != selectionEffect) {
@@ -1286,6 +1399,7 @@ int main() {
             const auto act = nodeGraphPanel.draw(graphModel, selName, selHasGraph);
             if (selValid && act == iron::NodeGraphPanel::Action::Assign) {
                 scene.entities[selectedIndex].logicGraph = graphModel.toJson().dump();
+                structuralEdit = true;   // M57: Assign mutates the scene
             } else if (selValid && act == iron::NodeGraphPanel::Action::LoadFromEntity) {
                 auto parsed = nlohmann::json::parse(
                     scene.entities[selectedIndex].logicGraph, nullptr, false);
@@ -1437,7 +1551,88 @@ int main() {
                 }
                 selectedIndex = -1;
             }
+
+            // M57: any add/delete/duplicate is a structural scene edit.
+            if (action == Action::AddCube || action == Action::AddPlane ||
+                action == Action::AddGltf || action == Action::Duplicate ||
+                action == Action::Delete)
+                structuralEdit = true;
         }
+
+        // --- M57: undo/redo apply + coalescing (Edit mode only) ---
+        if (!editor.isPlaying()) {
+            const bool nodeFocused = nodeGraphPanel.focused();
+
+            // Apply a requested undo/redo to the focused document.
+            if (wantUndo || wantRedo) {
+                if (nodeFocused) {
+                    // Flush an open txn so a mid-interaction undo is a proper step.
+                    if (graphDoc.txnOpen) {
+                        graphDoc.hist.commit(graphDoc.pendingBefore);
+                        graphDoc.txnOpen = false;
+                    }
+                    const std::string cur = graphModel.toJson().dump();
+                    auto restored = wantRedo ? graphDoc.hist.redo(cur)
+                                             : graphDoc.hist.undo(cur);
+                    if (restored) {
+                        auto parsed = nlohmann::json::parse(*restored, nullptr, false);
+                        if (!parsed.is_discarded() && graphModel.loadFromJson(parsed)) {
+                            nodeGraphPanel.resetPlacement();
+                            graphDoc.last    = graphModel.toJson().dump();
+                            graphDoc.txnOpen = false;
+                            graphModel.clearDirty();
+                        }
+                    }
+                } else {
+                    // Flush an open txn so a mid-interaction undo is a proper step.
+                    if (sceneDoc.txnOpen) {
+                        sceneDoc.hist.commit(sceneDoc.pendingBefore);
+                        sceneDoc.txnOpen = false;
+                    }
+                    const std::string cur = iron::sceneToJsonString(reflection, scene);
+                    auto restored = wantRedo ? sceneDoc.hist.redo(cur)
+                                             : sceneDoc.hist.undo(cur);
+                    if (restored) {
+                        auto s = iron::sceneFromJsonString(reflection, *restored);
+                        if (s) {
+                            scene = *s;
+                            rebuildDerivedFromScene();
+                            sceneDoc.last    = iron::sceneToJsonString(reflection, scene);
+                            sceneDoc.txnOpen = false;
+                        }
+                    }
+                }
+            }
+
+            // Per-frame coalescing. Serialize the scene only when an edit is
+            // plausible (keeps idle cost ~zero); the graph is cheap so we key it
+            // off the model's dirty flag (set by every model mutation, incl.
+            // node-position drags) or an already-open txn.
+            const bool anyMouseDown  = ImGui::IsAnyMouseDown();
+            // A focused/editing widget (InputText, InputInt, an in-progress
+            // DragFloat/slider, ColorEdit, …) counts as an interaction in flight,
+            // so a multi-keystroke field edit collapses into ONE undo entry
+            // instead of one-per-character.
+            const bool anyItemActive = ImGui::IsAnyItemActive();
+            const bool sceneStable  = !anyMouseDown && !gizmo.dragging() && !anyItemActive;
+            const bool sceneSignal  = inspectorChanged || gizmo.dragging() ||
+                                      structuralEdit || sceneDoc.txnOpen;
+            if (sceneSignal) {
+                const std::string cur = iron::sceneToJsonString(reflection, scene);
+                tickDoc(sceneDoc, cur, sceneStable);
+            }
+
+            const bool graphSignal = graphModel.dirty() || graphDoc.txnOpen;
+            if (graphSignal) {
+                const std::string cur = graphModel.toJson().dump();
+                tickDoc(graphDoc, cur, !anyMouseDown && !anyItemActive);
+                graphModel.clearDirty();
+            }
+        }
+        // Always clear: the latch is only set in Edit mode, so this is a no-op
+        // in Play, but it defends against a buffered press leaking across modes.
+        wantUndo = false;
+        wantRedo = false;
 
         // --- re-derive render data from the (possibly edited) scene ---
         // Mesh + texture handles are fixed (path editing is out of scope), so
