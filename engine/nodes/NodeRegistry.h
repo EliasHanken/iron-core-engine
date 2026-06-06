@@ -52,7 +52,7 @@ private:
     std::unordered_map<std::string, NodeTypeDesc> types_;
 };
 
-// [{ "typeName", "category", "ports":[{"name","type","dir"}] }, ...]
+// [{ "typeName", "category", "subtitle", "devOnly", "ports":[{"name","type","dir"}] }, ...]
 nlohmann::json catalogToJson(const NodeRegistry& registry);
 
 }  // namespace iron
