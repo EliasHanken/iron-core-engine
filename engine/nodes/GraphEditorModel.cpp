@@ -4,6 +4,9 @@
 #include "nodes/NodeGraphIO.h"
 #include "nodes/NodeRegistry.h"
 
+#include <algorithm>   // std::remove_if, std::max
+#include <utility>     // std::move
+
 namespace iron {
 
 GraphEditorModel::GraphEditorModel(const NodeRegistry* registry)
@@ -81,12 +84,57 @@ void GraphEditorModel::setNodePosition(NodeId id, float x, float y) {
     }
 }
 
+std::uint32_t GraphEditorModel::addComment(float x, float y, float w, float h, std::string title) {
+    Comment c;
+    c.id = nextCommentId_++;
+    c.x = x; c.y = y; c.w = w; c.h = h;
+    c.title = std::move(title);
+    comments_.push_back(std::move(c));
+    dirty_ = true;
+    return comments_.back().id;
+}
+
+void GraphEditorModel::deleteComment(std::uint32_t id) {
+    const auto it = std::remove_if(comments_.begin(), comments_.end(),
+                                   [id](const Comment& c) { return c.id == id; });
+    if (it != comments_.end()) { comments_.erase(it, comments_.end()); dirty_ = true; }
+}
+
+void GraphEditorModel::setCommentRect(std::uint32_t id, float x, float y, float w, float h) {
+    for (Comment& c : comments_) {
+        if (c.id != id) continue;
+        if (c.x != x || c.y != y || c.w != w || c.h != h) {
+            c.x = x; c.y = y; c.w = w; c.h = h;
+            dirty_ = true;
+        }
+        return;
+    }
+}
+
+void GraphEditorModel::setCommentTitle(std::uint32_t id, std::string title) {
+    for (Comment& c : comments_) {
+        if (c.id != id) continue;
+        if (c.title != title) { c.title = std::move(title); dirty_ = true; }
+        return;
+    }
+}
+
 void GraphEditorModel::run() {
     lastRun_ = RunContext{};
     if (registry_) iron::run(graph_, *registry_, lastRun_);
 }
 
-nlohmann::json GraphEditorModel::toJson() const { return iron::toJson(graph_); }
+nlohmann::json GraphEditorModel::toJson() const {
+    nlohmann::json j = iron::toJson(graph_);
+    nlohmann::json arr = nlohmann::json::array();
+    for (const Comment& c : comments_) {
+        arr.push_back({{"id", c.id}, {"x", c.x}, {"y", c.y},
+                       {"w", c.w}, {"h", c.h}, {"title", c.title}});
+    }
+    j["comments"]      = arr;
+    j["nextCommentId"] = nextCommentId_;
+    return j;
+}
 
 bool GraphEditorModel::loadFromJson(const nlohmann::json& j) {
     if (!registry_) return false;
@@ -94,6 +142,25 @@ bool GraphEditorModel::loadFromJson(const nlohmann::json& j) {
     if (!g) return false;
     graph_ = std::move(*g);
     selected_ = 0;
+
+    comments_.clear();
+    nextCommentId_ = 1;
+    if (j.contains("comments") && j["comments"].is_array()) {
+        for (const auto& jc : j["comments"]) {
+            Comment c;
+            c.id    = jc.value("id", 0u);
+            c.x     = jc.value("x", 0.0f);
+            c.y     = jc.value("y", 0.0f);
+            c.w     = jc.value("w", 240.0f);
+            c.h     = jc.value("h", 160.0f);
+            c.title = jc.value("title", std::string("Comment"));
+            if (c.id == 0) continue;   // skip malformed
+            comments_.push_back(std::move(c));
+            nextCommentId_ = std::max(nextCommentId_, c.id + 1);
+        }
+    }
+    nextCommentId_ = std::max(nextCommentId_, j.value("nextCommentId", 1u));
+
     dirty_ = false;
     return true;
 }
