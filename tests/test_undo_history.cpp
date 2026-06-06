@@ -63,5 +63,5 @@ int main() {
         CHECK(*r == "after");
     }
 
-    return 0;
+    return iron_test_result();
 }
