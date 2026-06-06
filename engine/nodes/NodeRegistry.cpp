@@ -47,6 +47,8 @@ nlohmann::json catalogToJson(const NodeRegistry& registry) {
         }
         arr.push_back({{"typeName", t->typeName},
                        {"category", t->category},
+                       {"subtitle", t->subtitle},
+                       {"devOnly",  t->devOnly},
                        {"ports", ports}});
     }
     return arr;

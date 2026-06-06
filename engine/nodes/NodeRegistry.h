@@ -37,6 +37,8 @@ struct NodeTypeDesc {
     std::vector<PortDesc> ports;
     NodeFn evaluate;
     bool isEntry = false;   // an entry/event node the evaluator starts from
+    std::string subtitle;       // optional UE5-style secondary line ("" = none)
+    bool devOnly = false;       // render a "dev only" tag
 };
 
 // Registry of node types. Introspectable -> catalogToJson is the AI contract.

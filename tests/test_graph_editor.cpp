@@ -259,5 +259,21 @@ int main() {
         CHECK(inHasConst);
     }
 
+    // M61: catalogToJson emits subtitle + devOnly per type.
+    {
+        const nlohmann::json cat = catalogToJson(reg);
+        CHECK(cat.is_array());
+        bool sawSubtitle = false, sawDevOnly = false;
+        for (const auto& e : cat) {
+            CHECK(e.contains("subtitle"));
+            CHECK(e.contains("devOnly"));
+            if (e.value("typeName", std::string()) == "Branch" && !e.value("subtitle", std::string()).empty())
+                sawSubtitle = true;
+            if (e.value("devOnly", false)) sawDevOnly = true;
+        }
+        CHECK(sawSubtitle);   // Branch gets an authored subtitle
+        CHECK(sawDevOnly);    // at least one node is dev-only
+    }
+
     return iron_test_result();
 }
