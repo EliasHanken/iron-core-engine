@@ -313,25 +313,27 @@ NodeGraphPanel::Action NodeGraphPanel::draw(GraphEditorModel& model, const char*
         ImGui::EndGroup();
 
         ImGui::EndGroup();   // M58: close the content group
+        const ImVec2 contentMin = ImGui::GetItemRectMin();
+        const ImVec2 contentMax = ImGui::GetItemRectMax();
         ImGui::PopID();
         ed::EndNode();
 
-        // M58/M61: node decorations (header band, glass, dev tag) drawn into the
-        // node background list, CLIPPED to the node's exact screen card rect so
-        // nothing overhangs the rounded edges (contentMin/Max ± padding only
-        // ESTIMATED the card and overshot at the top).
+        // M58/M61: node decorations drawn into the node background list. Positions
+        // use the content's SCREEN rect (contentMin/Max ± NodePadding) — the same
+        // space the bg list draws in. Clipped to that card rect; rounded fills use
+        // RoundCorners flags and the glass gradient is INSET by the corner radius
+        // so its square corners tuck under the rounding (no boxy overhang).
         if (ImDrawList* bg = ed::GetNodeBackgroundDrawList(
                 ed::NodeId(static_cast<std::uintptr_t>(n.id)))) {
-            const ed::NodeId nid(static_cast<std::uintptr_t>(n.id));
+            const ImVec4 pad      = ed::GetStyle().NodePadding;   // x=left y=top z=right w=bottom
             const float  rounding = ed::GetStyle().NodeRounding;
-            const ImVec2 npos = ed::GetNodePosition(nid);
-            const ImVec2 nsz  = ed::GetNodeSize(nid);
-            const ImVec2 cardMin = ed::CanvasToScreen(npos);
-            const ImVec2 cardMax = ed::CanvasToScreen(ImVec2(npos.x + nsz.x, npos.y + nsz.y));
-            bg->PushClipRect(cardMin, cardMax, true);   // never overhang the card
+            const ImVec2 cardMin(contentMin.x - pad.x, contentMin.y - pad.y);
+            const ImVec2 cardMax(contentMax.x + pad.z, contentMax.y + pad.w);
+            bg->PushClipRect(cardMin, cardMax, true);
 
-            // Header band: flush with the card top/sides, ending below the subtitle.
-            const ImVec2 a(cardMin.x, cardMin.y);
+            // Header band (rounded top): category color, translucent gloss-ramp
+            // gradient, dark contrast overlay, separator under the subtitle.
+            const ImVec2 a = cardMin;
             const ImVec2 b(cardMax.x, headerBottom + 3.0f);
             bg->AddRectFilled(a, b, headerColor(t->category), rounding, ImDrawFlags_RoundCornersTop);
             if (headerTex_)
@@ -341,17 +343,16 @@ NodeGraphPanel::Action NodeGraphPanel::draw(GraphEditorModel& model, const char*
             bg->AddRectFilled(a, b, IM_COL32(0, 0, 0, 55), rounding, ImDrawFlags_RoundCornersTop);
             bg->AddLine(ImVec2(a.x, b.y), ImVec2(b.x, b.y), IM_COL32(0, 0, 0, 120), 1.0f);
 
-            // M61: glass — a top-down sheen over the upper card, a bright top edge,
-            // and a faint bottom inner shadow for depth (the UE5 glassy look).
-            const float h = cardMax.y - cardMin.y;
-            bg->AddRectFilledMultiColor(cardMin, ImVec2(cardMax.x, cardMin.y + h * 0.45f),
-                                        IM_COL32(255, 255, 255, 26), IM_COL32(255, 255, 255, 26),
-                                        IM_COL32(255, 255, 255, 0),  IM_COL32(255, 255, 255, 0));
-            bg->AddRectFilledMultiColor(ImVec2(cardMin.x, cardMax.y - h * 0.30f), cardMax,
-                                        IM_COL32(0, 0, 0, 0),  IM_COL32(0, 0, 0, 0),
-                                        IM_COL32(0, 0, 0, 70), IM_COL32(0, 0, 0, 70));
+            // M61: glass — a full-height volume gradient (bright top -> dark bottom)
+            // INSET by the corner radius so its square corners hide under the
+            // rounded card, plus a bright top inner edge for a glossy highlight.
+            const ImVec2 gMin(cardMin.x + rounding, cardMin.y);
+            const ImVec2 gMax(cardMax.x - rounding, cardMax.y);
+            bg->AddRectFilledMultiColor(gMin, gMax,
+                                        IM_COL32(255, 255, 255, 32), IM_COL32(255, 255, 255, 32),
+                                        IM_COL32(0, 0, 0, 60),       IM_COL32(0, 0, 0, 60));
             bg->AddLine(ImVec2(cardMin.x + rounding, cardMin.y + 1.0f),
-                        ImVec2(cardMax.x - rounding, cardMin.y + 1.0f), IM_COL32(255, 255, 255, 55), 1.0f);
+                        ImVec2(cardMax.x - rounding, cardMin.y + 1.0f), IM_COL32(255, 255, 255, 75), 1.0f);
 
             // M61: dev-only striped tag along the card's bottom edge.
             if (t->devOnly) {
