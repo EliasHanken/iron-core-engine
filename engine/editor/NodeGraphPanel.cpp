@@ -91,11 +91,13 @@ NodeGraphPanel::NodeGraphPanel() {
     ed::Style& st = ed::GetStyle();
     st.NodeRounding    = 8.0f;
     st.NodeBorderWidth = 1.5f;
-    // Near-black charcoal body (high contrast for white text) + a subtle LIGHT
-    // outline, matching the blueprint example. Slight translucency lets the grid
-    // show through faintly.
-    st.Colors[ed::StyleColor_NodeBg]     = ImColor(26, 26, 32, 248);
-    st.Colors[ed::StyleColor_NodeBorder] = ImColor(200, 200, 215, 90);
+    // Dark canvas (stock is a washed mid-grey 60,60,70) so the node cards pop.
+    st.Colors[ed::StyleColor_Bg]         = ImColor(24, 24, 28, 255);
+    st.Colors[ed::StyleColor_Grid]       = ImColor(255, 255, 255, 16);
+    // UE4 look: the card sits a touch LIGHTER than the dark canvas with a subtle
+    // light outline, so white text reads crisp and the card stands out.
+    st.Colors[ed::StyleColor_NodeBg]     = ImColor(43, 43, 50, 255);
+    st.Colors[ed::StyleColor_NodeBorder] = ImColor(255, 255, 255, 70);
     ed::SetCurrentEditor(nullptr);
 }
 NodeGraphPanel::~NodeGraphPanel() { if (ctx_) ed::DestroyEditor(ctx_); }
