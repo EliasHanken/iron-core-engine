@@ -278,6 +278,23 @@ void* ImGuiLayer::registerTexture(const unsigned char* rgba, int width, int heig
     return id;
 }
 
+void* ImGuiLayer::registerTextureFromFile(const std::string& path) {
+    if (!initialized_) return nullptr;
+    auto& vk = static_cast<VulkanRenderer&>(*renderer_);
+    // loadTexture decodes via stb_image + uploads (image owned by the renderer's
+    // texture store); we only own the ImGui descriptor binding below.
+    const TextureHandle h = vk.loadTexture(path, /*srgb=*/false);
+    if (h == kInvalidHandle) return nullptr;
+    VkImageView view = VK_NULL_HANDLE;
+    VkSampler  sampler = VK_NULL_HANDLE;
+    if (!vk.textureViewSampler(h, view, sampler)) return nullptr;
+    VkDescriptorSet ds = ImGui_ImplVulkan_AddTexture(
+        sampler, view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+    void* id = static_cast<void*>(ds);
+    registeredTextures_.push_back(id);
+    return id;
+}
+
 void ImGuiLayer::shutdown() {
     if (!initialized_) return;
     const VkDevice device = static_cast<VkDevice>(device_);

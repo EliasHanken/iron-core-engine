@@ -335,12 +335,15 @@ NodeGraphPanel::Action NodeGraphPanel::draw(GraphEditorModel& model, const char*
             // gradient, dark contrast overlay, separator under the subtitle.
             const ImVec2 a = cardMin;
             const ImVec2 b(cardMax.x, headerBottom + 3.0f);
-            bg->AddRectFilled(a, b, headerColor(t->category), rounding, ImDrawFlags_RoundCornersTop);
+            // The blueprint header texture IS the header, multiplied by the
+            // category color (its built-in gradient + sheen give the non-flat
+            // look). Falls back to a plain colored band if the texture is absent.
             if (headerTex_)
                 bg->AddImageRounded(reinterpret_cast<ImTextureID>(headerTex_), a, b,
-                                    ImVec2(0, 0), ImVec2(1, 1), IM_COL32(255, 255, 255, 150),
+                                    ImVec2(0, 0), ImVec2(1, 1), headerColor(t->category),
                                     rounding, ImDrawFlags_RoundCornersTop);
-            bg->AddRectFilled(a, b, IM_COL32(0, 0, 0, 55), rounding, ImDrawFlags_RoundCornersTop);
+            else
+                bg->AddRectFilled(a, b, headerColor(t->category), rounding, ImDrawFlags_RoundCornersTop);
             bg->AddLine(ImVec2(a.x, b.y), ImVec2(b.x, b.y), IM_COL32(0, 0, 0, 120), 1.0f);
 
             // M61: glass — a full-height volume gradient (bright top -> dark bottom)
