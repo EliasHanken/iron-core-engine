@@ -415,9 +415,10 @@ NodeGraphPanel::Action NodeGraphPanel::draw(GraphEditorModel& model, const char*
         ed::Resume();
     }
 
-    ed::End();
-
-    // M59: render the drag-from-pin create popup outside the canvas.
+    // M59: create + context popups. Suspend/Resume + BeginPopup MUST run INSIDE
+    // ed::Begin/End (Suspend requires an active canvas draw list); ed::End() below
+    // then flushes the suspended popups. Rendering them after ed::End() trips
+    // "Suspend was called outside of Begin/End".
     ed::Suspend();
     if (ImGui::BeginPopup("##create_node_popup")) {
         ImGui::TextDisabled("Create node");
@@ -487,6 +488,7 @@ NodeGraphPanel::Action NodeGraphPanel::draw(GraphEditorModel& model, const char*
     }
     ed::Resume();
 
+    ed::End();
     ed::SetCurrentEditor(nullptr);
     ImGui::End();
     return action;
