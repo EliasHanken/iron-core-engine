@@ -114,7 +114,7 @@ NodeGraphPanel::Action NodeGraphPanel::draw(GraphEditorModel& model, const char*
             try {
                 nlohmann::json j; f >> j;
                 if (model.loadFromJson(j))
-                    placed_.clear();   // re-place restored nodes from their saved positions
+                    resetPlacement();   // re-place restored nodes + comments from their saved positions
             } catch (const std::exception&) {
                 // malformed file: ignore, leave graph unchanged
             }
@@ -365,6 +365,8 @@ NodeGraphPanel::Action NodeGraphPanel::draw(GraphEditorModel& model, const char*
                     const std::uint32_t cidRaw = static_cast<std::uint32_t>(raw & 0xFFFFFFFFu);
                     model.deleteComment(cidRaw);
                     placedComments_.erase(cidRaw);
+                    commentOffX_.erase(cidRaw);
+                    commentOffY_.erase(cidRaw);
                 } else {
                     model.deleteNode(static_cast<NodeId>(raw));
                 }
