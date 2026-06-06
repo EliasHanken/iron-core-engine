@@ -239,9 +239,16 @@ NodeGraphPanel::Action NodeGraphPanel::draw(GraphEditorModel& model, const char*
         ImGui::PushID(static_cast<int>(n.id));
         ImGui::BeginGroup();   // M58: wrap content for reliable screen-space bounds
 
-        // Header: white title; the colored band is drawn behind it after EndNode.
+        // Header: category icon + white title, then optional dim subtitle.
+        // The colored band is drawn behind it after EndNode.
+        ImGui::TextColored(ImVec4(0.78f, 0.84f, 0.92f, 1.0f), "%s", nodeCategoryIcon(t->category));
+        ImGui::SameLine(0.0f, 6.0f);
         ImGui::TextColored(ImVec4(1.0f, 1.0f, 1.0f, 1.0f), "%s", t->typeName.c_str());
-        const float titleBottom = ImGui::GetItemRectMax().y;
+        float headerBottom = ImGui::GetItemRectMax().y;
+        if (!t->subtitle.empty()) {
+            ImGui::TextColored(ImVec4(0.62f, 0.64f, 0.70f, 1.0f), "%s", t->subtitle.c_str());
+            headerBottom = ImGui::GetItemRectMax().y;
+        }
         ImGui::Dummy(ImVec2(0.0f, 2.0f));
 
         const float iconSz = 16.0f;
@@ -313,17 +320,19 @@ NodeGraphPanel::Action NodeGraphPanel::draw(GraphEditorModel& model, const char*
             const ImVec4 pad      = ed::GetStyle().NodePadding;   // x=left y=top z=right w=bottom
             const float  rounding = ed::GetStyle().NodeRounding;
             const ImVec2 a(contentMin.x - pad.x, contentMin.y - pad.y);
-            const ImVec2 b(contentMax.x + pad.z, titleBottom + 3.0f);
-            // M59: category-colored band (rounded top), then the UE4 gloss-ramp
-            // texture multiplied over it for a smooth top-down gradient, then a
-            // dark separator under it. Falls back to the plain band if no texture.
+            const ImVec2 b(contentMax.x + pad.z, headerBottom + 3.0f);
+            // M59/M61: category-colored band (rounded top), then the UE4 gloss-ramp
+            // texture multiplied over it at lowered alpha for a translucent top-down
+            // gradient, then a subtle dark contrast overlay so the title/subtitle
+            // pop, then a dark separator under it. Falls back to the plain band.
             bg->AddRectFilled(a, b, headerColor(t->category), rounding, ImDrawFlags_RoundCornersTop);
             if (headerTex_)
                 bg->AddImageRounded(reinterpret_cast<ImTextureID>(headerTex_),
                                     a, b, ImVec2(0, 0), ImVec2(1, 1),
-                                    IM_COL32(255, 255, 255, 255), rounding,
+                                    IM_COL32(255, 255, 255, 150), rounding,
                                     ImDrawFlags_RoundCornersTop);
-            bg->AddLine(ImVec2(a.x, b.y), ImVec2(b.x, b.y), ImColor(0, 0, 0, 110), 1.0f);
+            bg->AddRectFilled(a, b, IM_COL32(0, 0, 0, 55), rounding, ImDrawFlags_RoundCornersTop);
+            bg->AddLine(ImVec2(a.x, b.y), ImVec2(b.x, b.y), IM_COL32(0, 0, 0, 120), 1.0f);
         }
     }
 
