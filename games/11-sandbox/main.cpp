@@ -1844,6 +1844,12 @@ int main() {
             ImDrawList* fg = ImGui::GetForegroundDrawList();
             const ImU32 kLabelCol = IM_COL32(255, 240, 80, 230);  // yellow-white, easy to read
             constexpr float kLabelOffset = 10.0f;  // pixels below projected point
+            // Clip world-space labels to the Viewport panel so a label that
+            // projects off to the side doesn't bleed over the Node Editor / other
+            // docked panels (the foreground draw list is otherwise full-window).
+            fg->PushClipRect(ImVec2(viewport.rectMin.x, viewport.rectMin.y),
+                             ImVec2(viewport.rectMin.x + viewport.size.x,
+                                    viewport.rectMin.y + viewport.size.y), true);
 
             float lx, ly;
             if (worldToViewport(kPomFlatCenter, lx, ly)) {
@@ -1892,6 +1898,7 @@ int main() {
                     fg->AddText({gx - tsg.x * 0.5f, gy + kLabelOffset}, kLabelCol, groundLabel);
                 }
             }
+            fg->PopClipRect();
         }
 
         // M49: mirror sphere at the probe-room centre (kRoomCenter). Metallic=1,
@@ -2015,11 +2022,15 @@ int main() {
             const ImVec2 mp  = ImGui::GetMousePos();
             viewport.mousePx = iron::Vec2{mp.x, mp.y};
             viewport.mouseValid = true;
-            // M40 view-gizmo: anchored to THIS panel's rect (top-right of the image).
-            drawViewGizmo(cam, viewPivotFor(selectedIndex), 150.0f, 20.0f,
-                          viewport.rectMin, viewport.size);
         }
         ImGui::End();
+        // M40 view-gizmo: drawn as a top-level overlay AFTER the Viewport window
+        // (not nested inside its Begin/End) so it stays on top. ImGui 1.92.8
+        // changed z-ordering for a window begun while another is active, which
+        // hid the nested overlay behind the viewport image. Anchored to the
+        // viewport panel rect captured above (top-right of the image).
+        drawViewGizmo(cam, viewPivotFor(selectedIndex), 150.0f, 20.0f,
+                      viewport.rectMin, viewport.size);
         imgui.endDockspace();
         imgui.render();   // enqueues the UI overlay into the scene pass tail
         renderer.endFrame();
