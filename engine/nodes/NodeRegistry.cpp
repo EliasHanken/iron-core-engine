@@ -2,6 +2,24 @@
 
 namespace iron {
 
+namespace {
+bool dataCompatible(PortType a, PortType b) {
+    if (a == b) return true;
+    const bool aNum = (a == PortType::Int || a == PortType::Float);
+    const bool bNum = (b == PortType::Int || b == PortType::Float);
+    return aNum && bNum;
+}
+}  // namespace
+
+bool portsCompatible(const PortDesc& from, const PortDesc& to) {
+    if (from.dir != PortDir::Out || to.dir != PortDir::In) return false;
+    const bool fromExec = from.type == PortType::Exec;
+    const bool toExec   = to.type   == PortType::Exec;
+    if (fromExec != toExec) return false;
+    if (!fromExec && !dataCompatible(from.type, to.type)) return false;
+    return true;
+}
+
 void NodeRegistry::registerType(NodeTypeDesc desc) {
     types_[desc.typeName] = std::move(desc);
 }

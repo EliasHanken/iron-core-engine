@@ -22,6 +22,12 @@ struct PortDesc {
     PortDir     dir;
 };
 
+// True iff a connection from `from` (must be an Out pin) to `to` (must be an In
+// pin) is valid: exec<->exec or data<->data with int/float interchangeable. The
+// single source of truth shared by GraphEditorModel::connect and the drag-create
+// menu so the two never diverge.
+bool portsCompatible(const PortDesc& from, const PortDesc& to);
+
 // A node function reads inputs, sets outputs, and (for exec nodes) fires.
 using NodeFn = std::function<void(NodeContext&)>;
 

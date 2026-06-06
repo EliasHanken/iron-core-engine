@@ -157,6 +157,25 @@ void* ImGuiLayer::viewportTexture(VkImageView view, VkSampler sampler) {
     return viewportTexId_;
 }
 
+void* ImGuiLayer::registerTexture(const unsigned char* rgba, int width, int height) {
+    if (!initialized_ || !rgba || width <= 0 || height <= 0) return nullptr;
+    auto& vk = static_cast<VulkanRenderer&>(*renderer_);
+    // Reuse the renderer's proven staging upload (creates the VkImage + view,
+    // transitions to SHADER_READ_ONLY_OPTIMAL). The image is owned by the
+    // renderer's texture store and destroyed with it; we only own the ImGui
+    // descriptor binding below. Linear (non-sRGB) so the gloss ramp's alpha
+    // blends as authored.
+    const TextureHandle h = vk.createTexture(width, height, rgba, /*srgb=*/false);
+    VkImageView view = VK_NULL_HANDLE;
+    VkSampler  sampler = VK_NULL_HANDLE;
+    if (!vk.textureViewSampler(h, view, sampler)) return nullptr;
+    VkDescriptorSet ds = ImGui_ImplVulkan_AddTexture(
+        sampler, view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+    void* id = static_cast<void*>(ds);
+    registeredTextures_.push_back(id);
+    return id;
+}
+
 void ImGuiLayer::shutdown() {
     if (!initialized_) return;
     const VkDevice device = static_cast<VkDevice>(device_);
@@ -165,6 +184,9 @@ void ImGuiLayer::shutdown() {
         ImGui_ImplVulkan_RemoveTexture(static_cast<VkDescriptorSet>(viewportTexId_));
         viewportTexId_ = nullptr;
     }
+    for (void* id : registeredTextures_)
+        if (id) ImGui_ImplVulkan_RemoveTexture(static_cast<VkDescriptorSet>(id));
+    registeredTextures_.clear();
     ImGui_ImplVulkan_Shutdown();
     ImGui_ImplGlfw_Shutdown();
     ImGui::DestroyContext();

@@ -207,5 +207,57 @@ int main() {
         CHECK(g.has_value());              // comments don't break executable load
     }
 
+    // M59: portsCompatible parity (pure, no registry).
+    {
+        const PortDesc outF{"o", PortType::Float, PortDir::Out};
+        const PortDesc inF {"i", PortType::Float, PortDir::In};
+        const PortDesc inI {"i", PortType::Int,   PortDir::In};
+        const PortDesc outE{"o", PortType::Exec,  PortDir::Out};
+        const PortDesc inE {"i", PortType::Exec,  PortDir::In};
+        CHECK(portsCompatible(outF, inF));    // float->float
+        CHECK(portsCompatible(outF, inI));    // float->int
+        CHECK(portsCompatible(outE, inE));    // exec->exec
+        CHECK(!portsCompatible(outF, inE));   // data->exec mismatch
+        CHECK(!portsCompatible(outE, inF));   // exec->data mismatch
+        CHECK(!portsCompatible(outF, outF));  // Out->Out
+        CHECK(!portsCompatible(inF, inF));    // In as source
+    }
+
+    // M59: compatibleCreations — every offered creation is genuinely connectable.
+    {
+        GraphEditorModel m(&reg);
+        const NodeId src = m.addNode("Const", 0, 0);   // Const has a Float "out"
+        const auto fromFloat = m.compatibleCreations(PortType::Float, PortDir::Out);
+        CHECK(!fromFloat.empty());
+        for (const auto& c : fromFloat) {
+            const NodeId n = m.addNode(c.typeName, 0, 0);
+            CHECK(m.connect(src, "out", n, c.targetPort));   // must actually connect
+            m.deleteNode(n);
+        }
+        const auto fromExec = m.compatibleCreations(PortType::Exec, PortDir::Out);
+        bool hasBranch = false, hasConst = false;
+        for (const auto& c : fromExec) {
+            if (c.typeName == "Branch") hasBranch = true;
+            if (c.typeName == "Const")  hasConst  = true;
+        }
+        CHECK(hasBranch);
+        CHECK(!hasConst);
+
+        // In-source direction (dragging from an input pin): offered types must
+        // have an OUTPUT that can feed a Float input. Verify each connects into
+        // an Add node's Float input "a".
+        const auto fromFloatIn = m.compatibleCreations(PortType::Float, PortDir::In);
+        CHECK(!fromFloatIn.empty());
+        bool inHasConst = false;
+        const NodeId sink = m.addNode("Add", 0, 0);   // Add has Float In "a"
+        for (const auto& cr : fromFloatIn) {
+            if (cr.typeName == "Const") inHasConst = true;
+            const NodeId n = m.addNode(cr.typeName, 0, 0);
+            CHECK(m.connect(n, cr.targetPort, sink, "a"));   // offered Out -> Float In
+            m.deleteNode(n);
+        }
+        CHECK(inHasConst);
+    }
+
     return iron_test_result();
 }

@@ -140,24 +140,6 @@ NodeGraphPanel::Action NodeGraphPanel::draw(GraphEditorModel& model, const char*
     ImGui::BeginDisabled(!targetName);
     if (ImGui::Button("Assign to entity")) action = Action::Assign;
     ImGui::EndDisabled();
-    // Palette
-    if (model.registry()) {
-        ImGui::TextUnformatted("Add:");
-        for (const NodeTypeDesc* t : model.registry()->all()) {
-            ImGui::SameLine();
-            if (ImGui::SmallButton(t->typeName.c_str())) {
-                model.addNode(t->typeName, spawnX_, spawnY_);
-                spawnX_ += 30.0f; spawnY_ += 30.0f;
-                if (spawnX_ > 400.0f) { spawnX_ = 40.0f; spawnY_ = 40.0f; }
-            }
-        }
-        ImGui::SameLine();
-        if (ImGui::SmallButton("+ Comment")) {
-            model.addComment(spawnX_, spawnY_, 240.0f, 160.0f, "Comment");
-            spawnX_ += 30.0f; spawnY_ += 30.0f;
-            if (spawnX_ > 400.0f) { spawnX_ = 40.0f; spawnY_ = 40.0f; }
-        }
-    }
     // Outputs readout (the visible result of Run).
     ImGui::Separator();
     ImGui::TextUnformatted("Run outputs:");
@@ -290,12 +272,15 @@ NodeGraphPanel::Action NodeGraphPanel::draw(GraphEditorModel& model, const char*
             const float  rounding = ed::GetStyle().NodeRounding;
             const ImVec2 a(contentMin.x - pad.x, contentMin.y - pad.y);
             const ImVec2 b(contentMax.x + pad.z, titleBottom + 3.0f);
-            // Category-colored band (rounded top), then a top-down white gloss
-            // gradient for the blueprint "sheen", then a dark separator under it.
+            // M59: category-colored band (rounded top), then the UE4 gloss-ramp
+            // texture multiplied over it for a smooth top-down gradient, then a
+            // dark separator under it. Falls back to the plain band if no texture.
             bg->AddRectFilled(a, b, headerColor(t->category), rounding, ImDrawFlags_RoundCornersTop);
-            bg->AddRectFilledMultiColor(a, b,
-                IM_COL32(255, 255, 255, 55), IM_COL32(255, 255, 255, 55),
-                IM_COL32(255, 255, 255,  0), IM_COL32(255, 255, 255,  0));
+            if (headerTex_)
+                bg->AddImageRounded(reinterpret_cast<ImTextureID>(headerTex_),
+                                    a, b, ImVec2(0, 0), ImVec2(1, 1),
+                                    IM_COL32(255, 255, 255, 255), rounding,
+                                    ImDrawFlags_RoundCornersTop);
             bg->AddLine(ImVec2(a.x, b.y), ImVec2(b.x, b.y), ImColor(0, 0, 0, 110), 1.0f);
         }
     }
@@ -350,6 +335,20 @@ NodeGraphPanel::Action NodeGraphPanel::draw(GraphEditorModel& model, const char*
                 }
             }
         }
+        // M59: drag from a pin onto empty canvas -> open a type-compatible
+        // create menu and auto-wire the new node to the dragged pin.
+        ed::PinId newNodePin = 0;
+        if (ed::QueryNewNode(&newNodePin)) {
+            if (ed::AcceptNewItem()) {
+                const ImVec2 canvasPos = ed::ScreenToCanvas(ImGui::GetMousePos());
+                pendingCreatePin_ = static_cast<unsigned long long>(newNodePin.Get());
+                pendingCreateX_   = canvasPos.x;
+                pendingCreateY_   = canvasPos.y;
+                ed::Suspend();
+                ImGui::OpenPopup("##create_node_popup");
+                ed::Resume();
+            }
+        }
     }
     ed::EndCreate();
 
@@ -384,6 +383,110 @@ NodeGraphPanel::Action NodeGraphPanel::draw(GraphEditorModel& model, const char*
         }
     }
     ed::EndDelete();
+
+    {
+        ed::NodeId ctxNode = 0; ed::PinId ctxPin = 0; ed::LinkId ctxLink = 0;
+        ed::Suspend();
+        if (ed::ShowNodeContextMenu(&ctxNode)) {
+            ctxMenuNode_ = static_cast<unsigned long long>(ctxNode.Get());
+            ImGui::OpenPopup("##node_ctx");
+        } else if (ed::ShowPinContextMenu(&ctxPin)) {
+            ctxMenuPin_ = static_cast<unsigned long long>(ctxPin.Get());
+            ImGui::OpenPopup("##pin_ctx");
+        } else if (ed::ShowLinkContextMenu(&ctxLink)) {
+            // Capture the link's target {toNode,toPort} NOW (stable) rather than
+            // re-indexing connections() when the user clicks Delete (the vector
+            // may shift before then).
+            const std::size_t idx = static_cast<std::size_t>(ctxLink.Get()) - 1;
+            const auto& cs = model.graph().connections();
+            if (idx < cs.size()) {
+                ctxMenuLinkToNode_ = cs[idx].toNode;
+                ctxMenuLinkToPort_ = cs[idx].toPort;
+            } else {
+                ctxMenuLinkToNode_ = 0;
+                ctxMenuLinkToPort_.clear();
+            }
+            ImGui::OpenPopup("##link_ctx");
+        } else if (ed::ShowBackgroundContextMenu()) {
+            const ImVec2 cp = ed::ScreenToCanvas(ImGui::GetMousePos());
+            ctxMenuBgX_ = cp.x; ctxMenuBgY_ = cp.y;
+            ImGui::OpenPopup("##bg_ctx");
+        }
+        ed::Resume();
+    }
+
+    // M59: create + context popups. Suspend/Resume + BeginPopup MUST run INSIDE
+    // ed::Begin/End (Suspend requires an active canvas draw list); ed::End() below
+    // then flushes the suspended popups. Rendering them after ed::End() trips
+    // "Suspend was called outside of Begin/End".
+    ed::Suspend();
+    if (ImGui::BeginPopup("##create_node_popup")) {
+        ImGui::TextDisabled("Create node");
+        ImGui::Separator();
+        NodeId pn; std::string pp;
+        const PortDesc* sp = resolvePin(model, static_cast<std::uintptr_t>(pendingCreatePin_), pn, pp);
+        if (sp) {
+            const auto options = model.compatibleCreations(sp->type, sp->dir);
+            if (options.empty()) ImGui::TextDisabled("(no compatible nodes)");
+            for (const auto& c : options) {
+                if (ImGui::MenuItem(c.typeName.c_str())) {
+                    const NodeId nn = model.addNode(c.typeName, pendingCreateX_, pendingCreateY_);
+                    if (sp->dir == PortDir::Out) model.connect(pn, pp, nn, c.targetPort);
+                    else                         model.connect(nn, c.targetPort, pn, pp);
+                }
+            }
+        }
+        ImGui::EndPopup();
+    }
+
+    // M59: right-click context menus (background / node / pin / link).
+    if (ImGui::BeginPopup("##bg_ctx")) {
+        if (model.registry() && ImGui::BeginMenu("Add Node")) {
+            for (const NodeTypeDesc* t : model.registry()->all())
+                if (ImGui::MenuItem(t->typeName.c_str()))
+                    model.addNode(t->typeName, ctxMenuBgX_, ctxMenuBgY_);
+            ImGui::EndMenu();
+        }
+        if (ImGui::MenuItem("Add Comment"))
+            model.addComment(ctxMenuBgX_, ctxMenuBgY_, 240.0f, 160.0f, "Comment");
+        ImGui::EndPopup();
+    }
+    if (ImGui::BeginPopup("##node_ctx")) {
+        const std::uintptr_t raw = static_cast<std::uintptr_t>(ctxMenuNode_);
+        if (raw & (std::uintptr_t{1} << 62)) {   // comment id namespace
+            if (ImGui::MenuItem("Delete Comment")) {
+                const std::uint32_t cid = static_cast<std::uint32_t>(raw & 0xFFFFFFFFu);
+                model.deleteComment(cid);
+                placedComments_.erase(cid); commentOffX_.erase(cid); commentOffY_.erase(cid);
+            }
+        } else {
+            const NodeId nid = static_cast<NodeId>(raw);
+            if (ImGui::MenuItem("Delete")) model.deleteNode(nid);
+            if (ImGui::MenuItem("Duplicate")) {
+                if (const Node* src = model.graph().node(nid)) {
+                    const NodeId dup = model.addNode(src->typeName,
+                                                     src->editorX + 30.0f, src->editorY + 30.0f);
+                    for (const auto& kv : src->literals) model.setLiteral(dup, kv.first, kv.second);
+                }
+            }
+        }
+        ImGui::EndPopup();
+    }
+    if (ImGui::BeginPopup("##pin_ctx")) {
+        NodeId pn; std::string pp;
+        const PortDesc* sp = resolvePin(model, static_cast<std::uintptr_t>(ctxMenuPin_), pn, pp);
+        if (sp && ImGui::MenuItem("Break links")) {
+            if (sp->dir == PortDir::In) model.disconnect(pn, pp);
+            else                        model.disconnectOutgoing(pn, pp);
+        }
+        ImGui::EndPopup();
+    }
+    if (ImGui::BeginPopup("##link_ctx")) {
+        if (!ctxMenuLinkToPort_.empty() && ImGui::MenuItem("Delete link"))
+            model.disconnect(ctxMenuLinkToNode_, ctxMenuLinkToPort_);
+        ImGui::EndPopup();
+    }
+    ed::Resume();
 
     ed::End();
     ed::SetCurrentEditor(nullptr);

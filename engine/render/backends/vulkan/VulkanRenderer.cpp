@@ -196,6 +196,14 @@ TextureHandle VulkanRenderer::loadTexture(const std::string& path,
                                           bool srgb) {
     return textures_.loadFromFile(context_, path, srgb);
 }
+bool VulkanRenderer::textureViewSampler(TextureHandle h, VkImageView& view,
+                                        VkSampler& sampler) const {
+    if (!textures_.has(h)) return false;
+    const VkTextureResource& t = textures_.get(h);
+    view    = t.view;
+    sampler = t.sampler;
+    return true;
+}
 TextureHandle VulkanRenderer::whiteTexture()      const { return textures_.whiteTexture();      }
 TextureHandle VulkanRenderer::flatNormalTexture() const { return textures_.flatNormalTexture(); }
 TextureHandle VulkanRenderer::noSpecularTexture() const { return textures_.noSpecularTexture(); }

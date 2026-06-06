@@ -2,6 +2,7 @@
 
 #include "nodes/NodeContext.h"   // RunContext
 #include "nodes/NodeGraph.h"
+#include "nodes/NodeRegistry.h"  // PortDir, PortDesc, portsCompatible
 
 #include <nlohmann/json.hpp>
 
@@ -11,14 +12,19 @@
 
 namespace iron {
 
-class NodeRegistry;
-
 // Editor-only annotation: a movable/resizable labeled backdrop region grouping
 // nodes visually. NOT part of the executable Graph — the evaluator never sees it.
 struct Comment {
     std::uint32_t id = 0;
     float x = 0.0f, y = 0.0f, w = 240.0f, h = 160.0f;
     std::string title = "Comment";
+};
+
+// A node type creatable from a dragged pin, paired with the port on that type to
+// auto-wire to. Produced by GraphEditorModel::compatibleCreations.
+struct NodeCreation {
+    std::string typeName;
+    std::string targetPort;
 };
 
 // Headless editing state over a NodeGraph: validated edit ops, selection, a
@@ -37,6 +43,8 @@ public:
     bool   connect(NodeId fromNode, std::string fromPort,
                    NodeId toNode, std::string toPort);
     void   disconnect(NodeId toNode, std::string toPort);
+    // Break the connection leaving an output pin (fromNode, fromPort), if any.
+    void disconnectOutgoing(NodeId fromNode, std::string fromPort);
     void   setLiteral(NodeId id, std::string port, NodeValue value);
     // Update a node's editor canvas position (persisted in toJson). Dirties.
     void setNodePosition(NodeId id, float x, float y);
@@ -47,6 +55,10 @@ public:
     void setCommentRect(std::uint32_t id, float x, float y, float w, float h);
     void setCommentTitle(std::uint32_t id, std::string title);
     const std::vector<Comment>& comments() const { return comments_; }
+
+    // Node types creatable from a pin of (srcType, srcDir), each paired with the
+    // first port on that type forming a valid connection (same rule as connect()).
+    std::vector<NodeCreation> compatibleCreations(PortType srcType, PortDir srcDir) const;
 
     void   run();                         // executes via the M53 evaluator
     const RunContext& lastRun() const { return lastRun_; }

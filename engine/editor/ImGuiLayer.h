@@ -2,6 +2,8 @@
 
 #include <vulkan/vulkan.h>
 
+#include <vector>
+
 namespace iron {
 
 class Window;
@@ -43,6 +45,11 @@ public:
     // ImTextureID. Returns nullptr if not initialized or handles are null.
     void* viewportTexture(VkImageView view, VkSampler sampler);
 
+    // Upload a small RGBA8 texture and return an ImGui texture id (void* /
+    // VkDescriptorSet), valid for the layer's lifetime. Returns nullptr if not
+    // initialized. Used for the node header gradient.
+    void* registerTexture(const unsigned char* rgba, int width, int height);
+
 private:
     bool initialized_ = false;
     void* device_ = nullptr;          // VkDevice, stored opaquely for shutdown
@@ -52,6 +59,11 @@ private:
     void*       viewportTexId_      = nullptr;            // ImTextureID (VkDescriptorSet), cast to void*
     VkImageView viewportTexView_    = VK_NULL_HANDLE;     // last-bound view (change-detect)
     VkSampler   viewportTexSampler_ = VK_NULL_HANDLE;     // last-bound sampler
+
+    // ImGui descriptor sets created by registerTexture(); freed in shutdown().
+    // The backing VkImage/view/sampler are owned by the renderer's texture
+    // store, so only the ImGui binding is ours to remove here.
+    std::vector<void*> registeredTextures_;
 };
 
 }  // namespace iron
