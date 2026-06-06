@@ -2024,14 +2024,13 @@ int main() {
             viewport.mouseValid = true;
         }
         ImGui::End();
-        // M40 view-gizmo: drawn as a top-level overlay AFTER the Viewport window
-        // (not nested inside its Begin/End) so it stays on top. ImGui 1.92.8
-        // changed z-ordering for a window begun while another is active, which
-        // hid the nested overlay behind the viewport image. Anchored to the
-        // viewport panel rect captured above (top-right of the image).
+        imgui.endDockspace();
+        // M40 view-gizmo: drawn as a true top-level overlay AFTER endDockspace()
+        // — when NO window (not even the dockspace host) is active — so ImGui
+        // doesn't z-order it behind the viewport image (a 1.92.8 nested-window
+        // change hid it). Anchored to the viewport panel rect captured above.
         drawViewGizmo(cam, viewPivotFor(selectedIndex), 150.0f, 20.0f,
                       viewport.rectMin, viewport.size);
-        imgui.endDockspace();
         imgui.render();   // enqueues the UI overlay into the scene pass tail
         renderer.endFrame();
         app.window().swapBuffers();
