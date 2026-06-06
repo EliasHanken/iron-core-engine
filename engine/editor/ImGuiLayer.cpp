@@ -17,6 +17,92 @@
 
 namespace iron {
 
+namespace {
+
+// --- Iron editor dark theme (deep charcoal + subtle blue). Tweak here. ---
+const ImVec4 kBgWindow     = ImColor( 27,  27,  30, 255);  // #1b1b1e
+const ImVec4 kBgChild      = ImColor( 24,  24,  27, 255);  // #18181b
+const ImVec4 kBgPopup      = ImColor( 30,  30,  34, 255);  // #1e1e22
+const ImVec4 kBgTitle      = ImColor( 36,  36,  40, 255);  // #242428
+const ImVec4 kBgPanel      = ImColor( 46,  46,  52, 255);  // #2e2e34
+const ImVec4 kFrame        = ImColor( 42,  42,  48, 255);  // #2a2a30
+const ImVec4 kFrameHover   = ImColor( 52,  52,  60, 255);  // #34343c
+const ImVec4 kFrameActive  = ImColor( 61,  61,  70, 255);  // #3d3d46
+const ImVec4 kButton       = ImColor( 46,  46,  54, 255);  // #2e2e36
+const ImVec4 kButtonHover  = ImColor( 58,  58,  68, 255);  // #3a3a44
+const ImVec4 kAccent       = ImColor( 61, 126, 170, 255);  // #3d7eaa
+const ImVec4 kAccentBright = ImColor( 74, 144, 194, 255);  // #4a90c2
+const ImVec4 kAccentDim    = ImColor( 61, 126, 170, 110);  // accent @ low alpha
+const ImVec4 kText         = ImColor(226, 226, 228, 255);  // #e2e2e4
+const ImVec4 kTextDim      = ImColor(110, 110, 118, 255);  // #6e6e76
+const ImVec4 kBorder       = ImColor( 58,  58,  66, 255);  // #3a3a42
+const ImVec4 kScrollGrab   = ImColor( 58,  58,  68, 255);
+const ImVec4 kScrollGrabHv = ImColor( 74,  74,  86, 255);
+const ImVec4 kDimBg        = ImColor(  0,   0,   0, 120);  // modal dim
+
+void applyIronDarkTheme(ImGuiStyle& s) {
+    ImVec4* c = s.Colors;
+    c[ImGuiCol_Text]                  = kText;
+    c[ImGuiCol_TextDisabled]          = kTextDim;
+    c[ImGuiCol_WindowBg]              = kBgWindow;
+    c[ImGuiCol_ChildBg]               = kBgChild;
+    c[ImGuiCol_PopupBg]               = kBgPopup;
+    c[ImGuiCol_Border]                = kBorder;
+    c[ImGuiCol_FrameBg]               = kFrame;
+    c[ImGuiCol_FrameBgHovered]        = kFrameHover;
+    c[ImGuiCol_FrameBgActive]         = kFrameActive;
+    c[ImGuiCol_TitleBg]               = kBgWindow;
+    c[ImGuiCol_TitleBgActive]         = kBgTitle;
+    c[ImGuiCol_TitleBgCollapsed]      = kBgWindow;
+    c[ImGuiCol_MenuBarBg]             = kBgTitle;
+    c[ImGuiCol_ScrollbarBg]           = kBgWindow;
+    c[ImGuiCol_ScrollbarGrab]         = kScrollGrab;
+    c[ImGuiCol_ScrollbarGrabHovered]  = kScrollGrabHv;
+    c[ImGuiCol_ScrollbarGrabActive]   = kAccent;
+    c[ImGuiCol_CheckMark]             = kAccentBright;
+    c[ImGuiCol_SliderGrab]            = kAccent;
+    c[ImGuiCol_SliderGrabActive]      = kAccentBright;
+    c[ImGuiCol_Button]                = kButton;
+    c[ImGuiCol_ButtonHovered]         = kButtonHover;
+    c[ImGuiCol_ButtonActive]          = kAccent;
+    c[ImGuiCol_Header]                = kBgPanel;
+    c[ImGuiCol_HeaderHovered]         = kAccentDim;
+    c[ImGuiCol_HeaderActive]          = kAccent;
+    c[ImGuiCol_Separator]             = kBorder;
+    c[ImGuiCol_SeparatorHovered]      = kAccent;
+    c[ImGuiCol_SeparatorActive]       = kAccentBright;
+    c[ImGuiCol_ResizeGrip]            = kBorder;
+    c[ImGuiCol_ResizeGripHovered]     = kAccent;
+    c[ImGuiCol_ResizeGripActive]      = kAccentBright;
+    c[ImGuiCol_Tab]                   = kBgTitle;
+    c[ImGuiCol_TabHovered]            = kAccentBright;
+    c[ImGuiCol_TabSelected]           = kBgPanel;
+    c[ImGuiCol_TabSelectedOverline]   = kAccent;
+    c[ImGuiCol_TabDimmed]             = kBgWindow;
+    c[ImGuiCol_TabDimmedSelected]     = kBgTitle;
+    c[ImGuiCol_DockingPreview]        = kAccentDim;
+    c[ImGuiCol_DockingEmptyBg]        = kBgChild;
+    c[ImGuiCol_TextSelectedBg]        = kAccentDim;
+    c[ImGuiCol_DragDropTarget]        = kAccentBright;
+    c[ImGuiCol_NavCursor]             = kAccent;   // (was ImGuiCol_NavHighlight pre-1.91.4)
+    c[ImGuiCol_ModalWindowDimBg]      = kDimBg;
+
+    s.WindowRounding    = 4.0f;
+    s.ChildRounding     = 4.0f;
+    s.FrameRounding     = 4.0f;
+    s.GrabRounding      = 3.0f;
+    s.TabRounding       = 4.0f;
+    s.PopupRounding     = 4.0f;
+    s.ScrollbarRounding = 4.0f;
+    s.WindowBorderSize  = 1.0f;
+    s.FrameBorderSize   = 0.0f;
+    s.TabBorderSize     = 0.0f;
+    s.FramePadding      = ImVec2(8.0f, 4.0f);
+    s.ItemSpacing       = ImVec2(8.0f, 5.0f);
+}
+
+}  // namespace
+
 bool ImGuiLayer::init(Window& window, Renderer& renderer) {
     renderer_ = &renderer;
     auto& vk = static_cast<VulkanRenderer&>(renderer);  // editor is Vulkan-only
@@ -48,7 +134,8 @@ bool ImGuiLayer::init(Window& window, Renderer& renderer) {
     IMGUI_CHECKVERSION();
     ImGui::CreateContext();
     ImGui::GetIO().ConfigFlags |= ImGuiConfigFlags_DockingEnable;
-    ImGui::StyleColorsDark();
+    ImGui::StyleColorsDark();              // sane base; we override the key colors below
+    applyIronDarkTheme(ImGui::GetStyle());
 
     // M58: crisp UI font (Roboto-Medium, Apache-2.0), copied next to the exe with
     // the rest of the assets. Fallback to the built-in bitmap font if it's missing
