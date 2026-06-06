@@ -7,6 +7,7 @@
 #include <imgui.h>
 #include <imgui_node_editor.h>
 #include "utilities/widgets.h"
+#include "IconsForkAwesome.h"   // M61: node category glyphs
 
 #include <nlohmann/json.hpp>
 
@@ -75,6 +76,18 @@ ImColor headerColor(const std::string& category) {
     if (category == "Value")     return ImColor( 30, 105, 120);
     if (category == "Sink")      return ImColor( 90,  90,  90);
     return ImColor( 75,  75,  75);
+}
+
+// M61: Fork Awesome glyph per node category, for the header + create menu.
+const char* nodeCategoryIcon(const std::string& category) {
+    if (category == "Event")     return ICON_FK_BOLT;
+    if (category == "Flow")      return ICON_FK_SITEMAP;
+    if (category == "Math")      return ICON_FK_CALCULATOR;
+    if (category == "Transform") return ICON_FK_ARROWS;
+    if (category == "Variable")  return ICON_FK_CUBE;
+    if (category == "Value")     return ICON_FK_HASHTAG;
+    if (category == "Sink")      return ICON_FK_SIGN_OUT;
+    return ICON_FK_SQUARE_O;
 }
 
 ax::Widgets::IconType iconFor(PortType t) {

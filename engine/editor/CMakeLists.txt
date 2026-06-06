@@ -22,3 +22,7 @@ add_library(ironcore_editor STATIC
 target_link_libraries(ironcore_editor PUBLIC ironcore)
 target_link_libraries(ironcore_editor PRIVATE imgui::imgui)
 target_link_libraries(ironcore_editor PRIVATE imgui_node_editor)
+
+# M61: IconsForkAwesome.h lives directly in third_party/ (not on the include
+# path by default — only third_party/imgui-node-editor/ is, via its target).
+target_include_directories(ironcore_editor PRIVATE ${CMAKE_SOURCE_DIR}/third_party)

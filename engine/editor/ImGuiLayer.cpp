@@ -13,6 +13,8 @@
 #include <imgui_impl_glfw.h>
 #include <imgui_impl_vulkan.h>
 
+#include "IconsForkAwesome.h"   // M61: Fork Awesome glyph codepoints
+
 #include <GLFW/glfw3.h>
 
 namespace iron {
@@ -151,6 +153,19 @@ bool ImGuiLayer::init(Window& window, Renderer& renderer) {
             io.Fonts->AddFontDefault();
             Log::warn("ImGuiLayer: font '%s' not found; using default", fontPath.c_str());
         }
+    }
+
+    // M61: merge Fork Awesome icons into the editor font atlas (node header icons).
+    {
+        ImGuiIO& io = ImGui::GetIO();
+        static const ImWchar kFaRange[] = { ICON_MIN_FK, ICON_MAX_16_FK, 0 };
+        ImFontConfig icfg;
+        icfg.MergeMode        = true;
+        icfg.PixelSnapH       = true;
+        icfg.GlyphMinAdvanceX = 16.0f;   // keep icons monospace-ish
+        const std::string faPath = executableDir() + "/assets/fonts/forkawesome-webfont.ttf";
+        if (!io.Fonts->AddFontFromFileTTF(faPath.c_str(), 15.0f, &icfg, kFaRange))
+            Log::warn("ImGuiLayer: Fork Awesome icons '%s' not found; node icons disabled", faPath.c_str());
     }
 
     // install_callbacks=true is safe: iron::Input is poll-based (it never
