@@ -27,10 +27,15 @@ public:
     // the action the user requested this frame (host performs the assign/load).
     Action draw(GraphEditorModel& model, const char* targetName, bool targetHasGraph);
 
-    // Forget which nodes have been positioned, so the next draw re-applies every
-    // node's saved editorX/editorY to the canvas. Call after the host replaces
-    // the model's graph (e.g. Load-from-entity) so persisted positions take hold.
-    void resetPlacement() { placed_.clear(); }
+    // Forget which nodes/comments have been positioned, so the next draw re-applies
+    // every node's and comment's saved position. Call after the host replaces the
+    // model's graph (Load-from-entity, undo/redo) so persisted positions take hold.
+    void resetPlacement() {
+        placed_.clear();
+        placedComments_.clear();
+        commentOffX_.clear();
+        commentOffY_.clear();
+    }
 
     // Whether the "Node Editor" window was focused on the last draw(). Used by
     // the host to route Ctrl+Z/Y to the graph history vs the scene history.
