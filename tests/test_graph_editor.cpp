@@ -275,5 +275,30 @@ int main() {
         CHECK(sawDevOnly);    // at least one node is dev-only
     }
 
+    // M61: buildCreateList grouping + search + compat filter.
+    {
+        auto groups = buildCreateList(reg, "", nullptr);
+        std::size_t total = 0; bool sawFlow = false;
+        for (const auto& g : groups) { total += g.types.size(); if (g.category == "Flow") sawFlow = true; }
+        CHECK(sawFlow);
+        CHECK(total == reg.all().size());     // no type dropped
+
+        auto hits = buildCreateList(reg, "BRANCH", nullptr);  // case-insensitive
+        std::size_t hitCount = 0; bool sawBranch = false;
+        for (const auto& g : hits) for (const NodeTypeDesc* t : g.types) {
+            ++hitCount; if (t->typeName == "Branch") sawBranch = true;
+        }
+        CHECK(sawBranch);
+        CHECK(hitCount < reg.all().size());   // filtered
+
+        const std::vector<std::string> allowed = {"Add", "Compare"};
+        auto restricted = buildCreateList(reg, "", &allowed);
+        std::size_t rCount = 0;
+        for (const auto& g : restricted) for (const NodeTypeDesc* t : g.types) {
+            ++rCount; CHECK(t->typeName == "Add" || t->typeName == "Compare");
+        }
+        CHECK(rCount == 2u);
+    }
+
     return iron_test_result();
 }

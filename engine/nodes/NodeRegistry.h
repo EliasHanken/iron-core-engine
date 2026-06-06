@@ -41,6 +41,12 @@ struct NodeTypeDesc {
     bool devOnly = false;       // render a "dev only" tag
 };
 
+// A category group of node types for the create menu.
+struct NodeCreateGroup {
+    std::string category;
+    std::vector<const NodeTypeDesc*> types;
+};
+
 // Registry of node types. Introspectable -> catalogToJson is the AI contract.
 class NodeRegistry {
 public:
@@ -54,5 +60,14 @@ private:
 
 // [{ "typeName", "category", "subtitle", "devOnly", "ports":[{"name","type","dir"}] }, ...]
 nlohmann::json catalogToJson(const NodeRegistry& registry);
+
+// Build the create-menu list. Empty `query` -> all types grouped by category
+// (groups + types sorted by name). Non-empty `query` -> a single "Results" group
+// of types whose typeName or subtitle contains `query` (case-insensitive). If
+// `allowedTypeNames` is non-null, only those type names are considered (used by
+// drag-from-pin to restrict to compatible types).
+std::vector<NodeCreateGroup> buildCreateList(const NodeRegistry& registry,
+                                             std::string_view query,
+                                             const std::vector<std::string>* allowedTypeNames);
 
 }  // namespace iron
