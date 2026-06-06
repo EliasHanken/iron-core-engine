@@ -130,6 +130,11 @@ target_link_libraries(test_editor_state PRIVATE ironcore ironcore_editor)
 target_include_directories(test_editor_state PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 add_test(NAME test_editor_state COMMAND test_editor_state)
 
+add_executable(test_undo_history test_undo_history.cpp)
+target_link_libraries(test_undo_history PRIVATE ironcore ironcore_editor)
+target_include_directories(test_undo_history PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+add_test(NAME test_undo_history COMMAND test_undo_history)
+
 add_executable(test_viewport_input test_viewport_input.cpp)
 target_link_libraries(test_viewport_input PRIVATE ironcore ironcore_editor)
 target_include_directories(test_viewport_input PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})

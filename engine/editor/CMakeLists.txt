@@ -13,6 +13,7 @@ add_library(ironcore_editor STATIC
   ReflectionInspector.cpp
   ViewGizmo.cpp
   EditorState.cpp
+  UndoHistory.cpp
 )
 
 # ironcore PUBLIC propagates the engine include dir (engine/), GLFW, Vulkan, and
