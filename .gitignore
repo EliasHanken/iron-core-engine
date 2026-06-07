@@ -38,3 +38,4 @@ imgui.ini
 
 # Scratch / local working dir (never commit)
 tmp/
+.superpowers/
