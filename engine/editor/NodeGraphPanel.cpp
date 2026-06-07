@@ -7,13 +7,16 @@
 #include <imgui.h>
 #include <imgui_node_editor.h>
 #include "utilities/widgets.h"
+#include "IconsForkAwesome.h"   // M61: node category glyphs
 
 #include <nlohmann/json.hpp>
 
+#include <cmath>
 #include <cstdint>
 #include <cstdio>
 #include <fstream>
 #include <string>
+#include <vector>
 
 namespace ed = ax::NodeEditor;
 
@@ -77,15 +80,66 @@ ImColor headerColor(const std::string& category) {
     return ImColor( 75,  75,  75);
 }
 
+// M61: Fork Awesome glyph per node category, for the header + create menu.
+const char* nodeCategoryIcon(const std::string& category) {
+    if (category == "Event")     return ICON_FK_BOLT;
+    if (category == "Flow")      return ICON_FK_SITEMAP;
+    if (category == "Math")      return ICON_FK_CALCULATOR;
+    if (category == "Transform") return ICON_FK_ARROWS;
+    if (category == "Variable")  return ICON_FK_CUBE;
+    if (category == "Value")     return ICON_FK_HASHTAG;
+    if (category == "Sink")      return ICON_FK_SIGN_OUT;
+    return ICON_FK_SQUARE_O;
+}
+
 ax::Widgets::IconType iconFor(PortType t) {
     return t == PortType::Exec ? ax::Widgets::IconType::Flow
                                : ax::Widgets::IconType::Circle;
 }
 
+// Renders the search box + grouped create list; returns the chosen type name
+// ("" = nothing chosen this frame). searchBuf persists across frames (a panel member).
+std::string drawCreateList(GraphEditorModel& model, char* searchBuf, std::size_t searchCap,
+                           const std::vector<std::string>* allowedTypeNames) {
+    std::string chosen;
+    if (!model.registry()) return chosen;
+    ImGui::SetNextItemWidth(220.0f);
+    if (ImGui::IsWindowAppearing()) ImGui::SetKeyboardFocusHere();
+    ImGui::InputTextWithHint("##create_search", "Search...", searchBuf, searchCap);
+    ImGui::Separator();
+    const auto groups = buildCreateList(*model.registry(), searchBuf, allowedTypeNames);
+    if (groups.empty()) { ImGui::TextDisabled("(no matches)"); return chosen; }
+    const bool searching = searchBuf[0] != '\0';
+    for (const NodeCreateGroup& g : groups) {
+        if (!ImGui::CollapsingHeader(g.category.c_str(),
+                searching ? ImGuiTreeNodeFlags_DefaultOpen : ImGuiTreeNodeFlags_None))
+            continue;
+        for (const NodeTypeDesc* t : g.types) {
+            ImGui::PushID(t->typeName.c_str());
+            const std::string label = std::string(nodeCategoryIcon(t->category)) + "  " + t->typeName;
+            // Subtitle goes in MenuItem's shortcut slot: right-aligned + dimmed +
+            // part of the selectable row (so it tracks the hover highlight and
+            // clips within the popup, unlike a SameLine TextDisabled).
+            if (ImGui::MenuItem(label.c_str(),
+                                t->subtitle.empty() ? nullptr : t->subtitle.c_str()))
+                chosen = t->typeName;
+            ImGui::PopID();
+        }
+    }
+    return chosen;
+}
+
 }  // namespace
 
 NodeGraphPanel::NodeGraphPanel() {
-    ctx_ = ed::CreateEditor();
+    // M61 fix: disable the node-editor's OWN settings file ("NodeEditor.json").
+    // Otherwise layout has two competing sources of truth — our model (saved to
+    // node_graph.json) and the editor's internal store — which fight over comment
+    // position/size on reload (the editor's restored m_GroupBounds wins, so saved
+    // comment sizes never re-apply). Our model is the single source of truth.
+    ed::Config cfg;
+    cfg.SettingsFile = nullptr;
+    ctx_ = ed::CreateEditor(&cfg);
     // M58: soften the node cards to match the blueprint example.
     ed::SetCurrentEditor(ctx_);
     ed::Style& st = ed::GetStyle();
@@ -103,7 +157,15 @@ NodeGraphPanel::NodeGraphPanel() {
 NodeGraphPanel::~NodeGraphPanel() { if (ctx_) ed::DestroyEditor(ctx_); }
 
 NodeGraphPanel::Action NodeGraphPanel::draw(GraphEditorModel& model, const char* targetName, bool targetHasGraph) {
-    ImGui::Begin("Node Editor");
+    if (!ImGui::Begin("Node Editor")) {
+        // Collapsed or an inactive dock tab: ImGui sets SkipItems, so ed::Group's
+        // Dummy advances 0 and collapses comment group bounds — and the read-back
+        // below would then write that collapsed size back into the model. Skip all
+        // rendering while hidden (End() is still required to balance Begin()).
+        focused_ = false;
+        ImGui::End();
+        return Action::None;
+    }
     focused_ = ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows);
 
     if (ImGui::Button("Run")) model.run();
@@ -111,19 +173,33 @@ NodeGraphPanel::Action NodeGraphPanel::draw(GraphEditorModel& model, const char*
     ImGui::SetNextItemWidth(160);
     ImGui::InputText("##path", savePath_, sizeof(savePath_));
     ImGui::SameLine();
-    if (ImGui::Button("Save")) { std::ofstream f(savePath_); if (f) f << model.toJson().dump(2); }
+    // M61: unsaved indicator — a "*" on Save plus an amber tag so the user never
+    // leaves with unwritten edits. unsaved() is set by every model mutation and
+    // cleared on a successful Save/Load. (Uses unsaved(), NOT dirty(): the host's
+    // undo system consumes and clears dirty() every frame.)
+    const bool unsaved = model.unsaved();
+    if (ImGui::Button(unsaved ? "Save*" : "Save")) {
+        std::ofstream f(savePath_);
+        if (f) { f << model.toJson().dump(2); model.markSaved(); }
+    }
     ImGui::SameLine();
     if (ImGui::Button("Load")) {
         std::ifstream f(savePath_);
         if (f) {
             try {
                 nlohmann::json j; f >> j;
-                if (model.loadFromJson(j))
+                if (model.loadFromJson(j)) {
                     resetPlacement();   // re-place restored nodes + comments from their saved positions
+                    model.markSaved();  // freshly loaded == matches the file
+                }
             } catch (const std::exception&) {
                 // malformed file: ignore, leave graph unchanged
             }
         }
+    }
+    if (unsaved) {
+        ImGui::SameLine();
+        ImGui::TextColored(ImVec4(1.0f, 0.70f, 0.20f, 1.0f), ICON_FK_EXCLAMATION_CIRCLE " Unsaved");
     }
     // M55: entity-aware target readout + load/assign (host handles the wiring).
     Action action = Action::None;
@@ -168,6 +244,11 @@ NodeGraphPanel::Action NodeGraphPanel::draw(GraphEditorModel& model, const char*
         const ed::NodeId cid(commentEd(c.id));
         if (placedComments_.find(c.id) == placedComments_.end()) {
             ed::SetNodePosition(cid, ImVec2(c.x, c.y));
+            // ed::Group(size) only adopts its size arg the first frame a node
+            // becomes a group; afterwards the editor's stored m_GroupBounds wins.
+            // So push the model's size in explicitly on every (re)placement —
+            // this is what makes a Load/reopen restore the saved comment size.
+            ed::SetGroupSize(cid, ImVec2(c.w, c.h));
             placedComments_.insert(c.id);
         }
         ed::PushStyleColor(ed::StyleColor_NodeBg,     ImColor(60, 60, 75, 80).Value);
@@ -197,9 +278,16 @@ NodeGraphPanel::Action NodeGraphPanel::draw(GraphEditorModel& model, const char*
         ImGui::PushID(static_cast<int>(n.id));
         ImGui::BeginGroup();   // M58: wrap content for reliable screen-space bounds
 
-        // Header: white title; the colored band is drawn behind it after EndNode.
+        // Header: category icon + white title, then optional dim subtitle.
+        // The colored band is drawn behind it after EndNode.
+        ImGui::TextColored(ImVec4(0.78f, 0.84f, 0.92f, 1.0f), "%s", nodeCategoryIcon(t->category));
+        ImGui::SameLine(0.0f, 6.0f);
         ImGui::TextColored(ImVec4(1.0f, 1.0f, 1.0f, 1.0f), "%s", t->typeName.c_str());
-        const float titleBottom = ImGui::GetItemRectMax().y;
+        float headerBottom = ImGui::GetItemRectMax().y;
+        if (!t->subtitle.empty()) {
+            ImGui::TextColored(ImVec4(0.62f, 0.64f, 0.70f, 1.0f), "%s", t->subtitle.c_str());
+            headerBottom = ImGui::GetItemRectMax().y;
+        }
         ImGui::Dummy(ImVec2(0.0f, 2.0f));
 
         const float iconSz = 16.0f;
@@ -265,32 +353,72 @@ NodeGraphPanel::Action NodeGraphPanel::draw(GraphEditorModel& model, const char*
         ImGui::PopID();
         ed::EndNode();
 
-        // M58: filled category-colored header band behind the white title.
+        // M58/M61: node decorations drawn into the node background list. Positions
+        // use the content's SCREEN rect (contentMin/Max ± NodePadding) — the same
+        // space the bg list draws in. Clipped to that card rect; rounded fills use
+        // RoundCorners flags and the glass sheen lives in the upper body only
+        // (straight side edges, fades out before the rounded bottom corners).
         if (ImDrawList* bg = ed::GetNodeBackgroundDrawList(
                 ed::NodeId(static_cast<std::uintptr_t>(n.id)))) {
             const ImVec4 pad      = ed::GetStyle().NodePadding;   // x=left y=top z=right w=bottom
             const float  rounding = ed::GetStyle().NodeRounding;
-            const ImVec2 a(contentMin.x - pad.x, contentMin.y - pad.y);
-            const ImVec2 b(contentMax.x + pad.z, titleBottom + 3.0f);
-            // M59: category-colored band (rounded top), then the UE4 gloss-ramp
-            // texture multiplied over it for a smooth top-down gradient, then a
-            // dark separator under it. Falls back to the plain band if no texture.
-            bg->AddRectFilled(a, b, headerColor(t->category), rounding, ImDrawFlags_RoundCornersTop);
+            const ImVec2 cardMin(contentMin.x - pad.x, contentMin.y - pad.y);
+            const ImVec2 cardMax(contentMax.x + pad.z, contentMax.y + pad.w);
+            bg->PushClipRect(cardMin, cardMax, true);
+
+            // Header band (rounded top): category color, translucent gloss-ramp
+            // gradient, dark contrast overlay, separator under the subtitle.
+            const ImVec2 a = cardMin;
+            const ImVec2 b(cardMax.x, headerBottom + 3.0f);
+            // The blueprint header texture IS the header, multiplied by the
+            // category color (its built-in gradient + sheen give the non-flat
+            // look). Falls back to a plain colored band if the texture is absent.
             if (headerTex_)
-                bg->AddImageRounded(reinterpret_cast<ImTextureID>(headerTex_),
-                                    a, b, ImVec2(0, 0), ImVec2(1, 1),
-                                    IM_COL32(255, 255, 255, 255), rounding,
-                                    ImDrawFlags_RoundCornersTop);
-            bg->AddLine(ImVec2(a.x, b.y), ImVec2(b.x, b.y), ImColor(0, 0, 0, 110), 1.0f);
+                bg->AddImageRounded(reinterpret_cast<ImTextureID>(headerTex_), a, b,
+                                    ImVec2(0, 0), ImVec2(1, 1), headerColor(t->category),
+                                    rounding, ImDrawFlags_RoundCornersTop);
+            else
+                bg->AddRectFilled(a, b, headerColor(t->category), rounding, ImDrawFlags_RoundCornersTop);
+            bg->AddLine(ImVec2(a.x, b.y), ImVec2(b.x, b.y), IM_COL32(0, 0, 0, 120), 1.0f);
+
+            // M61: glass — a soft sheen confined to the UPPER BODY (just under the
+            // header), drawn full-width so it aligns with the body's straight side
+            // edges, and fading to zero alpha before the rounded bottom corners.
+            // This keeps the glossy glass falloff WITHOUT the inset "light grey box"
+            // / boxy-corner artifacts of a full-card gradient (AddRectFilledMultiColor
+            // can't round corners, so a full-card fill either insets into a visible
+            // box or overhangs the rounded corners).
+            const float  bodyTop = b.y;
+            const ImVec2 sheenMin(cardMin.x, bodyTop);
+            const ImVec2 sheenMax(cardMax.x, bodyTop + (cardMax.y - bodyTop) * 0.55f);
+            bg->AddRectFilledMultiColor(sheenMin, sheenMax,
+                                        IM_COL32(255, 255, 255, 26), IM_COL32(255, 255, 255, 26),
+                                        IM_COL32(255, 255, 255, 0),  IM_COL32(255, 255, 255, 0));
+
+            // M61: dev-only striped tag along the card's bottom edge.
+            if (t->devOnly) {
+                const float stripeH = 6.0f;
+                const ImVec2 sMin(cardMin.x, cardMax.y - stripeH);
+                const ImVec2 sMax(cardMax.x, cardMax.y);
+                bg->AddRectFilled(sMin, sMax, IM_COL32(20, 20, 20, 255), rounding, ImDrawFlags_RoundCornersBottom);
+                const float step = 10.0f;
+                for (float x = sMin.x - stripeH; x < sMax.x; x += step)
+                    bg->AddQuadFilled(ImVec2(x, sMax.y), ImVec2(x + stripeH, sMin.y),
+                                      ImVec2(x + stripeH + 4.0f, sMin.y), ImVec2(x + 4.0f, sMax.y),
+                                      IM_COL32(225, 190, 0, 200));
+            }
+            bg->PopClipRect();
         }
     }
 
     // M56: sync live canvas positions back into the model so drags persist
-    // through Save/Assign (loadFromJson + placed_ restore them). Only write on
-    // change to avoid needlessly dirtying the model every frame.
+    // through Save/Assign (loadFromJson + placed_ restore them). Only write on a
+    // real change (>0.5px) — the editor floors positions, so an exact compare
+    // would re-dirty a freshly loaded graph from sub-pixel drift, making the
+    // unsaved indicator lie. Mirrors setCommentRect's tolerance.
     for (const Node& n : model.graph().nodes()) {
         const ImVec2 pos = ed::GetNodePosition(ed::NodeId(static_cast<std::uintptr_t>(n.id)));
-        if (pos.x != n.editorX || pos.y != n.editorY)
+        if (std::fabs(pos.x - n.editorX) > 0.5f || std::fabs(pos.y - n.editorY) > 0.5f)
             model.setNodePosition(n.id, pos.x, pos.y);
     }
 
@@ -344,6 +472,7 @@ NodeGraphPanel::Action NodeGraphPanel::draw(GraphEditorModel& model, const char*
                 pendingCreatePin_ = static_cast<unsigned long long>(newNodePin.Get());
                 pendingCreateX_   = canvasPos.x;
                 pendingCreateY_   = canvasPos.y;
+                createSearch_[0] = '\0';
                 ed::Suspend();
                 ImGui::OpenPopup("##create_node_popup");
                 ed::Resume();
@@ -410,6 +539,7 @@ NodeGraphPanel::Action NodeGraphPanel::draw(GraphEditorModel& model, const char*
         } else if (ed::ShowBackgroundContextMenu()) {
             const ImVec2 cp = ed::ScreenToCanvas(ImGui::GetMousePos());
             ctxMenuBgX_ = cp.x; ctxMenuBgY_ = cp.y;
+            createSearch_[0] = '\0';
             ImGui::OpenPopup("##bg_ctx");
         }
         ed::Resume();
@@ -422,31 +552,41 @@ NodeGraphPanel::Action NodeGraphPanel::draw(GraphEditorModel& model, const char*
     ed::Suspend();
     if (ImGui::BeginPopup("##create_node_popup")) {
         ImGui::TextDisabled("Create node");
-        ImGui::Separator();
         NodeId pn; std::string pp;
         const PortDesc* sp = resolvePin(model, static_cast<std::uintptr_t>(pendingCreatePin_), pn, pp);
         if (sp) {
             const auto options = model.compatibleCreations(sp->type, sp->dir);
-            if (options.empty()) ImGui::TextDisabled("(no compatible nodes)");
-            for (const auto& c : options) {
-                if (ImGui::MenuItem(c.typeName.c_str())) {
-                    const NodeId nn = model.addNode(c.typeName, pendingCreateX_, pendingCreateY_);
-                    if (sp->dir == PortDir::Out) model.connect(pn, pp, nn, c.targetPort);
-                    else                         model.connect(nn, c.targetPort, pn, pp);
-                }
+            std::vector<std::string> allowedNames;
+            allowedNames.reserve(options.size());
+            for (const auto& o : options) allowedNames.push_back(o.typeName);
+            const std::string pick = drawCreateList(model, createSearch_, sizeof(createSearch_), &allowedNames);
+            if (!pick.empty()) {
+                std::string targetPort;
+                for (const auto& o : options) if (o.typeName == pick) { targetPort = o.targetPort; break; }
+                const NodeId nn = model.addNode(pick, pendingCreateX_, pendingCreateY_);
+                if (sp->dir == PortDir::Out) model.connect(pn, pp, nn, targetPort);
+                else                         model.connect(nn, targetPort, pn, pp);
+                createSearch_[0] = '\0';
+                ImGui::CloseCurrentPopup();
             }
+        } else {
+            // Source pin vanished (e.g. undo deleted its node while the popup was
+            // open) — don't leave a blank popup; close it.
+            ImGui::CloseCurrentPopup();
         }
         ImGui::EndPopup();
     }
 
     // M59: right-click context menus (background / node / pin / link).
     if (ImGui::BeginPopup("##bg_ctx")) {
-        if (model.registry() && ImGui::BeginMenu("Add Node")) {
-            for (const NodeTypeDesc* t : model.registry()->all())
-                if (ImGui::MenuItem(t->typeName.c_str()))
-                    model.addNode(t->typeName, ctxMenuBgX_, ctxMenuBgY_);
-            ImGui::EndMenu();
+        ImGui::TextDisabled("Add node");
+        const std::string pick = drawCreateList(model, createSearch_, sizeof(createSearch_), nullptr);
+        if (!pick.empty()) {
+            model.addNode(pick, ctxMenuBgX_, ctxMenuBgY_);
+            createSearch_[0] = '\0';
+            ImGui::CloseCurrentPopup();
         }
+        ImGui::Separator();
         if (ImGui::MenuItem("Add Comment"))
             model.addComment(ctxMenuBgX_, ctxMenuBgY_, 240.0f, 160.0f, "Comment");
         ImGui::EndPopup();

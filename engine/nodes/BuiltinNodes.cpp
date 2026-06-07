@@ -13,24 +13,24 @@ void registerBuiltinNodes(NodeRegistry& r) {
     // Entry: kicks off control flow.
     r.registerType({"Entry", "Flow",
         { P{"then", PortType::Exec, Out} },
-        [](NodeContext& c) { c.fire("then"); }, true});
+        [](NodeContext& c) { c.fire("then"); }, true, "Graph entry point"});
 
     // Branch: fire "true" or "false" based on the bool input.
     r.registerType({"Branch", "Flow",
         { P{"in", PortType::Exec, In}, P{"cond", PortType::Bool, In},
           P{"true", PortType::Exec, Out}, P{"false", PortType::Exec, Out} },
-        [](NodeContext& c) { c.fire(c.in("cond").asBool() ? "true" : "false"); }});
+        [](NodeContext& c) { c.fire(c.in("cond").asBool() ? "true" : "false"); }, false, "Flow control"});
 
     // Sequence: fire "0" then "1" in order (DFS in the evaluator).
     r.registerType({"Sequence", "Flow",
         { P{"in", PortType::Exec, In},
           P{"0", PortType::Exec, Out}, P{"1", PortType::Exec, Out} },
-        [](NodeContext& c) { c.fire("0"); c.fire("1"); }});
+        [](NodeContext& c) { c.fire("0"); c.fire("1"); }, false, "Run outputs in order"});
 
     // Const: forward its literal-defaulted "value" input to "out".
     r.registerType({"Const", "Value",
         { P{"value", PortType::Float, In}, P{"out", PortType::Float, Out} },
-        [](NodeContext& c) { c.out("out", c.in("value")); }});
+        [](NodeContext& c) { c.out("out", c.in("value")); }, false, "Literal value"});
 
     // Compare: a (op) b -> bool. op is a String input with a literal default.
     r.registerType({"Compare", "Math",
@@ -47,7 +47,7 @@ void registerBuiltinNodes(NodeRegistry& r) {
             else if (op == "<=") res = a <= b;
             else if (op == "==") res = a == b;
             c.out("result", NodeValue::B(res));
-        }});
+        }, false, "Compare two values"});
 
     // Add: a + b -> float.
     r.registerType({"Add", "Math",
@@ -55,7 +55,7 @@ void registerBuiltinNodes(NodeRegistry& r) {
           P{"result", PortType::Float, Out} },
         [](NodeContext& c) {
             c.out("result", NodeValue::F(c.in("a").asFloat() + c.in("b").asFloat()));
-        }});
+        }, false, "a + b"});
 
     // SetOutput (sink): write run().outputs[key] = value on exec.
     r.registerType({"SetOutput", "Sink",
@@ -63,7 +63,7 @@ void registerBuiltinNodes(NodeRegistry& r) {
           P{"value", PortType::Float, In} },
         [](NodeContext& c) {
             c.run().outputs[c.in("key").asString()] = c.in("value");
-        }});
+        }, false, "Write a graph output", true});
 }
 
 }  // namespace iron

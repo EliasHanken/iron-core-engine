@@ -838,24 +838,12 @@ int main() {
         return 1;
     }
 
-    // M59: a 1x64 white gloss ramp (alpha ~90 at top fading to 0 at the bottom),
-    // uploaded once and multiplied over each node's category-colored header band
-    // to give the smooth UE4 gradient. Registered once; valid for imgui's life.
-    {
-        constexpr int kH = 64;
-        unsigned char ramp[kH * 4];
-        for (int y = 0; y < kH; ++y) {
-            const float t = static_cast<float>(y) / static_cast<float>(kH - 1);
-            const unsigned char alpha =
-                static_cast<unsigned char>(90.0f * (1.0f - t) + 0.5f);
-            ramp[y * 4 + 0] = 255;
-            ramp[y * 4 + 1] = 255;
-            ramp[y * 4 + 2] = 255;
-            ramp[y * 4 + 3] = alpha;
-        }
-        if (void* tex = imgui.registerTexture(ramp, 1, kH))
-            nodeGraphPanel.setHeaderTexture(tex);
-    }
+    // M61: the imgui-node-editor blueprint header-background texture (a soft
+    // non-linear gradient + sheen), multiplied by each node's category color to
+    // give the exact blueprint header look. Registered once; valid for imgui's
+    // life. Falls back to a plain colored band if the file is missing.
+    if (void* tex = imgui.registerTextureFromFile(exeDir + "/assets/node-header-bg.png"))
+        nodeGraphPanel.setHeaderTexture(tex);
 
     iron::SceneOutliner    outliner;
     iron::SceneInspector   inspector;
@@ -882,6 +870,7 @@ int main() {
         graphModel.connect(br, "true", st, "in");
         graphModel.connect(br, "false", sf, "in");
         graphModel.clearDirty();
+        graphModel.markSaved();   // initial demo graph: open clean, not "Unsaved"
     }
 
     // M55 demo: make the first entity bob on Y via a node graph.
@@ -1423,9 +1412,10 @@ int main() {
             } else if (selValid && act == iron::NodeGraphPanel::Action::LoadFromEntity) {
                 auto parsed = nlohmann::json::parse(
                     scene.entities[selectedIndex].logicGraph, nullptr, false);
-                if (!parsed.is_discarded() && graphModel.loadFromJson(parsed))
+                if (!parsed.is_discarded() && graphModel.loadFromJson(parsed)) {
                     nodeGraphPanel.resetPlacement();  // re-apply saved node positions
-
+                    graphModel.markSaved();           // fresh load == clean baseline
+                }
             }
         }
 

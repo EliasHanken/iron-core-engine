@@ -13,6 +13,8 @@
 #include <imgui_impl_glfw.h>
 #include <imgui_impl_vulkan.h>
 
+#include "IconsForkAwesome.h"   // M61: Fork Awesome glyph codepoints
+
 #include <GLFW/glfw3.h>
 
 namespace iron {
@@ -153,6 +155,19 @@ bool ImGuiLayer::init(Window& window, Renderer& renderer) {
         }
     }
 
+    // M61: merge Fork Awesome icons into the editor font atlas (node header icons).
+    {
+        ImGuiIO& io = ImGui::GetIO();
+        static const ImWchar kFaRange[] = { ICON_MIN_FK, ICON_MAX_16_FK, 0 };
+        ImFontConfig icfg;
+        icfg.MergeMode        = true;
+        icfg.PixelSnapH       = true;
+        icfg.GlyphMinAdvanceX = 16.0f;   // keep icons monospace-ish
+        const std::string faPath = executableDir() + "/assets/fonts/forkawesome-webfont.ttf";
+        if (!io.Fonts->AddFontFromFileTTF(faPath.c_str(), 15.0f, &icfg, kFaRange))
+            Log::warn("ImGuiLayer: Fork Awesome icons '%s' not found; node icons disabled", faPath.c_str());
+    }
+
     // install_callbacks=true is safe: iron::Input is poll-based (it never
     // installs GLFW callbacks), and ImGui chains to any pre-existing ones.
     ImGui_ImplGlfw_InitForVulkan(window.handle(), /*install_callbacks=*/true);
@@ -253,6 +268,23 @@ void* ImGuiLayer::registerTexture(const unsigned char* rgba, int width, int heig
     // descriptor binding below. Linear (non-sRGB) so the gloss ramp's alpha
     // blends as authored.
     const TextureHandle h = vk.createTexture(width, height, rgba, /*srgb=*/false);
+    VkImageView view = VK_NULL_HANDLE;
+    VkSampler  sampler = VK_NULL_HANDLE;
+    if (!vk.textureViewSampler(h, view, sampler)) return nullptr;
+    VkDescriptorSet ds = ImGui_ImplVulkan_AddTexture(
+        sampler, view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+    void* id = static_cast<void*>(ds);
+    registeredTextures_.push_back(id);
+    return id;
+}
+
+void* ImGuiLayer::registerTextureFromFile(const std::string& path) {
+    if (!initialized_) return nullptr;
+    auto& vk = static_cast<VulkanRenderer&>(*renderer_);
+    // loadTexture decodes via stb_image + uploads (image owned by the renderer's
+    // texture store); we only own the ImGui descriptor binding below.
+    const TextureHandle h = vk.loadTexture(path, /*srgb=*/false);
+    if (h == kInvalidHandle) return nullptr;
     VkImageView view = VK_NULL_HANDLE;
     VkSampler  sampler = VK_NULL_HANDLE;
     if (!vk.textureViewSampler(h, view, sampler)) return nullptr;

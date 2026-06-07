@@ -26,14 +26,14 @@ const PortDesc* GraphEditorModel::portOf(NodeId node, std::string_view port) con
 NodeId GraphEditorModel::addNode(std::string typeName, float x, float y) {
     const NodeId id = graph_.addNode(std::move(typeName));
     if (Node* n = graph_.node(id)) { n->editorX = x; n->editorY = y; }
-    dirty_ = true;
+    markChanged();
     return id;
 }
 
 void GraphEditorModel::deleteNode(NodeId id) {
     graph_.removeNode(id);
     if (selected_ == id) selected_ = 0;
-    dirty_ = true;
+    markChanged();
 }
 
 bool GraphEditorModel::connect(NodeId fromNode, std::string fromPort,
@@ -49,7 +49,7 @@ bool GraphEditorModel::connect(NodeId fromNode, std::string fromPort,
         graph_.disconnect(toNode, toPort);                // data in: one source
     }
     graph_.connect(fromNode, std::move(fromPort), toNode, std::move(toPort));
-    dirty_ = true;
+    markChanged();
     return true;
 }
 
@@ -70,24 +70,24 @@ std::vector<NodeCreation> GraphEditorModel::compatibleCreations(PortType srcType
 
 void GraphEditorModel::disconnect(NodeId toNode, std::string toPort) {
     graph_.disconnect(toNode, toPort);
-    dirty_ = true;
+    markChanged();
 }
 
 void GraphEditorModel::disconnectOutgoing(NodeId fromNode, std::string fromPort) {
     graph_.removeOutgoing(fromNode, fromPort);
-    dirty_ = true;
+    markChanged();
 }
 
 void GraphEditorModel::setLiteral(NodeId id, std::string port, NodeValue value) {
     graph_.setLiteral(id, std::move(port), std::move(value));
-    dirty_ = true;
+    markChanged();
 }
 
 void GraphEditorModel::setNodePosition(NodeId id, float x, float y) {
     if (Node* n = graph_.node(id)) {
         n->editorX = x;
         n->editorY = y;
-        dirty_ = true;
+        markChanged();
     }
 }
 
@@ -97,14 +97,14 @@ std::uint32_t GraphEditorModel::addComment(float x, float y, float w, float h, s
     c.x = x; c.y = y; c.w = w; c.h = h;
     c.title = std::move(title);
     comments_.push_back(std::move(c));
-    dirty_ = true;
+    markChanged();
     return comments_.back().id;
 }
 
 void GraphEditorModel::deleteComment(std::uint32_t id) {
     const auto it = std::remove_if(comments_.begin(), comments_.end(),
                                    [id](const Comment& c) { return c.id == id; });
-    if (it != comments_.end()) { comments_.erase(it, comments_.end()); dirty_ = true; }
+    if (it != comments_.end()) { comments_.erase(it, comments_.end()); markChanged(); }
 }
 
 void GraphEditorModel::setCommentRect(std::uint32_t id, float x, float y, float w, float h) {
@@ -115,7 +115,7 @@ void GraphEditorModel::setCommentRect(std::uint32_t id, float x, float y, float 
         if (std::fabs(c.x - x) > kTol || std::fabs(c.y - y) > kTol ||
             std::fabs(c.w - w) > kTol || std::fabs(c.h - h) > kTol) {
             c.x = x; c.y = y; c.w = w; c.h = h;
-            dirty_ = true;
+            markChanged();
         }
         return;
     }
@@ -124,7 +124,7 @@ void GraphEditorModel::setCommentRect(std::uint32_t id, float x, float y, float 
 void GraphEditorModel::setCommentTitle(std::uint32_t id, std::string title) {
     for (Comment& c : comments_) {
         if (c.id != id) continue;
-        if (c.title != title) { c.title = std::move(title); dirty_ = true; }
+        if (c.title != title) { c.title = std::move(title); markChanged(); }
         return;
     }
 }

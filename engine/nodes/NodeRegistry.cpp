@@ -1,5 +1,8 @@
 #include "nodes/NodeRegistry.h"
 
+#include <algorithm>
+#include <cctype>
+
 namespace iron {
 
 namespace {
@@ -47,9 +50,54 @@ nlohmann::json catalogToJson(const NodeRegistry& registry) {
         }
         arr.push_back({{"typeName", t->typeName},
                        {"category", t->category},
+                       {"subtitle", t->subtitle},
+                       {"devOnly",  t->devOnly},
                        {"ports", ports}});
     }
     return arr;
+}
+
+namespace {
+std::string toLower(std::string_view s) {
+    std::string r(s);
+    std::transform(r.begin(), r.end(), r.begin(),
+                   [](unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
+    return r;
+}
+bool isAllowed(const std::vector<std::string>* allow, const std::string& name) {
+    if (!allow) return true;
+    return std::find(allow->begin(), allow->end(), name) != allow->end();
+}
+}  // namespace
+
+std::vector<NodeCreateGroup> buildCreateList(const NodeRegistry& registry,
+                                             std::string_view query,
+                                             const std::vector<std::string>* allowedTypeNames) {
+    const std::string q = toLower(query);
+    std::vector<const NodeTypeDesc*> types;
+    for (const NodeTypeDesc* t : registry.all()) {
+        if (!isAllowed(allowedTypeNames, t->typeName)) continue;
+        if (!q.empty()) {
+            const bool match = toLower(t->typeName).find(q) != std::string::npos ||
+                               toLower(t->subtitle).find(q) != std::string::npos;
+            if (!match) continue;
+        }
+        types.push_back(t);
+    }
+    std::sort(types.begin(), types.end(),
+              [](const NodeTypeDesc* a, const NodeTypeDesc* b) { return a->typeName < b->typeName; });
+
+    std::vector<NodeCreateGroup> groups;
+    if (!q.empty()) { groups.push_back({"Results", std::move(types)}); return groups; }
+    for (const NodeTypeDesc* t : types) {
+        auto it = std::find_if(groups.begin(), groups.end(),
+                               [&](const NodeCreateGroup& g) { return g.category == t->category; });
+        if (it == groups.end()) groups.push_back({t->category, {t}});
+        else it->types.push_back(t);
+    }
+    std::sort(groups.begin(), groups.end(),
+              [](const NodeCreateGroup& a, const NodeCreateGroup& b) { return a.category < b.category; });
+    return groups;
 }
 
 }  // namespace iron

@@ -2,6 +2,7 @@
 
 #include <vulkan/vulkan.h>
 
+#include <string>
 #include <vector>
 
 namespace iron {
@@ -49,6 +50,11 @@ public:
     // VkDescriptorSet), valid for the layer's lifetime. Returns nullptr if not
     // initialized. Used for the node header gradient.
     void* registerTexture(const unsigned char* rgba, int width, int height);
+
+    // Load an RGBA image file, upload it, and return an ImGui texture id (void*).
+    // Returns nullptr if not initialized or the file can't be loaded. Used for the
+    // node header background texture (the blueprint header gradient).
+    void* registerTextureFromFile(const std::string& path);
 
 private:
     bool initialized_ = false;

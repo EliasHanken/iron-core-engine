@@ -259,5 +259,63 @@ int main() {
         CHECK(inHasConst);
     }
 
+    // M61: catalogToJson emits subtitle + devOnly per type.
+    {
+        const nlohmann::json cat = catalogToJson(reg);
+        CHECK(cat.is_array());
+        bool sawSubtitle = false, sawDevOnly = false;
+        for (const auto& e : cat) {
+            CHECK(e.contains("subtitle"));
+            CHECK(e.contains("devOnly"));
+            if (e.value("typeName", std::string()) == "Branch" && !e.value("subtitle", std::string()).empty())
+                sawSubtitle = true;
+            if (e.value("devOnly", false)) sawDevOnly = true;
+        }
+        CHECK(sawSubtitle);   // Branch gets an authored subtitle
+        CHECK(sawDevOnly);    // at least one node is dev-only
+    }
+
+    // M61: buildCreateList grouping + search + compat filter.
+    {
+        auto groups = buildCreateList(reg, "", nullptr);
+        std::size_t total = 0; bool sawFlow = false;
+        for (const auto& g : groups) { total += g.types.size(); if (g.category == "Flow") sawFlow = true; }
+        CHECK(sawFlow);
+        CHECK(total == reg.all().size());     // no type dropped
+
+        auto hits = buildCreateList(reg, "BRANCH", nullptr);  // case-insensitive
+        std::size_t hitCount = 0; bool sawBranch = false;
+        for (const auto& g : hits) for (const NodeTypeDesc* t : g.types) {
+            ++hitCount; if (t->typeName == "Branch") sawBranch = true;
+        }
+        CHECK(sawBranch);
+        CHECK(hitCount < reg.all().size());   // filtered
+
+        const std::vector<std::string> allowed = {"Add", "Compare"};
+        auto restricted = buildCreateList(reg, "", &allowed);
+        std::size_t rCount = 0;
+        for (const auto& g : restricted) for (const NodeTypeDesc* t : g.types) {
+            ++rCount; CHECK(t->typeName == "Add" || t->typeName == "Compare");
+        }
+        CHECK(rCount == 2u);
+    }
+
+    // M61: unsaved() is independent of the transient dirty() signal — the undo
+    // system clears dirty() every frame, which must NOT clear the unsaved state.
+    {
+        GraphEditorModel m(&reg);
+        CHECK(!m.unsaved());                 // fresh model is clean
+        const NodeId id = m.addNode("Const", 0, 0);
+        CHECK(m.dirty());
+        CHECK(m.unsaved());                  // a mutation sets both
+        m.clearDirty();                      // undo consumes the per-frame signal
+        CHECK(!m.dirty());
+        CHECK(m.unsaved());                  // ...but unsaved persists (the bug we fixed)
+        m.markSaved();                       // a Save/Load clears it
+        CHECK(!m.unsaved());
+        m.setNodePosition(id, 5, 5);         // any later edit re-flags unsaved
+        CHECK(m.unsaved());
+    }
+
     return iron_test_result();
 }
