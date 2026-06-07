@@ -1,4 +1,5 @@
 #include "ui/UiElement.h"
+#include "ui/UiInput.h"
 #include "ui/UiLayout.h"
 #include "test_framework.h"
 
@@ -72,6 +73,55 @@ int main() {
         CHECK_NEAR(b.min.y, 50.0f);           // 40 height + 10 spacing
         CHECK_NEAR(a.min.x, 10.0f);           // centered: (200-180)/2
         CHECK_NEAR(b.min.x, 10.0f);
+    }
+
+    // Input: a click inside a button fires its actionId; outside does not.
+    {
+        UiElement root = uiPanel(Anchor::Stretch, Vec2{0, 0}, Vec2{0, 0}, Vec4{0, 0, 0, 0});
+        root.children.push_back(uiButton(Anchor::TopLeft, Vec2{0, 0}, Vec2{100, 50},
+                                         "Play", 18.0f, 7, Vec4{1, 1, 1, 1}));
+        uiAssignIds(root);
+        const UiLayoutMap m = layoutUi(root, Vec2{800, 600});
+
+        UiInputState in;
+        in.mouse = Vec2{50, 25}; in.mousePressed = true;
+        UiInputResult r = updateUi(root, m, in, 0);
+        CHECK(r.hovered == root.children[0].id);
+        CHECK(r.fired.size() == 1u);
+        CHECK(r.fired[0] == 7u);
+
+        in.mouse = Vec2{500, 500};   // outside the button
+        r = updateUi(root, m, in, 0);
+        CHECK(r.hovered == 0u);
+        CHECK(r.fired.empty());
+    }
+
+    // Input: nav cycles focus among buttons (wrapping); activate fires focused.
+    {
+        UiElement root = uiStackPanel(Anchor::TopLeft, Vec2{0, 0}, Vec2{200, 200},
+                                      StackDir::Vertical, 0.0f);
+        root.children.push_back(uiButton(Anchor::TopLeft, Vec2{0, 0}, Vec2{200, 40},
+                                         "A", 18.0f, 11, Vec4{1, 1, 1, 1}));
+        root.children.push_back(uiButton(Anchor::TopLeft, Vec2{0, 0}, Vec2{200, 40},
+                                         "B", 18.0f, 22, Vec4{1, 1, 1, 1}));
+        uiAssignIds(root);
+        const UiLayoutMap m = layoutUi(root, Vec2{800, 600});
+        const UiId bA = root.children[0].id;
+        const UiId bB = root.children[1].id;
+
+        UiInputState nav; nav.navNext = true;
+        UiInputResult r = updateUi(root, m, nav, 0);
+        CHECK(r.focused == bA);                 // first navNext focuses first button
+        r = updateUi(root, m, nav, r.focused);
+        CHECK(r.focused == bB);                 // advances
+        r = updateUi(root, m, nav, r.focused);
+        CHECK(r.focused == bA);                 // wraps
+
+        UiInputState act; act.activate = true;
+        r = updateUi(root, m, act, bB);
+        CHECK(r.focused == bB);
+        CHECK(r.fired.size() == 1u);
+        CHECK(r.fired[0] == 22u);
     }
 
     return iron_test_result();
