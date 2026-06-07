@@ -73,18 +73,31 @@ public:
     void clearSelection() { selected_ = 0; }
     NodeId selected() const { return selected_; }
 
+    // Transient "changed this frame" signal the undo system consumes and clears
+    // every frame. NOT a save-state indicator (see unsaved()).
     bool dirty() const { return dirty_; }
     void clearDirty() { dirty_ = false; }
+
+    // Persistent "edited since last save" state. Set by every mutation, cleared
+    // only by markSaved() (called when the graph is written to / read from disk).
+    // Independent of dirty_ so the per-frame undo clear doesn't reset it.
+    bool unsaved() const { return unsaved_; }
+    void markSaved() { unsaved_ = false; }
 
 private:
     // The PortDesc for (node, port), or nullptr.
     const struct PortDesc* portOf(NodeId node, std::string_view port) const;
+
+    // Mark the model changed: both the transient undo signal and the persistent
+    // unsaved state. Every mutation calls this.
+    void markChanged() { dirty_ = true; unsaved_ = true; }
 
     Graph graph_;
     const NodeRegistry* registry_ = nullptr;
     RunContext lastRun_;
     NodeId selected_ = 0;
     bool dirty_ = false;
+    bool unsaved_ = false;
     std::vector<Comment> comments_;
     std::uint32_t nextCommentId_ = 1;
 };

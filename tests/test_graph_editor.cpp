@@ -300,5 +300,22 @@ int main() {
         CHECK(rCount == 2u);
     }
 
+    // M61: unsaved() is independent of the transient dirty() signal — the undo
+    // system clears dirty() every frame, which must NOT clear the unsaved state.
+    {
+        GraphEditorModel m(&reg);
+        CHECK(!m.unsaved());                 // fresh model is clean
+        const NodeId id = m.addNode("Const", 0, 0);
+        CHECK(m.dirty());
+        CHECK(m.unsaved());                  // a mutation sets both
+        m.clearDirty();                      // undo consumes the per-frame signal
+        CHECK(!m.dirty());
+        CHECK(m.unsaved());                  // ...but unsaved persists (the bug we fixed)
+        m.markSaved();                       // a Save/Load clears it
+        CHECK(!m.unsaved());
+        m.setNodePosition(id, 5, 5);         // any later edit re-flags unsaved
+        CHECK(m.unsaved());
+    }
+
     return iron_test_result();
 }

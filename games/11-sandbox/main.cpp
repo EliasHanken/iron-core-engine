@@ -870,6 +870,7 @@ int main() {
         graphModel.connect(br, "true", st, "in");
         graphModel.connect(br, "false", sf, "in");
         graphModel.clearDirty();
+        graphModel.markSaved();   // initial demo graph: open clean, not "Unsaved"
     }
 
     // M55 demo: make the first entity bob on Y via a node graph.
@@ -1411,9 +1412,10 @@ int main() {
             } else if (selValid && act == iron::NodeGraphPanel::Action::LoadFromEntity) {
                 auto parsed = nlohmann::json::parse(
                     scene.entities[selectedIndex].logicGraph, nullptr, false);
-                if (!parsed.is_discarded() && graphModel.loadFromJson(parsed))
+                if (!parsed.is_discarded() && graphModel.loadFromJson(parsed)) {
                     nodeGraphPanel.resetPlacement();  // re-apply saved node positions
-
+                    graphModel.markSaved();           // fresh load == clean baseline
+                }
             }
         }
 

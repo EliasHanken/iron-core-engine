@@ -11,6 +11,7 @@
 
 #include <nlohmann/json.hpp>
 
+#include <cmath>
 #include <cstdint>
 #include <cstdio>
 #include <fstream>
@@ -131,7 +132,14 @@ std::string drawCreateList(GraphEditorModel& model, char* searchBuf, std::size_t
 }  // namespace
 
 NodeGraphPanel::NodeGraphPanel() {
-    ctx_ = ed::CreateEditor();
+    // M61 fix: disable the node-editor's OWN settings file ("NodeEditor.json").
+    // Otherwise layout has two competing sources of truth — our model (saved to
+    // node_graph.json) and the editor's internal store — which fight over comment
+    // position/size on reload (the editor's restored m_GroupBounds wins, so saved
+    // comment sizes never re-apply). Our model is the single source of truth.
+    ed::Config cfg;
+    cfg.SettingsFile = nullptr;
+    ctx_ = ed::CreateEditor(&cfg);
     // M58: soften the node cards to match the blueprint example.
     ed::SetCurrentEditor(ctx_);
     ed::Style& st = ed::GetStyle();
@@ -149,7 +157,15 @@ NodeGraphPanel::NodeGraphPanel() {
 NodeGraphPanel::~NodeGraphPanel() { if (ctx_) ed::DestroyEditor(ctx_); }
 
 NodeGraphPanel::Action NodeGraphPanel::draw(GraphEditorModel& model, const char* targetName, bool targetHasGraph) {
-    ImGui::Begin("Node Editor");
+    if (!ImGui::Begin("Node Editor")) {
+        // Collapsed or an inactive dock tab: ImGui sets SkipItems, so ed::Group's
+        // Dummy advances 0 and collapses comment group bounds — and the read-back
+        // below would then write that collapsed size back into the model. Skip all
+        // rendering while hidden (End() is still required to balance Begin()).
+        focused_ = false;
+        ImGui::End();
+        return Action::None;
+    }
     focused_ = ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows);
 
     if (ImGui::Button("Run")) model.run();
@@ -157,19 +173,33 @@ NodeGraphPanel::Action NodeGraphPanel::draw(GraphEditorModel& model, const char*
     ImGui::SetNextItemWidth(160);
     ImGui::InputText("##path", savePath_, sizeof(savePath_));
     ImGui::SameLine();
-    if (ImGui::Button("Save")) { std::ofstream f(savePath_); if (f) f << model.toJson().dump(2); }
+    // M61: unsaved indicator — a "*" on Save plus an amber tag so the user never
+    // leaves with unwritten edits. unsaved() is set by every model mutation and
+    // cleared on a successful Save/Load. (Uses unsaved(), NOT dirty(): the host's
+    // undo system consumes and clears dirty() every frame.)
+    const bool unsaved = model.unsaved();
+    if (ImGui::Button(unsaved ? "Save*" : "Save")) {
+        std::ofstream f(savePath_);
+        if (f) { f << model.toJson().dump(2); model.markSaved(); }
+    }
     ImGui::SameLine();
     if (ImGui::Button("Load")) {
         std::ifstream f(savePath_);
         if (f) {
             try {
                 nlohmann::json j; f >> j;
-                if (model.loadFromJson(j))
+                if (model.loadFromJson(j)) {
                     resetPlacement();   // re-place restored nodes + comments from their saved positions
+                    model.markSaved();  // freshly loaded == matches the file
+                }
             } catch (const std::exception&) {
                 // malformed file: ignore, leave graph unchanged
             }
         }
+    }
+    if (unsaved) {
+        ImGui::SameLine();
+        ImGui::TextColored(ImVec4(1.0f, 0.70f, 0.20f, 1.0f), ICON_FK_EXCLAMATION_CIRCLE " Unsaved");
     }
     // M55: entity-aware target readout + load/assign (host handles the wiring).
     Action action = Action::None;
@@ -214,6 +244,11 @@ NodeGraphPanel::Action NodeGraphPanel::draw(GraphEditorModel& model, const char*
         const ed::NodeId cid(commentEd(c.id));
         if (placedComments_.find(c.id) == placedComments_.end()) {
             ed::SetNodePosition(cid, ImVec2(c.x, c.y));
+            // ed::Group(size) only adopts its size arg the first frame a node
+            // becomes a group; afterwards the editor's stored m_GroupBounds wins.
+            // So push the model's size in explicitly on every (re)placement —
+            // this is what makes a Load/reopen restore the saved comment size.
+            ed::SetGroupSize(cid, ImVec2(c.w, c.h));
             placedComments_.insert(c.id);
         }
         ed::PushStyleColor(ed::StyleColor_NodeBg,     ImColor(60, 60, 75, 80).Value);
@@ -321,8 +356,8 @@ NodeGraphPanel::Action NodeGraphPanel::draw(GraphEditorModel& model, const char*
         // M58/M61: node decorations drawn into the node background list. Positions
         // use the content's SCREEN rect (contentMin/Max ± NodePadding) — the same
         // space the bg list draws in. Clipped to that card rect; rounded fills use
-        // RoundCorners flags and the glass gradient is INSET by the corner radius
-        // so its square corners tuck under the rounding (no boxy overhang).
+        // RoundCorners flags and the glass sheen lives in the upper body only
+        // (straight side edges, fades out before the rounded bottom corners).
         if (ImDrawList* bg = ed::GetNodeBackgroundDrawList(
                 ed::NodeId(static_cast<std::uintptr_t>(n.id)))) {
             const ImVec4 pad      = ed::GetStyle().NodePadding;   // x=left y=top z=right w=bottom
@@ -346,16 +381,19 @@ NodeGraphPanel::Action NodeGraphPanel::draw(GraphEditorModel& model, const char*
                 bg->AddRectFilled(a, b, headerColor(t->category), rounding, ImDrawFlags_RoundCornersTop);
             bg->AddLine(ImVec2(a.x, b.y), ImVec2(b.x, b.y), IM_COL32(0, 0, 0, 120), 1.0f);
 
-            // M61: glass — a full-height volume gradient (bright top -> dark bottom)
-            // INSET by the corner radius so its square corners hide under the
-            // rounded card, plus a bright top inner edge for a glossy highlight.
-            const ImVec2 gMin(cardMin.x + rounding, cardMin.y);
-            const ImVec2 gMax(cardMax.x - rounding, cardMax.y);
-            bg->AddRectFilledMultiColor(gMin, gMax,
-                                        IM_COL32(255, 255, 255, 32), IM_COL32(255, 255, 255, 32),
-                                        IM_COL32(0, 0, 0, 60),       IM_COL32(0, 0, 0, 60));
-            bg->AddLine(ImVec2(cardMin.x + rounding, cardMin.y + 1.0f),
-                        ImVec2(cardMax.x - rounding, cardMin.y + 1.0f), IM_COL32(255, 255, 255, 75), 1.0f);
+            // M61: glass — a soft sheen confined to the UPPER BODY (just under the
+            // header), drawn full-width so it aligns with the body's straight side
+            // edges, and fading to zero alpha before the rounded bottom corners.
+            // This keeps the glossy glass falloff WITHOUT the inset "light grey box"
+            // / boxy-corner artifacts of a full-card gradient (AddRectFilledMultiColor
+            // can't round corners, so a full-card fill either insets into a visible
+            // box or overhangs the rounded corners).
+            const float  bodyTop = b.y;
+            const ImVec2 sheenMin(cardMin.x, bodyTop);
+            const ImVec2 sheenMax(cardMax.x, bodyTop + (cardMax.y - bodyTop) * 0.55f);
+            bg->AddRectFilledMultiColor(sheenMin, sheenMax,
+                                        IM_COL32(255, 255, 255, 26), IM_COL32(255, 255, 255, 26),
+                                        IM_COL32(255, 255, 255, 0),  IM_COL32(255, 255, 255, 0));
 
             // M61: dev-only striped tag along the card's bottom edge.
             if (t->devOnly) {
@@ -374,11 +412,13 @@ NodeGraphPanel::Action NodeGraphPanel::draw(GraphEditorModel& model, const char*
     }
 
     // M56: sync live canvas positions back into the model so drags persist
-    // through Save/Assign (loadFromJson + placed_ restore them). Only write on
-    // change to avoid needlessly dirtying the model every frame.
+    // through Save/Assign (loadFromJson + placed_ restore them). Only write on a
+    // real change (>0.5px) — the editor floors positions, so an exact compare
+    // would re-dirty a freshly loaded graph from sub-pixel drift, making the
+    // unsaved indicator lie. Mirrors setCommentRect's tolerance.
     for (const Node& n : model.graph().nodes()) {
         const ImVec2 pos = ed::GetNodePosition(ed::NodeId(static_cast<std::uintptr_t>(n.id)));
-        if (pos.x != n.editorX || pos.y != n.editorY)
+        if (std::fabs(pos.x - n.editorX) > 0.5f || std::fabs(pos.y - n.editorY) > 0.5f)
             model.setNodePosition(n.id, pos.x, pos.y);
     }
 
