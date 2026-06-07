@@ -4,6 +4,7 @@
 #include "ui/FontAtlas.h"
 #include "ui/UiRender.h"
 #include "ui/UiStack.h"
+#include "ui/UiSerialize.h"
 #include "test_framework.h"
 #include <cstdio>
 #include <string>
@@ -218,6 +219,20 @@ int main() {
         fired = stack.update(in, Vec2{800, 600});
         CHECK(fired.size() == 1u);
         CHECK(fired[0] == 99u);
+    }
+
+    // Serialize: a built tree round-trips through JSON (uiEqual ignores id/texture).
+    {
+        UiElement root = uiStackPanel(Anchor::Center, Vec2{0, 0}, Vec2{200, 160},
+                                      StackDir::Vertical, 8.0f);
+        root.children.push_back(uiButton(Anchor::TopCenter, Vec2{0, 0}, Vec2{180, 40},
+                                         "Play", 20.0f, 1, Vec4{0.2f, 0.2f, 0.25f, 1}));
+        root.children.push_back(uiBar(Anchor::BottomLeft, Vec2{10, -10}, Vec2{120, 14},
+                                      0.7f, Vec4{0.8f, 0.2f, 0.2f, 1}, Vec4{0.1f, 0.1f, 0.1f, 1}));
+        uiAssignIds(root);
+
+        const UiElement back = uiFromJson(uiToJson(root));
+        CHECK(uiEqual(root, back));
     }
 
     return iron_test_result();
