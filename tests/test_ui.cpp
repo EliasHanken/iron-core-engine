@@ -2,6 +2,7 @@
 #include "ui/UiInput.h"
 #include "ui/UiLayout.h"
 #include "ui/FontAtlas.h"
+#include "ui/UiRender.h"
 #include "test_framework.h"
 #include <cstdio>
 #include <string>
@@ -156,6 +157,38 @@ int main() {
             atlas.quadFor('A', penX, penY);
             CHECK(penX > 0.0f);   // pen advanced
         }
+    }
+
+    // Render: a panel emits one white-texture quad (6 verts) at its laid-out rect.
+    {
+        UiElement root = uiPanel(Anchor::TopLeft, Vec2{0, 0}, Vec2{100, 40},
+                                 Vec4{0.5f, 0.5f, 0.5f, 1.0f});
+        uiAssignIds(root);
+        const UiLayoutMap m = layoutUi(root, Vec2{800, 600});
+
+        FontAtlas empty;                 // not baked: text routines no-op
+        const TextureHandle white = static_cast<TextureHandle>(1);
+        const HudBatch b = renderUi(root, m, empty, white, 0, 0);
+
+        CHECK(b.size() == 1u);
+        CHECK(b[0].texture == white);
+        CHECK(b[0].vertices.size() == 6u);
+        CHECK_NEAR(b[0].vertices[0].position.x, 0.0f);
+        CHECK_NEAR(b[0].vertices[0].position.y, 0.0f);
+    }
+
+    // Render: a Bar emits the track quad plus a partial fill quad (2 quads).
+    {
+        UiElement bar = uiBar(Anchor::TopLeft, Vec2{0, 0}, Vec2{200, 20}, 0.5f,
+                              Vec4{1, 0, 0, 1}, Vec4{0.2f, 0.2f, 0.2f, 1});
+        uiAssignIds(bar);
+        const UiLayoutMap m = layoutUi(bar, Vec2{800, 600});
+        FontAtlas empty;
+        const TextureHandle white = static_cast<TextureHandle>(1);
+        const HudBatch b = renderUi(bar, m, empty, white, 0, 0);
+
+        CHECK(b.size() == 1u);                  // both quads use whiteTexture
+        CHECK(b[0].vertices.size() == 12u);     // track + fill = 2 quads
     }
 
     return iron_test_result();

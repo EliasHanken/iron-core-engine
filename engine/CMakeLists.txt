@@ -25,6 +25,7 @@ add_library(ironcore STATIC
   ui/UiLayout.cpp
   ui/UiInput.cpp
   ui/FontAtlas.cpp
+  ui/UiRender.cpp
   physics/Rope.cpp
   physics/PhysicsWorld.cpp
   physics/Ragdoll.cpp
