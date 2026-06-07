@@ -1,7 +1,11 @@
 #include "ui/UiElement.h"
 #include "ui/UiInput.h"
 #include "ui/UiLayout.h"
+#include "ui/FontAtlas.h"
 #include "test_framework.h"
+#include <cstdio>
+#include <string>
+#include <vector>
 
 using namespace iron;
 
@@ -122,6 +126,36 @@ int main() {
         CHECK(r.focused == bB);
         CHECK(r.fired.size() == 1u);
         CHECK(r.fired[0] == 22u);
+    }
+
+    // FontAtlas: baking Roboto yields a non-empty atlas + sane metrics.
+    {
+        const std::string path =
+            std::string(IRON_REPO_ROOT) + "/games/11-sandbox/assets/fonts/Roboto-Medium.ttf";
+        std::FILE* f = std::fopen(path.c_str(), "rb");
+        CHECK(f != nullptr);
+        if (f) {
+            std::fseek(f, 0, SEEK_END);
+            const long n = std::ftell(f);
+            std::fseek(f, 0, SEEK_SET);
+            std::vector<unsigned char> bytes(static_cast<std::size_t>(n));
+            const std::size_t rd = std::fread(bytes.data(), 1, bytes.size(), f);
+            std::fclose(f);
+            CHECK(rd == bytes.size());
+
+            FontAtlas atlas;
+            CHECK(atlas.bake(bytes.data(), static_cast<int>(bytes.size()), 48.0f));
+            CHECK(atlas.width() > 0);
+            CHECK(atlas.height() > 0);
+            CHECK(atlas.pixels().size() ==
+                  static_cast<std::size_t>(atlas.width()) * atlas.height() * 4);
+            CHECK(atlas.textWidth("AV") > 0.0f);
+            CHECK(atlas.textWidth("AVA") > atlas.textWidth("AV"));  // proportional advance
+
+            float penX = 0.0f, penY = 0.0f;
+            atlas.quadFor('A', penX, penY);
+            CHECK(penX > 0.0f);   // pen advanced
+        }
     }
 
     return iron_test_result();
