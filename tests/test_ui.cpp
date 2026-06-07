@@ -3,6 +3,7 @@
 #include "ui/UiLayout.h"
 #include "ui/FontAtlas.h"
 #include "ui/UiRender.h"
+#include "ui/UiStack.h"
 #include "test_framework.h"
 #include <cstdio>
 #include <string>
@@ -189,6 +190,34 @@ int main() {
 
         CHECK(b.size() == 1u);                  // both quads use whiteTexture
         CHECK(b[0].vertices.size() == 12u);     // track + fill = 2 quads
+    }
+
+    // UiStack: a modal top screen blocks input to the screen beneath it.
+    {
+        UiStack stack;
+        UiElement hud = uiPanel(Anchor::Stretch, Vec2{0, 0}, Vec2{0, 0}, Vec4{0, 0, 0, 0});
+        hud.children.push_back(uiButton(Anchor::TopLeft, Vec2{0, 0}, Vec2{100, 50},
+                                        "HudBtn", 18.0f, 99, Vec4{1, 1, 1, 1}));
+        stack.push(hud, /*modal=*/false);
+
+        UiElement pause = uiPanel(Anchor::Stretch, Vec2{0, 0}, Vec2{0, 0}, Vec4{0, 0, 0, 0.5f});
+        pause.children.push_back(uiButton(Anchor::Center, Vec2{0, 0}, Vec2{120, 40},
+                                          "Resume", 18.0f, 3, Vec4{1, 1, 1, 1}));
+        stack.push(pause, /*modal=*/true);
+        CHECK(stack.topIsModal());
+
+        // Click where the HUD button sits (top-left): it must NOT fire — only the
+        // top (pause) screen receives input, and nothing of pause is there.
+        UiInputState in; in.mouse = Vec2{50, 25}; in.mousePressed = true;
+        std::vector<std::uint32_t> fired = stack.update(in, Vec2{800, 600});
+        CHECK(fired.empty());
+
+        // Pop the pause screen; now the HUD button is clickable again.
+        stack.pop();
+        CHECK(!stack.topIsModal());
+        fired = stack.update(in, Vec2{800, 600});
+        CHECK(fired.size() == 1u);
+        CHECK(fired[0] == 99u);
     }
 
     return iron_test_result();
