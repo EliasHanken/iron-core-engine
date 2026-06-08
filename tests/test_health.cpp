@@ -1,5 +1,5 @@
 #include "test_framework.h"
-#include "game/Health.h"
+#include "common/Health.h"
 
 using namespace iron;
 

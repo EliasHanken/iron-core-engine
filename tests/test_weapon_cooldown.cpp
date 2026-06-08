@@ -1,5 +1,5 @@
 #include "test_framework.h"
-#include "game/WeaponCooldown.h"
+#include "common/WeaponCooldown.h"
 
 using namespace iron;
 

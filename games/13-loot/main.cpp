@@ -11,7 +11,7 @@
 #include "core/Application.h"
 #include "core/Log.h"
 #include "core/Platform.h"
-#include "game/Inventory.h"
+#include "common/Inventory.h"
 #include "math/Transform.h"
 #include "render/RendererFactory.h"
 #include "scene/Camera.h"

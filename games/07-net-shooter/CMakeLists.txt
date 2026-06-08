@@ -3,7 +3,7 @@ add_executable(net-shooter
   Arena.cpp
   HitscanRifle.cpp
   RocketLauncher.cpp)
-target_link_libraries(net-shooter PRIVATE ironcore)
+target_link_libraries(net-shooter PRIVATE ironcore gamecommon)
 
 add_custom_command(TARGET net-shooter POST_BUILD
   COMMAND ${CMAKE_COMMAND} -E copy_directory
