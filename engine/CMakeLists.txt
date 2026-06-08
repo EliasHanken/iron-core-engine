@@ -22,6 +22,12 @@ add_library(ironcore STATIC
   ui/BitmapFont.cpp
   ui/BuiltinFont.cpp
   ui/Hud.cpp
+  ui/UiLayout.cpp
+  ui/UiInput.cpp
+  ui/FontAtlas.cpp
+  ui/UiRender.cpp
+  ui/UiStack.cpp
+  ui/UiSerialize.cpp
   physics/Rope.cpp
   physics/PhysicsWorld.cpp
   physics/Ragdoll.cpp
