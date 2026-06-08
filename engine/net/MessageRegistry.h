@@ -94,6 +94,16 @@ public:
         }
     }
 
+    // --- raw variable-length channel ---
+    // For payloads that aren't fixed-size POD (e.g. the Replicator's snapshots).
+    // The handler receives the payload AFTER the tag byte. Wire format is the
+    // same [u8 tag][payload...]; raw tags share the same tag namespace as POD
+    // messages, so don't reuse a tag for both.
+    void registerRawHandler(std::uint8_t tag,
+                            std::function<void(ConnectionId, std::span<const std::byte>)> fn);
+    bool sendRaw(ConnectionId conn, std::uint8_t tag,
+                 std::span<const std::byte> payload, SendReliability reliability);
+
 private:
     // Dispatch entry point — non-template so it can live in the .cpp.
     void dispatch(ConnectionId conn, std::span<const std::byte> bytes);
