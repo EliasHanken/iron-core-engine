@@ -303,5 +303,48 @@ int main() {
         CHECK(!uiEqual(slot, diff2));
     }
 
+    // M63: Grid wraps children into rows of `gridCols` using child size + spacing.
+    {
+        UiElement grid = uiGrid(Anchor::TopLeft, Vec2{0, 0}, Vec2{200, 200}, 3, 10.0f);
+        for (int i = 0; i < 5; ++i)
+            grid.children.push_back(uiPanel(Anchor::TopLeft, Vec2{0, 0}, Vec2{40, 40},
+                                            Vec4{1, 1, 1, 1}));
+        uiAssignIds(grid);
+        const UiLayoutMap m = layoutUi(grid, Vec2{300, 300});
+        // child 0 at (0,0); child 1 at (50,0); child 2 at (100,0); child 3 wraps to (0,50).
+        CHECK(m.at(grid.children[0].id).min.x == 0.0f);
+        CHECK(m.at(grid.children[1].id).min.x == 50.0f);
+        CHECK(m.at(grid.children[2].id).min.x == 100.0f);
+        CHECK(m.at(grid.children[3].id).min.x == 0.0f);
+        CHECK(m.at(grid.children[3].id).min.y == 50.0f);
+    }
+
+    // M63: applyScroll shifts ScrollBox descendants up by the offset and clips them.
+    {
+        UiElement box = uiScrollBox(Anchor::TopLeft, Vec2{0, 0}, Vec2{100, 100}, 0.0f);
+        UiElement inner = uiGrid(Anchor::TopLeft, Vec2{0, 0}, Vec2{100, 300}, 1, 0.0f);
+        for (int i = 0; i < 6; ++i)                          // 6 * 50 = 300 tall content
+            inner.children.push_back(uiPanel(Anchor::TopLeft, Vec2{0, 0}, Vec2{100, 50},
+                                             Vec4{1, 1, 1, 1}));
+        box.children.push_back(std::move(inner));
+        uiAssignIds(box);
+        UiLayoutMap m = layoutUi(box, Vec2{200, 400});
+        const UiId child0 = box.children[0].children[0].id;
+        const float before = m.at(child0).min.y;
+        std::unordered_map<UiId, float> offsets{{box.id, 40.0f}};
+        const UiClipMap clips = applyScroll(box, m, offsets);
+        CHECK(m.at(child0).min.y == before - 40.0f);         // shifted up
+        CHECK(clips.count(child0) == 1u);                    // descendant is clipped
+        CHECK(clips.at(child0).min.y == 0.0f);               // clip == scrollbox rect
+        CHECK(clips.at(child0).max.y == 100.0f);
+        // Offset clamps to [0, contentHeight - viewport] = [0, 200].
+        std::unordered_map<UiId, float> tooBig{{box.id, 9999.0f}};
+        UiLayoutMap m2 = layoutUi(box, Vec2{200, 400});
+        applyScroll(box, m2, tooBig);
+        const UiId last = box.children[0].children[5].id;
+        // content bottom (originally 300) shifted by clamped 200 -> 100 == viewport bottom.
+        CHECK(m2.at(last).max.y == 100.0f);
+    }
+
     return iron_test_result();
 }

@@ -1,5 +1,7 @@
 #include "ui/UiLayout.h"
 
+#include <algorithm>
+
 namespace iron {
 
 namespace {
@@ -53,6 +55,21 @@ Rect resolveAnchored(const Rect& parent, Anchor anchor, Vec2 size, Vec2 offset) 
 void layoutRec(const UiElement& e, const Rect& eRect, UiLayoutMap& out) {
     if (e.id != 0) out[e.id] = eRect;
 
+    if (e.kind == UiKind::Grid && e.gridCols > 0) {
+        float x = eRect.min.x, y = eRect.min.y, rowH = 0.0f;
+        int col = 0;
+        for (const UiElement& c : e.children) {
+            const Rect cr{Vec2{x, y}, Vec2{x + c.size.x, y + c.size.y}};
+            layoutRec(c, cr, out);
+            rowH = std::max(rowH, c.size.y);
+            x += c.size.x + e.spacing;
+            if (++col >= e.gridCols) {                    // wrap to next row
+                col = 0; x = eRect.min.x; y += rowH + e.spacing; rowH = 0.0f;
+            }
+        }
+        return;
+    }
+
     if (e.stack == StackDir::None) {
         for (const UiElement& c : e.children)
             layoutRec(c, resolveAnchored(eRect, c.anchor, c.size, c.offset), out);
@@ -89,6 +106,56 @@ UiLayoutMap layoutUi(const UiElement& root, Vec2 screenSize) {
     const Rect rootRect = resolveAnchored(screen, root.anchor, root.size, root.offset);
     layoutRec(root, rootRect, out);
     return out;
+}
+
+namespace {
+
+// Collect ids of e and all descendants.
+void collectSubtreeIds(const UiElement& e, std::vector<UiId>& out) {
+    if (e.id != 0) out.push_back(e.id);
+    for (const UiElement& c : e.children) collectSubtreeIds(c, out);
+}
+
+void applyScrollRec(const UiElement& e, UiLayoutMap& rects,
+                    const std::unordered_map<UiId, float>& offsets, UiClipMap& clips) {
+    if (e.kind == UiKind::ScrollBox) {
+        const auto boxIt = rects.find(e.id);
+        const auto offIt = offsets.find(e.id);
+        if (boxIt != rects.end()) {
+            const Rect viewport = boxIt->second;
+            const float viewH = viewport.max.y - viewport.min.y;
+            // Content height = (max descendant bottom) - viewport top, pre-shift.
+            std::vector<UiId> ids;
+            for (const UiElement& c : e.children) collectSubtreeIds(c, ids);
+            float contentBottom = viewport.min.y;
+            for (UiId id : ids) {
+                const auto it = rects.find(id);
+                if (it != rects.end()) contentBottom = std::max(contentBottom, it->second.max.y);
+            }
+            const float contentH = contentBottom - viewport.min.y;
+            float off = (offIt != offsets.end()) ? offIt->second : 0.0f;
+            const float maxOff = std::max(0.0f, contentH - viewH);
+            if (off < 0.0f) off = 0.0f;
+            if (off > maxOff) off = maxOff;
+            for (UiId id : ids) {
+                const auto it = rects.find(id);
+                if (it == rects.end()) continue;
+                it->second.min.y -= off;
+                it->second.max.y -= off;
+                clips[id] = viewport;
+            }
+        }
+    }
+    for (const UiElement& c : e.children) applyScrollRec(c, rects, offsets, clips);
+}
+
+}  // namespace
+
+UiClipMap applyScroll(const UiElement& root, UiLayoutMap& rects,
+                      const std::unordered_map<UiId, float>& offsets) {
+    UiClipMap clips;
+    applyScrollRec(root, rects, offsets, clips);
+    return clips;
 }
 
 }  // namespace iron
