@@ -346,5 +346,57 @@ int main() {
         CHECK(m2.at(last).max.y == 100.0f);
     }
 
+    // M63: drag start on press over a draggable; release over a dropTarget emits a drop.
+    {
+        UiElement root = uiPanel(Anchor::TopLeft, Vec2{0, 0}, Vec2{300, 100}, Vec4{0, 0, 0, 0});
+        root.children.push_back(uiSlot(Anchor::TopLeft, Vec2{0, 0},   Vec2{40, 40}, 0,
+                                       Vec4{0, 0, 0, 0}, 0.0f, 0x00000001u));  // src slot
+        root.children.push_back(uiSlot(Anchor::TopLeft, Vec2{100, 0}, Vec2{40, 40}, 0,
+                                       Vec4{0, 0, 0, 0}, 0.0f, 0x00010002u));  // dst slot
+        uiAssignIds(root);
+        const UiLayoutMap m = layoutUi(root, Vec2{300, 100});
+
+        // Frame 1: press on src slot -> drag becomes active.
+        UiInputState s1; s1.mouse = Vec2{20, 20}; s1.mousePressed = true; s1.mouseDown = true;
+        UiInputResult r1 = updateUi(root, m, s1, 0, UiDragState{}, UiClipMap{});
+        CHECK(r1.drag.active);
+        CHECK(r1.drag.sourceUserData == 0x00000001u);
+
+        // Frame 2: release over dst slot -> drop{src,dst}, drag clears.
+        UiInputState s2; s2.mouse = Vec2{120, 20}; s2.mouseReleased = true;
+        UiInputResult r2 = updateUi(root, m, s2, 0, r1.drag, UiClipMap{});
+        CHECK(r2.drop.has_value());
+        CHECK(r2.drop->source == 0x00000001u);
+        CHECK(r2.drop->target == 0x00010002u);
+        CHECK(!r2.drag.active);
+    }
+
+    // M63: double-click on a draggable emits quickTransfer, no drag.
+    {
+        UiElement root = uiPanel(Anchor::TopLeft, Vec2{0, 0}, Vec2{100, 100}, Vec4{0, 0, 0, 0});
+        root.children.push_back(uiSlot(Anchor::TopLeft, Vec2{0, 0}, Vec2{40, 40}, 0,
+                                       Vec4{0, 0, 0, 0}, 0.0f, 0x00000005u));
+        uiAssignIds(root);
+        const UiLayoutMap m = layoutUi(root, Vec2{100, 100});
+        UiInputState s; s.mouse = Vec2{20, 20}; s.mousePressed = true; s.mouseDown = true;
+        s.doubleClick = true;
+        UiInputResult r = updateUi(root, m, s, 0, UiDragState{}, UiClipMap{});
+        CHECK(r.quickTransfer.has_value());
+        CHECK(*r.quickTransfer == 0x00000005u);
+        CHECK(!r.drag.active);
+    }
+
+    // M63: wheel over a scrollbox produces a scroll delta keyed by its id.
+    {
+        UiElement box = uiScrollBox(Anchor::TopLeft, Vec2{0, 0}, Vec2{100, 100}, 0.0f);
+        uiAssignIds(box);
+        const UiLayoutMap m = layoutUi(box, Vec2{200, 200});
+        UiInputState s; s.mouse = Vec2{50, 50}; s.wheel = -1.0f;   // scroll down
+        UiInputResult r = updateUi(box, m, s, 0, UiDragState{}, UiClipMap{});
+        CHECK(r.scrollDeltas.size() == 1u);
+        CHECK(r.scrollDeltas[0].first == box.id);
+        CHECK(r.scrollDeltas[0].second > 0.0f);               // down -> increase offset
+    }
+
     return iron_test_result();
 }

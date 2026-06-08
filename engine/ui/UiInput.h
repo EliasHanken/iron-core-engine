@@ -5,6 +5,8 @@
 #include "ui/UiLayout.h"
 
 #include <cstdint>
+#include <optional>
+#include <utility>
 #include <vector>
 
 namespace iron {
@@ -17,12 +19,33 @@ struct UiInputState {
     bool navPrev = false;        // up/left went down this frame
     bool navNext = false;        // down/right went down this frame
     bool activate = false;       // enter/space/gamepad-A went down this frame
+    // M63 additions (appended to preserve aggregate-init order):
+    bool  mouseDown = false;      // left button held this frame
+    bool  mouseReleased = false;  // left button went up this frame
+    bool  doubleClick = false;    // left double-click recognized this frame (host-timed)
+    float wheel = 0.0f;           // scroll delta this frame (+ = up)
 };
+
+// Carried drag state: persists across the per-frame rebuild like focus.
+struct UiDragState {
+    bool          active = false;
+    UiId          sourceId = 0;
+    std::uint32_t sourceUserData = 0;
+    Vec2          grabOffset{0.0f, 0.0f};   // cursor - sourceRect.min at pickup
+};
+
+// A completed drop (source slot dragged onto target slot); userData payloads.
+struct UiDropEvent { std::uint32_t source = 0; std::uint32_t target = 0; };
 
 struct UiInputResult {
     std::vector<std::uint32_t> fired;  // actionIds activated this frame
     UiId hovered = 0;                  // button under the cursor (0 = none)
     UiId focused = 0;                  // keyboard/gamepad focus (0 = none)
+    // M63 additions:
+    std::optional<UiDropEvent>                 drop;          // a drop completed this frame
+    std::optional<std::uint32_t>               quickTransfer; // double-click source userData
+    std::vector<std::pair<UiId, float>>        scrollDeltas;  // {scrollBoxId, deltaPx}
+    UiDragState                                drag;          // state to carry to next frame
 };
 
 // Process one screen's tree. `prevFocused` carries focus across frames. Mouse:
@@ -31,6 +54,8 @@ struct UiInputResult {
 // among visible Buttons in tree order (wrapping); activate fires the focused
 // button. A button fires at most once per frame.
 UiInputResult updateUi(const UiElement& root, const UiLayoutMap& rects,
-                       const UiInputState& in, UiId prevFocused);
+                       const UiInputState& in, UiId prevFocused,
+                       const UiDragState& prevDrag = {},
+                       const UiClipMap& clips = {});
 
 }  // namespace iron
