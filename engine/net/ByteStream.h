@@ -67,6 +67,12 @@ private:
 // their own serialize/deserialize overloads, which win via overload resolution
 // (non-template exact match beats this template; and SFINAE removes this for
 // non-trivially-copyable types anyway).
+//
+// WARNING: this byte-blits the object as-is. Only use it for types whose bytes
+// are meaningful on the receiver — plain values/ids/enums. Do NOT replicate a
+// struct containing a raw pointer or any handle/index into a process-local
+// table: the pointer value would be copied to the wire and dereferenced as
+// garbage on the other side. Give such a type its own serialize/deserialize.
 template <typename T>
 std::enable_if_t<std::is_trivially_copyable_v<T>>
 serialize(ByteWriter& w, const T& v) {

@@ -56,6 +56,10 @@ void Replicator::onPacket(ConnectionId conn, std::span<const std::byte> payload)
     if (r.failed()) return;
 
     if (sub == kSubSync) {
+        // Only clients apply syncs. The host owns authoritative state and must
+        // never deserialize a (possibly forged) sync from a client into its own
+        // authoritative object — state changes on the host go through onCommand.
+        if (peers_.isHost()) return;
         const ReplicationId id = r.u32();
         const auto it = objects_.find(id);
         if (it == objects_.end()) return;
