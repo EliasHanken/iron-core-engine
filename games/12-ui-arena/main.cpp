@@ -142,6 +142,9 @@ int main() {
     iron::UiStack stack;
     stack.push(buildMenu(), /*modal=*/false);
 
+    Mode  prevMode = mode;
+    iron::UiId uiFocus = 0;   // carried across the per-frame stack rebuild
+
     float spin = 0.0f;
     float health = 1.0f;
     int   ammo = 24;
@@ -178,8 +181,14 @@ int main() {
             if (health > 1.0f) health = 1.0f;
         }
 
+        // A mode change starts a fresh screen with no carried focus.
+        if (mode != prevMode) { uiFocus = 0; prevMode = mode; }
+
         // Rebuild screens each frame so HUD values + the active stack stay current.
+        // The rebuild resets the top screen's focus, so re-seed the focus we
+        // carried from last frame (ids are deterministic per tree structure).
         rebuildStack();
+        stack.setTopFocus(uiFocus);
 
         // Translate engine input into a UiInputState.
         iron::UiInputState ui;
@@ -196,6 +205,7 @@ int main() {
         const iron::Vec2 screen{static_cast<float>(app.window().width()),
                                 static_cast<float>(app.window().height())};
         const std::vector<std::uint32_t> fired = stack.update(ui, screen);
+        uiFocus = stack.topFocus();   // remember focus for next frame's rebuild
         for (std::uint32_t a : fired) {
             switch (a) {
                 case ACT_PLAY:

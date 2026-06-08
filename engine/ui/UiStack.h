@@ -27,6 +27,14 @@ public:
     UiElement&       top()       { return screens_.back().root; }
     const UiElement& top() const { return screens_.back().root; }
 
+    // Top screen's keyboard/gamepad focus. A game that rebuilds its screens each
+    // frame (e.g. to refresh HUD values) must carry focus across the rebuild:
+    // capture topFocus() after update(), re-seed it via setTopFocus() after the
+    // rebuild. Widget ids are deterministic per tree structure, so a re-seeded id
+    // still resolves to the same button.
+    UiId topFocus() const { return screens_.empty() ? 0 : screens_.back().focused; }
+    void setTopFocus(UiId id) { if (!screens_.empty()) screens_.back().focused = id; }
+
     // Route input to the top screen; returns its fired actionIds.
     std::vector<std::uint32_t> update(const UiInputState& in, Vec2 screenSize);
     // Render every screen bottom-to-top into one batch.

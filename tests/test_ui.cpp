@@ -134,7 +134,7 @@ int main() {
     // FontAtlas: baking Roboto yields a non-empty atlas + sane metrics.
     {
         const std::string path =
-            std::string(IRON_REPO_ROOT) + "/games/11-sandbox/assets/fonts/Roboto-Medium.ttf";
+            std::string(IRON_REPO_ROOT) + "/games/12-ui-arena/assets/fonts/Roboto-Medium.ttf";
         std::FILE* f = std::fopen(path.c_str(), "rb");
         CHECK(f != nullptr);
         if (f) {
@@ -219,6 +219,43 @@ int main() {
         fired = stack.update(in, Vec2{800, 600});
         CHECK(fired.size() == 1u);
         CHECK(fired[0] == 99u);
+    }
+
+    // UiStack: focus can be carried across a rebuild via setTopFocus/topFocus,
+    // so a game that clears+rebuilds its screens each frame keeps keyboard focus.
+    {
+        auto buildMenu = [] {
+            UiElement m = uiStackPanel(Anchor::Center, Vec2{0, 0}, Vec2{200, 120},
+                                       StackDir::Vertical, 0.0f);
+            m.children.push_back(uiButton(Anchor::TopCenter, Vec2{0, 0}, Vec2{200, 40},
+                                          "Play", 18.0f, 1, Vec4{1, 1, 1, 1}));
+            m.children.push_back(uiButton(Anchor::TopCenter, Vec2{0, 0}, Vec2{200, 40},
+                                          "Quit", 18.0f, 2, Vec4{1, 1, 1, 1}));
+            return m;
+        };
+
+        UiStack stack;
+        stack.push(buildMenu(), false);
+        const UiId quitId = stack.top().children[1].id;   // deterministic id
+
+        // Seed focus on "Quit", then activate (no mouse, no nav this frame).
+        stack.setTopFocus(quitId);
+        UiInputState act; act.activate = true;
+        std::vector<std::uint32_t> fired = stack.update(act, Vec2{800, 600});
+        CHECK(fired.size() == 1u);
+        CHECK(fired[0] == 2u);                 // focused "Quit" fired
+        CHECK(stack.topFocus() == quitId);     // focus persisted, readable
+
+        // Simulate the demo's per-frame rebuild: clear + rebuild resets focus to 0,
+        // but re-seeding the carried id restores it (ids are stable per structure).
+        const UiId carried = stack.topFocus();
+        stack.clear();
+        stack.push(buildMenu(), false);
+        CHECK(stack.topFocus() == 0u);         // rebuild dropped focus...
+        stack.setTopFocus(carried);            // ...re-seeded
+        fired = stack.update(act, Vec2{800, 600});
+        CHECK(fired.size() == 1u);
+        CHECK(fired[0] == 2u);                 // still on "Quit" after the rebuild
     }
 
     // Serialize: a built tree round-trips through JSON (uiEqual ignores id/texture).
