@@ -6,6 +6,7 @@
 #include "ui/UiStack.h"
 #include "ui/UiSerialize.h"
 #include "test_framework.h"
+#include <algorithm>
 #include <cstdio>
 #include <string>
 #include <vector>
@@ -344,6 +345,67 @@ int main() {
         const UiId last = box.children[0].children[5].id;
         // content bottom (originally 300) shifted by clamped 200 -> 100 == viewport bottom.
         CHECK(m2.at(last).max.y == 100.0f);
+    }
+
+    // M63: uiClipQuad intersects a quad and remaps UVs proportionally.
+    {
+        Vec2 mn{0, 0}, mx{100, 100}, uv0{0, 0}, uv1{1, 1};
+        const Rect clip{Vec2{50, 0}, Vec2{200, 200}};       // clip left half away
+        const bool kept = uiClipQuad(mn, mx, uv0, uv1, clip);
+        CHECK(kept);
+        CHECK(mn.x == 50.0f);
+        CHECK(uv0.x == 0.5f);                                // uv remapped to half
+        CHECK(mx.x == 100.0f);
+        // Fully outside -> dropped.
+        Vec2 a{0, 0}, b{10, 10}, c{0, 0}, d{1, 1};
+        CHECK(!uiClipQuad(a, b, c, d, Rect{Vec2{500, 500}, Vec2{600, 600}}));
+    }
+
+    // M63: a 9-slice image emits 9 quads (54 verts) into its texture group.
+    {
+        FontAtlas dummy;                                     // no texture; not used here
+        UiElement panel = uiImage9(Anchor::TopLeft, Vec2{0, 0}, Vec2{100, 100},
+                                   /*tex=*/7, Vec4{10, 10, 10, 10}, 0.25f, Vec4{1, 1, 1, 1});
+        uiAssignIds(panel);
+        const UiLayoutMap m = layoutUi(panel, Vec2{200, 200});
+        const HudBatch b = renderUi(panel, m, dummy, /*white=*/1, 0, 0);
+        std::size_t verts = 0;
+        for (const auto& g : b) if (g.texture == 7) verts += g.vertices.size();
+        CHECK(verts == 54u);                                 // 9 quads * 6 verts
+    }
+
+    // M63: clips param trims a panel's quad to the clip rect.
+    {
+        FontAtlas dummy;
+        UiElement p = uiPanel(Anchor::TopLeft, Vec2{0, 0}, Vec2{100, 100}, Vec4{1, 1, 1, 1});
+        uiAssignIds(p);
+        const UiLayoutMap m = layoutUi(p, Vec2{200, 200});
+        UiClipMap clips; clips[p.id] = Rect{Vec2{0, 0}, Vec2{100, 40}};
+        const HudBatch b = renderUi(p, m, dummy, /*white=*/1, 0, 0, clips);
+        // The single quad's lowest y must be clamped to 40.
+        float maxY = 0.0f;
+        for (const auto& g : b) for (const auto& v : g.vertices) maxY = std::max(maxY, v.position.y);
+        CHECK(maxY == 40.0f);
+    }
+
+    // M63: drag ghost re-renders the dragged subtree translated to the cursor.
+    {
+        FontAtlas dummy;
+        UiElement root = uiPanel(Anchor::TopLeft, Vec2{0, 0}, Vec2{200, 200}, Vec4{0, 0, 0, 0});
+        root.children.push_back(uiSlot(Anchor::TopLeft, Vec2{0, 0}, Vec2{40, 40},
+                                       /*tile=*/0, Vec4{0, 0, 0, 0}, 0.0f, 0x10001u));
+        uiAssignIds(root);
+        const UiLayoutMap m = layoutUi(root, Vec2{200, 200});
+        UiDragState drag; drag.active = true; drag.sourceId = root.children[0].id;
+        drag.grabOffset = Vec2{0, 0};
+        const HudBatch ghost = renderUiDragGhost(root, m, dummy, /*white=*/1, drag, Vec2{120, 130});
+        bool any = false;
+        for (const auto& g : ghost) if (!g.vertices.empty()) any = true;
+        CHECK(any);                                          // ghost emitted something
+        // Ghost geometry sits near the cursor (x >= ~120), not at the origin slot.
+        float minX = 1e9f;
+        for (const auto& g : ghost) for (const auto& v : g.vertices) minX = std::min(minX, v.position.x);
+        CHECK(minX >= 120.0f - 0.01f);
     }
 
     // M63: drag start on press over a draggable; release over a dropTarget emits a drop.
