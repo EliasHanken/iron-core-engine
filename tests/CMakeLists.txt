@@ -36,6 +36,7 @@ target_compile_definitions(test_audio_engine PRIVATE
 iron_add_test(test_file_watcher test_file_watcher.cpp)
 iron_add_test(test_ray test_ray.cpp)
 iron_add_test(test_collision test_collision.cpp)
+iron_add_test(test_inventory test_inventory.cpp)
 iron_add_test(test_weapon_cooldown test_weapon_cooldown.cpp)
 iron_add_test(test_health test_health.cpp)
 iron_add_test(test_lag_compensator test_lag_compensator.cpp)

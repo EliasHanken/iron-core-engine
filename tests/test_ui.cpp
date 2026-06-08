@@ -6,6 +6,7 @@
 #include "ui/UiStack.h"
 #include "ui/UiSerialize.h"
 #include "test_framework.h"
+#include <algorithm>
 #include <cstdio>
 #include <string>
 #include <vector>
@@ -270,6 +271,240 @@ int main() {
 
         const UiElement back = uiFromJson(uiToJson(root));
         CHECK(uiEqual(root, back));
+    }
+
+    // M63: new kinds, slot flags, and serialize round-trip for new fields.
+    {
+        UiElement grid = uiGrid(Anchor::TopLeft, Vec2{10, 10}, Vec2{200, 120}, 4, 6.0f);
+        CHECK(grid.kind == UiKind::Grid);
+        CHECK(grid.gridCols == 4);
+        CHECK(grid.spacing == 6.0f);
+
+        UiElement scroll = uiScrollBox(Anchor::TopLeft, Vec2{0, 0}, Vec2{180, 100}, 4.0f);
+        CHECK(scroll.kind == UiKind::ScrollBox);
+
+        UiElement slot = uiSlot(Anchor::TopLeft, Vec2{0, 0}, Vec2{40, 40},
+                                kInvalidHandle, Vec4{8, 8, 8, 8}, 0.25f,
+                                /*userData=*/0x00010003u);
+        CHECK(slot.kind == UiKind::Image);
+        CHECK(slot.draggable);
+        CHECK(slot.dropTarget);
+        CHECK(slot.userData == 0x00010003u);
+        CHECK(slot.nineSliceUv == 0.25f);
+        CHECK(slot.nineSliceMargin.x == 8.0f);
+
+        // Serialize round-trips the new fields (texture/id still excluded).
+        const nlohmann::json j = uiToJson(slot);
+        const UiElement back = uiFromJson(j);
+        CHECK(uiEqual(slot, back));
+        // uiEqual is sensitive to the new fields.
+        UiElement diff = slot; diff.userData = 99u;
+        CHECK(!uiEqual(slot, diff));
+        UiElement diff2 = slot; diff2.gridCols = 7;
+        CHECK(!uiEqual(slot, diff2));
+    }
+
+    // M63: Grid wraps children into rows of `gridCols` using child size + spacing.
+    {
+        UiElement grid = uiGrid(Anchor::TopLeft, Vec2{0, 0}, Vec2{200, 200}, 3, 10.0f);
+        for (int i = 0; i < 5; ++i)
+            grid.children.push_back(uiPanel(Anchor::TopLeft, Vec2{0, 0}, Vec2{40, 40},
+                                            Vec4{1, 1, 1, 1}));
+        uiAssignIds(grid);
+        const UiLayoutMap m = layoutUi(grid, Vec2{300, 300});
+        // child 0 at (0,0); child 1 at (50,0); child 2 at (100,0); child 3 wraps to (0,50).
+        CHECK(m.at(grid.children[0].id).min.x == 0.0f);
+        CHECK(m.at(grid.children[1].id).min.x == 50.0f);
+        CHECK(m.at(grid.children[2].id).min.x == 100.0f);
+        CHECK(m.at(grid.children[3].id).min.x == 0.0f);
+        CHECK(m.at(grid.children[3].id).min.y == 50.0f);
+    }
+
+    // M63: applyScroll shifts ScrollBox descendants up by the offset and clips them.
+    {
+        UiElement box = uiScrollBox(Anchor::TopLeft, Vec2{0, 0}, Vec2{100, 100}, 0.0f);
+        UiElement inner = uiGrid(Anchor::TopLeft, Vec2{0, 0}, Vec2{100, 300}, 1, 0.0f);
+        for (int i = 0; i < 6; ++i)                          // 6 * 50 = 300 tall content
+            inner.children.push_back(uiPanel(Anchor::TopLeft, Vec2{0, 0}, Vec2{100, 50},
+                                             Vec4{1, 1, 1, 1}));
+        box.children.push_back(std::move(inner));
+        uiAssignIds(box);
+        UiLayoutMap m = layoutUi(box, Vec2{200, 400});
+        const UiId child0 = box.children[0].children[0].id;
+        const float before = m.at(child0).min.y;
+        std::unordered_map<UiId, float> offsets{{box.id, 40.0f}};
+        const UiClipMap clips = applyScroll(box, m, offsets);
+        CHECK(m.at(child0).min.y == before - 40.0f);         // shifted up
+        CHECK(clips.count(child0) == 1u);                    // descendant is clipped
+        CHECK(clips.at(child0).min.y == 0.0f);               // clip == scrollbox rect
+        CHECK(clips.at(child0).max.y == 100.0f);
+        // Offset clamps to [0, contentHeight - viewport] = [0, 200].
+        std::unordered_map<UiId, float> tooBig{{box.id, 9999.0f}};
+        UiLayoutMap m2 = layoutUi(box, Vec2{200, 400});
+        applyScroll(box, m2, tooBig);
+        const UiId last = box.children[0].children[5].id;
+        // content bottom (originally 300) shifted by clamped 200 -> 100 == viewport bottom.
+        CHECK(m2.at(last).max.y == 100.0f);
+    }
+
+    // M63: uiClipQuad intersects a quad and remaps UVs proportionally.
+    {
+        Vec2 mn{0, 0}, mx{100, 100}, uv0{0, 0}, uv1{1, 1};
+        const Rect clip{Vec2{50, 0}, Vec2{200, 200}};       // clip left half away
+        const bool kept = uiClipQuad(mn, mx, uv0, uv1, clip);
+        CHECK(kept);
+        CHECK(mn.x == 50.0f);
+        CHECK(uv0.x == 0.5f);                                // uv remapped to half
+        CHECK(mx.x == 100.0f);
+        // Fully outside -> dropped.
+        Vec2 a{0, 0}, b{10, 10}, c{0, 0}, d{1, 1};
+        CHECK(!uiClipQuad(a, b, c, d, Rect{Vec2{500, 500}, Vec2{600, 600}}));
+    }
+
+    // M63: a 9-slice image emits 9 quads (54 verts) into its texture group.
+    {
+        FontAtlas dummy;                                     // no texture; not used here
+        UiElement panel = uiImage9(Anchor::TopLeft, Vec2{0, 0}, Vec2{100, 100},
+                                   /*tex=*/7, Vec4{10, 10, 10, 10}, 0.25f, Vec4{1, 1, 1, 1});
+        uiAssignIds(panel);
+        const UiLayoutMap m = layoutUi(panel, Vec2{200, 200});
+        const HudBatch b = renderUi(panel, m, dummy, /*white=*/1, 0, 0);
+        std::size_t verts = 0;
+        for (const auto& g : b) if (g.texture == 7) verts += g.vertices.size();
+        CHECK(verts == 54u);                                 // 9 quads * 6 verts
+    }
+
+    // M63: clips param trims a panel's quad to the clip rect.
+    {
+        FontAtlas dummy;
+        UiElement p = uiPanel(Anchor::TopLeft, Vec2{0, 0}, Vec2{100, 100}, Vec4{1, 1, 1, 1});
+        uiAssignIds(p);
+        const UiLayoutMap m = layoutUi(p, Vec2{200, 200});
+        UiClipMap clips; clips[p.id] = Rect{Vec2{0, 0}, Vec2{100, 40}};
+        const HudBatch b = renderUi(p, m, dummy, /*white=*/1, 0, 0, clips);
+        // The single quad's lowest y must be clamped to 40.
+        float maxY = 0.0f;
+        for (const auto& g : b) for (const auto& v : g.vertices) maxY = std::max(maxY, v.position.y);
+        CHECK(maxY == 40.0f);
+    }
+
+    // M63: drag ghost re-renders the dragged subtree translated to the cursor.
+    {
+        FontAtlas dummy;
+        UiElement root = uiPanel(Anchor::TopLeft, Vec2{0, 0}, Vec2{200, 200}, Vec4{0, 0, 0, 0});
+        root.children.push_back(uiSlot(Anchor::TopLeft, Vec2{0, 0}, Vec2{40, 40},
+                                       /*tile=*/0, Vec4{0, 0, 0, 0}, 0.0f, 0x10001u));
+        uiAssignIds(root);
+        const UiLayoutMap m = layoutUi(root, Vec2{200, 200});
+        UiDragState drag; drag.active = true; drag.sourceId = root.children[0].id;
+        drag.grabOffset = Vec2{0, 0};
+        const HudBatch ghost = renderUiDragGhost(root, m, dummy, /*white=*/1, drag, Vec2{120, 130});
+        bool any = false;
+        for (const auto& g : ghost) if (!g.vertices.empty()) any = true;
+        CHECK(any);                                          // ghost emitted something
+        // Ghost geometry sits near the cursor (x >= ~120), not at the origin slot.
+        float minX = 1e9f;
+        for (const auto& g : ghost) for (const auto& v : g.vertices) minX = std::min(minX, v.position.x);
+        CHECK(minX >= 120.0f - 0.01f);
+    }
+
+    // M63: drag start on press over a draggable; release over a dropTarget emits a drop.
+    {
+        UiElement root = uiPanel(Anchor::TopLeft, Vec2{0, 0}, Vec2{300, 100}, Vec4{0, 0, 0, 0});
+        root.children.push_back(uiSlot(Anchor::TopLeft, Vec2{0, 0},   Vec2{40, 40}, 0,
+                                       Vec4{0, 0, 0, 0}, 0.0f, 0x00000001u));  // src slot
+        root.children.push_back(uiSlot(Anchor::TopLeft, Vec2{100, 0}, Vec2{40, 40}, 0,
+                                       Vec4{0, 0, 0, 0}, 0.0f, 0x00010002u));  // dst slot
+        uiAssignIds(root);
+        const UiLayoutMap m = layoutUi(root, Vec2{300, 100});
+
+        // Frame 1: press on src slot -> drag becomes active.
+        UiInputState s1; s1.mouse = Vec2{20, 20}; s1.mousePressed = true; s1.mouseDown = true;
+        UiInputResult r1 = updateUi(root, m, s1, 0, UiDragState{}, UiClipMap{});
+        CHECK(r1.drag.active);
+        CHECK(r1.drag.sourceUserData == 0x00000001u);
+
+        // Frame 2: release over dst slot -> drop{src,dst}, drag clears.
+        UiInputState s2; s2.mouse = Vec2{120, 20}; s2.mouseReleased = true;
+        UiInputResult r2 = updateUi(root, m, s2, 0, r1.drag, UiClipMap{});
+        CHECK(r2.drop.has_value());
+        CHECK(r2.drop->source == 0x00000001u);
+        CHECK(r2.drop->target == 0x00010002u);
+        CHECK(!r2.drag.active);
+    }
+
+    // M63: double-click on a draggable emits quickTransfer, no drag.
+    {
+        UiElement root = uiPanel(Anchor::TopLeft, Vec2{0, 0}, Vec2{100, 100}, Vec4{0, 0, 0, 0});
+        root.children.push_back(uiSlot(Anchor::TopLeft, Vec2{0, 0}, Vec2{40, 40}, 0,
+                                       Vec4{0, 0, 0, 0}, 0.0f, 0x00000005u));
+        uiAssignIds(root);
+        const UiLayoutMap m = layoutUi(root, Vec2{100, 100});
+        UiInputState s; s.mouse = Vec2{20, 20}; s.mousePressed = true; s.mouseDown = true;
+        s.doubleClick = true;
+        UiInputResult r = updateUi(root, m, s, 0, UiDragState{}, UiClipMap{});
+        CHECK(r.quickTransfer.has_value());
+        CHECK(*r.quickTransfer == 0x00000005u);
+        CHECK(!r.drag.active);
+    }
+
+    // M63: wheel over a scrollbox produces a scroll delta keyed by its id.
+    {
+        UiElement box = uiScrollBox(Anchor::TopLeft, Vec2{0, 0}, Vec2{100, 100}, 0.0f);
+        uiAssignIds(box);
+        const UiLayoutMap m = layoutUi(box, Vec2{200, 200});
+        UiInputState s; s.mouse = Vec2{50, 50}; s.wheel = -1.0f;   // scroll down
+        UiInputResult r = updateUi(box, m, s, 0, UiDragState{}, UiClipMap{});
+        CHECK(r.scrollDeltas.size() == 1u);
+        CHECK(r.scrollDeltas[0].first == box.id);
+        CHECK(r.scrollDeltas[0].second > 0.0f);               // down -> increase offset
+    }
+
+    // M63: UiStack accumulates wheel into a per-scrollbox offset across frames,
+    // and exposes drag state that survives a clear()+rebuild re-seed.
+    {
+        auto buildScreen = []() {
+            UiElement root = uiPanel(Anchor::Stretch, Vec2{0, 0}, Vec2{0, 0}, Vec4{0, 0, 0, 0});
+            UiElement box = uiScrollBox(Anchor::TopLeft, Vec2{0, 0}, Vec2{100, 100}, 0.0f);
+            UiElement grid = uiGrid(Anchor::TopLeft, Vec2{0, 0}, Vec2{100, 300}, 1, 0.0f);
+            for (int i = 0; i < 6; ++i)
+                grid.children.push_back(uiPanel(Anchor::TopLeft, Vec2{0, 0}, Vec2{100, 50},
+                                                Vec4{1, 1, 1, 1}));
+            box.children.push_back(std::move(grid));
+            root.children.push_back(std::move(box));
+            return root;
+        };
+        UiStack stack;
+        stack.push(buildScreen(), false);
+        // Find the scrollbox id (child 0 of root).
+        const UiId boxId = stack.top().children[0].id;
+
+        UiInputState s; s.mouse = Vec2{50, 50}; s.wheel = -1.0f;  // scroll down a notch
+        stack.update(s, Vec2{200, 200});
+        CHECK(stack.scrollOffset(boxId) > 0.0f);                 // offset accumulated
+
+        // Drag carries: seed a drag, confirm topDrag() reports it.
+        UiDragState d; d.active = true; d.sourceId = boxId; d.sourceUserData = 7u;
+        stack.setTopDrag(d);
+        CHECK(stack.topDrag().active);
+        CHECK(stack.topDrag().sourceUserData == 7u);
+    }
+
+    // M63 (review hardening): an oversized 9-slice margin must not produce quads
+    // outside the element rect — corners clamp, the center cell collapses.
+    {
+        FontAtlas dummy;
+        UiElement panel = uiImage9(Anchor::TopLeft, Vec2{0, 0}, Vec2{40, 40},
+                                   /*tex=*/9, Vec4{100, 100, 100, 100}, 0.25f,
+                                   Vec4{1, 1, 1, 1});   // margins >> size
+        uiAssignIds(panel);
+        const UiLayoutMap m = layoutUi(panel, Vec2{200, 200});
+        const HudBatch b = renderUi(panel, m, dummy, /*white=*/1, 0, 0);
+        for (const auto& g : b)
+            for (const auto& v : g.vertices) {
+                CHECK(v.position.x >= 0.0f && v.position.x <= 40.0f);
+                CHECK(v.position.y >= 0.0f && v.position.y <= 40.0f);
+            }
     }
 
     return iron_test_result();

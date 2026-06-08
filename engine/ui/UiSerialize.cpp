@@ -33,6 +33,13 @@ nlohmann::json uiToJson(const UiElement& e) {
     j["value"]      = e.value;
     j["trackColor"] = v4(e.trackColor);
     j["actionId"]   = e.actionId;
+    j["gridCols"]        = e.gridCols;
+    j["scrollOffset"]    = e.scrollOffset;
+    j["nineSliceMargin"] = v4(e.nineSliceMargin);
+    j["nineSliceUv"]     = e.nineSliceUv;
+    j["draggable"]       = e.draggable;
+    j["dropTarget"]      = e.dropTarget;
+    j["userData"]        = e.userData;
 
     nlohmann::json kids = nlohmann::json::array();
     for (const UiElement& c : e.children) kids.push_back(uiToJson(c));
@@ -55,6 +62,13 @@ UiElement uiFromJson(const nlohmann::json& j) {
     e.value      = j.value("value", 0.0f);
     e.trackColor = readV4(j.contains("trackColor") ? j["trackColor"] : nlohmann::json{}, Vec4{0, 0, 0, 1});
     e.actionId   = j.value("actionId", 0u);
+    e.gridCols        = j.value("gridCols", 0);
+    e.scrollOffset    = j.value("scrollOffset", 0.0f);
+    e.nineSliceMargin = readV4(j.contains("nineSliceMargin") ? j["nineSliceMargin"] : nlohmann::json{}, Vec4{0, 0, 0, 0});
+    e.nineSliceUv     = j.value("nineSliceUv", 0.0f);
+    e.draggable       = j.value("draggable", false);
+    e.dropTarget      = j.value("dropTarget", false);
+    e.userData        = j.value("userData", 0u);
 
     if (j.contains("children") && j["children"].is_array())
         for (const auto& jc : j["children"]) e.children.push_back(uiFromJson(jc));
