@@ -13,7 +13,7 @@ namespace iron {
 
 using UiId = std::uint32_t;   // 1-based; 0 = unset/invalid
 
-enum class UiKind { Panel, Label, Image, Button, Bar };
+enum class UiKind { Panel, Label, Image, Button, Bar, Grid, ScrollBox };
 
 // 9 presets place the element's matching point against the parent rect;
 // Stretch fills the parent (offset acts as a uniform inset).
@@ -45,6 +45,14 @@ struct UiElement {
     Vec4          trackColor{0.0f, 0.0f, 0.0f, 1.0f}; // Bar background
     std::uint32_t actionId = 0;                // Button -> game action code
 
+    int           gridCols = 0;                // Grid: columns per row
+    float         scrollOffset = 0.0f;         // ScrollBox: current vertical scroll (px)
+    Vec4          nineSliceMargin{0, 0, 0, 0}; // L,T,R,B dest border px (0 => plain quad)
+    float         nineSliceUv = 0.0f;          // source border fraction 0..1 (uniform)
+    bool          draggable = false;           // can initiate a drag
+    bool          dropTarget = false;          // can receive a drop
+    std::uint32_t userData = 0;                // payload (game encodes container/slot)
+
     std::vector<UiElement> children;
 };
 
@@ -75,6 +83,26 @@ inline UiElement uiBar(Anchor a, Vec2 offset, Vec2 size, float value, Vec4 fill,
     UiElement e; e.kind = UiKind::Bar; e.anchor = a; e.offset = offset;
     e.size = size; e.value = value; e.color = fill; e.trackColor = track; return e;
 }
+inline UiElement uiGrid(Anchor a, Vec2 offset, Vec2 size, int cols, float spacing) {
+    UiElement e = uiPanel(a, offset, size, Vec4{0, 0, 0, 0});
+    e.kind = UiKind::Grid; e.gridCols = cols; e.spacing = spacing; return e;
+}
+inline UiElement uiScrollBox(Anchor a, Vec2 offset, Vec2 size, float spacing) {
+    UiElement e = uiPanel(a, offset, size, Vec4{0, 0, 0, 0});
+    e.kind = UiKind::ScrollBox; e.spacing = spacing; return e;
+}
+inline UiElement uiImage9(Anchor a, Vec2 offset, Vec2 size, TextureHandle tex,
+                          Vec4 margin, float uvBorder, Vec4 tint) {
+    UiElement e = uiImage(a, offset, size, tex, tint);
+    e.nineSliceMargin = margin; e.nineSliceUv = uvBorder; return e;
+}
+// A draggable/droppable 9-slice tile, ready to receive icon + count children.
+inline UiElement uiSlot(Anchor a, Vec2 offset, Vec2 size, TextureHandle tileTex,
+                        Vec4 margin, float uvBorder, std::uint32_t userData,
+                        Vec4 tint = Vec4{1, 1, 1, 1}) {
+    UiElement e = uiImage9(a, offset, size, tileTex, margin, uvBorder, tint);
+    e.draggable = true; e.dropTarget = true; e.userData = userData; return e;
+}
 
 // Assign unique sequential ids (1-based), depth-first. Returns next free id.
 // Call once after building a screen.
@@ -98,6 +126,11 @@ inline bool uiEqual(const UiElement& a, const UiElement& b) {
     if (a.visible != b.visible || a.text != b.text) return false;
     if (!nf(a.fontPx, b.fontPx) || !nf(a.value, b.value) || !nf(a.spacing, b.spacing)) return false;
     if (a.actionId != b.actionId) return false;
+    if (a.gridCols != b.gridCols) return false;
+    if (!nf(a.scrollOffset, b.scrollOffset)) return false;
+    if (!n4(a.nineSliceMargin, b.nineSliceMargin) || !nf(a.nineSliceUv, b.nineSliceUv)) return false;
+    if (a.draggable != b.draggable || a.dropTarget != b.dropTarget) return false;
+    if (a.userData != b.userData) return false;
     if (a.children.size() != b.children.size()) return false;
     for (std::size_t i = 0; i < a.children.size(); ++i)
         if (!uiEqual(a.children[i], b.children[i])) return false;

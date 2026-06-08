@@ -272,5 +272,36 @@ int main() {
         CHECK(uiEqual(root, back));
     }
 
+    // M63: new kinds, slot flags, and serialize round-trip for new fields.
+    {
+        UiElement grid = uiGrid(Anchor::TopLeft, Vec2{10, 10}, Vec2{200, 120}, 4, 6.0f);
+        CHECK(grid.kind == UiKind::Grid);
+        CHECK(grid.gridCols == 4);
+        CHECK(grid.spacing == 6.0f);
+
+        UiElement scroll = uiScrollBox(Anchor::TopLeft, Vec2{0, 0}, Vec2{180, 100}, 4.0f);
+        CHECK(scroll.kind == UiKind::ScrollBox);
+
+        UiElement slot = uiSlot(Anchor::TopLeft, Vec2{0, 0}, Vec2{40, 40},
+                                kInvalidHandle, Vec4{8, 8, 8, 8}, 0.25f,
+                                /*userData=*/0x00010003u);
+        CHECK(slot.kind == UiKind::Image);
+        CHECK(slot.draggable);
+        CHECK(slot.dropTarget);
+        CHECK(slot.userData == 0x00010003u);
+        CHECK(slot.nineSliceUv == 0.25f);
+        CHECK(slot.nineSliceMargin.x == 8.0f);
+
+        // Serialize round-trips the new fields (texture/id still excluded).
+        const nlohmann::json j = uiToJson(slot);
+        const UiElement back = uiFromJson(j);
+        CHECK(uiEqual(slot, back));
+        // uiEqual is sensitive to the new fields.
+        UiElement diff = slot; diff.userData = 99u;
+        CHECK(!uiEqual(slot, diff));
+        UiElement diff2 = slot; diff2.gridCols = 7;
+        CHECK(!uiEqual(slot, diff2));
+    }
+
     return iron_test_result();
 }
