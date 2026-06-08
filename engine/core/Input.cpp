@@ -4,16 +4,22 @@
 #include <unordered_map>
 
 namespace {
-std::unordered_map<GLFWwindow*, iron::Input*>& inputRegistry() {
-    static std::unordered_map<GLFWwindow*, iron::Input*> r;
+// One registry entry per window: the owning Input plus the scroll callback that
+// was installed before us (so we can chain to it — e.g. ImGui's — and restore it
+// when the Input is destroyed). Per-window so multiple windows don't clobber a
+// single global previous-callback pointer.
+struct ScrollEntry { iron::Input* input = nullptr; GLFWscrollfun prev = nullptr; };
+std::unordered_map<GLFWwindow*, ScrollEntry>& inputRegistry() {
+    static std::unordered_map<GLFWwindow*, ScrollEntry> r;
     return r;
 }
-GLFWscrollfun g_prevScroll = nullptr;
 void scrollCallback(GLFWwindow* w, double xoff, double yoff) {
     auto& reg = inputRegistry();
     const auto it = reg.find(w);
-    if (it != reg.end() && it->second) it->second->addScroll(yoff);
-    if (g_prevScroll) g_prevScroll(w, xoff, yoff);   // chain (ImGui etc.)
+    if (it != reg.end()) {
+        if (it->second.input) it->second.input->addScroll(yoff);
+        if (it->second.prev)  it->second.prev(w, xoff, yoff);   // chain (ImGui etc.)
+    }
 }
 }  // namespace
 
@@ -24,8 +30,18 @@ Input::Input(GLFWwindow* window) : window_(window) {
         glfwGetCursorPos(window_, &mouseX_, &mouseY_);
         prevMouseX_ = mouseX_;
         prevMouseY_ = mouseY_;
-        inputRegistry()[window_] = this;
-        g_prevScroll = glfwSetScrollCallback(window_, scrollCallback);
+        const GLFWscrollfun prev = glfwSetScrollCallback(window_, scrollCallback);
+        inputRegistry()[window_] = ScrollEntry{this, prev};
+    }
+}
+
+Input::~Input() {
+    if (!window_) return;
+    auto& reg = inputRegistry();
+    const auto it = reg.find(window_);
+    if (it != reg.end() && it->second.input == this) {
+        glfwSetScrollCallback(window_, it->second.prev);   // restore prior callback
+        reg.erase(it);
     }
 }
 

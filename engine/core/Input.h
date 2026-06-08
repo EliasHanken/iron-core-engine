@@ -11,6 +11,7 @@ namespace iron {
 class Input {
 public:
     explicit Input(GLFWwindow* window);
+    ~Input();   // unregisters + restores the prior GLFW scroll callback
 
     void update();
 

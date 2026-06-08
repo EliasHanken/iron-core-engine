@@ -50,8 +50,16 @@ void appendQuadClipped(std::vector<HudVertex>& out, Vec2 mn, Vec2 mx,
 // border fraction `uvb`, into `verts`, clipped by `clip` if non-null.
 void appendNineSlice(std::vector<HudVertex>& verts, const Rect& r, Vec4 m,
                      float uvb, Vec4 color, const Rect* clip) {
-    const float xs[4] = {r.min.x, r.min.x + m.x, r.max.x - m.z, r.max.x};
-    const float ys[4] = {r.min.y, r.min.y + m.y, r.max.y - m.w, r.max.y};
+    // Clamp inner split points so the corner/edge cells never overshoot the
+    // rect when a margin is larger than the element (xs/ys stay monotonic within
+    // [min,max]; an oversized margin collapses the center cell instead of
+    // producing inverted, out-of-bounds quads).
+    const float x1 = std::min(r.min.x + m.x, r.max.x);
+    const float x2 = std::max(r.max.x - m.z, x1);
+    const float y1 = std::min(r.min.y + m.y, r.max.y);
+    const float y2 = std::max(r.max.y - m.w, y1);
+    const float xs[4] = {r.min.x, x1, x2, r.max.x};
+    const float ys[4] = {r.min.y, y1, y2, r.max.y};
     const float us[4] = {0.0f, uvb, 1.0f - uvb, 1.0f};
     const float vs[4] = {0.0f, uvb, 1.0f - uvb, 1.0f};
     for (int row = 0; row < 3; ++row) {

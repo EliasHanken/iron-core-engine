@@ -490,5 +490,22 @@ int main() {
         CHECK(stack.topDrag().sourceUserData == 7u);
     }
 
+    // M63 (review hardening): an oversized 9-slice margin must not produce quads
+    // outside the element rect — corners clamp, the center cell collapses.
+    {
+        FontAtlas dummy;
+        UiElement panel = uiImage9(Anchor::TopLeft, Vec2{0, 0}, Vec2{40, 40},
+                                   /*tex=*/9, Vec4{100, 100, 100, 100}, 0.25f,
+                                   Vec4{1, 1, 1, 1});   // margins >> size
+        uiAssignIds(panel);
+        const UiLayoutMap m = layoutUi(panel, Vec2{200, 200});
+        const HudBatch b = renderUi(panel, m, dummy, /*white=*/1, 0, 0);
+        for (const auto& g : b)
+            for (const auto& v : g.vertices) {
+                CHECK(v.position.x >= 0.0f && v.position.x <= 40.0f);
+                CHECK(v.position.y >= 0.0f && v.position.y <= 40.0f);
+            }
+    }
+
     return iron_test_result();
 }
