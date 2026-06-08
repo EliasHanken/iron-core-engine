@@ -1,6 +1,7 @@
 #include "ui/UiRender.h"
 
 #include <algorithm>
+#include <utility>
 
 namespace iron {
 
@@ -160,6 +161,22 @@ void renderRec(const UiElement& e, const UiLayoutMap& rects, const FontAtlas& at
         renderRec(c, rects, atlas, white, hovered, focused, clips, batch);
 }
 
+// Text must paint over image/panel quads. The batch is grouped by texture and
+// drawn in group-creation order, so an image group created AFTER the text group
+// (e.g. a later item icon with its own texture) would otherwise cover the text.
+// Move the font-atlas group to the end so labels/counts always render on top.
+void hoistTextLast(HudBatch& batch, TextureHandle atlasTex) {
+    if (atlasTex == kInvalidHandle) return;
+    for (std::size_t i = 0; i + 1 < batch.size(); ++i) {
+        if (batch[i].texture == atlasTex) {
+            HudDrawGroup g = std::move(batch[i]);
+            batch.erase(batch.begin() + static_cast<std::ptrdiff_t>(i));
+            batch.push_back(std::move(g));
+            return;
+        }
+    }
+}
+
 }  // namespace
 
 bool uiClipQuad(Vec2& min, Vec2& max, Vec2& uvMin, Vec2& uvMax, const Rect& clip) {
@@ -171,6 +188,7 @@ HudBatch renderUi(const UiElement& root, const UiLayoutMap& rects,
                   UiId hovered, UiId focused, const UiClipMap& clips) {
     HudBatch batch;
     renderRec(root, rects, atlas, whiteTexture, hovered, focused, clips, batch);
+    hoistTextLast(batch, atlas.texture);
     return batch;
 }
 
@@ -221,6 +239,7 @@ HudBatch renderUiDragGhost(const UiElement& root, const UiLayoutMap& rects,
     const Vec2 newMin{cursor.x - drag.grabOffset.x, cursor.y - drag.grabOffset.y};
     const Vec2 delta{newMin.x - it->second.min.x, newMin.y - it->second.min.y};
     renderGhostRec(*src, rects, atlas, whiteTexture, delta, 0.75f, batch);
+    hoistTextLast(batch, atlas.texture);
     return batch;
 }
 
