@@ -3,7 +3,7 @@
 #include "Messages.h"
 #include "Projectile.h"
 
-#include "game/WeaponCooldown.h"
+#include "common/WeaponCooldown.h"
 #include "math/Aabb.h"
 #include "math/Vec.h"
 

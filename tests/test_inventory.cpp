@@ -1,4 +1,4 @@
-#include "game/Inventory.h"
+#include "common/Inventory.h"
 #include "test_framework.h"
 
 using namespace iron;

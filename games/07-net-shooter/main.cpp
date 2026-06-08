@@ -17,7 +17,7 @@
 #include "asset/GltfLoader.h"
 #include "audio/AudioEngine.h"
 #include "game/Collision.h"
-#include "game/Health.h"
+#include "common/Health.h"
 #include "core/FixedTickScheduler.h"
 #include "core/Log.h"
 #include "debug/GizmoRegistry.h"
