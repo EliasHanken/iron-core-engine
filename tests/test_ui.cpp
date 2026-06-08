@@ -460,5 +460,35 @@ int main() {
         CHECK(r.scrollDeltas[0].second > 0.0f);               // down -> increase offset
     }
 
+    // M63: UiStack accumulates wheel into a per-scrollbox offset across frames,
+    // and exposes drag state that survives a clear()+rebuild re-seed.
+    {
+        auto buildScreen = []() {
+            UiElement root = uiPanel(Anchor::Stretch, Vec2{0, 0}, Vec2{0, 0}, Vec4{0, 0, 0, 0});
+            UiElement box = uiScrollBox(Anchor::TopLeft, Vec2{0, 0}, Vec2{100, 100}, 0.0f);
+            UiElement grid = uiGrid(Anchor::TopLeft, Vec2{0, 0}, Vec2{100, 300}, 1, 0.0f);
+            for (int i = 0; i < 6; ++i)
+                grid.children.push_back(uiPanel(Anchor::TopLeft, Vec2{0, 0}, Vec2{100, 50},
+                                                Vec4{1, 1, 1, 1}));
+            box.children.push_back(std::move(grid));
+            root.children.push_back(std::move(box));
+            return root;
+        };
+        UiStack stack;
+        stack.push(buildScreen(), false);
+        // Find the scrollbox id (child 0 of root).
+        const UiId boxId = stack.top().children[0].id;
+
+        UiInputState s; s.mouse = Vec2{50, 50}; s.wheel = -1.0f;  // scroll down a notch
+        stack.update(s, Vec2{200, 200});
+        CHECK(stack.scrollOffset(boxId) > 0.0f);                 // offset accumulated
+
+        // Drag carries: seed a drag, confirm topDrag() reports it.
+        UiDragState d; d.active = true; d.sourceId = boxId; d.sourceUserData = 7u;
+        stack.setTopDrag(d);
+        CHECK(stack.topDrag().active);
+        CHECK(stack.topDrag().sourceUserData == 7u);
+    }
+
     return iron_test_result();
 }
