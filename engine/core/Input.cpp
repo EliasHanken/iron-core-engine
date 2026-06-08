@@ -1,6 +1,21 @@
 #include "core/Input.h"
 
 #include <GLFW/glfw3.h>
+#include <unordered_map>
+
+namespace {
+std::unordered_map<GLFWwindow*, iron::Input*>& inputRegistry() {
+    static std::unordered_map<GLFWwindow*, iron::Input*> r;
+    return r;
+}
+GLFWscrollfun g_prevScroll = nullptr;
+void scrollCallback(GLFWwindow* w, double xoff, double yoff) {
+    auto& reg = inputRegistry();
+    const auto it = reg.find(w);
+    if (it != reg.end() && it->second) it->second->addScroll(yoff);
+    if (g_prevScroll) g_prevScroll(w, xoff, yoff);   // chain (ImGui etc.)
+}
+}  // namespace
 
 namespace iron {
 
@@ -9,6 +24,8 @@ Input::Input(GLFWwindow* window) : window_(window) {
         glfwGetCursorPos(window_, &mouseX_, &mouseY_);
         prevMouseX_ = mouseX_;
         prevMouseY_ = mouseY_;
+        inputRegistry()[window_] = this;
+        g_prevScroll = glfwSetScrollCallback(window_, scrollCallback);
     }
 }
 
@@ -30,6 +47,8 @@ void Input::update() {
         currentMouse_[button] =
             glfwGetMouseButton(window_, button) == GLFW_PRESS;
     }
+    scrollThisFrame_ = scrollAccum_;
+    scrollAccum_ = 0.0;
 }
 
 bool Input::keyDown(int key) const {
@@ -54,5 +73,12 @@ bool Input::mouseButtonPressed(int button) const {
     return button >= 0 && button < kMouseButtonCount
            && currentMouse_[button] && !previousMouse_[button];
 }
+
+bool Input::mouseButtonReleased(int button) const {
+    return button >= 0 && button < kMouseButtonCount
+           && !currentMouse_[button] && previousMouse_[button];
+}
+
+void Input::addScroll(double yoff) { scrollAccum_ += yoff; }
 
 } // namespace iron

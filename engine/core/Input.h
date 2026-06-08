@@ -24,6 +24,10 @@ public:
     double mouseDeltaY() const { return mouseY_ - prevMouseY_; }
     bool mouseButtonDown(int button) const;
     bool mouseButtonPressed(int button) const;  // went down this frame
+    bool mouseButtonReleased(int button) const; // went up this frame
+    double scrollDelta() const { return scrollThisFrame_; }  // wheel since last update()
+
+    void addScroll(double yoff);  // called by the file-local GLFW scroll callback
 
 private:
     static constexpr int kKeyCount = 350;   // GLFW_KEY_LAST is 348
@@ -36,6 +40,8 @@ private:
     bool previousMouse_[kMouseButtonCount] = {};
     double mouseX_ = 0.0, mouseY_ = 0.0;
     double prevMouseX_ = 0.0, prevMouseY_ = 0.0;
+    double scrollAccum_ = 0.0;      // accumulated by the GLFW scroll callback
+    double scrollThisFrame_ = 0.0;  // snapshot taken in update()
 };
 
 } // namespace iron
