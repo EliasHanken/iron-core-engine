@@ -167,6 +167,7 @@ bool renderComponentByPtr(const Reflection& r,
     if (!typeName.empty()) ImGui::SeparatorText(std::string(typeName).c_str());
     bool changed = false;
     for (const FieldDesc& f : fields) {
+        if (f.meta.hidden) continue;
         switch (f.type) {
             case TypeId::Bool:   changed |= drawBool(f, obj);          break;
             case TypeId::Int32:

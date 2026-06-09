@@ -5,7 +5,7 @@ namespace iron {
 
 void registerLogicGraphComponent(Reflection& r) {
     r.registerType<LogicGraphComponent>("LogicGraphComponent")
-        .field("graph", &LogicGraphComponent::graph);
+        .field("graph", &LogicGraphComponent::graph, {.hidden = true});
 }
 
 }  // namespace iron

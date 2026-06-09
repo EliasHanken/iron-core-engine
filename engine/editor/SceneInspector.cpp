@@ -59,13 +59,19 @@ bool SceneInspector::draw(const Reflection& reflection,
         const ComponentRegistry::Entry* entry = registry.byTypeId(box->typeId());
         if (!entry) continue;
         ImGui::PushID(static_cast<int>(entry->typeId));
-        ImGui::SeparatorText(std::string(entry->name).c_str());
-        changed |= renderComponentByPtr(reflection, /*typeName=*/{}, entry->fields, box->data());
-        if (ImGui::SmallButton("Remove")) {
-            e.components.removeTypeId(entry->typeId);
-            changed = true;
-            ImGui::PopID();
-            break;   // mutated the container mid-iteration — stop this frame
+        const std::string header(entry->name);
+        const bool open = ImGui::CollapsingHeader(header.c_str(), ImGuiTreeNodeFlags_DefaultOpen);
+        if (open) {
+            ImGui::Indent();
+            changed |= renderComponentByPtr(reflection, std::string_view{}, entry->fields, box->data());
+            if (ImGui::SmallButton("Remove")) {
+                e.components.removeTypeId(entry->typeId);
+                changed = true;
+                ImGui::Unindent();
+                ImGui::PopID();
+                break;   // container mutated mid-iteration — stop this frame
+            }
+            ImGui::Unindent();
         }
         ImGui::PopID();
     }
