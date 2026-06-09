@@ -1,4 +1,5 @@
 #include "common/Inventory.h"
+#include "net/ByteStream.h"
 
 #include <algorithm>
 
@@ -77,6 +78,25 @@ bool Inventory::quickTransfer(Inventory& src, int srcSlot,
     s.count = leftover;
     if (s.count <= 0) { s.item = kNoItem; s.count = 0; }
     return leftover < before;
+}
+
+void serialize(ByteWriter& w, const Inventory& inv) {
+    w.u16(static_cast<std::uint16_t>(inv.slots_.size()));
+    for (const ItemStack& s : inv.slots_) {
+        w.u32(s.item);
+        w.i32(s.count);
+    }
+}
+
+void deserialize(ByteReader& r, Inventory& inv) {
+    const std::uint16_t n = r.u16();
+    if (r.failed()) return;                       // leave inv unchanged
+    std::vector<ItemStack> next(static_cast<std::size_t>(n));
+    for (std::uint16_t i = 0; i < n && !r.failed(); ++i) {
+        next[i].item  = r.u32();
+        next[i].count = r.i32();
+    }
+    if (!r.failed()) inv.slots_ = std::move(next);  // commit only on full read
 }
 
 }  // namespace iron

@@ -43,6 +43,8 @@ iron_add_test(test_health test_health.cpp)
 target_link_libraries(test_inventory PRIVATE gamecommon)
 target_link_libraries(test_weapon_cooldown PRIVATE gamecommon)
 target_link_libraries(test_health PRIVATE gamecommon)
+iron_add_test(test_inventory_serialize test_inventory_serialize.cpp)
+target_link_libraries(test_inventory_serialize PRIVATE gamecommon)
 iron_add_test(test_lag_compensator test_lag_compensator.cpp)
 iron_add_test(test_clock_sync test_clock_sync.cpp)
 iron_add_test(test_mesh_builders test_mesh_builders.cpp)
@@ -107,6 +109,16 @@ target_include_directories(test_rocket_launcher PRIVATE
   ${CMAKE_CURRENT_SOURCE_DIR}
   ${CMAKE_SOURCE_DIR}/games/07-net-shooter)
 add_test(NAME test_rocket_launcher COMMAND test_rocket_launcher)
+
+# test_net_chest compiles the game-side ChestLogic.cpp directly.
+add_executable(test_net_chest
+  test_net_chest.cpp
+  ${CMAKE_SOURCE_DIR}/games/15-net-chest/ChestLogic.cpp)
+target_link_libraries(test_net_chest PRIVATE ironcore gamecommon)
+target_include_directories(test_net_chest PRIVATE
+  ${CMAKE_CURRENT_SOURCE_DIR}
+  ${CMAKE_SOURCE_DIR}/games/15-net-chest)
+add_test(NAME test_net_chest COMMAND test_net_chest)
 
 iron_add_test(test_glsl_to_spirv test_glsl_to_spirv.cpp)
 iron_add_test(test_standard_lit_shader test_standard_lit_shader.cpp)
