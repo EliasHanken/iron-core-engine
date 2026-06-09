@@ -56,6 +56,9 @@
 #include "physics/PhysicsWorld.h"
 #include "scene/Picking.h"
 #include "world/CollisionShape.h"
+#include "world/ComponentRegistry.h"
+#include "scene/RegisterCoreComponents.h"
+#include "gameplay/LogicGraphComponent.h"
 
 #include <GLFW/glfw3.h>
 #include <imgui.h>
@@ -169,11 +172,15 @@ int main() {
     iron::registerCollisionShape(reflection);
     iron::registerAudioEmitter(reflection);
     iron::registerReflectionProbe(reflection);
+    iron::registerLogicGraphComponent(reflection);
+
+    iron::ComponentRegistry componentRegistry;
+    iron::registerCoreComponents(componentRegistry, reflection);
 
     // --- M29: load the scene file ---
     const std::string exeDir = iron::executableDir();
     const std::string scenePath = exeDir + "/assets/scenes/demo.json";
-    const auto sceneOpt = iron::loadSceneFile(reflection, scenePath);
+    const auto sceneOpt = iron::loadSceneFile(reflection, componentRegistry, scenePath);
     if (!sceneOpt) {
         iron::Log::error("sandbox: failed to load %s", scenePath.c_str());
         return 1;
@@ -491,10 +498,13 @@ int main() {
             ne.transform.scale    = {0.2f, 0.2f, 0.2f};   // tiny visual marker only
             ne.mesh.primitive     = iron::PrimitiveKind::Cube;
             ne.material.baseColorFactor = {0.2f, 0.9f, 1.0f};
-            ne.probe.emplace();
             // 4.2 > RW/2=4.0; 3.7 > RH/2=3.5; 4.2 > RD/2=4.0
-            ne.probe->halfExtents = {4.2f, 3.7f, 4.2f};
-            ne.probe->faceSize    = 256;  // 128→256: thinner cube-face seams at wall/floor edges
+            {
+                iron::ReflectionProbeDef pd;
+                pd.halfExtents = {4.2f, 3.7f, 4.2f};
+                pd.faceSize    = 256;  // 128→256: thinner cube-face seams at wall/floor edges
+                ne.components.add<iron::ReflectionProbeDef>(pd);
+            }
 
             const int idx = static_cast<int>(scene.entities.size());
             scene.entities.push_back(ne);
@@ -666,9 +676,9 @@ int main() {
             // serialized graph (if any) so tickLogicGraphs runs it in Play.
             // allow_exceptions=false: a malformed string yields a discarded
             // value (guarded below) so nothing throws into the frame.
-            if (!e.logicGraph.empty() &&
-                i < static_cast<int>(sceneIndexToEntity.size())) {
-                auto parsed = nlohmann::json::parse(e.logicGraph, nullptr, false);
+            const iron::LogicGraphComponent* lgc = e.components.get<iron::LogicGraphComponent>();
+            if (lgc && !lgc->graph.empty() && i < static_cast<int>(sceneIndexToEntity.size())) {
+                auto parsed = nlohmann::json::parse(lgc->graph, nullptr, false);
                 if (!parsed.is_discarded()) {
                     if (auto pg = iron::fromJson(parsed, nodeRegistry)) {
                         iron::LogicGraph lg; lg.graph = std::move(*pg);
@@ -676,8 +686,8 @@ int main() {
                     }
                 }
             }
-            if (e.collision) {
-                const iron::CollisionShape& cs = *e.collision;
+            if (const iron::CollisionShape* csp = e.components.get<iron::CollisionShape>()) {
+                const iron::CollisionShape& cs = *csp;
                 const iron::Vec3 p = e.transform.position;
                 const iron::Quat q = e.transform.rotation;
                 iron::BodyId b = iron::kInvalidBody;
@@ -698,8 +708,9 @@ int main() {
                 }
                 if (b.isValid()) playBodies[i] = b;
             }
-            if (e.audio && e.audio->playOnStart) {
-                const iron::AudioEmitter& em = *e.audio;
+            const iron::AudioEmitter* emp = e.components.get<iron::AudioEmitter>();
+            if (emp && emp->playOnStart) {
+                const iron::AudioEmitter& em = *emp;
                 const iron::SoundHandle h = soundFor(em.wavPath);
                 if (h != iron::kInvalidSound) {
                     if (em.loop && em.spatial) {
@@ -767,7 +778,7 @@ int main() {
             // scene/graph so the first Edit-mode change opens a fresh txn.
             sceneDoc.hist.clear(); graphDoc.hist.clear();
             sceneDoc.txnOpen = false; graphDoc.txnOpen = false;
-            sceneDoc.last = iron::sceneToJsonString(reflection, scene);
+            sceneDoc.last = iron::sceneToJsonString(reflection, componentRegistry, scene);
             graphDoc.last = graphModel.toJson().dump();
             iron::Log::info("sandbox: Play -> Edit");
         } else {
@@ -894,7 +905,8 @@ int main() {
         demo.connect(br, "z", mk, "z");
         demo.connect(mk, "v", setp, "pos");
         demo.connect(tick, "then", setp, "in");
-        scene.entities[0].logicGraph = demo.toJson().dump();
+        scene.entities[0].components
+            .add<iron::LogicGraphComponent>(iron::LogicGraphComponent{ demo.toJson().dump() });
     }
 
     int  selectedIndex = scene.entities.empty() ? -1 : 0;
@@ -928,8 +940,9 @@ int main() {
     // Capsule = cylinder approximation (2 rings + 4 verticals). Uses the same
     // drawLineOverlay path as the selection outline.
     auto drawColliderWireframe = [&](const iron::SceneEntity& e) {
-        if (!e.collision) return;
-        const iron::CollisionShape& cs = *e.collision;
+        const iron::CollisionShape* csp = e.components.get<iron::CollisionShape>();
+        if (!csp) return;
+        const iron::CollisionShape& cs = *csp;
         const iron::Vec3 c  = e.transform.position;
         const iron::Vec3 col{0.2f, 1.0f, 0.3f};  // collider green
         const iron::Quat q  = e.transform.rotation;
@@ -985,10 +998,11 @@ int main() {
     // rotation (probes are axis-aligned). Distinct cyan avoids confusion with
     // the collider green.
     auto drawProbeWireframe = [&](const iron::SceneEntity& e) {
-        if (!e.probe) return;
+        const iron::ReflectionProbeDef* pp = e.components.get<iron::ReflectionProbeDef>();
+        if (!pp) return;
         const iron::Vec3 c   = e.transform.position;
         const iron::Vec3 col{0.2f, 0.9f, 1.0f};  // probe cyan
-        const iron::Vec3 h   = e.probe->halfExtents;
+        const iron::Vec3 h   = pp->halfExtents;
         iron::Vec3 v[8];
         for (int i = 0; i < 8; ++i)
             v[i] = iron::Vec3{c.x + ((i & 1) ? h.x : -h.x),
@@ -1064,7 +1078,7 @@ int main() {
     };
 
     // M57: baseline snapshots (after all startup entities + the seeded graph).
-    sceneDoc.last = iron::sceneToJsonString(reflection, scene);
+    sceneDoc.last = iron::sceneToJsonString(reflection, componentRegistry, scene);
     graphDoc.last = graphModel.toJson().dump();
 
     // --- Main loop ---
@@ -1106,8 +1120,8 @@ int main() {
             physics.step(t.deltaSeconds);
             for (auto& [idx, body] : playBodies) {
                 if (idx < 0 || idx >= static_cast<int>(scene.entities.size())) continue;
-                if (scene.entities[idx].collision &&
-                    scene.entities[idx].collision->body == iron::ColliderBody::Dynamic) {
+                auto* csb = scene.entities[idx].components.get<iron::CollisionShape>();
+                if (csb && csb->body == iron::ColliderBody::Dynamic) {
                     scene.entities[idx].transform.position = physics.bodyPosition(body);
                     scene.entities[idx].transform.rotation = physics.bodyRotation(body);
                     auto vit = playVoices.find(idx);
@@ -1382,7 +1396,7 @@ int main() {
                                    selectedIndex < static_cast<int>(scene.entities.size());
             iron::GizmoSpace sp = gizmo.space();
             iron::EffectKind ek = selectionEffect;
-            inspectorChanged = inspector.draw(reflection,
+            inspectorChanged = inspector.draw(reflection, componentRegistry,
                            inspValid ? &scene.entities[selectedIndex] : nullptr, sp, ek);
             gizmo.setSpace(sp);  // Inspector may flip it; setSpace is a no-op mid-drag
             if (ek != selectionEffect) {
@@ -1404,14 +1418,20 @@ int main() {
             const bool selValid = selectedIndex >= 0 &&
                                   selectedIndex < (int)scene.entities.size();
             const char* selName = selValid ? scene.entities[selectedIndex].name.c_str() : nullptr;
-            const bool selHasGraph = selValid && !scene.entities[selectedIndex].logicGraph.empty();
+            const iron::LogicGraphComponent* selLgc = selValid
+                ? scene.entities[selectedIndex].components.get<iron::LogicGraphComponent>()
+                : nullptr;
+            const bool selHasGraph = selLgc && !selLgc->graph.empty();
             const auto act = nodeGraphPanel.draw(graphModel, selName, selHasGraph);
             if (selValid && act == iron::NodeGraphPanel::Action::Assign) {
-                scene.entities[selectedIndex].logicGraph = graphModel.toJson().dump();
+                scene.entities[selectedIndex].components
+                    .add<iron::LogicGraphComponent>(iron::LogicGraphComponent{ graphModel.toJson().dump() });
                 structuralEdit = true;   // M57: Assign mutates the scene
             } else if (selValid && act == iron::NodeGraphPanel::Action::LoadFromEntity) {
+                const iron::LogicGraphComponent* lgc =
+                    scene.entities[selectedIndex].components.get<iron::LogicGraphComponent>();
                 auto parsed = nlohmann::json::parse(
-                    scene.entities[selectedIndex].logicGraph, nullptr, false);
+                    lgc ? lgc->graph : std::string{}, nullptr, false);
                 if (!parsed.is_discarded() && graphModel.loadFromJson(parsed)) {
                     nodeGraphPanel.resetPlacement();  // re-apply saved node positions
                     graphModel.markSaved();           // fresh load == clean baseline
@@ -1496,7 +1516,7 @@ int main() {
         // user can't modify the scene during Play.
         if (!editor.isPlaying()) {
             if (outRes.saveClicked) {
-                if (iron::saveSceneFile(reflection, scene, scenePath))
+                if (iron::saveSceneFile(reflection, componentRegistry, scene, scenePath))
                     iron::Log::info("sandbox: saved %s", scenePath.c_str());
                 else
                     iron::Log::error("sandbox: save FAILED for %s", scenePath.c_str());
@@ -1599,15 +1619,15 @@ int main() {
                         sceneDoc.hist.commit(sceneDoc.pendingBefore);
                         sceneDoc.txnOpen = false;
                     }
-                    const std::string cur = iron::sceneToJsonString(reflection, scene);
+                    const std::string cur = iron::sceneToJsonString(reflection, componentRegistry, scene);
                     auto restored = wantRedo ? sceneDoc.hist.redo(cur)
                                              : sceneDoc.hist.undo(cur);
                     if (restored) {
-                        auto s = iron::sceneFromJsonString(reflection, *restored);
+                        auto s = iron::sceneFromJsonString(reflection, componentRegistry, *restored);
                         if (s) {
                             scene = *s;
                             rebuildDerivedFromScene();
-                            sceneDoc.last    = iron::sceneToJsonString(reflection, scene);
+                            sceneDoc.last    = iron::sceneToJsonString(reflection, componentRegistry, scene);
                             sceneDoc.txnOpen = false;
                         }
                     }
@@ -1628,7 +1648,7 @@ int main() {
             const bool sceneSignal  = inspectorChanged || gizmo.dragging() ||
                                       structuralEdit || sceneDoc.txnOpen;
             if (sceneSignal) {
-                const std::string cur = iron::sceneToJsonString(reflection, scene);
+                const std::string cur = iron::sceneToJsonString(reflection, componentRegistry, scene);
                 tickDoc(sceneDoc, cur, sceneStable);
             }
 
@@ -1732,7 +1752,7 @@ int main() {
             // skip the solid box draw so neither the viewport nor probe captures
             // see a stray box floating at the probe center.
             if (sceneIdx >= 0 && sceneIdx < static_cast<int>(scene.entities.size()) &&
-                scene.entities[sceneIdx].probe.has_value()) continue;
+                scene.entities[sceneIdx].components.has<iron::ReflectionProbeDef>()) continue;
 
             call.effectId              = (sceneIdx == selectedIndex) ? 1 : 0;
             renderer.submit(call);
@@ -1937,15 +1957,16 @@ int main() {
         if (bakeRequested) {
             std::vector<iron::GpuReflectionProbe> next;
             for (const iron::SceneEntity& e : scene.entities) {
-                if (!e.probe) continue;
+                const iron::ReflectionProbeDef* pp = e.components.get<iron::ReflectionProbeDef>();
+                if (!pp) continue;
                 const iron::Vec3 c = e.transform.position;
-                const iron::Vec3 h = e.probe->halfExtents;
+                const iron::Vec3 h = pp->halfExtents;
                 iron::GpuReflectionProbe gp{
                     {c.x - h.x, c.y - h.y, c.z - h.z},
                     {c.x + h.x, c.y + h.y, c.z + h.z},
                     c,
                     iron::kInvalidHandle};
-                gp.faceSize = e.probe->faceSize;
+                gp.faceSize = pp->faceSize;
                 next.push_back(gp);
             }
             // Carry over prior baked handles (by order) so bakeReflectionProbes
