@@ -5,7 +5,10 @@
 #include "reflection/Reflection.h"
 #include "reflection/RegisterCoreTypes.h"
 #include "world/CollisionShape.h"
+#include "world/ComponentRegistry.h"
+#include "scene/RegisterCoreComponents.h"
 #include "audio/AudioEmitter.h"
+#include "gameplay/LogicGraphComponent.h"
 #include "test_framework.h"
 
 #include <filesystem>
@@ -30,7 +33,14 @@ iron::Reflection makeReflectionRegistry() {
     iron::registerCollisionShape(r);
     iron::registerAudioEmitter(r);
     iron::registerReflectionProbe(r);
+    iron::registerLogicGraphComponent(r);
     return r;
+}
+
+static iron::ComponentRegistry makeComponentRegistry(const iron::Reflection& r) {
+    iron::ComponentRegistry cr;
+    iron::registerCoreComponents(cr, r);
+    return cr;
 }
 
 SceneFile makeSampleScene() {
@@ -77,9 +87,10 @@ int main() {
         const SceneFile original = makeSampleScene();
         const std::string path = tempScenePath("iron_scene_roundtrip.json");
         const iron::Reflection r = makeReflectionRegistry();
-        CHECK(saveSceneFile(r, original, path));
+        const iron::ComponentRegistry cr = makeComponentRegistry(r);
+        CHECK(saveSceneFile(r, cr, original, path));
 
-        const auto loadedOpt = loadSceneFile(r, path);
+        const auto loadedOpt = loadSceneFile(r, cr, path);
         CHECK(loadedOpt.has_value());
         if (loadedOpt.has_value()) {
             const SceneFile& l = *loadedOpt;
@@ -121,7 +132,8 @@ int main() {
         const std::string path = tempScenePath("iron_scene_malformed.json");
         { std::ofstream f(path); f << "{ this is not valid json ]"; }
         const iron::Reflection r = makeReflectionRegistry();
-        const auto loaded = loadSceneFile(r, path);
+        const iron::ComponentRegistry cr = makeComponentRegistry(r);
+        const auto loaded = loadSceneFile(r, cr, path);
         CHECK(!loaded.has_value());
         fs::remove(path);
     }
@@ -129,7 +141,8 @@ int main() {
     // --- Test 3: missing file returns nullopt ---
     {
         const iron::Reflection r = makeReflectionRegistry();
-        const auto loaded = loadSceneFile(r, "does/not/exist/scene.json");
+        const iron::ComponentRegistry cr = makeComponentRegistry(r);
+        const auto loaded = loadSceneFile(r, cr, "does/not/exist/scene.json");
         CHECK(!loaded.has_value());
     }
 
@@ -141,7 +154,8 @@ int main() {
             f << R"({ "entities": [ { "name": "c", "mesh": { "primitive": "cube" } } ] })";
         }
         const iron::Reflection r = makeReflectionRegistry();
-        const auto loadedOpt = loadSceneFile(r, path);
+        const iron::ComponentRegistry cr = makeComponentRegistry(r);
+        const auto loadedOpt = loadSceneFile(r, cr, path);
         CHECK(loadedOpt.has_value());
         if (loadedOpt.has_value()) {
             const SceneFile& l = *loadedOpt;
@@ -171,8 +185,9 @@ int main() {
         s.entities.push_back(e);
 
         const iron::Reflection r = makeReflectionRegistry();
+        const iron::ComponentRegistry cr = makeComponentRegistry(r);
         const std::string path = tempScenePath("iron_scene_nested.json");
-        CHECK(saveSceneFile(r, s, path));
+        CHECK(saveSceneFile(r, cr, s, path));
 
         std::ifstream f(path);
         std::string contents((std::istreambuf_iterator<char>(f)),
@@ -190,81 +205,86 @@ int main() {
         fs::remove(path);
     }
 
-    // --- M42: collision + audio optionals round-trip ---
+    // M67: generic component round-trip via the registry.
     {
-        iron::SceneFile s;
-        iron::SceneEntity withBoth;
-        withBoth.name = "crate";
-        withBoth.mesh.primitive = iron::PrimitiveKind::Cube;
-        withBoth.collision = iron::CollisionShape{};
-        withBoth.collision->body = iron::ColliderBody::Dynamic;
-        withBoth.collision->mass = 7.0f;
-        withBoth.audio = iron::AudioEmitter{};
-        withBoth.audio->wavPath = "hum.wav";
-        withBoth.audio->loop = true;
-        withBoth.probe = iron::ReflectionProbeDef{};
-        withBoth.probe->halfExtents = {3.0f, 4.0f, 5.0f};
-        withBoth.probe->faceSize    = 256;
-        withBoth.probe->intensity   = 2.0f;
-        s.entities.push_back(withBoth);
+        iron::Reflection r = makeReflectionRegistry();
+        iron::ComponentRegistry cr = makeComponentRegistry(r);
 
-        iron::SceneEntity plain;
-        plain.name = "floor";
-        plain.mesh.primitive = iron::PrimitiveKind::Plane;
-        s.entities.push_back(plain);
+        iron::SceneFile scene;
+        iron::SceneEntity e;
+        e.name = "thing";
+        iron::CollisionShape cs{};
+        cs.shape = iron::ColliderShape::Sphere;
+        cs.halfExtents = {1,1,1};
+        cs.radius = 2.0f;
+        cs.halfHeight = 0.5f;
+        cs.mass = 3.0f;
+        e.components.add<iron::CollisionShape>(cs);
+        iron::AudioEmitter ae{};
+        ae.wavPath = "boom.wav";
+        ae.gain = 0.8f;
+        ae.loop = true;
+        ae.spatial = true;
+        ae.playOnStart = false;
+        e.components.add<iron::AudioEmitter>(ae);
+        e.components.add<iron::LogicGraphComponent>(iron::LogicGraphComponent{ "{\"nodes\":[]}" });
+        scene.entities.push_back(e);
 
-        const iron::Reflection r = makeReflectionRegistry();
-        const std::string path = tempScenePath("m42_sceneio_tmp.json");
-        CHECK(iron::saveSceneFile(r, s, path));
-        const auto loaded = iron::loadSceneFile(r, path);
-        CHECK(loaded.has_value());
-        CHECK(loaded->entities.size() == 2u);
+        const std::string json = iron::sceneToJsonString(r, cr, scene);
+        const iron::SceneFile back = iron::sceneFromJsonString(r, cr, json).value();
 
-        const auto& a = loaded->entities[0];
-        CHECK(a.collision.has_value());
-        CHECK(a.collision->body == iron::ColliderBody::Dynamic);
-        CHECK_NEAR(a.collision->mass, 7.0f);
-        CHECK(a.audio.has_value());
-        CHECK(a.audio->wavPath == "hum.wav");
-        CHECK(a.probe.has_value());
-        CHECK_NEAR(a.probe->halfExtents.x, 3.0f);
-        CHECK_NEAR(a.probe->halfExtents.y, 4.0f);
-        CHECK_NEAR(a.probe->halfExtents.z, 5.0f);
-        CHECK(a.probe->faceSize == 256);
-        CHECK_NEAR(a.probe->intensity, 2.0f);
-
-        const auto& b = loaded->entities[1];
-        CHECK(!b.collision.has_value());
-        CHECK(!b.audio.has_value());
-        CHECK(!b.probe.has_value());
-
-        fs::remove(path);
+        CHECK(back.entities.size() == 1u);
+        const iron::SceneEntity& b = back.entities[0];
+        CHECK(b.components.has<iron::CollisionShape>());
+        CHECK(b.components.get<iron::CollisionShape>()->shape == iron::ColliderShape::Sphere);
+        CHECK_NEAR(b.components.get<iron::CollisionShape>()->mass, 3.0f);
+        CHECK(b.components.has<iron::AudioEmitter>());
+        CHECK(b.components.get<iron::AudioEmitter>()->wavPath == "boom.wav");
+        CHECK(b.components.has<iron::LogicGraphComponent>());
+        CHECK(b.components.get<iron::LogicGraphComponent>()->graph == "{\"nodes\":[]}");
+        CHECK(!b.components.has<iron::ReflectionProbeDef>());
     }
 
-    // M55: logicGraph string round-trips through save/load.
+    // M67: legacy back-compat — old top-level keys still load.
     {
-        iron::SceneFile s;
-        iron::SceneEntity e;
-        e.name = "scripted";
-        e.logicGraph = R"({"nodes":[{"id":1,"type":"OnTick"}],"connections":[]})";
-        s.entities.push_back(e);
+        iron::Reflection r = makeReflectionRegistry();
+        iron::ComponentRegistry cr = makeComponentRegistry(r);
+        const std::string legacy = R"({"entities":[{"name":"old",
+            "collision":{"shape":"box","body":"static","halfExtents":[2,2,2]},
+            "logicGraph":"{\"v\":1}"}]})";
+        const iron::SceneFile back = iron::sceneFromJsonString(r, cr, legacy).value();
+        CHECK(back.entities.size() == 1u);
+        CHECK(back.entities[0].components.has<iron::CollisionShape>());
+        CHECK(back.entities[0].components.get<iron::CollisionShape>()->shape == iron::ColliderShape::Box);
+        CHECK(back.entities[0].components.has<iron::LogicGraphComponent>());
+        CHECK(back.entities[0].components.get<iron::LogicGraphComponent>()->graph == "{\"v\":1}");
+    }
 
-        const iron::Reflection r = makeReflectionRegistry();
-        const std::string path = tempScenePath("iron_scene_logicgraph.json");
-        CHECK(iron::saveSceneFile(r, s, path));
-        const auto loaded = iron::loadSceneFile(r, path);
-        CHECK(loaded.has_value());
-        CHECK(loaded->entities.size() == 1u);
-        if (loaded.has_value() && loaded->entities.size() == 1u) {
-            CHECK(loaded->entities[0].logicGraph == e.logicGraph);
-        }
-        fs::remove(path);
+    // M67 headline: a brand-new component type round-trips with NO SceneIO edits.
+    {
+        struct DummyComp { int n = 0; float f = 0.0f; };
+        iron::Reflection r = makeReflectionRegistry();
+        r.registerType<DummyComp>("DummyComp").field("n", &DummyComp::n).field("f", &DummyComp::f);
+        iron::ComponentRegistry cr = makeComponentRegistry(r);
+        cr.registerComponent<DummyComp>("DummyComp", r);
+
+        iron::SceneFile scene;
+        iron::SceneEntity e; e.name = "x";
+        e.components.add<DummyComp>(DummyComp{ 11, 2.5f });
+        scene.entities.push_back(e);
+
+        const iron::SceneFile back =
+            iron::sceneFromJsonString(r, cr, iron::sceneToJsonString(r, cr, scene)).value();
+        CHECK(back.entities[0].components.get<DummyComp>() != nullptr);
+        CHECK(back.entities[0].components.get<DummyComp>()->n == 11);
+        CHECK_NEAR(back.entities[0].components.get<DummyComp>()->f, 2.5f);
     }
 
     // In-memory string round-trip (M57): toJsonString -> fromJsonString
     // preserves entity name + transform + a material factor.
     {
         const Reflection r = makeReflectionRegistry();
+        const iron::ComponentRegistry cr = makeComponentRegistry(r);
         SceneFile s;
         SceneEntity e;
         e.name = "undo_probe";
@@ -272,9 +292,9 @@ int main() {
         e.material.metallic = 0.25f;
         s.entities.push_back(e);
 
-        const std::string json = sceneToJsonString(r, s);
+        const std::string json = sceneToJsonString(r, cr, s);
         CHECK(!json.empty());
-        auto back = sceneFromJsonString(r, json);
+        auto back = sceneFromJsonString(r, cr, json);
         CHECK(back.has_value());
         CHECK(back->entities.size() == 1u);
         CHECK(back->entities[0].name == "undo_probe");
@@ -284,7 +304,7 @@ int main() {
         CHECK_NEAR(back->entities[0].material.metallic, 0.25f);
 
         // Malformed input -> nullopt.
-        CHECK(!sceneFromJsonString(r, "{ not json").has_value());
+        CHECK(!sceneFromJsonString(r, cr, "{ not json").has_value());
     }
 
     return iron_test_result();

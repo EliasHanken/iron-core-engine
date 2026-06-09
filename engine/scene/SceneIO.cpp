@@ -1,7 +1,12 @@
 #include "scene/SceneIO.h"
 
+#include "audio/AudioEmitter.h"
 #include "core/Log.h"
+#include "gameplay/LogicGraphComponent.h"
+#include "render/ReflectionProbe.h"
 #include "scene/ReflectionIO.h"
+#include "world/CollisionShape.h"
+#include "world/ComponentRegistry.h"
 
 #include <nlohmann/json.hpp>
 
@@ -32,44 +37,69 @@ void readString(const json& j, const char* key, std::string& out) {
     if (j.contains(key) && j[key].is_string()) out = j[key].get<std::string>();
 }
 
-json entityToJson(const Reflection& r, const SceneEntity& e) {
+json entityToJson(const Reflection& r, const ComponentRegistry& cr, const SceneEntity& e) {
     json j = json::object();
     j["name"]      = e.name;
     j["transform"] = componentToJson(r, e.transform);
     j["mesh"]      = componentToJson(r, e.mesh);
     j["material"]  = componentToJson(r, e.material);
-    if (e.collision) j["collision"] = componentToJson(r, *e.collision);
-    if (e.audio)     j["audio"]     = componentToJson(r, *e.audio);
-    if (e.probe)     j["probe"]     = componentToJson(r, *e.probe);
-    if (!e.logicGraph.empty()) j["logicGraph"] = e.logicGraph;
+    json comps = json::array();
+    for (const auto& box : e.components.all()) {
+        const ComponentRegistry::Entry* entry = cr.byTypeId(box->typeId());
+        if (!entry) continue;
+        json cj = componentToJsonByPtr(r, entry->fields, box->data());
+        cj["type"] = std::string(entry->name);
+        comps.push_back(std::move(cj));
+    }
+    if (!comps.empty()) j["components"] = std::move(comps);
     return j;
 }
 
-SceneEntity entityFromJson(const Reflection& r, const json& j) {
+SceneEntity entityFromJson(const Reflection& r, const ComponentRegistry& cr, const json& j) {
     SceneEntity e;
     readString(j, "name", e.name);
     if (j.contains("transform")) componentFromJson(r, e.transform, j["transform"]);
     if (j.contains("mesh"))      componentFromJson(r, e.mesh,      j["mesh"]);
     if (j.contains("material"))  componentFromJson(r, e.material,  j["material"]);
-    if (j.contains("collision")) {
-        e.collision = CollisionShape{};
-        componentFromJson(r, *e.collision, j["collision"]);
+
+    if (j.contains("components") && j["components"].is_array()) {
+        for (const json& cj : j["components"]) {
+            if (!cj.contains("type") || !cj["type"].is_string()) continue;
+            const ComponentRegistry::Entry* entry = cr.byName(cj["type"].get<std::string>());
+            if (!entry) continue;
+            auto box = entry->factory();
+            componentFromJsonByPtr(r, entry->fields, box->data(), cj);
+            e.components.addBox(std::move(box));
+        }
     }
-    if (j.contains("audio")) {
-        e.audio = AudioEmitter{};
-        componentFromJson(r, *e.audio, j["audio"]);
+
+    // Back-compat: legacy top-level keys -> components.
+    auto legacy = [&](const char* key, std::string_view typeName) {
+        if (!j.contains(key)) return;
+        const ComponentRegistry::Entry* entry = cr.byName(typeName);
+        if (!entry) return;
+        auto box = entry->factory();
+        componentFromJsonByPtr(r, entry->fields, box->data(), j[key]);
+        e.components.addBox(std::move(box));
+    };
+    legacy("collision", "CollisionShape");
+    legacy("audio",     "AudioEmitter");
+    legacy("probe",     "ReflectionProbeDef");
+    if (j.contains("logicGraph") && j["logicGraph"].is_string()) {
+        if (const auto* entry = cr.byName("LogicGraphComponent")) {
+            auto box = entry->factory();
+            static_cast<LogicGraphComponent*>(box->data())->graph = j["logicGraph"].get<std::string>();
+            e.components.addBox(std::move(box));
+        }
     }
-    if (j.contains("probe")) {
-        e.probe = ReflectionProbeDef{};
-        componentFromJson(r, *e.probe, j["probe"]);
-    }
-    readString(j, "logicGraph", e.logicGraph);
     return e;
 }
 
 }  // namespace
 
-std::string sceneToJsonString(const Reflection& reflection, const SceneFile& scene) {
+std::string sceneToJsonString(const Reflection& reflection,
+                              const ComponentRegistry& cr,
+                              const SceneFile& scene) {
     json root = json::object();
     root["clearColor"] = toJson(scene.clearColor);
 
@@ -96,13 +126,14 @@ std::string sceneToJsonString(const Reflection& reflection, const SceneFile& sce
     root["pointLights"] = pls;
 
     json ents = json::array();
-    for (const auto& e : scene.entities) ents.push_back(entityToJson(reflection, e));
+    for (const auto& e : scene.entities) ents.push_back(entityToJson(reflection, cr, e));
     root["entities"] = ents;
 
     return root.dump();
 }
 
 std::optional<SceneFile> sceneFromJsonString(const Reflection& reflection,
+                                             const ComponentRegistry& cr,
                                              const std::string& jsonStr) {
     json root;
     try {
@@ -138,13 +169,14 @@ std::optional<SceneFile> sceneFromJsonString(const Reflection& reflection,
     }
     if (root.contains("entities") && root["entities"].is_array()) {
         for (const auto& j : root["entities"]) {
-            scene.entities.push_back(entityFromJson(reflection, j));
+            scene.entities.push_back(entityFromJson(reflection, cr, j));
         }
     }
     return scene;
 }
 
 bool saveSceneFile(const Reflection& reflection,
+                   const ComponentRegistry& cr,
                    const SceneFile& scene,
                    const std::string& path) {
     std::ofstream f(path);
@@ -154,12 +186,13 @@ bool saveSceneFile(const Reflection& reflection,
     }
     // Re-indent for the human-diffable on-disk file (the string serializer is
     // compact); schema is defined once, in sceneToJsonString.
-    json root = json::parse(sceneToJsonString(reflection, scene));
+    json root = json::parse(sceneToJsonString(reflection, cr, scene));
     f << root.dump(2);
     return true;
 }
 
 std::optional<SceneFile> loadSceneFile(const Reflection& reflection,
+                                       const ComponentRegistry& cr,
                                        const std::string& path) {
     std::ifstream f(path);
     if (!f) {
@@ -168,7 +201,7 @@ std::optional<SceneFile> loadSceneFile(const Reflection& reflection,
     }
     std::string contents((std::istreambuf_iterator<char>(f)),
                          std::istreambuf_iterator<char>());
-    return sceneFromJsonString(reflection, contents);
+    return sceneFromJsonString(reflection, cr, contents);
 }
 
 }  // namespace iron
