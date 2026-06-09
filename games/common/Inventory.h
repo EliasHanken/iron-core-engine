@@ -9,6 +9,9 @@
 
 namespace iron {
 
+class ByteWriter;   // engine/net/ByteStream.h
+class ByteReader;   // engine/net/ByteStream.h
+
 using ItemId = std::uint32_t;          // 0 = none/empty
 constexpr ItemId kNoItem = 0;
 
@@ -64,6 +67,12 @@ public:
 
 private:
     std::vector<ItemStack> slots_;
+
+    // Network (de)serialization — writes slotCount + (item,count) per slot.
+    // NEVER serializes the icon TextureHandle (it is process-local). Defined in
+    // Inventory.cpp; used by the M64 Replicator to sync inventories.
+    friend void serialize(ByteWriter& w, const Inventory& inv);
+    friend void deserialize(ByteReader& r, Inventory& inv);
 };
 
 }  // namespace iron
