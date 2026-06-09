@@ -104,6 +104,12 @@ public:
     bool sendRaw(ConnectionId conn, std::uint8_t tag,
                  std::span<const std::byte> payload, SendReliability reliability);
 
+    // Detach the handler for `tag`, if any. Idempotent — unregistering an absent
+    // tag is a no-op. The symmetric counterpart to registerHandler/registerRawHandler;
+    // lets a handler owner (e.g. Replicator) give its callback back so the
+    // registry can safely outlive it or be reused.
+    void unregisterHandler(std::uint8_t tag);
+
 private:
     // Dispatch entry point — non-template so it can live in the .cpp.
     void dispatch(ConnectionId conn, std::span<const std::byte> bytes);
