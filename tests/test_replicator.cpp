@@ -148,5 +148,46 @@ int main() {
         CHECK(clientBoard.scores[2] == 9);
     }
 
+    // M66: remove() unregisters an object — it stops syncing AND stops late-join
+    // push, while a sibling object keeps replicating.
+    {
+        constexpr ReplicationId kIdA = 1, kIdB = 2;
+        MockTransport srvT, cliT;
+        MessageRegistry srvR(&srvT), cliR(&cliT);
+        PeerManager srv(srvT, srvR, kGame), cli(cliT, cliR, kGame);
+        Replicator srvRep(srv, srvR), cliRep(cli, cliR);
+
+        Scoreboard hostA, hostB, clientA, clientB;
+        srvRep.replicate<Scoreboard>(kIdA, &hostA);
+        srvRep.replicate<Scoreboard>(kIdB, &hostB);
+        cliRep.replicate<Scoreboard>(kIdA, &clientA);
+        cliRep.replicate<Scoreboard>(kIdB, &clientB);
+
+        CHECK(srv.start(hostArgs()));
+        CHECK(cli.start(clientArgs()));
+        for (int i = 0; i < 4; ++i) { srv.poll(); cli.poll(); }
+
+        // Remove B on the host, then mutate + flush both.
+        srvRep.remove(kIdB);
+        hostA.scores = {1};
+        hostB.scores = {2};
+        srvRep.markDirty(kIdA);
+        srvRep.markDirty(kIdB);   // no-op: B is no longer registered
+        srvRep.flush();
+        cli.poll();
+
+        CHECK(clientA.scores.size() == 1u);   // A still syncs
+        CHECK(clientB.scores.empty());        // B removed → never synced
+
+        // Late-join push after remove: onPeerJoined re-sends only survivors.
+        clientA.scores.clear();
+        clientB.scores = {99};                // sentinel — must stay untouched
+        srvRep.onPeerJoined(1);               // push full state to the client (peer 1)
+        cli.poll();
+        CHECK(clientA.scores.size() == 1u);   // A re-pushed
+        CHECK(clientB.scores.size() == 1u);   // B NOT pushed
+        CHECK(clientB.scores[0] == 99);       // still the sentinel
+    }
+
     return iron_test_result();
 }

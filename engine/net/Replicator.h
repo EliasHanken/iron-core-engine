@@ -24,8 +24,9 @@ using ReplicationId = std::uint32_t;
 // (250), sub-dispatched internally.
 //
 // Lifetime: the referenced PeerManager and MessageRegistry MUST outlive the
-// Replicator (it registers a raw handler capturing `this`; MessageRegistry has
-// no unregister API).
+// Replicator. ~Replicator detaches its raw handler via
+// MessageRegistry::unregisterHandler, so a stale handler capturing `this`
+// cannot survive the Replicator and dispatch into freed memory.
 //
 // Reserved-tag convention: tag 1 = Hello (PeerManager), 250 = replication
 // (Replicator), 254/255 = ping/pong (PeerManager). Games use tags 2–249.
@@ -52,6 +53,11 @@ public:
 
     // Host: mark a replicated object changed; broadcast on the next flush().
     void markDirty(ReplicationId id);
+
+    // Unregister a replicated object: after removal it is no longer broadcast on
+    // flush(), no longer pushed on onPeerJoined(), and (on a client) no longer
+    // applies incoming syncs. Idempotent. Sends nothing over the wire.
+    void remove(ReplicationId id);
 
     // Host: serialize + broadcast every dirty object (coalesced), clear dirty.
     // No-op on clients. Call once per tick AFTER peers.poll().

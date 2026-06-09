@@ -11,7 +11,13 @@ Replicator::Replicator(PeerManager& peers, MessageRegistry& registry)
         [this](ConnectionId c, std::span<const std::byte> p) { onPacket(c, p); });
 }
 
-Replicator::~Replicator() = default;
+Replicator::~Replicator() {
+    registry_.unregisterHandler(kReplicationTag);
+}
+
+void Replicator::remove(ReplicationId id) {
+    objects_.erase(id);
+}
 
 void Replicator::markDirty(ReplicationId id) {
     const auto it = objects_.find(id);
