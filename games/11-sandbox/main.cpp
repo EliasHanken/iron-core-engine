@@ -904,6 +904,8 @@ int main() {
         int demoIdx = -1;
         for (int i = 0; i < static_cast<int>(scene.entities.size()); ++i)
             if (scene.entities[i].name.find("cube") != std::string::npos) { demoIdx = i; break; }
+        if (demoIdx < 0)
+            iron::Log::warn("sandbox: no 'cube' entity in the scene - M68 health demo not seeded");
         if (demoIdx >= 0) {
             iron::SceneEntity& de = scene.entities[demoIdx];
             de.components.add<iron::Health>();
@@ -1724,7 +1726,7 @@ int main() {
         }
 
         // M55: run entity logic graphs AFTER the scene->World transform mirror so
-        // a graph that writes the World Transform (e.g. SetPosition bob) isn't
+        // a graph that writes the World Transform (e.g. via SetPosition) isn't
         // overwritten by the mirror, and BEFORE submit so the new pose is drawn.
         if (editor.isPlaying())
             iron::tickLogicGraphs(world, nodeRegistry, playTime, playDt);
