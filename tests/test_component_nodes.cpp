@@ -171,7 +171,9 @@ int main() {
     // Set label -> SetOutput(reads Get Combat power post-write).
     {
         World w; EntityId e = w.create();
-        ComponentSet cs; cs.add<Combat>();
+        ComponentSet cs;
+        cs.add<Decoy>();   // first box: same field name — write must discriminate by typeId
+        cs.add<Combat>();
         w.add<ComponentSet>(e, cs);
 
         Graph g;
@@ -216,6 +218,7 @@ int main() {
         // readOnly + hidden + unsupported fields untouched (no Set node exists).
         CHECK_NEAR(c->score, 1.5f);
         CHECK_NEAR(c->secret, 9.0f);
+        CHECK_NEAR(w.get<ComponentSet>(e)->get<Decoy>()->power, -1.0f);   // untouched
     }
 
     // Missing component: Set is a silent no-op and exec continues past it.
@@ -259,6 +262,55 @@ int main() {
         CHECK(cat.find("Get Combat") != std::string::npos);
         CHECK(cat.find("Set Combat power") != std::string::npos);
         CHECK(cat.find("Set Combat score") == std::string::npos);   // readOnly
+    }
+
+    // Memoization pin: a Get node pulled BEFORE a Set keeps its pre-write
+    // value on later pulls in the same run; a SEPARATE Get node re-reads.
+    // (Evaluator memoizes per node+port per run — documented in
+    // ComponentNodes.h; this test makes any future change deliberate.)
+    // Wiring note: Sequence only has outputs "0"/"1", and SetOutput is a sink
+    // (no exec-out). We use two nested Sequences:
+    //   tick -> seqOuter -> "0" -> seqInner -> "0" -> outA0 (getA pre-write)
+    //                                       -> "1" -> sP (writes 42)
+    //                                sP "then" -> outA1 (getA memoized, stale)
+    //              seqOuter "1" -> outB (getB fresh, re-reads 42)
+    {
+        World w; EntityId e = w.create();
+        ComponentSet cs; cs.add<Combat>();          // power = 10
+        w.add<ComponentSet>(e, cs);
+
+        Graph g;
+        const NodeId tick     = g.addNode("OnTick");
+        const NodeId getA     = g.addNode("Get Combat");   // pulled pre-write
+        const NodeId getB     = g.addNode("Get Combat");   // pulled post-write
+        const NodeId outA0    = g.addNode("SetOutput");    // getA before Set
+        const NodeId sP       = g.addNode("Set Combat power");
+        const NodeId outA1    = g.addNode("SetOutput");    // getA after Set (memoized)
+        const NodeId outB     = g.addNode("SetOutput");    // getB after Set (fresh)
+        const NodeId seqOuter = g.addNode("Sequence");
+        const NodeId seqInner = g.addNode("Sequence");
+        g.setLiteral(sP,    "value", NodeValue::F(42.0f));
+        g.setLiteral(outA0, "key",   NodeValue::S("a0"));
+        g.setLiteral(outA1, "key",   NodeValue::S("a1"));
+        g.setLiteral(outB,  "key",   NodeValue::S("b"));
+        // data wiring
+        g.connect(getA, "power", outA0, "value");
+        g.connect(getA, "power", outA1, "value");
+        g.connect(getB, "power", outB,  "value");
+        // exec wiring
+        g.connect(tick,     "then", seqOuter, "in");
+        g.connect(seqOuter, "0",    seqInner, "in");
+        g.connect(seqInner, "0",    outA0,    "in");   // fires getA (first pull)
+        g.connect(seqInner, "1",    sP,       "in");   // writes 42
+        g.connect(sP,       "then", outA1,    "in");   // getA memoized -> stale
+        g.connect(seqOuter, "1",    outB,     "in");   // getB fresh -> 42
+
+        GameContext gc{&w, e, 0.0f, 0.016f};
+        RunContext ctx; ctx.domainContext = &gc;
+        run(g, reg, ctx);
+        CHECK_NEAR(ctx.outputs.at("a0").asFloat(), 10.0f);   // pre-write
+        CHECK_NEAR(ctx.outputs.at("a1").asFloat(), 10.0f);   // memoized (stale)
+        CHECK_NEAR(ctx.outputs.at("b").asFloat(),  42.0f);   // fresh node re-reads
     }
 
     return iron_test_result();

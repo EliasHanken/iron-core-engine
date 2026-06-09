@@ -16,6 +16,9 @@ class ComponentRegistry;
 // the Get node's has pin). Nodes resolve self-only via GameContext against
 // world->get<ComponentSet>(self); missing component / null context => Get
 // reports has=false + zeros, Set is a silent no-op, exec always continues.
+// NOTE: data outputs are memoized per run at first pull — a Get node pulled
+// before a Set in the same tick keeps its pre-write values; place a separate
+// Get node after the Set to re-read.
 // Call once at startup, after registerCoreComponents + registerGameplayNodes.
 void registerComponentNodes(NodeRegistry& nodes, const ComponentRegistry& components);
 
