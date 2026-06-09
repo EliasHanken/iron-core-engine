@@ -1,6 +1,7 @@
 #include "test_framework.h"
 #include "math/Mat4.h"
 #include "math/Vec.h"
+#include "reflection/Reflection.h"
 #include "render/ReflectionPlane.h"
 #include "render/Renderer.h"  // for DrawCall
 
@@ -80,6 +81,17 @@ int main() {
         DrawCall d;
         CHECK_NEAR(d.material.reflectivity, 0.0f);
         CHECK(d.material.useReflectionPlane == false);
+    }
+
+    // M68: FieldMeta.readOnly is registered and retrievable.
+    {
+        struct RoProbe { float locked = 0.0f; float open = 0.0f; };
+        Reflection rr;
+        rr.registerType<RoProbe>("RoProbe")
+            .field("locked", &RoProbe::locked, {.readOnly = true})
+            .field("open",   &RoProbe::open);
+        CHECK(rr.fieldByName<RoProbe>("locked")->meta.readOnly);
+        CHECK(!rr.fieldByName<RoProbe>("open")->meta.readOnly);
     }
 
     return iron_test_result();

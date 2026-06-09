@@ -16,6 +16,7 @@ struct FieldMeta {
     bool  color     = false;  // Vec3 → ColorEdit3 instead of DragFloat3
     bool  slider    = false;  // float → SliderFloat instead of DragFloat (needs min+max)
     bool  hidden    = false;  // skip in the Inspector (still serialized — IO ignores meta)
+    bool  readOnly  = false;  // M68: no Set node generated; Inspector may grey out later
 };
 
 // One reflected field. Name has static storage duration (string literal
