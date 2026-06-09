@@ -168,5 +168,33 @@ int main() {
         CHECK(got[4] == std::byte{5});
     }
 
+    // M66: unregisterHandler detaches a handler; later messages with that tag
+    // are dropped. Unregistering an absent tag is a harmless no-op.
+    {
+        MockTransport srv, cli;
+        MessageRegistry srvReg(&srv);
+        MessageRegistry cliReg(&cli);
+
+        int fooCount = 0;
+        srvReg.registerHandler<Foo>([&](ConnectionId, const Foo&) { ++fooCount; });
+
+        CHECK(srv.start()); CHECK(srv.listen(kAddr));
+        CHECK(cli.start());
+        const ConnectionId c = cli.connect(kAddr);
+        CHECK(c != kInvalidConnection);
+        srv.poll(); cli.poll();
+
+        CHECK(cliReg.send<Foo>(c, Foo{1}, SendReliability::Reliable));
+        srv.poll();
+        CHECK(fooCount == 1);
+
+        srvReg.unregisterHandler(Foo::kTag);
+        CHECK(cliReg.send<Foo>(c, Foo{2}, SendReliability::Reliable));
+        srv.poll();
+        CHECK(fooCount == 1);          // not incremented after unregister
+
+        srvReg.unregisterHandler(99);  // absent tag → no crash
+    }
+
     return iron_test_result();
 }

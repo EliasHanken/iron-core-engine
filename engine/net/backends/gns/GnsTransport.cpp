@@ -6,11 +6,19 @@
 #include <steam/steamnetworkingsockets.h>
 #include <steam/steamnetworkingtypes.h>
 
+#include <chrono>
 #include <cstring>
+#include <thread>
 
 namespace iron {
 
 namespace {
+
+// Per-connection inactivity timeout. After this long without hearing from a
+// peer, GNS fires ProblemDetectedLocally → onConnectionClosed, so the app
+// learns of a crashed/killed peer within a few seconds (the GNS default is
+// ~10s+). Tune here in one line. LAN/localhost-appropriate; raise for WAN.
+constexpr int kConnectionTimeoutMs = 5000;
 
 std::int64_t packThisPointer(void* p) {
     return reinterpret_cast<std::int64_t>(p);
@@ -77,11 +85,19 @@ bool GnsTransport::start() {
 void GnsTransport::stop() {
     if (!started_) return;
 
+    // Close with linger=true so the close packet (and any queued reliable data)
+    // is delivered, then pump RunCallbacks briefly to flush it onto the wire
+    // BEFORE we tear down the library. Without this flush, peers only learn of
+    // our departure via their (slower) connection timeout.
     for (auto& [id, h] : idToHandle_) {
-        sockets_->CloseConnection(h, 0, "transport stopped", false);
+        sockets_->CloseConnection(h, 0, "transport stopped", true);
     }
     idToHandle_.clear();
     handleToId_.clear();
+    for (int i = 0; i < 20; ++i) {
+        sockets_->RunCallbacks();
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    }
 
     if (pollGroup_ != k_HSteamNetPollGroup_Invalid) {
         sockets_->DestroyPollGroup(pollGroup_);
@@ -104,12 +120,13 @@ bool GnsTransport::listen(NetAddress addr) {
     sa.Clear();
     sa.SetIPv4(addr.ipv4, addr.port);
 
-    SteamNetworkingConfigValue_t opts[2];
+    SteamNetworkingConfigValue_t opts[3];
     opts[0].SetPtr(k_ESteamNetworkingConfig_Callback_ConnectionStatusChanged,
                    reinterpret_cast<void*>(&GnsTransport::statusChangedThunk));
     opts[1].SetInt64(k_ESteamNetworkingConfig_ConnectionUserData,
                      packThisPointer(this));
-    HSteamListenSocket s = sockets_->CreateListenSocketIP(sa, 2, opts);
+    opts[2].SetInt32(k_ESteamNetworkingConfig_TimeoutConnected, kConnectionTimeoutMs);
+    HSteamListenSocket s = sockets_->CreateListenSocketIP(sa, 3, opts);
     if (s == k_HSteamListenSocket_Invalid) {
         Log::error("GnsTransport: CreateListenSocketIP failed");
         return false;
@@ -128,12 +145,13 @@ ConnectionId GnsTransport::connect(NetAddress addr) {
     sa.Clear();
     sa.SetIPv4(addr.ipv4, addr.port);
 
-    SteamNetworkingConfigValue_t opts[2];
+    SteamNetworkingConfigValue_t opts[3];
     opts[0].SetPtr(k_ESteamNetworkingConfig_Callback_ConnectionStatusChanged,
                    reinterpret_cast<void*>(&GnsTransport::statusChangedThunk));
     opts[1].SetInt64(k_ESteamNetworkingConfig_ConnectionUserData,
                      packThisPointer(this));
-    HSteamNetConnection h = sockets_->ConnectByIPAddress(sa, 2, opts);
+    opts[2].SetInt32(k_ESteamNetworkingConfig_TimeoutConnected, kConnectionTimeoutMs);
+    HSteamNetConnection h = sockets_->ConnectByIPAddress(sa, 3, opts);
     if (h == k_HSteamNetConnection_Invalid) {
         Log::error("GnsTransport: ConnectByIPAddress failed");
         return kInvalidConnection;

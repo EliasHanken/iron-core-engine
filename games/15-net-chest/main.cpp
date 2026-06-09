@@ -122,8 +122,9 @@ int runHost(const NetArgs& args) {
 
     // Authoritative backpacks, one per peer. unordered_map gives stable element
     // addresses (node storage), so the raw pointer the Replicator captures stays
-    // valid. We never erase (the M64 Replicator has no unregister API; a leaked
-    // backpack per disconnect is fine for a demo).
+    // valid. On disconnect (setOnPeerLeft below) we Replicator::remove() the
+    // backpack BEFORE erasing it from the map, so the captured pointer is dropped
+    // before the element is destroyed.
     std::unordered_map<std::uint32_t, Inventory> backpacks;
 
     auto markDirtyFor = [&](std::uint32_t peer, const chest::MoveResult& res) {
@@ -153,6 +154,15 @@ int runHost(const NetArgs& args) {
         }
         repl.onPeerJoined(fromPeer);   // full current state -> just this peer
         Log::info("net-chest host: peer %u ready; pushed full state", fromPeer);
+    });
+
+    // On disconnect, unregister + drop the peer's backpack. Order matters:
+    // remove() detaches the Replicator's captured pointer FIRST, then we erase
+    // the map element (which would otherwise leave the Replicator dangling).
+    peers.setOnPeerLeft([&](std::uint32_t pid) {
+        repl.remove(kBackpackBase + pid);
+        backpacks.erase(pid);
+        Log::info("net-chest host: peer %u left; dropped backpack", pid);
     });
 
     if (!peers.start(args)) { Log::error("net-chest host: start failed"); return 1; }

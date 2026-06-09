@@ -29,6 +29,10 @@ void MessageRegistry::registerRawHandler(
     handlers_[tag] = std::move(fn);
 }
 
+void MessageRegistry::unregisterHandler(std::uint8_t tag) {
+    handlers_.erase(tag);
+}
+
 bool MessageRegistry::sendRaw(ConnectionId conn, std::uint8_t tag,
                               std::span<const std::byte> payload,
                               SendReliability reliability) {
