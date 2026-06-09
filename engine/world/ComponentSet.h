@@ -75,6 +75,7 @@ public:
         comps_.push_back(std::move(box));
     }
     std::span<const std::unique_ptr<IComponentBox>> all() const { return comps_; }
+    std::span<std::unique_ptr<IComponentBox>>       all()       { return comps_; }
 
 private:
     void copyFrom(const ComponentSet& o) {

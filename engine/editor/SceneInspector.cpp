@@ -1,16 +1,18 @@
 #include "editor/SceneInspector.h"
 
-#include "audio/AudioEmitter.h"
 #include "editor/ReflectionInspector.h"
-#include "render/ReflectionProbe.h"
 #include "scene/SceneFormat.h"
-#include "world/CollisionShape.h"
+#include "world/ComponentRegistry.h"
+#include "world/ComponentSet.h"
 
 #include <imgui.h>
+
+#include <string>
 
 namespace iron {
 
 bool SceneInspector::draw(const Reflection& reflection,
+                          const ComponentRegistry& registry,
                           SceneEntity* entity,
                           GizmoSpace& space,
                           EffectKind& effectKind) {
@@ -52,48 +54,31 @@ bool SceneInspector::draw(const Reflection& reflection,
     changed |= renderComponent(reflection, e.mesh);
     changed |= renderComponent(reflection, e.material);
 
-    // M42: optional components (collision / audio). Table-driven so the combo +
-    // render loop stay generic; a future optional component is one row here +
-    // one std::optional field on SceneEntity. (A fully generic world.add<T>
-    // combo waits for the World-migration milestone.)
-    struct OptionalComp {
-        const char* label;
-        bool (*present)(const SceneEntity&);
-        void (*attach)(SceneEntity&);
-        void (*remove)(SceneEntity&);
-        bool (*render)(const Reflection&, SceneEntity&);
-    };
-    static const OptionalComp kOptional[] = {
-        { "CollisionShape",
-          [](const SceneEntity& s){ return s.collision.has_value(); },
-          [](SceneEntity& s){ s.collision.emplace(); },
-          [](SceneEntity& s){ s.collision.reset(); },
-          [](const Reflection& r, SceneEntity& s){ return renderComponent(r, *s.collision); } },
-        { "AudioEmitter",
-          [](const SceneEntity& s){ return s.audio.has_value(); },
-          [](SceneEntity& s){ s.audio.emplace(); },
-          [](SceneEntity& s){ s.audio.reset(); },
-          [](const Reflection& r, SceneEntity& s){ return renderComponent(r, *s.audio); } },
-        { "ReflectionProbe",
-          [](const SceneEntity& s){ return s.probe.has_value(); },
-          [](SceneEntity& s){ s.probe.emplace(); },
-          [](SceneEntity& s){ s.probe.reset(); },
-          [](const Reflection& r, SceneEntity& s){ return renderComponent(r, *s.probe); } },
-    };
-
-    for (const OptionalComp& oc : kOptional) {
-        if (!oc.present(e)) continue;
-        changed |= oc.render(reflection, e);
-        ImGui::PushID(oc.label);
-        if (ImGui::SmallButton("Remove")) { oc.remove(e); changed = true; }
+    // Components on this entity (registry-driven; reflected editing + remove).
+    for (auto& box : e.components.all()) {                 // non-const all() → mutable data()
+        const ComponentRegistry::Entry* entry = registry.byTypeId(box->typeId());
+        if (!entry) continue;
+        ImGui::PushID(static_cast<int>(entry->typeId));
+        ImGui::SeparatorText(std::string(entry->name).c_str());
+        changed |= renderComponentByPtr(reflection, /*typeName=*/{}, entry->fields, box->data());
+        if (ImGui::SmallButton("Remove")) {
+            e.components.removeTypeId(entry->typeId);
+            changed = true;
+            ImGui::PopID();
+            break;   // mutated the container mid-iteration — stop this frame
+        }
         ImGui::PopID();
     }
 
-    // "Add Component" combo lists only the optionals this entity lacks.
+    // "Add Component" combo lists only the registered types this entity lacks.
     if (ImGui::BeginCombo("Add Component", "Add Component ...")) {
-        for (const OptionalComp& oc : kOptional) {
-            if (oc.present(e)) continue;
-            if (ImGui::Selectable(oc.label)) { oc.attach(e); changed = true; }
+        for (std::uint32_t id : registry.order()) {
+            if (e.components.hasTypeId(id)) continue;
+            const ComponentRegistry::Entry* entry = registry.byTypeId(id);
+            if (entry && ImGui::Selectable(std::string(entry->name).c_str())) {
+                e.components.addBox(entry->factory());
+                changed = true;
+            }
         }
         ImGui::EndCombo();
     }
