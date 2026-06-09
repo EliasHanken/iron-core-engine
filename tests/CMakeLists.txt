@@ -110,6 +110,16 @@ target_include_directories(test_rocket_launcher PRIVATE
   ${CMAKE_SOURCE_DIR}/games/07-net-shooter)
 add_test(NAME test_rocket_launcher COMMAND test_rocket_launcher)
 
+# test_net_chest compiles the game-side ChestLogic.cpp directly.
+add_executable(test_net_chest
+  test_net_chest.cpp
+  ${CMAKE_SOURCE_DIR}/games/15-net-chest/ChestLogic.cpp)
+target_link_libraries(test_net_chest PRIVATE ironcore gamecommon)
+target_include_directories(test_net_chest PRIVATE
+  ${CMAKE_CURRENT_SOURCE_DIR}
+  ${CMAKE_SOURCE_DIR}/games/15-net-chest)
+add_test(NAME test_net_chest COMMAND test_net_chest)
+
 iron_add_test(test_glsl_to_spirv test_glsl_to_spirv.cpp)
 iron_add_test(test_standard_lit_shader test_standard_lit_shader.cpp)
 iron_add_test(test_renderer_factory test_renderer_factory.cpp)
