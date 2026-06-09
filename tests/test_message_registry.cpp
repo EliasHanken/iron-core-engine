@@ -143,5 +143,30 @@ int main() {
         CHECK(!reg.send<Foo>(kInvalidConnection, Foo{1}, SendReliability::Reliable));
     }
 
+    // M64: raw variable-length channel round-trips an arbitrary payload under a tag.
+    {
+        MockTransport aT, bT;
+        MessageRegistry aR(&aT), bR(&bT);
+        // Wire them up directly (no PeerManager needed for this low-level test).
+        aT.start(); bT.start();
+        aT.listen(NetAddress{0x7F000001u, 7001});
+        const ConnectionId aToB = bT.connect(NetAddress{0x7F000001u, 7001});
+        for (int i = 0; i < 4; ++i) { aT.poll(); bT.poll(); }
+
+        std::vector<std::byte> got;
+        aR.registerRawHandler(200, [&](ConnectionId, std::span<const std::byte> p) {
+            got.assign(p.begin(), p.end());
+        });
+
+        const std::byte payload[5] = {std::byte{1}, std::byte{2}, std::byte{3},
+                                      std::byte{4}, std::byte{5}};
+        CHECK(bR.sendRaw(aToB, 200, std::span<const std::byte>(payload, 5),
+                         SendReliability::Reliable));
+        aT.poll();
+        CHECK(got.size() == 5u);
+        CHECK(got[0] == std::byte{1});
+        CHECK(got[4] == std::byte{5});
+    }
+
     return iron_test_result();
 }
