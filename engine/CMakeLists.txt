@@ -57,6 +57,7 @@ add_library(ironcore STATIC
   render/TextureLoader.cpp
   util/FileWatcher.cpp
   world/World.cpp
+  world/ComponentRegistry.cpp
   debug/GizmoRegistry.cpp
   render/RenderHandles.reflect.cpp
   scene/MaterialDef.reflect.cpp
