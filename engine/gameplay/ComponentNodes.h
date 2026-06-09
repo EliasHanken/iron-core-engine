@@ -12,7 +12,8 @@ class ComponentRegistry;
 //   - "Set <Component> <field>": one node per supported, non-hidden,
 //     non-readOnly field (exec in, typed `value` in, exec `then` out).
 // Supported TypeIds: Float, Int32, Bool, Vec3, String — anything else gets no
-// pin and no Set node. Nodes resolve self-only via GameContext against
+// pin and no Set node. A field literally named "has" is skipped (reserved for
+// the Get node's has pin). Nodes resolve self-only via GameContext against
 // world->get<ComponentSet>(self); missing component / null context => Get
 // reports has=false + zeros, Set is a silent no-op, exec always continues.
 // Call once at startup, after registerCoreComponents + registerGameplayNodes.

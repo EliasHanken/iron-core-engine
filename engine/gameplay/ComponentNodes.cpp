@@ -52,6 +52,17 @@ NodeValue readField(const void* obj, const FieldDesc& f) {
     }
 }
 
+void writeField(void* obj, const FieldDesc& f, const NodeValue& v) {
+    switch (f.type) {
+        case TypeId::Float:  *f.ptr<float>(obj)        = v.asFloat();  break;
+        case TypeId::Int32:  *f.ptr<std::int32_t>(obj) = v.asInt();    break;
+        case TypeId::Bool:   *f.ptr<bool>(obj)         = v.asBool();   break;
+        case TypeId::Vec3:   *f.ptr<Vec3>(obj)         = v.asVec3();   break;
+        case TypeId::String: *f.ptr<std::string>(obj)  = v.asString(); break;
+        default: break;   // unreachable: Set nodes are pre-filtered
+    }
+}
+
 }  // namespace
 
 void registerComponentNodes(NodeRegistry& nodes, const ComponentRegistry& components) {
@@ -89,6 +100,24 @@ void registerComponentNodes(NodeRegistry& nodes, const ComponentRegistry& compon
                                   : zeroValue(*portTypeFor(f.type)));
         };
         nodes.registerType(std::move(d));
+
+        // "Set <Component> <field>": one node per writable field.
+        for (const FieldDesc& f : gettable) {
+            if (f.meta.readOnly) continue;
+            NodeTypeDesc s;
+            s.typeName = "Set " + compName + " " + std::string(f.name);
+            s.category = "Components";
+            s.subtitle = compName + "." + std::string(f.name);
+            s.ports = { {"in", PortType::Exec, PortDir::In},
+                        {"value", *portTypeFor(f.type), PortDir::In},
+                        {"then", PortType::Exec, PortDir::Out} };
+            s.evaluate = [typeId, f](NodeContext& c) {
+                if (void* obj = componentOf(c, typeId))
+                    writeField(obj, f, c.in("value"));
+                c.fire("then");   // always continue, even on a no-op (M55 convention)
+            };
+            nodes.registerType(std::move(s));
+        }
     }
 }
 

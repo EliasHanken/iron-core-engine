@@ -42,6 +42,12 @@ void registerCombat(Reflection& r) {
         .field("facing", &Combat::facing);
 }
 
+struct Decoy { float power = -1.0f; };   // same field name, different component
+
+void registerDecoy(Reflection& r) {
+    r.registerType<Decoy>("Decoy").field("power", &Decoy::power);
+}
+
 const PortDesc* findPort(const NodeTypeDesc* d, std::string_view name) {
     for (const PortDesc& p : d->ports)
         if (p.name == name) return &p;
@@ -53,8 +59,10 @@ const PortDesc* findPort(const NodeTypeDesc* d, std::string_view name) {
 int main() {
     Reflection r;
     registerCombat(r);
+    registerDecoy(r);
     ComponentRegistry cr;
     cr.registerComponent<Combat>("Combat", r);
+    cr.registerComponent<Decoy>("Decoy", r);
 
     NodeRegistry reg;
     registerBuiltinNodes(reg);
@@ -83,6 +91,7 @@ int main() {
     {
         World w; EntityId e = w.create();
         ComponentSet cs;
+        cs.add<Decoy>();              // first box: wrong component, same field name
         Combat c0; c0.power = 77.0f;
         cs.add<Combat>(c0);
         w.add<ComponentSet>(e, cs);
@@ -137,6 +146,119 @@ int main() {
         RunContext ctx;                      // domainContext == nullptr
         run(g, reg, ctx);                    // must not crash
         CHECK(!ctx.outputs.at("has").asBool());
+    }
+
+    // Set nodes exist for exactly the writable supported fields.
+    {
+        CHECK(reg.find("Set Combat power") != nullptr);
+        CHECK(reg.find("Set Combat ammo")  != nullptr);
+        CHECK(reg.find("Set Combat armed") != nullptr);
+        CHECK(reg.find("Set Combat aim")   != nullptr);
+        CHECK(reg.find("Set Combat label") != nullptr);
+        CHECK(reg.find("Set Combat score")  == nullptr);   // readOnly
+        CHECK(reg.find("Set Combat secret") == nullptr);   // hidden
+        CHECK(reg.find("Set Combat facing") == nullptr);   // unsupported Quat
+        const NodeTypeDesc* d = reg.find("Set Combat aim");
+        CHECK(d->category == "Components");
+        CHECK(d->ports.size() == 3u);   // in / value / then
+        CHECK(findPort(d, "in")    && findPort(d, "in")->type    == PortType::Exec);
+        CHECK(findPort(d, "value") && findPort(d, "value")->type == PortType::Vec3);
+        CHECK(findPort(d, "then")  && findPort(d, "then")->type  == PortType::Exec);
+    }
+
+    // Set-then-Get round-trip through the evaluator, per supported type.
+    // Chain: OnTick -> Set power -> Set ammo -> Set armed -> Set aim ->
+    // Set label -> SetOutput(reads Get Combat power post-write).
+    {
+        World w; EntityId e = w.create();
+        ComponentSet cs; cs.add<Combat>();
+        w.add<ComponentSet>(e, cs);
+
+        Graph g;
+        const NodeId tick = g.addNode("OnTick");
+        const NodeId sP = g.addNode("Set Combat power");
+        const NodeId sA = g.addNode("Set Combat ammo");
+        const NodeId sB = g.addNode("Set Combat armed");
+        const NodeId sV = g.addNode("Set Combat aim");
+        const NodeId sS = g.addNode("Set Combat label");
+        const NodeId getN = g.addNode("Get Combat");
+        const NodeId out  = g.addNode("SetOutput");
+        g.setLiteral(sP, "value", NodeValue::F(42.0f));
+        g.setLiteral(sA, "value", NodeValue::I(9));
+        g.setLiteral(sB, "value", NodeValue::B(false));
+        g.setLiteral(sV, "value", NodeValue::V3(Vec3{1.0f, 2.0f, 3.0f}));
+        g.setLiteral(sS, "value", NodeValue::S("sword"));
+        g.setLiteral(out, "key", NodeValue::S("p"));
+        g.connect(getN, "power", out, "value");
+        g.connect(tick, "then", sP, "in");
+        g.connect(sP, "then", sA, "in");
+        g.connect(sA, "then", sB, "in");
+        g.connect(sB, "then", sV, "in");
+        g.connect(sV, "then", sS, "in");
+        g.connect(sS, "then", out, "in");
+
+        GameContext gc{&w, e, 0.0f, 0.016f};
+        RunContext ctx; ctx.domainContext = &gc;
+        run(g, reg, ctx);
+
+        // Get pulled AFTER the writes in the exec chain sees the new value.
+        CHECK_NEAR(ctx.outputs.at("p").asFloat(), 42.0f);
+        // And the runtime World copy holds every written value.
+        Combat* c = w.get<ComponentSet>(e)->get<Combat>();
+        CHECK(c != nullptr);
+        CHECK_NEAR(c->power, 42.0f);
+        CHECK(c->ammo == 9);
+        CHECK(!c->armed);
+        CHECK_NEAR(c->aim.x, 1.0f);
+        CHECK_NEAR(c->aim.y, 2.0f);
+        CHECK_NEAR(c->aim.z, 3.0f);
+        CHECK(c->label == "sword");
+        // readOnly + hidden + unsupported fields untouched (no Set node exists).
+        CHECK_NEAR(c->score, 1.5f);
+        CHECK_NEAR(c->secret, 9.0f);
+    }
+
+    // Missing component: Set is a silent no-op and exec continues past it.
+    {
+        World w; EntityId e = w.create();   // no ComponentSet
+        Graph g;
+        const NodeId tick = g.addNode("OnTick");
+        const NodeId sP   = g.addNode("Set Combat power");
+        const NodeId out  = g.addNode("SetOutput");
+        g.setLiteral(sP, "value", NodeValue::F(5.0f));
+        g.setLiteral(out, "key", NodeValue::S("ran"));
+        g.setLiteral(out, "value", NodeValue::F(1.0f));
+        g.connect(tick, "then", sP, "in");
+        g.connect(sP, "then", out, "in");
+
+        GameContext gc{&w, e, 0.0f, 0.016f};
+        RunContext ctx; ctx.domainContext = &gc;
+        run(g, reg, ctx);
+        CHECK_NEAR(ctx.outputs.at("ran").asFloat(), 1.0f);   // chain didn't stall
+    }
+
+    // Null domainContext: Set no-ops without crashing, exec continues.
+    {
+        Graph g;
+        const NodeId tick = g.addNode("OnTick");
+        const NodeId sP   = g.addNode("Set Combat power");
+        const NodeId out  = g.addNode("SetOutput");
+        g.setLiteral(sP, "value", NodeValue::F(5.0f));
+        g.setLiteral(out, "key", NodeValue::S("ran"));
+        g.setLiteral(out, "value", NodeValue::F(1.0f));
+        g.connect(tick, "then", sP, "in");
+        g.connect(sP, "then", out, "in");
+        RunContext ctx;                      // domainContext == nullptr
+        run(g, reg, ctx);
+        CHECK_NEAR(ctx.outputs.at("ran").asFloat(), 1.0f);
+    }
+
+    // Generated nodes are part of the AI contract (catalogToJson).
+    {
+        const std::string cat = catalogToJson(reg).dump();
+        CHECK(cat.find("Get Combat") != std::string::npos);
+        CHECK(cat.find("Set Combat power") != std::string::npos);
+        CHECK(cat.find("Set Combat score") == std::string::npos);   // readOnly
     }
 
     return iron_test_result();
