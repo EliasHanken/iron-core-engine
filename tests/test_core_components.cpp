@@ -35,6 +35,7 @@ int main() {
     // M68: Health has current + max, neither hidden nor readOnly.
     CHECK(reg.byName("Health")->fields.size() == 2u);
     CHECK(!reg.byName("Health")->fields[0].meta.readOnly);
+    CHECK(!reg.byName("Health")->fields[1].meta.readOnly);
 
     return iron_test_result();
 }
