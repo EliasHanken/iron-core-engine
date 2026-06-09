@@ -54,6 +54,7 @@ iron_add_test(test_ui test_ui.cpp)
 target_compile_definitions(test_ui PRIVATE IRON_REPO_ROOT="${CMAKE_SOURCE_DIR}")
 iron_add_test(test_point_lights test_point_lights.cpp)
 iron_add_test(test_reflection test_reflection.cpp)
+iron_add_test(test_component_set test_component_set.cpp)
 iron_add_test(test_texture_loader test_texture_loader.cpp)
 target_compile_definitions(test_texture_loader PRIVATE
   IRON_REPO_ROOT="${CMAKE_SOURCE_DIR}")
