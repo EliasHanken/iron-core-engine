@@ -49,6 +49,7 @@ add_library(ironcore STATIC
   gameplay/GameplayNodes.cpp
   gameplay/LogicRuntime.cpp
   gameplay/LogicGraphComponent.reflect.cpp
+  gameplay/Health.reflect.cpp
   audio/AudioEngine.cpp
   game/Collision.cpp
   render/RendererFactory.cpp

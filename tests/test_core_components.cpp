@@ -16,6 +16,7 @@ int main() {
     registerAudioEmitter(r);
     registerReflectionProbe(r);
     registerLogicGraphComponent(r);
+    registerHealth(r);
 
     ComponentRegistry reg;
     registerCoreComponents(reg, r);
@@ -24,11 +25,16 @@ int main() {
     CHECK(reg.byName("AudioEmitter")       != nullptr);
     CHECK(reg.byName("ReflectionProbeDef") != nullptr);
     CHECK(reg.byName("LogicGraphComponent")!= nullptr);
+    CHECK(reg.byName("Health")             != nullptr);            // M68
     CHECK(reg.byTypeId(componentTypeId<CollisionShape>()) != nullptr);
-    CHECK(reg.order().size() == 4u);
+    CHECK(reg.order().size() == 5u);                               // was 4
 
     // LogicGraphComponent has its one reflected string field.
     CHECK(reg.byName("LogicGraphComponent")->fields.size() == 1u);
+
+    // M68: Health has current + max, neither hidden nor readOnly.
+    CHECK(reg.byName("Health")->fields.size() == 2u);
+    CHECK(!reg.byName("Health")->fields[0].meta.readOnly);
 
     return iron_test_result();
 }

@@ -12,5 +12,6 @@ void registerCollisionShape(Reflection& r);
 void registerAudioEmitter(Reflection& r);
 void registerReflectionProbe(Reflection& r);
 void registerLogicGraphComponent(Reflection& r);
+void registerHealth(Reflection& r);
 
 }  // namespace iron

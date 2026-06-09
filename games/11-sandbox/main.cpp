@@ -173,6 +173,7 @@ int main() {
     iron::registerAudioEmitter(reflection);
     iron::registerReflectionProbe(reflection);
     iron::registerLogicGraphComponent(reflection);
+    iron::registerHealth(reflection);
 
     iron::ComponentRegistry componentRegistry;
     iron::registerCoreComponents(componentRegistry, reflection);
