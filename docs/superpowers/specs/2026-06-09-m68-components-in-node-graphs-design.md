@@ -90,7 +90,7 @@ Consumed by ComponentNodes in M68. Inspector greying is a noted follow-up,
 not in scope. `LogicGraphComponent`'s reflect sidecar marks `graph`
 readOnly.
 
-### `engine/gameplay/Health.{h}` + `Health.reflect.cpp` (demo component)
+### `engine/gameplay/Health.h` + `Health.reflect.cpp` (demo component)
 
 ```cpp
 struct Health { float current = 100.0f; float max = 100.0f; };
@@ -158,7 +158,9 @@ graph JSON round-trip through the Node Editor's Save/Load.
   - Missing-component path: `has=false`, zero outputs, Set no-op, exec
     continues. Null-domainContext path: same.
   - Generated nodes appear in `catalogToJson`.
-- Reflection test grows a `readOnly` round-trip assertion.
+- Reflection test asserts a field registered with `meta.readOnly = true`
+  reports it back through `fieldsOf<T>` (FieldMeta is not serialized — this
+  is a registration/retrieval check only).
 - Health registration covered implicitly (it's a registry entry; the
   existing registry/SceneIO tests patterns apply if needed).
 - All existing tests stay green (node core, ComponentRegistry, SceneIO
