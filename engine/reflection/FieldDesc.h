@@ -7,8 +7,9 @@
 
 namespace iron {
 
-// Per-field metadata. v1 covers range clamps + widget hints used by the
-// Inspector dispatch and ignored by SceneIO.
+// Per-field metadata: range clamps + widget hints consumed by the Inspector
+// dispatch, plus generation gates (hidden/readOnly) consumed by the node
+// generator. Ignored by SceneIO.
 struct FieldMeta {
     float min       = 0.0f;   // both zero = no clamp
     float max       = 0.0f;
