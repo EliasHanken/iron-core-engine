@@ -48,6 +48,7 @@ add_library(ironcore STATIC
   nodes/GraphEditorModel.cpp
   gameplay/GameplayNodes.cpp
   gameplay/LogicRuntime.cpp
+  gameplay/LogicGraphComponent.reflect.cpp
   audio/AudioEngine.cpp
   game/Collision.cpp
   render/RendererFactory.cpp
@@ -67,6 +68,7 @@ add_library(ironcore STATIC
   audio/AudioEmitter.reflect.cpp
   render/ReflectionProbe.reflect.cpp
   scene/ReflectionIO.cpp
+  scene/RegisterCoreComponents.cpp
 )
 
 target_include_directories(ironcore PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
