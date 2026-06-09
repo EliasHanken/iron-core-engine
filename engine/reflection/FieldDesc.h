@@ -15,6 +15,7 @@ struct FieldMeta {
     float dragSpeed = 0.0f;   // 0 = Inspector picks default per TypeId
     bool  color     = false;  // Vec3 → ColorEdit3 instead of DragFloat3
     bool  slider    = false;  // float → SliderFloat instead of DragFloat (needs min+max)
+    bool  hidden    = false;  // skip in the Inspector (still serialized — IO ignores meta)
 };
 
 // One reflected field. Name has static storage duration (string literal
