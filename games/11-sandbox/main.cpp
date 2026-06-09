@@ -893,40 +893,48 @@ int main() {
         graphModel.markSaved();   // initial demo graph: open clean, not "Unsaved"
     }
 
-    // M68 demo: entity 0 gets a Health component and a graph that drains it
+    // M68 demo: a cube gets a Health component and a graph that drains it
     // and maps it onto Y — the cube visibly sinks as its health runs out.
+    // Re-seeds on every launch (add is add-or-replace), overwriting any saved
+    // Health/graph on that entity — intentional for a demo.
     //   exec: OnTick -> Set Health current -> SetPosition
-    //   data: current' = current + dt*(-10);  y = current * 0.05  (pre-write
-    //         memoized read: one-frame lag, invisible at 60 fps)
-    if (!scene.entities.empty()) {
-        scene.entities[0].components.add<iron::Health>();
-        iron::GraphEditorModel demo(&nodeRegistry);
-        const auto tick   = demo.addNode("OnTick", 40, 40);
-        const auto getH   = demo.addNode("Get Health", 40, 180);
-        const auto drain  = demo.addNode("Mul", 240, 60);    // dt * -10
-        const auto add    = demo.addNode("Add", 420, 100);   // current + drain
-        const auto setH   = demo.addNode("Set Health current", 620, 40);
-        const auto getp   = demo.addNode("GetPosition", 40, 320);
-        const auto br     = demo.addNode("BreakVec3", 240, 320);
-        const auto scaleY = demo.addNode("Mul", 420, 240);   // current * 0.05
-        const auto mk     = demo.addNode("MakeVec3", 620, 280);
-        const auto setp   = demo.addNode("SetPosition", 840, 60);
-        demo.setLiteral(drain, "b", iron::NodeValue::F(-10.0f));
-        demo.setLiteral(scaleY, "b", iron::NodeValue::F(0.05f));
-        demo.connect(tick, "dt", drain, "a");
-        demo.connect(getH, "current", add, "a");
-        demo.connect(drain, "result", add, "b");
-        demo.connect(add, "result", setH, "value");
-        demo.connect(getH, "current", scaleY, "a");
-        demo.connect(getp, "pos", br, "v");
-        demo.connect(br, "x", mk, "x");
-        demo.connect(scaleY, "result", mk, "y");
-        demo.connect(br, "z", mk, "z");
-        demo.connect(mk, "v", setp, "pos");
-        demo.connect(tick, "then", setH, "in");
-        demo.connect(setH, "then", setp, "in");
-        scene.entities[0].components.add<iron::LogicGraphComponent>(
-            iron::LogicGraphComponent{ demo.toJson().dump() });
+    //   data: current' = current + dt*(-10);  y = current * 0.05  (same-tick
+    //         pre-write read: Y shows last tick's health, invisible at 60 fps)
+    {
+        int demoIdx = -1;
+        for (int i = 0; i < static_cast<int>(scene.entities.size()); ++i)
+            if (scene.entities[i].name.find("cube") != std::string::npos) { demoIdx = i; break; }
+        if (demoIdx >= 0) {
+            iron::SceneEntity& de = scene.entities[demoIdx];
+            de.components.add<iron::Health>();
+            iron::GraphEditorModel demo(&nodeRegistry);
+            const auto tick   = demo.addNode("OnTick", 40, 40);
+            const auto getH   = demo.addNode("Get Health", 40, 180);
+            const auto drain  = demo.addNode("Mul", 240, 60);    // dt * -10
+            const auto add    = demo.addNode("Add", 420, 100);   // current + drain
+            const auto setH   = demo.addNode("Set Health current", 620, 40);
+            const auto getp   = demo.addNode("GetPosition", 40, 320);
+            const auto br     = demo.addNode("BreakVec3", 240, 320);
+            const auto scaleY = demo.addNode("Mul", 420, 240);   // current * 0.05
+            const auto mk     = demo.addNode("MakeVec3", 620, 280);
+            const auto setp   = demo.addNode("SetPosition", 840, 60);
+            demo.setLiteral(drain, "b", iron::NodeValue::F(-10.0f));
+            demo.setLiteral(scaleY, "b", iron::NodeValue::F(0.05f));
+            demo.connect(tick, "dt", drain, "a");
+            demo.connect(getH, "current", add, "a");
+            demo.connect(drain, "result", add, "b");
+            demo.connect(add, "result", setH, "value");
+            demo.connect(getH, "current", scaleY, "a");
+            demo.connect(getp, "pos", br, "v");
+            demo.connect(br, "x", mk, "x");
+            demo.connect(scaleY, "result", mk, "y");
+            demo.connect(br, "z", mk, "z");
+            demo.connect(mk, "v", setp, "pos");
+            demo.connect(tick, "then", setH, "in");
+            demo.connect(setH, "then", setp, "in");
+            de.components.add<iron::LogicGraphComponent>(
+                iron::LogicGraphComponent{ demo.toJson().dump() });
+        }
     }
 
     int  selectedIndex = scene.entities.empty() ? -1 : 0;
