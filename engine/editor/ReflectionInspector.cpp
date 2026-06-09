@@ -42,20 +42,50 @@ bool drawFloat(const FieldDesc& f, void* obj) {
     return ImGui::DragFloat(label.c_str(), v, speed, f.meta.min, f.meta.max);
 }
 
+// Unreal-style 3-axis editor: colored X/Y/Z tag + drag per component, then the label.
+bool dragVec3Axes(const char* label, float v[3], float speed, float vmin, float vmax) {
+    ImGui::PushID(label);
+    bool changed = false;
+    const char* tags[3] = {"X", "Y", "Z"};
+    const ImVec4 cols[3] = { ImVec4(0.80f,0.22f,0.24f,1.0f),   // X red
+                             ImVec4(0.27f,0.62f,0.30f,1.0f),   // Y green
+                             ImVec4(0.20f,0.42f,0.85f,1.0f) }; // Z blue
+    // Compute per-axis drag width: divide available item width evenly across 3 slots,
+    // accounting for the tag text width and inner spacing between tag and drag widget.
+    const float innerSpacing = ImGui::GetStyle().ItemInnerSpacing.x;
+    const float itemSpacing  = ImGui::GetStyle().ItemSpacing.x;
+    const float tagWidth     = ImGui::CalcTextSize("X").x;
+    const float totalWidth   = ImGui::CalcItemWidth();
+    // 3 slots, each = tagWidth + gap + dragWidth; plus 2 inter-slot gaps between slots.
+    const float dragWidth = (totalWidth - 3.0f * (tagWidth + innerSpacing) - 2.0f * itemSpacing) / 3.0f;
+    for (int i = 0; i < 3; ++i) {
+        if (i > 0) ImGui::SameLine(0.0f, itemSpacing);
+        ImGui::TextColored(cols[i], "%s", tags[i]);
+        ImGui::SameLine(0.0f, innerSpacing);
+        ImGui::SetNextItemWidth(dragWidth > 20.0f ? dragWidth : 20.0f);
+        const std::string id = std::string("##") + tags[i];
+        changed |= ImGui::DragFloat(id.c_str(), &v[i], speed, vmin, vmax);
+    }
+    ImGui::SameLine(0.0f, innerSpacing);
+    ImGui::TextUnformatted(label);
+    ImGui::PopID();
+    return changed;
+}
+
 bool drawVec3(const FieldDesc& f, void* obj) {
     auto* v = f.ptr<Vec3>(obj);
     const std::string label(f.name);
     if (f.meta.color)
         return ImGui::ColorEdit3(label.c_str(), &v->x);
     const float speed = f.meta.dragSpeed > 0.0f ? f.meta.dragSpeed : kVec3DefaultSpeed;
-    return ImGui::DragFloat3(label.c_str(), &v->x, speed, f.meta.min, f.meta.max);
+    return dragVec3Axes(label.c_str(), &v->x, speed, f.meta.min, f.meta.max);
 }
 
 bool drawQuat(const FieldDesc& f, void* obj) {
     auto* q = f.ptr<Quat>(obj);
     Vec3 euler = quatToEuler(*q);
     const float speed = f.meta.dragSpeed > 0.0f ? f.meta.dragSpeed : kEulerDefaultSpeed;
-    if (ImGui::DragFloat3(std::string(f.name).c_str(), &euler.x, speed)) {
+    if (dragVec3Axes(std::string(f.name).c_str(), &euler.x, speed, 0.0f, 0.0f)) {
         *q = eulerToQuat(euler);
         return true;
     }
