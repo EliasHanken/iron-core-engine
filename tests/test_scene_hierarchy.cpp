@@ -71,6 +71,37 @@ static void test_cycle_guard_does_not_hang() {
     CHECK(w.at(0, 0) == w.at(0, 0));   // finite (not NaN) — NaN != NaN
 }
 
+static void test_reparent_preserves_world_position() {
+    iron::SceneFile s;
+    iron::SceneEntity p; p.transform.position = {5, 0, 0};
+    iron::SceneEntity c; c.transform.position = {7, 0, 0};   // world (7,0,0), root
+    s.entities = {p, c};
+    const iron::Mat4 before = iron::worldMatrixOf(s, 1);
+    CHECK(iron::reparentKeepWorld(s, 1, 0));
+    CHECK(s.entities[1].parentIndex == 0);
+    const iron::Mat4 after = iron::worldMatrixOf(s, 1);
+    CHECK_NEAR(after.at(0,3), before.at(0,3));           // world X unchanged
+    CHECK_NEAR(s.entities[1].transform.position.x, 2.0f); // new local = 7 - 5
+}
+
+static void test_reparent_to_root_keeps_world() {
+    iron::SceneFile s = makeChain();          // root(0)->mid(1)->leaf(2)
+    const iron::Mat4 before = iron::worldMatrixOf(s, 2);
+    CHECK(iron::reparentKeepWorld(s, 2, -1));  // unparent leaf
+    CHECK(s.entities[2].parentIndex == -1);
+    const iron::Mat4 after = iron::worldMatrixOf(s, 2);
+    CHECK_NEAR(after.at(0,3), before.at(0,3));
+    CHECK_NEAR(s.entities[2].transform.position.x, 3.0f);  // was world X=3
+}
+
+static void test_reparent_rejections() {
+    iron::SceneFile s = makeChain();
+    CHECK(!iron::reparentKeepWorld(s, 0, 0));   // self
+    CHECK(!iron::reparentKeepWorld(s, 0, 2));   // newParent is descendant of child -> cycle
+    CHECK(!iron::reparentKeepWorld(s, 9, 0));   // child out of range
+    CHECK(!iron::reparentKeepWorld(s, 1, 9));   // newParent out of range
+}
+
 int main() {
     test_transform_matrix_equals_inline_composition();
     test_world_matrix_three_deep_translation();
@@ -78,5 +109,8 @@ int main() {
     test_is_descendant();
     test_collect_subtree();
     test_cycle_guard_does_not_hang();
+    test_reparent_preserves_world_position();
+    test_reparent_to_root_keeps_world();
+    test_reparent_rejections();
     return iron_test_result();
 }

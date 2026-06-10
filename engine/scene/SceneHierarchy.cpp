@@ -1,5 +1,6 @@
 #include "scene/SceneHierarchy.h"
 
+#include "asset/Pose.h"
 #include "math/Mat4.h"
 
 namespace iron {
@@ -43,6 +44,26 @@ std::vector<int> collectSubtree(const SceneFile& scene, int root) {
             if (scene.entities[i].parentIndex == parent) out.push_back(i);
     }
     return out;
+}
+
+bool reparentKeepWorld(SceneFile& scene, int child, int newParent) {
+    if (!inRange(scene, child)) return false;
+    if (newParent != -1 && !inRange(scene, newParent)) return false;
+    if (newParent == child) return false;
+    if (newParent != -1 && isDescendant(scene, child, newParent)) return false;
+
+    const Mat4 childWorld  = worldMatrixOf(scene, child);
+    const Mat4 parentWorld = (newParent == -1) ? Mat4::identity()
+                                               : worldMatrixOf(scene, newParent);
+    const Mat4 newLocal    = inverse(parentWorld) * childWorld;
+
+    const BoneLocal trs = decomposeTRS(newLocal);
+    Transform& t = scene.entities[child].transform;
+    t.position = trs.translation;
+    t.rotation = trs.rotation;
+    t.scale    = trs.scale;
+    scene.entities[child].parentIndex = newParent;
+    return true;
 }
 
 }  // namespace iron

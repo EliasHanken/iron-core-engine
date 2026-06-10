@@ -25,4 +25,12 @@ bool isDescendant(const SceneFile& scene, int ancestor, int maybeDescendant);
 // is out of range.
 std::vector<int> collectSubtree(const SceneFile& scene, int root);
 
+// Reparent `child` under `newParent` (-1 = make root), preserving world pose:
+// the child's local transform is recomputed as inverse(parentWorld) * childWorld.
+// Returns false (no change) for an invalid child, an out-of-range newParent,
+// self-parenting, or a newParent that is a descendant of child (would cycle).
+// LOSSY under non-uniform parent scale combined with child rotation (shear has
+// no TRS representation) — the standard engine caveat.
+bool reparentKeepWorld(SceneFile& scene, int child, int newParent);
+
 }  // namespace iron
