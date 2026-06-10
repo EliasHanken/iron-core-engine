@@ -29,9 +29,12 @@
 #include "scene/FreeFlyCamera.h"
 #include "scene/Mesh.h"
 #include "scene/SceneFormat.h"
+#include "scene/SceneHierarchy.h"
 #include "scene/SceneIO.h"
+#include "world/Parent.h"
 #include "world/Transform.h"
 #include "world/World.h"
+#include "world/WorldHierarchy.h"
 #include "editor/EditorState.h"
 #include "editor/EnvironmentPanel.h"
 #include "editor/Gizmo.h"
@@ -221,6 +224,21 @@ int main() {
 
     iron::World world;
     std::vector<iron::EntityId> sceneIndexToEntity;   // parallel to scene.entities
+
+    // M69: mirror scene parentIndex links into World Parent components. Call after
+    // sceneIndexToEntity is fully populated (parent links need every entity's
+    // EntityId to exist). Idempotent: re-adds Parent on every entity each call
+    // (World::add overwrites an existing component).
+    auto mirrorParents = [&]() {
+        for (int i = 0; i < static_cast<int>(scene.entities.size()); ++i) {
+            if (i >= static_cast<int>(sceneIndexToEntity.size())) break;
+            const int p = scene.entities[i].parentIndex;
+            iron::EntityId parentId = iron::kEntityNone;
+            if (p >= 0 && p < static_cast<int>(sceneIndexToEntity.size()))
+                parentId = sceneIndexToEntity[p];
+            world.add<iron::Parent>(sceneIndexToEntity[i], iron::Parent{parentId});
+        }
+    };
 
     // Cache primitive meshes so N cubes/planes share one MeshHandle.
     iron::MeshHandle cubeMesh  = iron::kInvalidHandle;
@@ -528,6 +546,10 @@ int main() {
         iron::Log::info("sandbox: M49 probe demo room added (%zu entities total)",
                         scene.entities.size());
     }
+
+    // M69: all startup entities (scene + demo room + probe) now have World
+    // entities, so parent links can be resolved.
+    mirrorParents();
 
     // M49: baked probe list (persists across frames; populated on Bake button press).
     std::vector<iron::GpuReflectionProbe> bakedProbes;
@@ -1077,6 +1099,7 @@ int main() {
             world.add<iron::MaterialDef>(entity, se.material);
             world.add<iron::RenderHandles>(entity, toRenderHandles(re));
             sceneIndexToEntity.push_back(entity);
+            world.add<iron::Parent>(entity, iron::Parent{iron::kEntityNone});  // M69: new entities are roots
             selectedIndex = idx;
         } else {
             scene.entities.pop_back();
@@ -1103,6 +1126,7 @@ int main() {
             world.add<iron::RenderHandles>(entity, toRenderHandles(re));
             sceneIndexToEntity.push_back(entity);
         }
+        mirrorParents();  // M69: undo/redo restore must rebuild Parent links too
         if (selectedIndex >= static_cast<int>(scene.entities.size()))
             selectedIndex = -1;
     };
