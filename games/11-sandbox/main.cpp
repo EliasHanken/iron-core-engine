@@ -1358,15 +1358,13 @@ int main() {
                     std::unordered_map<std::uint32_t, iron::Mat4> pickMemo;
                     for (std::size_t i = 0; i < resolved.size(); ++i) {
                         const int si = resolved[i].entityIndex;
-                        if (si < 0 || si >= static_cast<int>(sceneIndexToEntity.size())) {
-                            // Shouldn't happen (resolved/scene/sceneIndexToEntity stay
-                            // parallel through deletes); inverted box never intersects.
-                            worldAabbs[i] = iron::Aabb{{1.0f, 1.0f, 1.0f},
-                                                       {-1.0f, -1.0f, -1.0f}};
-                            continue;
-                        }
                         const iron::Mat4 model =
-                            iron::worldMatrix(world, sceneIndexToEntity[si], pickMemo);
+                            (si >= 0 && si < static_cast<int>(sceneIndexToEntity.size()))
+                                ? iron::worldMatrix(world, sceneIndexToEntity[si], pickMemo)
+                                // M69: out-of-sync fallback (shouldn't happen --
+                                // resolved/scene/sceneIndexToEntity stay parallel
+                                // through deletes): compose scene-side instead.
+                                : iron::worldMatrixOf(scene, si);
                         worldAabbs[i] = worldAabb(resolved[i].localBounds, model);
                     }
                     const int ri = iron::pickEntity(ray, worldAabbs);
