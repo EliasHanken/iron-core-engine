@@ -62,6 +62,7 @@ add_library(ironcore STATIC
   util/FileWatcher.cpp
   world/World.cpp
   world/ComponentRegistry.cpp
+  world/WorldHierarchy.cpp
   debug/GizmoRegistry.cpp
   render/RenderHandles.reflect.cpp
   scene/MaterialDef.reflect.cpp
