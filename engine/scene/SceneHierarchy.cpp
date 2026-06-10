@@ -1,5 +1,7 @@
 #include "scene/SceneHierarchy.h"
 
+#include <numeric>
+
 #include "asset/Pose.h"
 #include "math/Mat4.h"
 
@@ -68,9 +70,9 @@ bool reparentKeepWorld(SceneFile& scene, int child, int newParent) {
 
 std::vector<int> deleteSubtree(SceneFile& scene, int root) {
     const int n = static_cast<int>(scene.entities.size());
-    std::vector<int> oldToNew(n, 0);
+    std::vector<int> oldToNew(n, -1);
     if (!inRange(scene, root)) {              // nothing removed: identity map
-        for (int i = 0; i < n; ++i) oldToNew[i] = i;
+        std::iota(oldToNew.begin(), oldToNew.end(), 0);
         return oldToNew;
     }
 

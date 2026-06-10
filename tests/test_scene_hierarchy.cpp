@@ -153,6 +153,27 @@ static void test_delete_subtree_remaps_surviving_parent_links() {
     CHECK(s.entities[1].parentIndex == 0);     // e's parent c remapped 2 -> 0
 }
 
+static void test_delete_subtree_out_of_range_is_identity() {
+    iron::SceneFile s = makeChain();           // 3 entities
+    auto map = iron::deleteSubtree(s, 99);
+    CHECK(map.size() == 3);
+    CHECK(map[0] == 0);
+    CHECK(map[1] == 1);
+    CHECK(map[2] == 2);
+    CHECK(s.entities.size() == 3);             // untouched
+    CHECK(iron::duplicateSubtree(s, 99, [](const std::string& n){ return n; }) == -1);
+}
+
+static void test_delete_subtree_entire_scene() {
+    iron::SceneFile s = makeChain();           // root(0)->mid(1)->leaf(2)
+    auto map = iron::deleteSubtree(s, 0);      // removes everything
+    CHECK(map.size() == 3);
+    CHECK(map[0] == -1);
+    CHECK(map[1] == -1);
+    CHECK(map[2] == -1);
+    CHECK(s.entities.empty());
+}
+
 static void test_duplicate_subtree() {
     iron::SceneFile s = makeChain();           // root(0)->mid(1)->leaf(2)
     auto uniq = [&](const std::string& base){ return base + "_copy"; };
@@ -178,6 +199,8 @@ int main() {
     test_reparent_between_two_parents_keeps_world();
     test_delete_subtree_remap();
     test_delete_subtree_remaps_surviving_parent_links();
+    test_delete_subtree_out_of_range_is_identity();
+    test_delete_subtree_entire_scene();
     test_duplicate_subtree();
     return iron_test_result();
 }
