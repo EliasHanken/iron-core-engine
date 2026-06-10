@@ -73,6 +73,7 @@
 #include <array>
 #include <cfloat>
 #include <cmath>
+#include <cstdint>
 #include <cstdio>
 #include <numbers>
 #include <span>
@@ -229,6 +230,9 @@ int main() {
     // sceneIndexToEntity is fully populated (parent links need every entity's
     // EntityId to exist). Idempotent: re-adds Parent on every entity each call
     // (World::add overwrites an existing component).
+    // If called while some parents' EntityIds are missing from sceneIndexToEntity,
+    // those links silently resolve to kEntityNone (root) — a correctness bug, not
+    // an assert. Keep the call sites AFTER full population.
     auto mirrorParents = [&]() {
         for (int i = 0; i < static_cast<int>(scene.entities.size()); ++i) {
             if (i >= static_cast<int>(sceneIndexToEntity.size())) break;
@@ -1763,10 +1767,10 @@ int main() {
                                 scene.pointLights.size()),
                             scene.fog, view, proj);
         // M37: submit iterates the World; D4 keeps it in sync with scene.entities.
+        std::unordered_map<std::uint32_t, iron::Mat4> worldMatrixMemo;   // M69: per-frame
         auto& transforms = world.view<iron::Transform>();
         for (std::size_t row = 0; row < transforms.size(); ++row) {
             const iron::EntityId       e   = transforms.entityAt(row);
-            const iron::Transform&     t   = transforms[row];
             const iron::MaterialDef*   mat = world.get<iron::MaterialDef>(e);
             const iron::RenderHandles* rh  = world.get<iron::RenderHandles>(e);
             if (!mat || !rh) continue;
@@ -1780,9 +1784,7 @@ int main() {
             iron::DrawCall call;
             call.mesh                  = rh->mesh;
             call.shader                = litShader;
-            call.model                 = iron::translation(t.position)
-                                       * t.rotation.toMat4()
-                                       * iron::scaling(t.scale);
+            call.model                 = iron::worldMatrix(world, e, worldMatrixMemo);   // M69
             call.material.texture      = rh->albedo;
             call.material.normalMap    = rh->normal;
             if (sceneIdx >= 0 && sceneIdx < static_cast<int>(resolved.size())) {
