@@ -218,7 +218,6 @@ int main() {
         int              entityIndex = -1;  // index into scene.entities
         iron::MeshHandle mesh     = iron::kInvalidHandle;
         iron::Material   material;
-        iron::Mat4       model    = iron::Mat4::identity();
         iron::Aabb       localBounds{};     // model-space mesh bounds for picking
     };
     std::vector<ResolvedEntity> resolved;
@@ -288,7 +287,7 @@ int main() {
     };
 
     // Resolve one SceneEntity into a ResolvedEntity (mesh handle + material +
-    // bounds + model). Returns false if the entity can't be drawn (a glTF that
+    // bounds). Returns false if the entity can't be drawn (a glTF that
     // fails to load, or no mesh). Reused for the initial scene + runtime adds.
     // Takes a mutable SceneEntity& so the glTF branch can seed the entity's
     // MaterialDef ONCE (non-clobbering) for Inspector visibility + live editing.
@@ -377,7 +376,6 @@ int main() {
         out.material.reflectivity    = e.material.reflectivity;
         out.material.normalScale     = e.material.normalScale;
         out.material.heightScale     = e.material.heightScale;
-        out.model = iron::translation(e.transform.position) * e.transform.rotation.toMat4() * iron::scaling(e.transform.scale);
         return true;
     };
 
@@ -1352,12 +1350,23 @@ int main() {
 
                 // A fresh click that didn't grab a handle re-selects (or clears).
                 if (lmbPressed && !consumed && mouseInViewport) {
+                    // M69: compose world AABBs through the Parent chain so picking
+                    // matches what setRender draws (call.model uses worldMatrix too).
+                    // Edit-mode only: scene <-> World transforms are mirrored each
+                    // frame, so World-side composition reflects the edited values.
                     std::vector<iron::Aabb> worldAabbs(resolved.size());
+                    std::unordered_map<std::uint32_t, iron::Mat4> pickMemo;
                     for (std::size_t i = 0; i < resolved.size(); ++i) {
-                        const iron::SceneEntity& e = scene.entities[resolved[i].entityIndex];
-                        const iron::Mat4 model = iron::translation(e.transform.position)
-                                               * e.transform.rotation.toMat4()
-                                               * iron::scaling(e.transform.scale);
+                        const int si = resolved[i].entityIndex;
+                        if (si < 0 || si >= static_cast<int>(sceneIndexToEntity.size())) {
+                            // Shouldn't happen (resolved/scene/sceneIndexToEntity stay
+                            // parallel through deletes); inverted box never intersects.
+                            worldAabbs[i] = iron::Aabb{{1.0f, 1.0f, 1.0f},
+                                                       {-1.0f, -1.0f, -1.0f}};
+                            continue;
+                        }
+                        const iron::Mat4 model =
+                            iron::worldMatrix(world, sceneIndexToEntity[si], pickMemo);
                         worldAabbs[i] = worldAabb(resolved[i].localBounds, model);
                     }
                     const int ri = iron::pickEntity(ray, worldAabbs);
@@ -1722,19 +1731,10 @@ int main() {
         wantUndo = false;
         wantRedo = false;
 
-        // --- re-derive render data from the (possibly edited) scene ---
-        // Mesh + texture handles are fixed (path editing is out of scope), so
-        // only the model matrix + material scalars need refreshing. Lighting is
-        // read live by beginFrame below.
-        for (auto& re : resolved) {
-            const iron::SceneEntity& e = scene.entities[re.entityIndex];
-            re.model = iron::translation(e.transform.position)
-                     * e.transform.rotation.toMat4()
-                     * iron::scaling(e.transform.scale);
-            re.material.emissive     = e.material.emissive;
-            re.material.uvScale      = e.material.uvScale;
-            re.material.reflectivity = e.material.reflectivity;
-        }
+        // M69: the per-frame resolved[] refresh (model matrix + material scalars)
+        // is gone: the render loop below reads transforms via iron::worldMatrix and
+        // material scalars from the World MaterialDef (kept live by the mirror just
+        // below); resolved[] only contributes load-time texture/mesh handles.
 
         // --- M37 D4: Inspector + Gizmo edit scene.entities[]; mirror them into the
         // World so the render path (and any future system that reads the World) sees
