@@ -43,6 +43,7 @@ json entityToJson(const Reflection& r, const ComponentRegistry& cr, const SceneE
     j["transform"] = componentToJson(r, e.transform);
     j["mesh"]      = componentToJson(r, e.mesh);
     j["material"]  = componentToJson(r, e.material);
+    if (e.parentIndex != -1) j["parent"] = e.parentIndex;   // M69
     json comps = json::array();
     for (const auto& box : e.components.all()) {
         const ComponentRegistry::Entry* entry = cr.byTypeId(box->typeId());
@@ -61,6 +62,8 @@ SceneEntity entityFromJson(const Reflection& r, const ComponentRegistry& cr, con
     if (j.contains("transform")) componentFromJson(r, e.transform, j["transform"]);
     if (j.contains("mesh"))      componentFromJson(r, e.mesh,      j["mesh"]);
     if (j.contains("material"))  componentFromJson(r, e.material,  j["material"]);
+    if (j.contains("parent") && j["parent"].is_number_integer())
+        e.parentIndex = j["parent"].get<int>();   // M69; validated after the whole scene loads
 
     if (j.contains("components") && j["components"].is_array()) {
         for (const json& cj : j["components"]) {
@@ -172,6 +175,30 @@ std::optional<SceneFile> sceneFromJsonString(const Reflection& reflection,
             scene.entities.push_back(entityFromJson(reflection, cr, j));
         }
     }
+
+    // M69: fail-safe parentIndex validation. Out-of-range, self-parent, or a
+    // parent chain that cycles is reset to -1 (root) with a warning — matching
+    // SceneIO's load-time posture of never rejecting a file outright.
+    const int n = static_cast<int>(scene.entities.size());
+    for (int i = 0; i < n; ++i) {
+        int p = scene.entities[i].parentIndex;
+        if (p < -1 || p >= n || p == i) {   // p < -1 = invalid negative (not the -1 root sentinel)
+            Log::warn("SceneIO: entity %d has invalid parent %d; resetting to root", i, p);
+            scene.entities[i].parentIndex = -1;
+        }
+    }
+    for (int i = 0; i < n; ++i) {
+        int hops = 0, p = scene.entities[i].parentIndex;
+        while (p != -1) {
+            if (++hops > n) {
+                Log::warn("SceneIO: entity %d parent chain cycles; resetting to root", i);
+                scene.entities[i].parentIndex = -1;
+                break;
+            }
+            p = scene.entities[p].parentIndex;
+        }
+    }
+
     return scene;
 }
 

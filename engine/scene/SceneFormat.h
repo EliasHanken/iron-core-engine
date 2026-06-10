@@ -57,6 +57,7 @@ struct SceneEntity {
     MeshRef     mesh;
     MaterialDef material;
     ComponentSet components;   // M67 — collision/audio/probe/logic are now components
+    int          parentIndex = -1;   // M69 — index into SceneFile::entities; -1 = root
 };
 
 // A complete authored scene: placed entities + global lighting/environment.

@@ -281,6 +281,67 @@ int main() {
         CHECK_NEAR(back.entities[0].components.get<DummyComp>()->f, 2.5f);
     }
 
+    // M69: parentIndex round-trip — entity[1].parentIndex = 0 survives serialize/parse.
+    {
+        const iron::Reflection r = makeReflectionRegistry();
+        const iron::ComponentRegistry cr = makeComponentRegistry(r);
+        iron::SceneFile s;
+        iron::SceneEntity a; a.name = "root";
+        iron::SceneEntity b; b.name = "child"; b.parentIndex = 0;
+        s.entities = {a, b};
+        const std::string json = iron::sceneToJsonString(r, cr, s);
+        const auto loadedOpt = iron::sceneFromJsonString(r, cr, json);
+        CHECK(loadedOpt.has_value());
+        if (loadedOpt.has_value()) {
+            CHECK(loadedOpt->entities.size() == 2u);
+            CHECK(loadedOpt->entities[0].parentIndex == -1);
+            CHECK(loadedOpt->entities[1].parentIndex == 0);
+        }
+    }
+
+    // M69: legacy files with no "parent" key default to -1.
+    {
+        const iron::Reflection r = makeReflectionRegistry();
+        const iron::ComponentRegistry cr = makeComponentRegistry(r);
+        const char* legacy = R"({"entities":[{"name":"a"},{"name":"b"}]})";
+        const auto loadedOpt = iron::sceneFromJsonString(r, cr, legacy);
+        CHECK(loadedOpt.has_value());
+        if (loadedOpt.has_value()) {
+            CHECK(loadedOpt->entities.size() == 2u);
+            CHECK(loadedOpt->entities[0].parentIndex == -1);
+            CHECK(loadedOpt->entities[1].parentIndex == -1);
+        }
+    }
+
+    // M69: out-of-range parent is sanitized to -1 at load time.
+    {
+        const iron::Reflection r = makeReflectionRegistry();
+        const iron::ComponentRegistry cr = makeComponentRegistry(r);
+        const char* bad = R"({"entities":[{"name":"a","parent":7}]})";
+        const auto loadedOpt = iron::sceneFromJsonString(r, cr, bad);
+        CHECK(loadedOpt.has_value());
+        if (loadedOpt.has_value()) {
+            CHECK(loadedOpt->entities.size() == 1u);
+            CHECK(loadedOpt->entities[0].parentIndex == -1);
+        }
+    }
+
+    // M69: a cyclic parent chain is broken at load time (cycle guard, pass 2).
+    {
+        const iron::Reflection r = makeReflectionRegistry();
+        const iron::ComponentRegistry cr = makeComponentRegistry(r);
+        // a->parent=1, b->parent=0 : a 2-node cycle.
+        const char* cyclic = R"({"entities":[{"name":"a","parent":1},{"name":"b","parent":0}]})";
+        const auto loadedOpt = iron::sceneFromJsonString(r, cr, cyclic);
+        CHECK(loadedOpt.has_value());
+        if (loadedOpt.has_value()) {
+            CHECK(loadedOpt->entities.size() == 2u);
+            // At least one link must be reset to -1 so no cycle remains.
+            CHECK(loadedOpt->entities[0].parentIndex == -1 ||
+                  loadedOpt->entities[1].parentIndex == -1);
+        }
+    }
+
     // In-memory string round-trip (M57): toJsonString -> fromJsonString
     // preserves entity name + transform + a material factor.
     {
