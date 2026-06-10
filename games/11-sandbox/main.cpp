@@ -1376,7 +1376,7 @@ int main() {
                     } else {
                         // M69: child — edit a world-space proxy, write back local.
                         const iron::Mat4 parentWorld = iron::worldMatrixOf(scene, sel.parentIndex);
-                        const iron::BoneLocal pw = iron::decomposeTRS(parentWorld * sel.transform.matrix());
+                        const iron::BoneLocal pw = iron::decomposeTRS(iron::worldMatrixOf(scene, selectedIndex));
                         iron::SceneEntity proxy = sel;          // copy (keeps mesh for any internal use)
                         proxy.transform.position = pw.translation;
                         proxy.transform.rotation = pw.rotation;
@@ -1433,7 +1433,7 @@ int main() {
 
         // M57: per-frame undo/redo signals (reset every frame).
         bool inspectorChanged   = false;
-        bool structuralEdit     = false;   // an add/delete/duplicate ran this frame
+        bool structuralEdit     = false;   // an add/delete/duplicate/reparent ran this frame
 
         // M43b: one-time default dock layout. DockBuilderGetNode == nullptr means
         // no layout exists yet (fresh — no imgui.ini), so a stale imgui.ini wins.
@@ -1730,12 +1730,22 @@ int main() {
 
                 mirrorParents();  // M69: surviving Parent links may have been remapped
                 selectedIndex = -1;
+            } else if (action == Action::Reparent) {
+                // M69: reparent keeping world pose. Rejection (self/descendant/
+                // out-of-range) is handled inside reparentKeepWorld. No selValid:
+                // the dragged entity need not be the selection.
+                if (iron::reparentKeepWorld(scene, outRes.reparentChild,
+                                            outRes.reparentNewParent)) {
+                    mirrorParents();   // refresh World Parent components
+                }
             }
 
-            // M57: any add/delete/duplicate is a structural scene edit.
+            // M57: any add/delete/duplicate/reparent is a structural scene edit.
+            // (A rejected reparent leaves the scene unchanged; tickDoc sees an
+            // identical serialization and pushes no undo entry.)
             if (action == Action::AddCube || action == Action::AddPlane ||
                 action == Action::AddGltf || action == Action::Duplicate ||
-                action == Action::Delete)
+                action == Action::Delete  || action == Action::Reparent)
                 structuralEdit = true;
         }
 
