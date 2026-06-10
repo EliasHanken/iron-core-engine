@@ -34,6 +34,7 @@ iron::Reflection makeReflectionRegistry() {
     iron::registerAudioEmitter(r);
     iron::registerReflectionProbe(r);
     iron::registerLogicGraphComponent(r);
+    iron::registerHealth(r);
     return r;
 }
 
