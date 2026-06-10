@@ -50,7 +50,7 @@ SceneOutliner::Result SceneOutliner::draw(const SceneFile& scene, int& selectedI
         if (ImGui::IsItemClicked() && !ImGui::IsItemToggledOpen()) selectedIndex = i;
 
         // Drag source: payload = this entity index.
-        if (ImGui::BeginDragDropSource()) {
+        if (!ImGui::IsItemToggledOpen() && ImGui::BeginDragDropSource()) {
             ImGui::SetDragDropPayload("IRON_ENTITY", &i, sizeof(int));
             ImGui::TextUnformatted(label);
             ImGui::EndDragDropSource();
