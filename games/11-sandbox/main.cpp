@@ -236,6 +236,7 @@ int main() {
     auto mirrorParents = [&]() {
         for (int i = 0; i < static_cast<int>(scene.entities.size()); ++i) {
             if (i >= static_cast<int>(sceneIndexToEntity.size())) break;
+            if (!sceneIndexToEntity[i].valid()) continue;   // skip kEntityNone gaps (defense; ComponentArray::add has no guard)
             const int p = scene.entities[i].parentIndex;
             iron::EntityId parentId = iron::kEntityNone;
             if (p >= 0 && p < static_cast<int>(sceneIndexToEntity.size()))
@@ -987,7 +988,9 @@ int main() {
     // helmet's dangling cables pull the AABB center off the body), and swings
     // when rotating about an off-center pivot — so we use the pivot.
     auto gizmoOriginFor = [&](int sel) -> iron::Vec3 {
-        return scene.entities[sel].transform.position;
+        // M69: world-space pivot (translation column of the composed matrix).
+        const iron::Mat4 w = iron::worldMatrixOf(scene, sel);
+        return iron::Vec3{w.at(0, 3), w.at(1, 3), w.at(2, 3)};
     };
 
     // M42: draw an entity's collider as a green wireframe in Edit mode, so the
@@ -1364,11 +1367,31 @@ int main() {
                 const bool lmbDown    = input.mouseButtonDown(GLFW_MOUSE_BUTTON_LEFT);
 
                 bool consumed = false;
-                if (selectedIndex >= 0 && selectedIndex < static_cast<int>(scene.entities.size()))
-                    consumed = gizmo.update(scene.entities[selectedIndex],
-                                            gizmoOriginFor(selectedIndex), ray,
-                                            lmbPressed, lmbDown, cam.position,
-                                            cam.fovDeg);
+                if (selectedIndex >= 0 && selectedIndex < static_cast<int>(scene.entities.size())) {
+                    iron::SceneEntity& sel = scene.entities[selectedIndex];
+                    if (sel.parentIndex < 0) {
+                        // Root: existing path, gizmo edits local == world.
+                        consumed = gizmo.update(sel, gizmoOriginFor(selectedIndex), ray,
+                                                lmbPressed, lmbDown, cam.position, cam.fovDeg);
+                    } else {
+                        // M69: child — edit a world-space proxy, write back local.
+                        const iron::Mat4 parentWorld = iron::worldMatrixOf(scene, sel.parentIndex);
+                        const iron::BoneLocal pw = iron::decomposeTRS(parentWorld * sel.transform.matrix());
+                        iron::SceneEntity proxy = sel;          // copy (keeps mesh for any internal use)
+                        proxy.transform.position = pw.translation;
+                        proxy.transform.rotation = pw.rotation;
+                        proxy.transform.scale    = pw.scale;
+                        consumed = gizmo.update(proxy, gizmoOriginFor(selectedIndex), ray,
+                                                lmbPressed, lmbDown, cam.position, cam.fovDeg);
+                        if (consumed) {
+                            const iron::BoneLocal nl =
+                                iron::decomposeTRS(iron::inverse(parentWorld) * proxy.transform.matrix());
+                            sel.transform.position = nl.translation;
+                            sel.transform.rotation = nl.rotation;
+                            sel.transform.scale    = nl.scale;
+                        }
+                    }
+                }
 
                 // A fresh click that didn't grab a handle re-selects (or clears).
                 if (lmbPressed && !consumed && mouseInViewport) {
@@ -1684,7 +1707,8 @@ int main() {
 
                 std::vector<iron::EntityId> newSITE(scene.entities.size());
                 for (int oldIdx = 0; oldIdx < static_cast<int>(map.size()); ++oldIdx) {
-                    if (oldIdx >= static_cast<int>(sceneIndexToEntity.size())) break;
+                    // gap from a failed resolve: no World entry for this index; keep scanning
+                    if (oldIdx >= static_cast<int>(sceneIndexToEntity.size())) continue;
                     const iron::EntityId e = sceneIndexToEntity[oldIdx];
                     if (map[oldIdx] == -1) world.destroy(e);
                     else                   newSITE[map[oldIdx]] = e;
@@ -2097,20 +2121,21 @@ int main() {
         renderer.setReflectionProbes(
             std::span<const iron::GpuReflectionProbe>(bakedProbes.data(), bakedProbes.size()));
 
-        if (selectedIndex >= 0 && selectedIndex < static_cast<int>(scene.entities.size()))
-            gizmo.draw(renderer, gizmoOriginFor(selectedIndex),
-                       scene.entities[selectedIndex].transform.rotation, cam.position,
+        if (selectedIndex >= 0 && selectedIndex < static_cast<int>(scene.entities.size())) {
+            // M69: Local-space handles orient by the entity's WORLD rotation.
+            const iron::BoneLocal wl = iron::decomposeTRS(iron::worldMatrixOf(scene, selectedIndex));
+            gizmo.draw(renderer, gizmoOriginFor(selectedIndex), wl.rotation, cam.position,
                        cam.fovDeg);
+        }
 
         // --- selection outline: the selected entity's oriented bounding box
         // drawn as an always-on-top box, so the active object reads clearly. ---
         if (selectedIndex >= 0 && selectedIndex < static_cast<int>(scene.entities.size())) {
             for (const auto& re : resolved) {
                 if (re.entityIndex != selectedIndex) continue;
-                const iron::SceneEntity& se = scene.entities[selectedIndex];
-                const iron::Mat4 m = iron::translation(se.transform.position)
-                                   * se.transform.rotation.toMat4()
-                                   * iron::scaling(se.transform.scale);
+                // M69: compose through the parent chain so the highlight box is
+                // correct for child entities, not just roots.
+                const iron::Mat4 m = iron::worldMatrixOf(scene, selectedIndex);
                 // Oriented bounding box: transform each LOCAL-bounds corner by the
                 // model matrix so the outline rotates + scales with the object,
                 // instead of a world-axis AABB that just grows/shrinks on spin.
