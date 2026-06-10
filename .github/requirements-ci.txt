@@ -1,0 +1,3 @@
+# CI-only Python deps (glad's code generator). Also the cache key for
+# actions/setup-python's pip cache - keep in sync with the Install step.
+jinja2
