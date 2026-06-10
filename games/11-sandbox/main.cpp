@@ -1182,7 +1182,7 @@ int main() {
                     const iron::Vec3 wp = physics.bodyPosition(body);
                     const iron::Quat wr = physics.bodyRotation(body);
                     const int parent = scene.entities[idx].parentIndex;   // M69
-                    if (parent < 0) {
+                    if (parent < 0 || parent >= static_cast<int>(sceneIndexToEntity.size())) {
                         scene.entities[idx].transform.position = wp;
                         scene.entities[idx].transform.rotation = wr;
                     } else {
