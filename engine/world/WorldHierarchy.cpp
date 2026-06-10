@@ -4,7 +4,7 @@
 #include "world/Transform.h"
 #include "world/World.h"
 
-#include "scene/SceneHierarchy.h"   // kMaxHierarchyDepth
+#include "world/HierarchyConfig.h"   // kMaxHierarchyDepth
 
 namespace iron {
 

@@ -16,7 +16,10 @@ class World;
 Mat4 worldMatrix(const World& world, EntityId e);
 
 // Memoized variant for per-frame iteration over many entities: caches by
-// entity index so a shared ancestor is composed once per frame.
+// entity index (not full generation) so a shared ancestor is composed once
+// per frame. The memo MUST be declared locally and discarded before any
+// World::create/destroy call that could recycle entity indices; a stale
+// memo across entity recycling returns incorrect matrices silently.
 Mat4 worldMatrix(const World& world, EntityId e,
                  std::unordered_map<std::uint32_t, Mat4>& memo);
 

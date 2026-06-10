@@ -2,16 +2,13 @@
 
 #include "math/Mat4.h"
 #include "scene/SceneFormat.h"
+#include "world/HierarchyConfig.h"
 
 #include <functional>
 #include <string>
 #include <vector>
 
 namespace iron {
-
-// Depth cap shared by every chain walk; doubles as a cycle guard so a
-// hand-corrupted parentIndex never hangs.
-inline constexpr int kMaxHierarchyDepth = 256;
 
 // World matrix of entity `index`: its local matrix pre-multiplied by every
 // ancestor's, walking up parentIndex. Returns identity for an out-of-range

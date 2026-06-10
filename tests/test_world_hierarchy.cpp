@@ -55,9 +55,25 @@ static void test_world_matrix_memoized_matches_plain() {
     CHECK(memo.size() == 2);
 }
 
+static void test_world_matrix_cycle_guard() {
+    iron::World w;
+    iron::EntityId a = w.create();
+    iron::EntityId b = w.create();
+    w.add<iron::Transform>(a, iron::Transform{});
+    w.add<iron::Transform>(b, iron::Transform{});
+    w.add<iron::Parent>(a, iron::Parent{b});
+    w.add<iron::Parent>(b, iron::Parent{a});  // cycle: a->b->a->...
+    // Must return without hanging (depth-capped). Also via the memo path.
+    (void)iron::worldMatrix(w, a);
+    std::unordered_map<std::uint32_t, iron::Mat4> memo;
+    (void)iron::worldMatrix(w, a, memo);
+    CHECK(true);
+}
+
 int main() {
     test_world_matrix_composes_through_parent();
     test_world_matrix_root_is_local();
     test_world_matrix_memoized_matches_plain();
+    test_world_matrix_cycle_guard();
     return iron_test_result();
 }
