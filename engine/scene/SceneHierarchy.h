@@ -33,4 +33,18 @@ std::vector<int> collectSubtree(const SceneFile& scene, int root);
 // no TRS representation) — the standard engine caveat.
 bool reparentKeepWorld(SceneFile& scene, int child, int newParent);
 
+// Remove `root` and its whole subtree. Returns an old->new index map sized to
+// the ORIGINAL entity count: removed entries are -1, survivors map to their new
+// index. Surviving parentIndex links are remapped. The host uses the map to fix
+// sceneIndexToEntity / resolved / selectedIndex in one place.
+std::vector<int> deleteSubtree(SceneFile& scene, int root);
+
+// Deep-copy `root`'s subtree, appending the copies. Internal parent links are
+// preserved; the new root attaches to the source root's parent. Each new entity
+// is renamed via `uniquify(name)`. Returns the new root's index (-1 if root is
+// out of range). Existing indices are unchanged (copies are appended), so the
+// host only needs to spawn World entities for the appended range.
+int duplicateSubtree(SceneFile& scene, int root,
+                     const std::function<std::string(const std::string&)>& uniquify);
+
 }  // namespace iron

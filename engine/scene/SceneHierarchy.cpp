@@ -66,4 +66,58 @@ bool reparentKeepWorld(SceneFile& scene, int child, int newParent) {
     return true;
 }
 
+std::vector<int> deleteSubtree(SceneFile& scene, int root) {
+    const int n = static_cast<int>(scene.entities.size());
+    std::vector<int> oldToNew(n, 0);
+    if (!inRange(scene, root)) {              // nothing removed: identity map
+        for (int i = 0; i < n; ++i) oldToNew[i] = i;
+        return oldToNew;
+    }
+
+    // Mark the subtree for removal.
+    std::vector<char> remove(n, 0);
+    for (int idx : collectSubtree(scene, root)) remove[idx] = 1;
+
+    // Build old->new and the surviving entity list in one pass.
+    std::vector<SceneEntity> kept;
+    kept.reserve(n);
+    int next = 0;
+    for (int i = 0; i < n; ++i) {
+        if (remove[i]) { oldToNew[i] = -1; }
+        else           { oldToNew[i] = next++; kept.push_back(scene.entities[i]); }
+    }
+
+    // Remap surviving parent links (a survivor's parent is always a survivor or -1).
+    for (auto& e : kept) {
+        if (e.parentIndex != -1) e.parentIndex = oldToNew[e.parentIndex];
+    }
+    scene.entities = std::move(kept);
+    return oldToNew;
+}
+
+int duplicateSubtree(SceneFile& scene, int root,
+                     const std::function<std::string(const std::string&)>& uniquify) {
+    if (!inRange(scene, root)) return -1;
+    const std::vector<int> sub = collectSubtree(scene, root);   // root first
+    const int base = static_cast<int>(scene.entities.size());
+
+    // old subtree index -> new appended index.
+    std::vector<int> remap(scene.entities.size(), -1);
+    for (std::size_t k = 0; k < sub.size(); ++k) remap[sub[k]] = base + static_cast<int>(k);
+
+    for (int oldIdx : sub) {
+        // Value copy taken BEFORE push_back, so the reallocation push_back may
+        // trigger cannot invalidate anything we still hold.
+        SceneEntity copy = scene.entities[oldIdx];   // value copy (transform + components)
+        copy.name = uniquify(copy.name);
+        if (oldIdx != root) {
+            copy.parentIndex = remap[copy.parentIndex];   // internal link -> the copy
+        }
+        // else: new root keeps the source root's parent (attach as a sibling
+        // subtree) — copy.parentIndex already equals scene.entities[root]'s.
+        scene.entities.push_back(std::move(copy));
+    }
+    return remap[root];
+}
+
 }  // namespace iron

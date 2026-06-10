@@ -102,6 +102,69 @@ static void test_reparent_rejections() {
     CHECK(!iron::reparentKeepWorld(s, 1, 9));   // newParent out of range
 }
 
+static void test_reparent_between_two_parents_keeps_world() {
+    iron::SceneFile s;
+    iron::SceneEntity p1; p1.transform.position = {10, 0, 0};
+    iron::SceneEntity p2; p2.transform.position = {0, 5, 0};
+    iron::SceneEntity c;  c.transform.position  = {2, 0, 0}; c.parentIndex = 0;
+    s.entities = {p1, p2, c};  // child's world pos = (12,0,0)
+    const iron::Mat4 before = iron::worldMatrixOf(s, 2);
+    CHECK(iron::reparentKeepWorld(s, 2, 1));
+    CHECK(s.entities[2].parentIndex == 1);
+    const iron::Mat4 after = iron::worldMatrixOf(s, 2);
+    CHECK_NEAR(after.at(0,3), before.at(0,3));  // world X still 12
+    CHECK_NEAR(after.at(1,3), before.at(1,3));  // world Y still 0
+}
+
+static void test_delete_subtree_remap() {
+    // 0 root, 1 child-of-0, 2 grandchild-of-1, 3 unrelated root.
+    iron::SceneFile s;
+    iron::SceneEntity a; a.name="a";
+    iron::SceneEntity b; b.name="b"; b.parentIndex=0;
+    iron::SceneEntity c; c.name="c"; c.parentIndex=1;
+    iron::SceneEntity d; d.name="d";
+    s.entities = {a,b,c,d};
+
+    auto map = iron::deleteSubtree(s, 1);     // removes b(1) and c(2)
+    CHECK(map.size() == 4);
+    CHECK(map[0] == 0);                        // a survives at 0
+    CHECK(map[1] == -1);                       // b removed
+    CHECK(map[2] == -1);                       // c removed
+    CHECK(map[3] == 1);                        // d shifts down to 1
+    CHECK(s.entities.size() == 2);
+    CHECK(s.entities[0].name == "a");
+    CHECK(s.entities[1].name == "d");
+    CHECK(s.entities[1].parentIndex == -1);    // d still root
+}
+
+static void test_delete_subtree_remaps_surviving_parent_links() {
+    // 0 root, 1 child-of-0, 2 sibling root with child 3.
+    iron::SceneFile s;
+    iron::SceneEntity a; a.name="a";
+    iron::SceneEntity b; b.name="b"; b.parentIndex=0;
+    iron::SceneEntity c; c.name="c";
+    iron::SceneEntity e; e.name="e"; e.parentIndex=2;
+    s.entities = {a,b,c,e};
+
+    iron::deleteSubtree(s, 0);                 // remove a(0) and b(1)
+    CHECK(s.entities.size() == 2);
+    CHECK(s.entities[0].name == "c");
+    CHECK(s.entities[1].name == "e");
+    CHECK(s.entities[1].parentIndex == 0);     // e's parent c remapped 2 -> 0
+}
+
+static void test_duplicate_subtree() {
+    iron::SceneFile s = makeChain();           // root(0)->mid(1)->leaf(2)
+    auto uniq = [&](const std::string& base){ return base + "_copy"; };
+    const int newRoot = iron::duplicateSubtree(s, 1, uniq);   // duplicate mid+leaf
+    CHECK(s.entities.size() == 5);
+    CHECK(newRoot == 3);                        // appended after the original 3
+    CHECK(s.entities[3].name == "mid_copy");
+    CHECK(s.entities[3].parentIndex == 0);      // new root attaches to source's parent (root)
+    CHECK(s.entities[4].name == "leaf_copy");
+    CHECK(s.entities[4].parentIndex == 3);      // internal link preserved (points at the copy)
+}
+
 int main() {
     test_transform_matrix_equals_inline_composition();
     test_world_matrix_three_deep_translation();
@@ -112,5 +175,9 @@ int main() {
     test_reparent_preserves_world_position();
     test_reparent_to_root_keeps_world();
     test_reparent_rejections();
+    test_reparent_between_two_parents_keeps_world();
+    test_delete_subtree_remap();
+    test_delete_subtree_remaps_surviving_parent_links();
+    test_duplicate_subtree();
     return iron_test_result();
 }
