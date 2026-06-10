@@ -8,6 +8,7 @@
 // release to interact with the editor UI. ESC to quit.
 
 #include "asset/GltfLoader.h"
+#include "asset/Pose.h"
 #include "core/Application.h"
 #include "core/Input.h"
 #include "core/Log.h"
@@ -1178,10 +1179,26 @@ int main() {
                 if (idx < 0 || idx >= static_cast<int>(scene.entities.size())) continue;
                 auto* csb = scene.entities[idx].components.get<iron::CollisionShape>();
                 if (csb && csb->body == iron::ColliderBody::Dynamic) {
-                    scene.entities[idx].transform.position = physics.bodyPosition(body);
-                    scene.entities[idx].transform.rotation = physics.bodyRotation(body);
+                    const iron::Vec3 wp = physics.bodyPosition(body);
+                    const iron::Quat wr = physics.bodyRotation(body);
+                    const int parent = scene.entities[idx].parentIndex;   // M69
+                    if (parent < 0) {
+                        scene.entities[idx].transform.position = wp;
+                        scene.entities[idx].transform.rotation = wr;
+                    } else {
+                        // Parent's current world pose lives in the World (logic/physics
+                        // updated it there). Compose local from it. Scale ignored (M42).
+                        const iron::Mat4 parentWorld =
+                            iron::worldMatrix(world, sceneIndexToEntity[parent]);
+                        const iron::Mat4 worldPose = iron::translation(wp) * wr.toMat4();
+                        const iron::BoneLocal trs =
+                            iron::decomposeTRS(iron::inverse(parentWorld) * worldPose);
+                        scene.entities[idx].transform.position = trs.translation;
+                        scene.entities[idx].transform.rotation = trs.rotation;
+                    }
                     auto vit = playVoices.find(idx);
                     if (vit != playVoices.end())
+                        // M69: local for parented bodies; voice tracking revisit if needed
                         audio.setVoicePosition(vit->second, scene.entities[idx].transform.position);
                 }
             }
