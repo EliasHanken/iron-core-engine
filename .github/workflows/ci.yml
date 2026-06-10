@@ -38,16 +38,21 @@ jobs:
         run: pip install jinja2
 
       - name: Cache vcpkg binary archives
-        # Restore previously-built dep archives. Invalidates only when our
-        # vcpkg manifest or registry baseline changes. On cache hit, vcpkg
-        # install in the Configure step decompresses pre-built packages
-        # instead of recompiling GNS + openssl + protobuf + abseil from
-        # source (~20 min saved).
+        # Restore previously-built dep archives. On cache hit, vcpkg install
+        # in the Configure step decompresses pre-built packages instead of
+        # recompiling GNS + openssl + protobuf + abseil from source (~20 min
+        # saved). The key ends in run_id so a fresh cache is SAVED every run:
+        # actions/cache skips the save step on an exact-key hit, and vcpkg's
+        # ABI hash also covers the MSVC version — so when the runner image
+        # updates the toolchain, every archive goes stale and (without the
+        # run_id suffix) the rebuild would never be persisted, making every
+        # later run repay the full source build.
         uses: actions/cache@v4
         with:
           path: ${{ github.workspace }}/vcpkg-bincache
-          key: vcpkg-bincache-${{ runner.os }}-${{ hashFiles('vcpkg.json', 'vcpkg-configuration.json') }}
+          key: vcpkg-bincache-${{ runner.os }}-${{ hashFiles('vcpkg.json', 'vcpkg-configuration.json') }}-${{ github.run_id }}
           restore-keys: |
+            vcpkg-bincache-${{ runner.os }}-${{ hashFiles('vcpkg.json', 'vcpkg-configuration.json') }}-
             vcpkg-bincache-${{ runner.os }}-
 
       - name: Ensure vcpkg binary cache dir exists
