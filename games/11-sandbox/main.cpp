@@ -1188,9 +1188,14 @@ int main() {
                     } else {
                         // Parent's current world pose lives in the World (logic/physics
                         // updated it there). Compose local from it. Scale ignored (M42).
+                        // NOTE: a dynamic parent's World transform is last-frame (the
+                        // scene->World mirror runs in setRender), so the child lags one
+                        // frame when the parent is also dynamic.
                         const iron::Mat4 parentWorld =
                             iron::worldMatrix(world, sceneIndexToEntity[parent]);
                         const iron::Mat4 worldPose = iron::translation(wp) * wr.toMat4();
+                        // LOSSY if the parent has non-uniform scale (shear discarded) —
+                        // same caveat as reparentKeepWorld.
                         const iron::BoneLocal trs =
                             iron::decomposeTRS(iron::inverse(parentWorld) * worldPose);
                         scene.entities[idx].transform.position = trs.translation;
@@ -1641,26 +1646,65 @@ int main() {
                 ne.mesh.gltfPath = outRes.gltfPath;
                 appendAndSelect(ne);
             } else if (action == Action::Duplicate && selValid) {
-                iron::SceneEntity ne = scene.entities[selectedIndex];  // copy mesh+material+transform
-                ne.name = uniqueName(ne.name);
-                ne.transform.position.x += 0.5f;  // slight offset so the copy is visible
-                appendAndSelect(ne);
+                // M69: deep-copy the whole subtree (copies are appended; the new
+                // root attaches to the source root's parent).
+                const int newRoot = iron::duplicateSubtree(scene, selectedIndex, uniqueName);
+                scene.entities[newRoot].transform.position.x += 0.5f;  // nudge the copy
+                // Spawn World entities for the appended range (same component set
+                // as appendAndSelect) and re-mirror parents.
+                for (int i = static_cast<int>(sceneIndexToEntity.size());
+                     i < static_cast<int>(scene.entities.size()); ++i) {
+                    const iron::EntityId entity = world.create();
+                    ResolvedEntity re;
+                    if (resolveEntity(scene.entities[i], i, re)) {
+                        resolved.push_back(re);
+                        world.add<iron::RenderHandles>(entity, toRenderHandles(re));
+                    } else {
+                        // Keep sceneIndexToEntity parallel to scene.entities even on a
+                        // failed resolve (the source itself may never have resolved):
+                        // spawn the World entity anyway, just without RenderHandles,
+                        // so the submit loop skips drawing it.
+                        iron::Log::warn("sandbox: duplicate of '%s' failed to resolve; "
+                                        "copy kept but not drawable",
+                                        scene.entities[i].name.c_str());
+                    }
+                    const iron::SceneEntity& se = scene.entities[i];
+                    world.add<iron::Transform>(entity, se.transform);
+                    world.add<iron::MeshRef>(entity, se.mesh);
+                    world.add<iron::MaterialDef>(entity, se.material);
+                    sceneIndexToEntity.push_back(entity);
+                }
+                mirrorParents();  // M69: fix up Parent links for the new range
+                selectedIndex = newRoot;
             } else if (action == Action::Delete && selValid) {
-                const int d = selectedIndex;
-                scene.entities.erase(scene.entities.begin() + d);
-                // M37: mirror destroy into the World. sceneIndexToEntity is parallel
-                // to scene.entities (no reindex needed — erase shifts later entries down).
-                if (d >= 0 && d < static_cast<int>(sceneIndexToEntity.size())) {
-                    iron::EntityId e = sceneIndexToEntity[d];
-                    world.destroy(e);
-                    sceneIndexToEntity.erase(sceneIndexToEntity.begin() + d);
+                // M69: delete the whole subtree. deleteSubtree mutates
+                // scene.entities and returns old->new (-1 = removed); we use it
+                // to rebuild the parallel sceneIndexToEntity + resolved arrays.
+                const std::vector<int> map = iron::deleteSubtree(scene, selectedIndex);
+
+                std::vector<iron::EntityId> newSITE(scene.entities.size());
+                for (int oldIdx = 0; oldIdx < static_cast<int>(map.size()); ++oldIdx) {
+                    if (oldIdx >= static_cast<int>(sceneIndexToEntity.size())) break;
+                    const iron::EntityId e = sceneIndexToEntity[oldIdx];
+                    if (map[oldIdx] == -1) world.destroy(e);
+                    else                   newSITE[map[oldIdx]] = e;
                 }
-                // Drop the deleted entity's resolved entry; shift higher indices down.
-                for (std::size_t i = 0; i < resolved.size();) {
-                    if (resolved[i].entityIndex == d) { resolved.erase(resolved.begin() + i); continue; }
-                    if (resolved[i].entityIndex > d) --resolved[i].entityIndex;
-                    ++i;
+                sceneIndexToEntity = std::move(newSITE);
+
+                // Rebuild resolved: drop removed, remap survivors' entityIndex.
+                std::vector<ResolvedEntity> keptResolved;
+                keptResolved.reserve(resolved.size());
+                for (auto& re : resolved) {
+                    const int ni = (re.entityIndex >= 0 &&
+                                    re.entityIndex < static_cast<int>(map.size()))
+                                       ? map[re.entityIndex] : -1;
+                    if (ni == -1) continue;
+                    re.entityIndex = ni;
+                    keptResolved.push_back(re);
                 }
+                resolved = std::move(keptResolved);
+
+                mirrorParents();  // M69: surviving Parent links may have been remapped
                 selectedIndex = -1;
             }
 
