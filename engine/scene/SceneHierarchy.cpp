@@ -50,6 +50,7 @@ std::vector<int> collectSubtree(const SceneFile& scene, int root) {
 
 bool reparentKeepWorld(SceneFile& scene, int child, int newParent) {
     if (!inRange(scene, child)) return false;
+    if (newParent == scene.entities[child].parentIndex) return false;   // already there: true no-op, no TRS round-trip
     if (newParent != -1 && !inRange(scene, newParent)) return false;
     if (newParent == child) return false;
     if (newParent != -1 && isDescendant(scene, child, newParent)) return false;

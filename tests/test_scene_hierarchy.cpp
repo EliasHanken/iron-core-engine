@@ -102,6 +102,33 @@ static void test_reparent_rejections() {
     CHECK(!iron::reparentKeepWorld(s, 1, 9));   // newParent out of range
 }
 
+static void test_reparent_onto_current_parent_is_noop() {
+    iron::SceneFile s = makeChain();           // root(0)->mid(1)->leaf(2)
+    const iron::Transform before = s.entities[2].transform;
+    CHECK(!iron::reparentKeepWorld(s, 2, 1));  // leaf already under mid -> rejected
+    CHECK(s.entities[2].parentIndex == 1);
+    // Bit-identical local transform: no inverse()*decomposeTRS round-trip allowed.
+    const iron::Transform& after = s.entities[2].transform;
+    CHECK(after.position.x == before.position.x);
+    CHECK(after.position.y == before.position.y);
+    CHECK(after.position.z == before.position.z);
+    CHECK(after.rotation.x == before.rotation.x);
+    CHECK(after.rotation.y == before.rotation.y);
+    CHECK(after.rotation.z == before.rotation.z);
+    CHECK(after.rotation.w == before.rotation.w);
+    CHECK(after.scale.x == before.scale.x);
+    CHECK(after.scale.y == before.scale.y);
+    CHECK(after.scale.z == before.scale.z);
+
+    // Root dropped on the outliner unparent zone: -1 -> -1 is the same no-op.
+    const iron::Transform rootBefore = s.entities[0].transform;
+    CHECK(!iron::reparentKeepWorld(s, 0, -1));
+    CHECK(s.entities[0].parentIndex == -1);
+    CHECK(s.entities[0].transform.position.x == rootBefore.position.x);
+    CHECK(s.entities[0].transform.rotation.w == rootBefore.rotation.w);
+    CHECK(s.entities[0].transform.scale.x == rootBefore.scale.x);
+}
+
 static void test_reparent_between_two_parents_keeps_world() {
     iron::SceneFile s;
     iron::SceneEntity p1; p1.transform.position = {10, 0, 0};
@@ -196,6 +223,7 @@ int main() {
     test_reparent_preserves_world_position();
     test_reparent_to_root_keeps_world();
     test_reparent_rejections();
+    test_reparent_onto_current_parent_is_noop();
     test_reparent_between_two_parents_keeps_world();
     test_delete_subtree_remap();
     test_delete_subtree_remaps_surviving_parent_links();
