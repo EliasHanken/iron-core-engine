@@ -844,13 +844,6 @@ int main() {
     };
     ViewportState viewport;
 
-    // Pivot the view-gizmo / camera orbit around: selected entity, else origin.
-    auto viewPivotFor = [&](int sel) -> iron::Vec3 {
-        return (sel >= 0 && sel < static_cast<int>(scene.entities.size()))
-                   ? scene.entities[sel].transform.position
-                   : iron::Vec3{0.0f, 0.0f, 0.0f};
-    };
-
     // M37.5: projection rebuilds on resize; lambda captures FOV/near/far closures.
     auto computeProj = [&]() {
         const float w = viewport.size.x > 0.0f ? viewport.size.x
@@ -991,6 +984,13 @@ int main() {
         // M69: world-space pivot (translation column of the composed matrix).
         const iron::Mat4 w = iron::worldMatrixOf(scene, sel);
         return iron::Vec3{w.at(0, 3), w.at(1, 3), w.at(2, 3)};
+    };
+
+    // Pivot the view-gizmo / camera orbit around: selected entity, else origin.
+    auto viewPivotFor = [&](int sel) -> iron::Vec3 {
+        return (sel >= 0 && sel < static_cast<int>(scene.entities.size()))
+                   ? gizmoOriginFor(sel)
+                   : iron::Vec3{0.0f, 0.0f, 0.0f};
     };
 
     // M42: draw an entity's collider as a green wireframe in Edit mode, so the
@@ -1244,7 +1244,7 @@ int main() {
             const float wheel = static_cast<float>(g_scrollAccum);
             const iron::Vec3 zoomPivot =
                 (selectedIndex >= 0 && selectedIndex < static_cast<int>(scene.entities.size()))
-                    ? scene.entities[selectedIndex].transform.position
+                    ? gizmoOriginFor(selectedIndex)
                     : iron::Vec3{0.0f, 0.0f, 0.0f};
             const iron::Vec3 rel = cam.position - zoomPivot;
             const float currentDist = iron::length(rel);
@@ -1270,7 +1270,7 @@ int main() {
             if (mmdx != 0.0f || mmdy != 0.0f) {
                 const iron::Vec3 orbitPivot =
                     (selectedIndex >= 0 && selectedIndex < static_cast<int>(scene.entities.size()))
-                        ? scene.entities[selectedIndex].transform.position
+                        ? gizmoOriginFor(selectedIndex)
                         : iron::Vec3{0.0f, 0.0f, 0.0f};
                 constexpr float kMmbOrbitSensitivity = 0.005f;
                 iron::orbitCamera(cam, orbitPivot,
