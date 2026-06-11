@@ -8,6 +8,7 @@
 // release to interact with the editor UI. ESC to quit.
 
 #include "asset/GltfLoader.h"
+#include "asset/Pose.h"
 #include "core/Application.h"
 #include "core/Input.h"
 #include "core/Log.h"
@@ -29,9 +30,12 @@
 #include "scene/FreeFlyCamera.h"
 #include "scene/Mesh.h"
 #include "scene/SceneFormat.h"
+#include "scene/SceneHierarchy.h"
 #include "scene/SceneIO.h"
+#include "world/Parent.h"
 #include "world/Transform.h"
 #include "world/World.h"
+#include "world/WorldHierarchy.h"
 #include "editor/EditorState.h"
 #include "editor/EnvironmentPanel.h"
 #include "editor/Gizmo.h"
@@ -70,6 +74,7 @@
 #include <array>
 #include <cfloat>
 #include <cmath>
+#include <cstdint>
 #include <cstdio>
 #include <numbers>
 #include <span>
@@ -214,13 +219,31 @@ int main() {
         int              entityIndex = -1;  // index into scene.entities
         iron::MeshHandle mesh     = iron::kInvalidHandle;
         iron::Material   material;
-        iron::Mat4       model    = iron::Mat4::identity();
         iron::Aabb       localBounds{};     // model-space mesh bounds for picking
     };
     std::vector<ResolvedEntity> resolved;
 
     iron::World world;
     std::vector<iron::EntityId> sceneIndexToEntity;   // parallel to scene.entities
+
+    // M69: mirror scene parentIndex links into World Parent components. Call after
+    // sceneIndexToEntity is fully populated (parent links need every entity's
+    // EntityId to exist). Idempotent: re-adds Parent on every entity each call
+    // (World::add overwrites an existing component).
+    // If called while some parents' EntityIds are missing from sceneIndexToEntity,
+    // those links silently resolve to kEntityNone (root) — a correctness bug, not
+    // an assert. Keep the call sites AFTER full population.
+    auto mirrorParents = [&]() {
+        for (int i = 0; i < static_cast<int>(scene.entities.size()); ++i) {
+            if (i >= static_cast<int>(sceneIndexToEntity.size())) break;
+            if (!sceneIndexToEntity[i].valid()) continue;   // skip kEntityNone gaps (defense; ComponentArray::add has no guard)
+            const int p = scene.entities[i].parentIndex;
+            iron::EntityId parentId = iron::kEntityNone;
+            if (p >= 0 && p < static_cast<int>(sceneIndexToEntity.size()))
+                parentId = sceneIndexToEntity[p];
+            world.add<iron::Parent>(sceneIndexToEntity[i], iron::Parent{parentId});
+        }
+    };
 
     // Cache primitive meshes so N cubes/planes share one MeshHandle.
     iron::MeshHandle cubeMesh  = iron::kInvalidHandle;
@@ -266,7 +289,7 @@ int main() {
     };
 
     // Resolve one SceneEntity into a ResolvedEntity (mesh handle + material +
-    // bounds + model). Returns false if the entity can't be drawn (a glTF that
+    // bounds). Returns false if the entity can't be drawn (a glTF that
     // fails to load, or no mesh). Reused for the initial scene + runtime adds.
     // Takes a mutable SceneEntity& so the glTF branch can seed the entity's
     // MaterialDef ONCE (non-clobbering) for Inspector visibility + live editing.
@@ -355,7 +378,6 @@ int main() {
         out.material.reflectivity    = e.material.reflectivity;
         out.material.normalScale     = e.material.normalScale;
         out.material.heightScale     = e.material.heightScale;
-        out.model = iron::translation(e.transform.position) * e.transform.rotation.toMat4() * iron::scaling(e.transform.scale);
         return true;
     };
 
@@ -528,6 +550,10 @@ int main() {
         iron::Log::info("sandbox: M49 probe demo room added (%zu entities total)",
                         scene.entities.size());
     }
+
+    // M69: all startup entities (scene + demo room + probe) now have World
+    // entities, so parent links can be resolved.
+    mirrorParents();
 
     // M49: baked probe list (persists across frames; populated on Bake button press).
     std::vector<iron::GpuReflectionProbe> bakedProbes;
@@ -818,13 +844,6 @@ int main() {
     };
     ViewportState viewport;
 
-    // Pivot the view-gizmo / camera orbit around: selected entity, else origin.
-    auto viewPivotFor = [&](int sel) -> iron::Vec3 {
-        return (sel >= 0 && sel < static_cast<int>(scene.entities.size()))
-                   ? scene.entities[sel].transform.position
-                   : iron::Vec3{0.0f, 0.0f, 0.0f};
-    };
-
     // M37.5: projection rebuilds on resize; lambda captures FOV/near/far closures.
     auto computeProj = [&]() {
         const float w = viewport.size.x > 0.0f ? viewport.size.x
@@ -962,7 +981,16 @@ int main() {
     // helmet's dangling cables pull the AABB center off the body), and swings
     // when rotating about an off-center pivot — so we use the pivot.
     auto gizmoOriginFor = [&](int sel) -> iron::Vec3 {
-        return scene.entities[sel].transform.position;
+        // M69: world-space pivot (translation column of the composed matrix).
+        const iron::Mat4 w = iron::worldMatrixOf(scene, sel);
+        return iron::Vec3{w.at(0, 3), w.at(1, 3), w.at(2, 3)};
+    };
+
+    // Pivot the view-gizmo / camera orbit around: selected entity, else origin.
+    auto viewPivotFor = [&](int sel) -> iron::Vec3 {
+        return (sel >= 0 && sel < static_cast<int>(scene.entities.size()))
+                   ? gizmoOriginFor(sel)
+                   : iron::Vec3{0.0f, 0.0f, 0.0f};
     };
 
     // M42: draw an entity's collider as a green wireframe in Edit mode, so the
@@ -1077,6 +1105,7 @@ int main() {
             world.add<iron::MaterialDef>(entity, se.material);
             world.add<iron::RenderHandles>(entity, toRenderHandles(re));
             sceneIndexToEntity.push_back(entity);
+            world.add<iron::Parent>(entity, iron::Parent{iron::kEntityNone});  // M69: new entities are roots
             selectedIndex = idx;
         } else {
             scene.entities.pop_back();
@@ -1103,6 +1132,7 @@ int main() {
             world.add<iron::RenderHandles>(entity, toRenderHandles(re));
             sceneIndexToEntity.push_back(entity);
         }
+        mirrorParents();  // M69: undo/redo restore must rebuild Parent links too
         if (selectedIndex >= static_cast<int>(scene.entities.size()))
             selectedIndex = -1;
     };
@@ -1152,10 +1182,31 @@ int main() {
                 if (idx < 0 || idx >= static_cast<int>(scene.entities.size())) continue;
                 auto* csb = scene.entities[idx].components.get<iron::CollisionShape>();
                 if (csb && csb->body == iron::ColliderBody::Dynamic) {
-                    scene.entities[idx].transform.position = physics.bodyPosition(body);
-                    scene.entities[idx].transform.rotation = physics.bodyRotation(body);
+                    const iron::Vec3 wp = physics.bodyPosition(body);
+                    const iron::Quat wr = physics.bodyRotation(body);
+                    const int parent = scene.entities[idx].parentIndex;   // M69
+                    if (parent < 0 || parent >= static_cast<int>(sceneIndexToEntity.size())) {
+                        scene.entities[idx].transform.position = wp;
+                        scene.entities[idx].transform.rotation = wr;
+                    } else {
+                        // Parent's current world pose lives in the World (logic/physics
+                        // updated it there). Compose local from it. Scale ignored (M42).
+                        // NOTE: a dynamic parent's World transform is last-frame (the
+                        // scene->World mirror runs in setRender), so the child lags one
+                        // frame when the parent is also dynamic.
+                        const iron::Mat4 parentWorld =
+                            iron::worldMatrix(world, sceneIndexToEntity[parent]);
+                        const iron::Mat4 worldPose = iron::translation(wp) * wr.toMat4();
+                        // LOSSY if the parent has non-uniform scale (shear discarded) —
+                        // same caveat as reparentKeepWorld.
+                        const iron::BoneLocal trs =
+                            iron::decomposeTRS(iron::inverse(parentWorld) * worldPose);
+                        scene.entities[idx].transform.position = trs.translation;
+                        scene.entities[idx].transform.rotation = trs.rotation;
+                    }
                     auto vit = playVoices.find(idx);
                     if (vit != playVoices.end())
+                        // M69: local for parented bodies; voice tracking revisit if needed
                         audio.setVoicePosition(vit->second, scene.entities[idx].transform.position);
                 }
             }
@@ -1193,7 +1244,7 @@ int main() {
             const float wheel = static_cast<float>(g_scrollAccum);
             const iron::Vec3 zoomPivot =
                 (selectedIndex >= 0 && selectedIndex < static_cast<int>(scene.entities.size()))
-                    ? scene.entities[selectedIndex].transform.position
+                    ? gizmoOriginFor(selectedIndex)
                     : iron::Vec3{0.0f, 0.0f, 0.0f};
             const iron::Vec3 rel = cam.position - zoomPivot;
             const float currentDist = iron::length(rel);
@@ -1219,7 +1270,7 @@ int main() {
             if (mmdx != 0.0f || mmdy != 0.0f) {
                 const iron::Vec3 orbitPivot =
                     (selectedIndex >= 0 && selectedIndex < static_cast<int>(scene.entities.size()))
-                        ? scene.entities[selectedIndex].transform.position
+                        ? gizmoOriginFor(selectedIndex)
                         : iron::Vec3{0.0f, 0.0f, 0.0f};
                 constexpr float kMmbOrbitSensitivity = 0.005f;
                 iron::orbitCamera(cam, orbitPivot,
@@ -1316,20 +1367,49 @@ int main() {
                 const bool lmbDown    = input.mouseButtonDown(GLFW_MOUSE_BUTTON_LEFT);
 
                 bool consumed = false;
-                if (selectedIndex >= 0 && selectedIndex < static_cast<int>(scene.entities.size()))
-                    consumed = gizmo.update(scene.entities[selectedIndex],
-                                            gizmoOriginFor(selectedIndex), ray,
-                                            lmbPressed, lmbDown, cam.position,
-                                            cam.fovDeg);
+                if (selectedIndex >= 0 && selectedIndex < static_cast<int>(scene.entities.size())) {
+                    iron::SceneEntity& sel = scene.entities[selectedIndex];
+                    if (sel.parentIndex < 0) {
+                        // Root: existing path, gizmo edits local == world.
+                        consumed = gizmo.update(sel, gizmoOriginFor(selectedIndex), ray,
+                                                lmbPressed, lmbDown, cam.position, cam.fovDeg);
+                    } else {
+                        // M69: child — edit a world-space proxy, write back local.
+                        const iron::Mat4 parentWorld = iron::worldMatrixOf(scene, sel.parentIndex);
+                        const iron::BoneLocal pw = iron::decomposeTRS(iron::worldMatrixOf(scene, selectedIndex));
+                        iron::SceneEntity proxy = sel;          // copy (keeps mesh for any internal use)
+                        proxy.transform.position = pw.translation;
+                        proxy.transform.rotation = pw.rotation;
+                        proxy.transform.scale    = pw.scale;
+                        consumed = gizmo.update(proxy, gizmoOriginFor(selectedIndex), ray,
+                                                lmbPressed, lmbDown, cam.position, cam.fovDeg);
+                        if (consumed) {
+                            const iron::BoneLocal nl =
+                                iron::decomposeTRS(iron::inverse(parentWorld) * proxy.transform.matrix());
+                            sel.transform.position = nl.translation;
+                            sel.transform.rotation = nl.rotation;
+                            sel.transform.scale    = nl.scale;
+                        }
+                    }
+                }
 
                 // A fresh click that didn't grab a handle re-selects (or clears).
                 if (lmbPressed && !consumed && mouseInViewport) {
+                    // M69: compose world AABBs through the Parent chain so picking
+                    // matches what setRender draws (call.model uses worldMatrix too).
+                    // Edit-mode only: scene <-> World transforms are mirrored each
+                    // frame, so World-side composition reflects the edited values.
                     std::vector<iron::Aabb> worldAabbs(resolved.size());
+                    std::unordered_map<std::uint32_t, iron::Mat4> pickMemo;
                     for (std::size_t i = 0; i < resolved.size(); ++i) {
-                        const iron::SceneEntity& e = scene.entities[resolved[i].entityIndex];
-                        const iron::Mat4 model = iron::translation(e.transform.position)
-                                               * e.transform.rotation.toMat4()
-                                               * iron::scaling(e.transform.scale);
+                        const int si = resolved[i].entityIndex;
+                        const iron::Mat4 model =
+                            (si >= 0 && si < static_cast<int>(sceneIndexToEntity.size()))
+                                ? iron::worldMatrix(world, sceneIndexToEntity[si], pickMemo)
+                                // M69: out-of-sync fallback (shouldn't happen --
+                                // resolved/scene/sceneIndexToEntity stay parallel
+                                // through deletes): compose scene-side instead.
+                                : iron::worldMatrixOf(scene, si);
                         worldAabbs[i] = worldAabb(resolved[i].localBounds, model);
                     }
                     const int ri = iron::pickEntity(ray, worldAabbs);
@@ -1353,7 +1433,7 @@ int main() {
 
         // M57: per-frame undo/redo signals (reset every frame).
         bool inspectorChanged   = false;
-        bool structuralEdit     = false;   // an add/delete/duplicate ran this frame
+        bool structuralEdit     = false;   // an add/delete/duplicate/reparent ran this frame
 
         // M43b: one-time default dock layout. DockBuilderGetNode == nullptr means
         // no layout exists yet (fresh — no imgui.ini), so a stale imgui.ini wins.
@@ -1589,33 +1669,83 @@ int main() {
                 ne.mesh.gltfPath = outRes.gltfPath;
                 appendAndSelect(ne);
             } else if (action == Action::Duplicate && selValid) {
-                iron::SceneEntity ne = scene.entities[selectedIndex];  // copy mesh+material+transform
-                ne.name = uniqueName(ne.name);
-                ne.transform.position.x += 0.5f;  // slight offset so the copy is visible
-                appendAndSelect(ne);
+                // M69: deep-copy the whole subtree (copies are appended; the new
+                // root attaches to the source root's parent).
+                const int newRoot = iron::duplicateSubtree(scene, selectedIndex, uniqueName);
+                scene.entities[newRoot].transform.position.x += 0.5f;  // nudge the copy
+                // Spawn World entities for the appended range (same component set
+                // as appendAndSelect) and re-mirror parents.
+                for (int i = static_cast<int>(sceneIndexToEntity.size());
+                     i < static_cast<int>(scene.entities.size()); ++i) {
+                    const iron::EntityId entity = world.create();
+                    ResolvedEntity re;
+                    if (resolveEntity(scene.entities[i], i, re)) {
+                        resolved.push_back(re);
+                        world.add<iron::RenderHandles>(entity, toRenderHandles(re));
+                    } else {
+                        // Keep sceneIndexToEntity parallel to scene.entities even on a
+                        // failed resolve (the source itself may never have resolved):
+                        // spawn the World entity anyway, just without RenderHandles,
+                        // so the submit loop skips drawing it.
+                        iron::Log::warn("sandbox: duplicate of '%s' failed to resolve; "
+                                        "copy kept but not drawable",
+                                        scene.entities[i].name.c_str());
+                    }
+                    const iron::SceneEntity& se = scene.entities[i];
+                    world.add<iron::Transform>(entity, se.transform);
+                    world.add<iron::MeshRef>(entity, se.mesh);
+                    world.add<iron::MaterialDef>(entity, se.material);
+                    sceneIndexToEntity.push_back(entity);
+                }
+                mirrorParents();  // M69: fix up Parent links for the new range
+                selectedIndex = newRoot;
             } else if (action == Action::Delete && selValid) {
-                const int d = selectedIndex;
-                scene.entities.erase(scene.entities.begin() + d);
-                // M37: mirror destroy into the World. sceneIndexToEntity is parallel
-                // to scene.entities (no reindex needed — erase shifts later entries down).
-                if (d >= 0 && d < static_cast<int>(sceneIndexToEntity.size())) {
-                    iron::EntityId e = sceneIndexToEntity[d];
-                    world.destroy(e);
-                    sceneIndexToEntity.erase(sceneIndexToEntity.begin() + d);
+                // M69: delete the whole subtree. deleteSubtree mutates
+                // scene.entities and returns old->new (-1 = removed); we use it
+                // to rebuild the parallel sceneIndexToEntity + resolved arrays.
+                const std::vector<int> map = iron::deleteSubtree(scene, selectedIndex);
+
+                std::vector<iron::EntityId> newSITE(scene.entities.size());
+                for (int oldIdx = 0; oldIdx < static_cast<int>(map.size()); ++oldIdx) {
+                    // gap from a failed resolve: no World entry for this index; keep scanning
+                    if (oldIdx >= static_cast<int>(sceneIndexToEntity.size())) continue;
+                    const iron::EntityId e = sceneIndexToEntity[oldIdx];
+                    if (map[oldIdx] == -1) world.destroy(e);
+                    else                   newSITE[map[oldIdx]] = e;
                 }
-                // Drop the deleted entity's resolved entry; shift higher indices down.
-                for (std::size_t i = 0; i < resolved.size();) {
-                    if (resolved[i].entityIndex == d) { resolved.erase(resolved.begin() + i); continue; }
-                    if (resolved[i].entityIndex > d) --resolved[i].entityIndex;
-                    ++i;
+                sceneIndexToEntity = std::move(newSITE);
+
+                // Rebuild resolved: drop removed, remap survivors' entityIndex.
+                std::vector<ResolvedEntity> keptResolved;
+                keptResolved.reserve(resolved.size());
+                for (auto& re : resolved) {
+                    const int ni = (re.entityIndex >= 0 &&
+                                    re.entityIndex < static_cast<int>(map.size()))
+                                       ? map[re.entityIndex] : -1;
+                    if (ni == -1) continue;
+                    re.entityIndex = ni;
+                    keptResolved.push_back(re);
                 }
+                resolved = std::move(keptResolved);
+
+                mirrorParents();  // M69: surviving Parent links may have been remapped
                 selectedIndex = -1;
+            } else if (action == Action::Reparent) {
+                // M69: reparent keeping world pose. Rejection (self/descendant/
+                // out-of-range) is handled inside reparentKeepWorld. No selValid:
+                // the dragged entity need not be the selection.
+                if (iron::reparentKeepWorld(scene, outRes.reparentChild,
+                                            outRes.reparentNewParent)) {
+                    mirrorParents();   // refresh World Parent components
+                }
             }
 
-            // M57: any add/delete/duplicate is a structural scene edit.
+            // M57: any add/delete/duplicate/reparent is a structural scene edit.
+            // (A rejected reparent leaves the scene unchanged; tickDoc sees an
+            // identical serialization and pushes no undo entry.)
             if (action == Action::AddCube || action == Action::AddPlane ||
                 action == Action::AddGltf || action == Action::Duplicate ||
-                action == Action::Delete)
+                action == Action::Delete  || action == Action::Reparent)
                 structuralEdit = true;
         }
 
@@ -1694,19 +1824,10 @@ int main() {
         wantUndo = false;
         wantRedo = false;
 
-        // --- re-derive render data from the (possibly edited) scene ---
-        // Mesh + texture handles are fixed (path editing is out of scope), so
-        // only the model matrix + material scalars need refreshing. Lighting is
-        // read live by beginFrame below.
-        for (auto& re : resolved) {
-            const iron::SceneEntity& e = scene.entities[re.entityIndex];
-            re.model = iron::translation(e.transform.position)
-                     * e.transform.rotation.toMat4()
-                     * iron::scaling(e.transform.scale);
-            re.material.emissive     = e.material.emissive;
-            re.material.uvScale      = e.material.uvScale;
-            re.material.reflectivity = e.material.reflectivity;
-        }
+        // M69: the per-frame resolved[] refresh (model matrix + material scalars)
+        // is gone: the render loop below reads transforms via iron::worldMatrix and
+        // material scalars from the World MaterialDef (kept live by the mirror just
+        // below); resolved[] only contributes load-time texture/mesh handles.
 
         // --- M37 D4: Inspector + Gizmo edit scene.entities[]; mirror them into the
         // World so the render path (and any future system that reads the World) sees
@@ -1739,10 +1860,10 @@ int main() {
                                 scene.pointLights.size()),
                             scene.fog, view, proj);
         // M37: submit iterates the World; D4 keeps it in sync with scene.entities.
+        std::unordered_map<std::uint32_t, iron::Mat4> worldMatrixMemo;   // M69: per-frame
         auto& transforms = world.view<iron::Transform>();
         for (std::size_t row = 0; row < transforms.size(); ++row) {
             const iron::EntityId       e   = transforms.entityAt(row);
-            const iron::Transform&     t   = transforms[row];
             const iron::MaterialDef*   mat = world.get<iron::MaterialDef>(e);
             const iron::RenderHandles* rh  = world.get<iron::RenderHandles>(e);
             if (!mat || !rh) continue;
@@ -1756,9 +1877,7 @@ int main() {
             iron::DrawCall call;
             call.mesh                  = rh->mesh;
             call.shader                = litShader;
-            call.model                 = iron::translation(t.position)
-                                       * t.rotation.toMat4()
-                                       * iron::scaling(t.scale);
+            call.model                 = iron::worldMatrix(world, e, worldMatrixMemo);   // M69
             call.material.texture      = rh->albedo;
             call.material.normalMap    = rh->normal;
             if (sceneIdx >= 0 && sceneIdx < static_cast<int>(resolved.size())) {
@@ -2012,20 +2131,21 @@ int main() {
         renderer.setReflectionProbes(
             std::span<const iron::GpuReflectionProbe>(bakedProbes.data(), bakedProbes.size()));
 
-        if (selectedIndex >= 0 && selectedIndex < static_cast<int>(scene.entities.size()))
-            gizmo.draw(renderer, gizmoOriginFor(selectedIndex),
-                       scene.entities[selectedIndex].transform.rotation, cam.position,
+        if (selectedIndex >= 0 && selectedIndex < static_cast<int>(scene.entities.size())) {
+            // M69: Local-space handles orient by the entity's WORLD rotation.
+            const iron::BoneLocal wl = iron::decomposeTRS(iron::worldMatrixOf(scene, selectedIndex));
+            gizmo.draw(renderer, gizmoOriginFor(selectedIndex), wl.rotation, cam.position,
                        cam.fovDeg);
+        }
 
         // --- selection outline: the selected entity's oriented bounding box
         // drawn as an always-on-top box, so the active object reads clearly. ---
         if (selectedIndex >= 0 && selectedIndex < static_cast<int>(scene.entities.size())) {
             for (const auto& re : resolved) {
                 if (re.entityIndex != selectedIndex) continue;
-                const iron::SceneEntity& se = scene.entities[selectedIndex];
-                const iron::Mat4 m = iron::translation(se.transform.position)
-                                   * se.transform.rotation.toMat4()
-                                   * iron::scaling(se.transform.scale);
+                // M69: compose through the parent chain so the highlight box is
+                // correct for child entities, not just roots.
+                const iron::Mat4 m = iron::worldMatrixOf(scene, selectedIndex);
                 // Oriented bounding box: transform each LOCAL-bounds corner by the
                 // model matrix so the outline rotates + scales with the object,
                 // instead of a world-axis AABB that just grows/shrinks on spin.

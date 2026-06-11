@@ -52,6 +52,12 @@ A gameplay module registers these (in addition to M53's `Entry`/`Const`/`Add`/`C
 - **`GetVar`** — `[in String "name", out Float "value"]` — reads `RunContext.vars[name]` (persistent per entity).
 - **`SetVar`** — `[in exec "in", in String "name", in Float "value"]` — writes `RunContext.vars[name]`.
 
+> **Hierarchy (M69):** `GetPosition` / `SetPosition` / `Translate` operate in an
+> entity's **LOCAL** space (relative to its parent). For a root entity local ==
+> world. World-space variants (`GetWorldPosition` / `SetWorldPosition`) are
+> deferred to M70/M71. A logic graph that moves a parent drags its children
+> automatically (render composes through the parent chain).
+
 These are **headless-unit-testable**: build a `World`, an entity with a `Transform`, a `RunContext{domainContext=&gameCtx, vars=…}`, run a graph, assert the `Transform` changed.
 
 ## The runtime
