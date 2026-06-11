@@ -12,6 +12,13 @@ on:
       - '**.md'
       - 'docs/**'
 
+# A new push to a PR branch supersedes the in-flight run — cancel it instead
+# of burning a second runner. Pushes to main are never cancelled (their cache
+# saves are what keep PR runs fast).
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   build-and-test:
     name: Build & test (Windows / MSVC)
@@ -22,6 +29,9 @@ jobs:
       # still sets it and prints a warning). Use a local file-based binary
       # cache that we back via actions/cache below.
       VCPKG_BINARY_SOURCES: 'clear;files,${{ github.workspace }}/vcpkg-bincache,readwrite'
+      # sccache stores compiled objects in the GitHub Actions cache service,
+      # so our own sources (plus FetchContent deps) compile-cache across runs.
+      SCCACHE_GHA_ENABLED: 'true'
 
     steps:
       - name: Checkout
@@ -33,9 +43,19 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: '3.x'
+          cache: 'pip'
+          cache-dependency-path: .github/requirements-ci.txt
 
       - name: Install glad generator dependency
-        run: pip install jinja2
+        run: pip install -r .github/requirements-ci.txt
+
+      - name: Set up MSVC environment
+        # Puts cl.exe on PATH — required by the Ninja generator (MSBuild found
+        # the compiler itself; Ninja expects a ready vcvars environment).
+        uses: ilammy/msvc-dev-cmd@v1
+
+      - name: Set up sccache
+        uses: mozilla-actions/sccache-action@v0.0.9
 
       - name: Cache vcpkg binary archives
         # Restore previously-built dep archives. On cache hit, vcpkg install
@@ -67,15 +87,36 @@ jobs:
       - name: Configure
         # bash shell on Windows runner: pwsh's `${env:VCPKG_ROOT}` interpolation
         # mangles -D...= args to cmake; bash with $VCPKG_ROOT is reliable.
+        #
+        # Ninja (single-config Debug) instead of MSBuild so sccache can hook in
+        # via CMAKE_*_COMPILER_LAUNCHER (MSBuild has no launcher support).
+        # /Z7 (Embedded debug info) instead of the /Zi default: sccache cannot
+        # cache /Zi compiles (shared PDB writes aren't reproducible). CMP0141
+        # must be forced NEW because our cmake_minimum_required(3.20) predates
+        # the MSVC_DEBUG_INFORMATION_FORMAT abstraction (3.25) — without it the
+        # variable is silently ignored. Local dev builds (build-vk, MSBuild
+        # multi-config) are unaffected; this is CI-only.
         shell: bash
-        run: cmake -S . -B build -DCMAKE_TOOLCHAIN_FILE="$VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake"
+        run: >
+          cmake -S . -B build -G Ninja
+          -DCMAKE_BUILD_TYPE=Debug
+          -DCMAKE_TOOLCHAIN_FILE="$VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake"
+          -DCMAKE_C_COMPILER_LAUNCHER=sccache
+          -DCMAKE_CXX_COMPILER_LAUNCHER=sccache
+          -DCMAKE_POLICY_DEFAULT_CMP0141=NEW
+          -DCMAKE_MSVC_DEBUG_INFORMATION_FORMAT=Embedded
 
       - name: Build
-        run: cmake --build build --config Debug
+        run: cmake --build build
+
+      - name: sccache stats
+        # Hit/miss counts — the first thing to look at if Build gets slow again.
+        run: sccache --show-stats
 
       - name: Smoke test - net-pingpong
+        # Ninja is single-config: no Debug/ subdirectory in exe paths.
         run: |
-          ./build/games/04-net-pingpong/Debug/net-pingpong.exe
+          ./build/games/04-net-pingpong/net-pingpong.exe
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Test
