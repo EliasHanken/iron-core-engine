@@ -22,6 +22,7 @@ add_library(ironcore STATIC
   scene/EntityJson.cpp
   scene/SceneHierarchy.cpp
   scene/Prefab.cpp
+  scene/PrefabIO.cpp
   scene/Picking.cpp
   ui/BitmapFont.cpp
   ui/BuiltinFont.cpp
