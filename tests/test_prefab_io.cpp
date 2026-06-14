@@ -62,6 +62,20 @@ static void test_load_sanitizes_bad_parent() {
     CHECK(loaded->entities.size() == 2);
     CHECK(loaded->entities[0].parentIndex == -1);   // root forced to -1
     CHECK(loaded->entities[1].parentIndex == -1);   // out-of-range sanitized
+
+    // Self-parent (pi == i) is cleared.
+    const char* selfParent =
+        R"({"version":1,"entities":[{"name":"a"},{"name":"b","parent":1}]})";
+    auto sp = iron::prefabFromJsonString(r, cr, selfParent);
+    CHECK(sp.has_value());
+    CHECK(sp->entities[1].parentIndex == -1);   // self-ref cleared
+
+    // Mutual cycle (1 -> 2 -> 1) is broken (at least one link reset to root).
+    const char* cycle =
+        R"({"version":1,"entities":[{"name":"a"},{"name":"b","parent":2},{"name":"c","parent":1}]})";
+    auto cy = iron::prefabFromJsonString(r, cr, cycle);
+    CHECK(cy.has_value());
+    CHECK(cy->entities[1].parentIndex == -1 || cy->entities[2].parentIndex == -1);
 }
 
 static void test_empty_or_malformed_is_nullopt() {

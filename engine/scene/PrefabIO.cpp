@@ -19,7 +19,11 @@ using json = nlohmann::json;
 void sanitizeParents(Prefab& p) {
     const int n = static_cast<int>(p.entities.size());
     if (n == 0) return;
-    p.entities[0].parentIndex = -1;                 // root is the root by definition
+    if (p.entities[0].parentIndex != -1) {          // root is the root by definition
+        Log::warn("PrefabIO: entity 0 has non-root parent %d; forcing to -1",
+                  p.entities[0].parentIndex);
+        p.entities[0].parentIndex = -1;
+    }
     for (int i = 1; i < n; ++i) {
         int& pi = p.entities[i].parentIndex;
         if (pi < -1 || pi >= n || pi == i) {
