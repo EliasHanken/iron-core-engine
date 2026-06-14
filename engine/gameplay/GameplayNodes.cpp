@@ -10,7 +10,12 @@
 #include "world/Parent.h"
 #include "world/WorldHierarchy.h"
 
+#include "gameplay/SpawnPoint.h"
+#include "world/ComponentSet.h"
+
 #include <cmath>
+#include <string>
+#include <vector>
 
 namespace iron {
 
@@ -97,6 +102,67 @@ void registerGameplayNodes(NodeRegistry& r) {
             }
             c.fire("then");
         }, false, "Set self position in world space"});
+
+    r.registerType({"GetSpawnPoint", "Spawn",
+        { P{"group", PortType::String, In},
+          P{"pos", PortType::Vec3, Out}, P{"found", PortType::Bool, Out} },
+        [](NodeContext& c) {
+            GameContext* g = gameOf(c);
+            Vec3 pos{0, 0, 0};
+            bool found = false;
+            if (g && g->world) {
+                const std::string group = c.in("group").asString();
+                g->world->view<ComponentSet>().forEach([&](EntityId e, ComponentSet& cs) {
+                    if (found) return;
+                    const SpawnPoint* sp = cs.get<SpawnPoint>();
+                    if (!sp || !sp->enabled || sp->group != group) return;
+                    const Mat4 wm = worldMatrix(*g->world, e);
+                    pos = Vec3{wm.at(0, 3), wm.at(1, 3), wm.at(2, 3)};
+                    found = true;
+                });
+            }
+            c.out("pos", NodeValue::V3(pos));
+            c.out("found", NodeValue::B(found));
+        }, false, "First enabled spawn point in group (world position)"});
+
+    r.registerType({"GetRandomSpawnPoint", "Spawn",
+        { P{"group", PortType::String, In},
+          P{"pos", PortType::Vec3, Out}, P{"found", PortType::Bool, Out} },
+        [](NodeContext& c) {
+            GameContext* g = gameOf(c);
+            Vec3 pos{0, 0, 0};
+            bool found = false;
+            if (g && g->world) {
+                const std::string group = c.in("group").asString();
+                std::vector<Vec3> matches;
+                g->world->view<ComponentSet>().forEach([&](EntityId e, ComponentSet& cs) {
+                    const SpawnPoint* sp = cs.get<SpawnPoint>();
+                    if (!sp || !sp->enabled || sp->group != group) return;
+                    const Mat4 wm = worldMatrix(*g->world, e);
+                    matches.push_back(Vec3{wm.at(0, 3), wm.at(1, 3), wm.at(2, 3)});
+                });
+                if (!matches.empty()) {
+                    std::size_t idx = 0;
+                    if (g->rngState)
+                        idx = nextRandomU32(*g->rngState) % matches.size();
+                    pos = matches[idx];
+                    found = true;
+                }
+            }
+            c.out("pos", NodeValue::V3(pos));
+            c.out("found", NodeValue::B(found));
+        }, false, "Random enabled spawn point in group (world position)"});
+
+    r.registerType({"SpawnPrefab", "Spawn",
+        { P{"in", PortType::Exec, In}, P{"prefab", PortType::String, In},
+          P{"pos", PortType::Vec3, In}, P{"then", PortType::Exec, Out} },
+        [](NodeContext& c) {
+            GameContext* g = gameOf(c);
+            if (g && g->spawnQueue)
+                g->spawnQueue->push_back(
+                    SpawnRequest{c.in("prefab").asString(), c.in("pos").asVec3()});
+            c.fire("then");
+        }, false, "Request a prefab spawn at a world position"});
 
     r.registerType({"MakeVec3", "Math",
         { P{"x", PortType::Float, In}, P{"y", PortType::Float, In},
