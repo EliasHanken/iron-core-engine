@@ -1,12 +1,7 @@
 #include "scene/SceneIO.h"
 
-#include "audio/AudioEmitter.h"
 #include "core/Log.h"
-#include "gameplay/LogicGraphComponent.h"
-#include "render/ReflectionProbe.h"
 #include "scene/EntityJson.h"
-#include "scene/ReflectionIO.h"
-#include "world/CollisionShape.h"
 #include "world/ComponentRegistry.h"
 
 #include <nlohmann/json.hpp>
