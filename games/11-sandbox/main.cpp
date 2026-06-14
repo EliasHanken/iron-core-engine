@@ -66,6 +66,7 @@
 #include "world/ComponentRegistry.h"
 #include "scene/RegisterCoreComponents.h"
 #include "gameplay/ComponentNodes.h"
+#include "gameplay/GameContext.h"   // M71: SpawnRequest, nextRandomU32
 #include "gameplay/Health.h"
 #include "gameplay/LogicGraphComponent.h"
 
@@ -81,6 +82,7 @@
 #include <cstdio>
 #include <filesystem>
 #include <numbers>
+#include <optional>
 #include <span>
 #include <string>
 #include <unordered_map>
@@ -185,6 +187,7 @@ int main() {
     iron::registerReflectionProbe(reflection);
     iron::registerLogicGraphComponent(reflection);
     iron::registerHealth(reflection);
+    iron::registerSpawnPoint(reflection);   // M71
 
     iron::ComponentRegistry componentRegistry;
     iron::registerCoreComponents(componentRegistry, reflection);
@@ -676,6 +679,9 @@ int main() {
     // M55: play-time clock for logic graphs (OnTick.time / .dt). Reset on Play.
     float playTime = 0.0f;
     float playDt   = 0.0f;
+    std::vector<iron::SpawnRequest> spawnQueue;     // M71: drained each Play frame
+    std::uint32_t                   spawnRng = 0;   // M71: seeded at Play start
+    std::unordered_map<std::string, std::optional<iron::Prefab>> spawnPrefabCache; // M71
     iron::PhysicsWorld physics;
     if (!physics.init()) {
         iron::Log::error("sandbox: PhysicsWorld init failed");
@@ -827,6 +833,8 @@ int main() {
             editCam   = cam;
             playTime  = 0.0f;   // M55: restart the logic clock each Play
             playDt    = 0.0f;
+            spawnRng  = 0x9E3779B9u;   // M71: fixed non-zero seed -> reproducible Play
+            spawnQueue.clear();
             editor.setMode(iron::EditorState::Mode::Play);
             spawnRuntime();
             // M57: undo/redo is Edit-mode only; drop any in-flight history.
@@ -1957,8 +1965,60 @@ int main() {
         // M55: run entity logic graphs AFTER the scene->World transform mirror so
         // a graph that writes the World Transform (e.g. via SetPosition) isn't
         // overwritten by the mirror, and BEFORE submit so the new pose is drawn.
-        if (editor.isPlaying())
-            iron::tickLogicGraphs(world, nodeRegistry, playTime, playDt);
+        if (editor.isPlaying()) {
+            iron::tickLogicGraphs(world, nodeRegistry, playTime, playDt,
+                                  &spawnQueue, &spawnRng);   // M71
+
+            // M71: drain spawn requests -> instantiate prefabs into the live game.
+            // Ephemeral: the Play->Stop snapshot discards them. Capped per frame.
+            constexpr int kMaxSpawnsPerFrame = 64;
+            int spawnsThisFrame = 0;
+            for (const iron::SpawnRequest& req : spawnQueue) {
+                if (spawnsThisFrame >= kMaxSpawnsPerFrame) {
+                    iron::Log::warn("sandbox: spawn cap (%d/frame) hit; %zu dropped",
+                                    kMaxSpawnsPerFrame,
+                                    spawnQueue.size() - static_cast<std::size_t>(spawnsThisFrame));
+                    break;
+                }
+                auto it = spawnPrefabCache.find(req.prefabPath);
+                if (it == spawnPrefabCache.end()) {
+                    it = spawnPrefabCache.emplace(
+                        req.prefabPath,
+                        iron::loadPrefabFile(reflection, componentRegistry, req.prefabPath)).first;
+                    if (!it->second)
+                        iron::Log::error("sandbox: spawn failed to load prefab %s",
+                                         req.prefabPath.c_str());
+                }
+                if (!it->second || it->second->entities.empty()) continue;
+                const iron::Prefab& pf = *it->second;
+
+                iron::Transform placement = pf.entities[0].transform;
+                placement.position = req.position;
+                iron::instantiatePrefab(scene, pf, placement, uniqueName);
+
+                for (int i = static_cast<int>(sceneIndexToEntity.size());
+                     i < static_cast<int>(scene.entities.size()); ++i) {
+                    const iron::EntityId entity = world.create();
+                    ResolvedEntity re;
+                    if (resolveEntity(scene.entities[i], i, re)) {
+                        resolved.push_back(re);
+                        world.add<iron::RenderHandles>(entity, toRenderHandles(re));
+                    } else {
+                        iron::Log::warn("sandbox: spawned entity '%s' failed to resolve",
+                                        scene.entities[i].name.c_str());
+                    }
+                    const iron::SceneEntity& se = scene.entities[i];
+                    world.add<iron::Transform>(entity, se.transform);
+                    world.add<iron::MeshRef>(entity, se.mesh);
+                    world.add<iron::MaterialDef>(entity, se.material);
+                    world.add<iron::ComponentSet>(entity, se.components);  // M71: visible to nodes
+                    sceneIndexToEntity.push_back(entity);
+                }
+                mirrorParents();
+                ++spawnsThisFrame;
+            }
+            spawnQueue.clear();
+        }
 
         // --- scene render ---
         const iron::Mat4 view = cam.viewMatrix();
