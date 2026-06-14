@@ -1974,21 +1974,30 @@ int main() {
             // Ephemeral: the Play->Stop snapshot discards them. Capped per frame.
             constexpr int kMaxSpawnsPerFrame = 64;
             int spawnsThisFrame = 0;
+            std::size_t examined = 0;   // for an accurate "not spawned" count on cap
             for (const iron::SpawnRequest& req : spawnQueue) {
                 if (spawnsThisFrame >= kMaxSpawnsPerFrame) {
-                    iron::Log::warn("sandbox: spawn cap (%d/frame) hit; %zu dropped",
-                                    kMaxSpawnsPerFrame,
-                                    spawnQueue.size() - static_cast<std::size_t>(spawnsThisFrame));
+                    iron::Log::warn("sandbox: spawn cap (%d/frame) hit; %zu not spawned",
+                                    kMaxSpawnsPerFrame, spawnQueue.size() - examined);
                     break;
                 }
+                ++examined;
                 auto it = spawnPrefabCache.find(req.prefabPath);
                 if (it == spawnPrefabCache.end()) {
+                    // Resolve a relative prefab path against the exe dir (mirrors how
+                    // every other asset loads); an absolute path is used as-is so a
+                    // path dragged from the prefab browser still works.
+                    const bool absolute =
+                        (!req.prefabPath.empty() && (req.prefabPath[0] == '/' || req.prefabPath[0] == '\\')) ||
+                        (req.prefabPath.size() > 1 && req.prefabPath[1] == ':');
+                    const std::string path = absolute ? req.prefabPath
+                                                      : exeDir + "/" + req.prefabPath;
                     it = spawnPrefabCache.emplace(
                         req.prefabPath,
-                        iron::loadPrefabFile(reflection, componentRegistry, req.prefabPath)).first;
+                        iron::loadPrefabFile(reflection, componentRegistry, path)).first;
                     if (!it->second)
                         iron::Log::error("sandbox: spawn failed to load prefab %s",
-                                         req.prefabPath.c_str());
+                                         path.c_str());
                 }
                 if (!it->second || it->second->entities.empty()) continue;
                 const iron::Prefab& pf = *it->second;
