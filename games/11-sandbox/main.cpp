@@ -835,6 +835,7 @@ int main() {
             playDt    = 0.0f;
             spawnRng  = 0x9E3779B9u;   // M71: fixed non-zero seed -> reproducible Play
             spawnQueue.clear();
+            spawnPrefabCache.clear();  // M71: re-check prefab files on disk each Play session
             editor.setMode(iron::EditorState::Mode::Play);
             spawnRuntime();
             // M57: undo/redo is Edit-mode only; drop any in-flight history.
