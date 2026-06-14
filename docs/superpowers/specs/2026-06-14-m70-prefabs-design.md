@@ -170,9 +170,11 @@ is done host-side and passed in, keeping the panel pure and testable-by-eye.
   `extractPrefab(scene, selectedIndex)` → `savePrefabFile(...,
   "assets/prefabs/<name>.prefab")` → refresh `prefabPaths`. No scene mutation, so
   no undo entry.
-- **Instantiate:** on `Instantiate`: `loadPrefabFile(path)` →
-  `instantiatePrefab(scene, *prefab, Transform{spawnPos()}, uniqueName)` → for
-  the appended index range, resolve + create World entities (the exact loop the
+- **Instantiate:** on `Instantiate`: `loadPrefabFile(path)` → build `placement`
+  from the prefab root's transform with `position` overridden to `spawnPos()`
+  (keeps the prefab's authored root rotation/scale, just relocates it) →
+  `instantiatePrefab(scene, *prefab, placement, uniqueName)` → for the
+  appended index range, resolve + create World entities (the exact loop the
   Duplicate branch already runs) → `mirrorParents()` → select the new root →
   set `structuralEdit = true` so it rides the existing whole-scene-JSON undo
   snapshot.
