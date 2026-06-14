@@ -6,6 +6,10 @@
 #include "world/Transform.h"
 #include "world/World.h"
 
+#include "math/Mat4.h"
+#include "world/Parent.h"
+#include "world/WorldHierarchy.h"
+
 #include <cmath>
 
 namespace iron {
@@ -59,6 +63,40 @@ void registerGameplayNodes(NodeRegistry& r) {
                 t->position = t->position + c.in("delta").asVec3();
             c.fire("then");
         }, false, "Offset position by delta"});
+
+    r.registerType({"GetWorldPosition", "Transform",
+        { P{"pos", PortType::Vec3, Out} },
+        [](NodeContext& c) {
+            GameContext* g = gameOf(c);
+            Vec3 pos{0, 0, 0};
+            if (g && g->world && g->world->get<Transform>(g->self)) {
+                const Mat4 wm = worldMatrix(*g->world, g->self);
+                pos = Vec3{wm.at(0, 3), wm.at(1, 3), wm.at(2, 3)};
+            }
+            c.out("pos", NodeValue::V3(pos));
+        }, false, "Self position in world space"});
+
+    r.registerType({"SetWorldPosition", "Transform",
+        { P{"in", PortType::Exec, In}, P{"pos", PortType::Vec3, In},
+          P{"then", PortType::Exec, Out} },
+        [](NodeContext& c) {
+            GameContext* g = gameOf(c);
+            if (g && g->world) {
+                if (Transform* t = g->world->get<Transform>(g->self)) {
+                    const Vec3 wp = c.in("pos").asVec3();
+                    const Parent* p = g->world->get<Parent>(g->self);
+                    if (p && p->parent.valid()) {
+                        // local = inverse(parentWorld) * worldPoint
+                        const Mat4 inv = inverse(worldMatrix(*g->world, p->parent));
+                        const Vec4 local = inv * Vec4{wp.x, wp.y, wp.z, 1.0f};
+                        t->position = Vec3{local.x, local.y, local.z};
+                    } else {
+                        t->position = wp;   // root: world == local
+                    }
+                }
+            }
+            c.fire("then");
+        }, false, "Set self position in world space"});
 
     r.registerType({"MakeVec3", "Math",
         { P{"x", PortType::Float, In}, P{"y", PortType::Float, In},
