@@ -7,6 +7,7 @@ add_library(ironcore_editor STATIC
   Gizmo.cpp
   ImGuiLayer.cpp
   SceneOutliner.cpp
+  PrefabBrowser.cpp
   SceneInspector.cpp
   EnvironmentPanel.cpp
   NodeGraphPanel.cpp
