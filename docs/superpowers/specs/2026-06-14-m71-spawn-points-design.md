@@ -111,9 +111,12 @@ and nodes stay pure.
 ### 4. Spawn nodes — `engine/gameplay/GameplayNodes.cpp`
 
 - `GetSpawnPoint` ← in `group: String` → out `pos: Vec3`, `found: Bool`.
-  Iterates `world->view<SpawnPoint>()`, skips `!enabled` and non-matching
-  `group`, returns the **first** match's world position (`worldMatrix`
-  translation) with `found=true`, else `{0,0,0}, found=false`.
+  Authored components are mirrored into the World as a single `ComponentSet` per
+  entity (M68's `spawnRuntime`, `world.add<ComponentSet>(...)`), so the node
+  iterates `world->view<ComponentSet>()` and reads `cs.get<SpawnPoint>()` (NOT a
+  `view<SpawnPoint>()`), skips `!enabled` and non-matching `group`, and returns
+  the **first** match's world position (`worldMatrix` translation) with
+  `found=true`, else `{0,0,0}, found=false`.
 - `GetRandomSpawnPoint` — same, but collects all matches and picks one via
   `nextRandomU32(*rngState)` (falls back to first if `rngState` is null).
 - `SpawnPrefab` ← exec `in`, `prefab: String`, `pos: Vec3` → exec `then`.
@@ -139,7 +142,15 @@ properties — same authoring result.)
   path→Prefab cache to avoid re-reading), build `placement` from the prefab
   root transform with `position = request.position`, `instantiatePrefab`, then
   the existing append-World-entities loop (`resolveEntity` + `world.add<...>` +
-  `sceneIndexToEntity.push_back`) and `mirrorParents()`. Clear the queue.
+  `sceneIndexToEntity.push_back`), plus `world.add<ComponentSet>` for each
+  spawned entity (matching `spawnRuntime` so the spawned prefab's components are
+  visible to nodes), and `mirrorParents()`. Clear the queue.
+
+  Note: spawned entities render and carry their `ComponentSet`, but their own
+  `LogicGraph` is **not** activated in M71 (no enemy behavior yet). Activating a
+  spawned entity's logic graph — factoring the `LogicGraph` parse out of
+  `spawnRuntime` into a shared helper the drain also calls — is deferred to M73
+  (enemy AI), which is when spawned entities first need to think.
 
 ### 6. Lifecycle
 
