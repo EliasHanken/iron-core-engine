@@ -1101,7 +1101,7 @@ int main() {
         std::error_code ec;
         if (!fs::exists(prefabsDir, ec)) return;
         for (const auto& entry : fs::directory_iterator(prefabsDir, ec)) {
-            if (ec) break;
+            // ec only covers construction above; range-for iteration errors throw.
             if (entry.is_regular_file() && entry.path().extension() == ".prefab")
                 prefabPaths.push_back(entry.path().string());
         }
@@ -1110,11 +1110,12 @@ int main() {
     // M70: build a non-clobbering prefab file path from a base name.
     auto uniquePrefabPath = [&](const std::string& base) -> std::string {
         namespace fs = std::filesystem;
+        std::error_code ec;
         std::string candidate = prefabsDir + "/" + base + ".prefab";
-        if (!fs::exists(candidate)) return candidate;
+        if (!fs::exists(candidate, ec) || ec) return candidate;
         for (int i = 2; ; ++i) {
             candidate = prefabsDir + "/" + base + " " + std::to_string(i) + ".prefab";
-            if (!fs::exists(candidate)) return candidate;
+            if (!fs::exists(candidate, ec) || ec) return candidate;
         }
     };
 
@@ -1800,12 +1801,17 @@ int main() {
                     namespace fs = std::filesystem;
                     std::error_code ec;
                     fs::create_directories(prefabsDir, ec);
-                    const std::string path = uniquePrefabPath(pbRes.name);
-                    if (iron::savePrefabFile(reflection, componentRegistry, pf, path)) {
-                        iron::Log::info("sandbox: saved prefab %s", path.c_str());
-                        refreshPrefabList();
+                    if (ec) {
+                        iron::Log::error("sandbox: could not create prefabs dir %s: %s",
+                                         prefabsDir.c_str(), ec.message().c_str());
                     } else {
-                        iron::Log::error("sandbox: prefab save FAILED for %s", path.c_str());
+                        const std::string path = uniquePrefabPath(pbRes.name);
+                        if (iron::savePrefabFile(reflection, componentRegistry, pf, path)) {
+                            iron::Log::info("sandbox: saved prefab %s", path.c_str());
+                            refreshPrefabList();
+                        } else {
+                            iron::Log::error("sandbox: prefab save FAILED for %s", path.c_str());
+                        }
                     }
                 }
                 // No scene mutation -> no undo entry.
