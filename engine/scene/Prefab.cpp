@@ -45,8 +45,10 @@ int instantiatePrefab(SceneFile& scene, const Prefab& prefab,
             e.parentIndex   = -1;                  // new scene root
             e.transform     = placement;           // caller chooses where it lands
         } else {
-            // prefab-local parent index -> scene index (always >= 0 here).
-            e.parentIndex = base + e.parentIndex;
+            // prefab-local parent index -> scene index. A negative value can occur
+            // when PrefabIO::sanitizeParents reset a corrupt child link to -1; treat
+            // such an entity as an additional scene root rather than computing base-1.
+            e.parentIndex = (e.parentIndex < 0) ? -1 : base + e.parentIndex;
         }
         scene.entities.push_back(std::move(e));
     }

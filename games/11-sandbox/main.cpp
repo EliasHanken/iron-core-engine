@@ -1100,10 +1100,14 @@ int main() {
         prefabPaths.clear();
         std::error_code ec;
         if (!fs::exists(prefabsDir, ec)) return;
-        for (const auto& entry : fs::directory_iterator(prefabsDir, ec)) {
-            // ec only covers construction above; range-for iteration errors throw.
-            if (entry.is_regular_file() && entry.path().extension() == ".prefab")
-                prefabPaths.push_back(entry.path().string());
+        try {
+            for (const auto& entry : fs::directory_iterator(prefabsDir, ec)) {
+                // ec only covers construction above; range-for iteration errors throw.
+                if (entry.is_regular_file() && entry.path().extension() == ".prefab")
+                    prefabPaths.push_back(entry.path().string());
+            }
+        } catch (const fs::filesystem_error& e) {
+            iron::Log::warn("sandbox: prefab dir scan error: %s", e.what());
         }
     };
 

@@ -80,6 +80,22 @@ static void test_instantiate_empty_prefab_is_noop() {
     CHECK(s.entities.size() == 3);                  // unchanged
 }
 
+static void test_instantiate_negative_child_parent_becomes_root() {
+    // Simulate a prefab whose 2nd entity had a corrupt parent that PrefabIO
+    // sanitized to -1. instantiatePrefab must treat it as an extra root, not base-1.
+    iron::SceneFile s = makeChain();              // 3 existing entities (indices 0,1,2)
+    iron::Prefab p;
+    iron::SceneEntity a; a.name = "pa";           // prefab root
+    iron::SceneEntity b; b.name = "pb"; b.parentIndex = -1;  // sanitized child (non-root, -1)
+    p.entities = {a, b};
+    auto uniq = [](const std::string& n){ return n; };
+    const int newRoot = iron::instantiatePrefab(s, p, iron::Transform{}, uniq);
+    CHECK(newRoot == 3);
+    CHECK(s.entities.size() == 5);
+    CHECK(s.entities[3].parentIndex == -1);       // prefab root -> scene root
+    CHECK(s.entities[4].parentIndex == -1);       // sanitized child -> extra scene root (NOT 2)
+}
+
 int main() {
     test_extract_rebases_parent_indices();
     test_extract_partial_subtree();
@@ -87,5 +103,6 @@ int main() {
     test_instantiate_reindexes_and_places_root();
     test_instantiate_leaves_existing_indices_untouched();
     test_instantiate_empty_prefab_is_noop();
+    test_instantiate_negative_child_parent_becomes_root();
     return iron_test_result();
 }
