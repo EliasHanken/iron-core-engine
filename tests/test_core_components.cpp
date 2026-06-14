@@ -6,6 +6,7 @@
 #include "audio/AudioEmitter.h"
 #include "render/ReflectionProbe.h"
 #include "gameplay/LogicGraphComponent.h"
+#include "gameplay/SpawnPoint.h"
 #include "test_framework.h"
 
 using namespace iron;
@@ -17,6 +18,7 @@ int main() {
     registerReflectionProbe(r);
     registerLogicGraphComponent(r);
     registerHealth(r);
+    registerSpawnPoint(r);   // M71
 
     ComponentRegistry reg;
     registerCoreComponents(reg, r);
@@ -26,8 +28,12 @@ int main() {
     CHECK(reg.byName("ReflectionProbeDef") != nullptr);
     CHECK(reg.byName("LogicGraphComponent")!= nullptr);
     CHECK(reg.byName("Health")             != nullptr);            // M68
+    CHECK(reg.byName("SpawnPoint")         != nullptr);            // M71
     CHECK(reg.byTypeId(componentTypeId<CollisionShape>()) != nullptr);
-    CHECK(reg.order().size() == 5u);                               // was 4
+    CHECK(reg.order().size() == 6u);                               // M71: +SpawnPoint
+
+    // M71: SpawnPoint has group (string) + enabled (bool).
+    CHECK(reg.byName("SpawnPoint")->fields.size() == 2u);
 
     // LogicGraphComponent has its one reflected string field.
     CHECK(reg.byName("LogicGraphComponent")->fields.size() == 1u);
