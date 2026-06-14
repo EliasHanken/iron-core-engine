@@ -13,5 +13,6 @@ void registerAudioEmitter(Reflection& r);
 void registerReflectionProbe(Reflection& r);
 void registerLogicGraphComponent(Reflection& r);
 void registerHealth(Reflection& r);
+void registerSpawnPoint(Reflection& r);
 
 }  // namespace iron

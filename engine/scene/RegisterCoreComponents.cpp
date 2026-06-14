@@ -3,6 +3,7 @@
 #include "audio/AudioEmitter.h"
 #include "gameplay/Health.h"
 #include "gameplay/LogicGraphComponent.h"
+#include "gameplay/SpawnPoint.h"
 #include "render/ReflectionProbe.h"
 #include "world/CollisionShape.h"
 #include "world/ComponentRegistry.h"
@@ -15,6 +16,7 @@ void registerCoreComponents(ComponentRegistry& cr, const Reflection& r) {
     cr.registerComponent<ReflectionProbeDef>("ReflectionProbeDef", r);
     cr.registerComponent<LogicGraphComponent>("LogicGraphComponent", r);
     cr.registerComponent<Health>("Health", r);   // M68 demo gameplay component
+    cr.registerComponent<SpawnPoint>("SpawnPoint", r);   // M71 spawn marker
 }
 
 }  // namespace iron
