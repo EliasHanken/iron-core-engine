@@ -101,6 +101,34 @@ static void test_get_random_spawn_point_member_of_group() {
     CHECK(x == 1.0f || x == 2.0f);   // one of the group's markers
 }
 
+static void test_get_random_spawn_point_null_rng_returns_member() {
+    World w;
+    makeMarker(w, {1, 0, 0}, "enemy", true);
+    makeMarker(w, {2, 0, 0}, "enemy", true);
+    NodeRegistry reg = makeReg();
+    Graph g;
+    const NodeId tick = g.addNode("OnTick");
+    const NodeId grp  = g.addNode("GetRandomSpawnPoint");
+    const NodeId oPos = g.addNode("SetOutput");
+    const NodeId oFnd = g.addNode("SetOutput");
+    const NodeId seq  = g.addNode("Sequence");
+    g.setLiteral(grp, "group", NodeValue::S("enemy"));
+    g.setLiteral(oPos, "key", NodeValue::S("pos"));
+    g.setLiteral(oFnd, "key", NodeValue::S("found"));
+    g.connect(grp, "pos",   oPos, "value");
+    g.connect(grp, "found", oFnd, "value");
+    g.connect(tick, "then", seq, "in");
+    g.connect(seq, "0", oPos, "in");
+    g.connect(seq, "1", oFnd, "in");
+
+    GameContext gc{&w, EntityId{}, 0.0f, 0.0f};   // rngState == nullptr
+    RunContext ctx; ctx.domainContext = &gc;
+    run(g, reg, ctx);
+    CHECK(ctx.outputs.at("found").asBool() == true);
+    const float x = ctx.outputs.at("pos").asVec3().x;
+    CHECK(x == 1.0f || x == 2.0f);
+}
+
 static void test_spawn_prefab_enqueues() {
     World w;
     NodeRegistry reg = makeReg();
@@ -140,6 +168,7 @@ int main() {
     test_get_spawn_point_first_enabled();
     test_get_spawn_point_none_found();
     test_get_random_spawn_point_member_of_group();
+    test_get_random_spawn_point_null_rng_returns_member();
     test_spawn_prefab_enqueues();
     test_spawn_prefab_null_queue_is_safe();
     return iron_test_result();

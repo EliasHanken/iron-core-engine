@@ -142,7 +142,7 @@ void registerGameplayNodes(NodeRegistry& r) {
                     matches.push_back(Vec3{wm.at(0, 3), wm.at(1, 3), wm.at(2, 3)});
                 });
                 if (!matches.empty()) {
-                    std::size_t idx = 0;
+                    std::size_t idx = 0;  // null rng (editor/headless) -> first entry; caller seeds non-zero
                     if (g->rngState)
                         idx = nextRandomU32(*g->rngState) % matches.size();
                     pos = matches[idx];
