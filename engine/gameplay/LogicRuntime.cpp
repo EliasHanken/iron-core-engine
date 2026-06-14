@@ -11,9 +11,11 @@
 namespace iron {
 
 void tickLogicGraphs(World& world, const NodeRegistry& registry,
-                     float time, float deltaTime) {
+                     float time, float deltaTime,
+                     std::vector<SpawnRequest>* spawnQueue,
+                     std::uint32_t* rngState) {
     world.view<LogicGraph>().forEach([&](EntityId e, LogicGraph& lg) {
-        GameContext gc{&world, e, time, deltaTime};
+        GameContext gc{&world, e, time, deltaTime, spawnQueue, rngState};
         RunContext ctx;
         ctx.vars = std::move(lg.vars);     // restore persistent state
         ctx.domainContext = &gc;
