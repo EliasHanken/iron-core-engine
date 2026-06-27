@@ -42,6 +42,9 @@
 #include "editor/ImGuiLayer.h"
 #include "editor/SceneInspector.h"
 #include "editor/SceneOutliner.h"
+#include "editor/PrefabBrowser.h"
+#include "scene/Prefab.h"
+#include "scene/PrefabIO.h"
 #include "editor/ViewGizmo.h"
 #include "editor/ViewportInput.h"
 #include "nodes/NodeRegistry.h"
@@ -76,6 +79,7 @@
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
+#include <filesystem>
 #include <numbers>
 #include <span>
 #include <string>
@@ -888,6 +892,12 @@ int main() {
     iron::SceneInspector   inspector;
     iron::EnvironmentPanel environment;
 
+    // M70: prefab browser panel + on-disk prefab library state. exeDir is in
+    // scope here (declared at scene-load time), so prefabsDir resolves now.
+    iron::PrefabBrowser      prefabBrowser;
+    const std::string        prefabsDir = exeDir + "/assets/prefabs";
+    std::vector<std::string> prefabPaths;   // refreshed by refreshPrefabList()
+
     // M54: seed a runnable demo so the Node Editor opens with something real:
     //   Entry -> Branch(Compare 7 > 5) -> true: SetOutput("r", 1) / false: ("r", 0)
     // Pressing Run shows "r = 1.000"; Save writes a meaningful node_graph.json.
@@ -1083,6 +1093,37 @@ int main() {
             if (!taken(n)) return n;
         }
     };
+
+    // M70: rescan assets/prefabs for *.prefab files into prefabPaths.
+    auto refreshPrefabList = [&]() {
+        namespace fs = std::filesystem;
+        prefabPaths.clear();
+        std::error_code ec;
+        if (!fs::exists(prefabsDir, ec)) return;
+        try {
+            for (const auto& entry : fs::directory_iterator(prefabsDir, ec)) {
+                // ec only covers construction above; range-for iteration errors throw.
+                if (entry.is_regular_file() && entry.path().extension() == ".prefab")
+                    prefabPaths.push_back(entry.path().string());
+            }
+        } catch (const fs::filesystem_error& e) {
+            iron::Log::warn("sandbox: prefab dir scan error: %s", e.what());
+        }
+    };
+
+    // M70: build a non-clobbering prefab file path from a base name.
+    auto uniquePrefabPath = [&](const std::string& base) -> std::string {
+        namespace fs = std::filesystem;
+        std::error_code ec;
+        std::string candidate = prefabsDir + "/" + base + ".prefab";
+        if (!fs::exists(candidate, ec) || ec) return candidate;
+        for (int i = 2; ; ++i) {
+            candidate = prefabsDir + "/" + base + " " + std::to_string(i) + ".prefab";
+            if (!fs::exists(candidate, ec) || ec) return candidate;
+        }
+    };
+
+    refreshPrefabList();   // M70: initial scan
 
     // Where a freshly added entity appears: a few units in front of the camera.
     auto spawnPos = [&]() -> iron::Vec3 {
@@ -1521,6 +1562,12 @@ int main() {
         }
         environment.draw(scene);
 
+        // M70: prefab browser panel (create-from-selection + instantiate).
+        const bool prefabSelValid = selectedIndex >= 0 &&
+                                    selectedIndex < static_cast<int>(scene.entities.size());
+        const iron::PrefabBrowser::Result pbRes =
+            prefabBrowser.draw(prefabPaths, prefabSelValid);
+
         // M54: node-editor panel (opens its own "Node Editor" window; docks like the rest).
         // M55: entity-aware — show the selected entity as the target, with Assign
         // (write graph back) and Load-from-entity (pull the entity's graph in).
@@ -1747,6 +1794,67 @@ int main() {
                 action == Action::AddGltf || action == Action::Duplicate ||
                 action == Action::Delete  || action == Action::Reparent)
                 structuralEdit = true;
+
+            // --- M70: prefab create / instantiate ---
+            using PbAction = iron::PrefabBrowser::Result::Action;
+            if (pbRes.action == PbAction::CreateFromSelection && prefabSelValid) {
+                const iron::Prefab pf = iron::extractPrefab(scene, selectedIndex);
+                if (pf.entities.empty()) {
+                    iron::Log::warn("sandbox: nothing to save as prefab");
+                } else {
+                    namespace fs = std::filesystem;
+                    std::error_code ec;
+                    fs::create_directories(prefabsDir, ec);
+                    if (ec) {
+                        iron::Log::error("sandbox: could not create prefabs dir %s: %s",
+                                         prefabsDir.c_str(), ec.message().c_str());
+                    } else {
+                        const std::string path = uniquePrefabPath(pbRes.name);
+                        if (iron::savePrefabFile(reflection, componentRegistry, pf, path)) {
+                            iron::Log::info("sandbox: saved prefab %s", path.c_str());
+                            refreshPrefabList();
+                        } else {
+                            iron::Log::error("sandbox: prefab save FAILED for %s", path.c_str());
+                        }
+                    }
+                }
+                // No scene mutation -> no undo entry.
+            } else if (pbRes.action == PbAction::Instantiate) {
+                auto loaded = iron::loadPrefabFile(reflection, componentRegistry, pbRes.prefabPath);
+                if (loaded && !loaded->entities.empty()) {
+                    // Place the new root in front of the camera, keeping the
+                    // prefab root's authored rotation/scale.
+                    iron::Transform placement = loaded->entities[0].transform;
+                    placement.position = spawnPos();
+                    const int newRoot =
+                        iron::instantiatePrefab(scene, *loaded, placement, uniqueName);
+                    // Spawn World entities for the appended range (same loop as Duplicate).
+                    for (int i = static_cast<int>(sceneIndexToEntity.size());
+                         i < static_cast<int>(scene.entities.size()); ++i) {
+                        const iron::EntityId entity = world.create();
+                        ResolvedEntity re;
+                        if (resolveEntity(scene.entities[i], i, re)) {
+                            resolved.push_back(re);
+                            world.add<iron::RenderHandles>(entity, toRenderHandles(re));
+                        } else {
+                            iron::Log::warn("sandbox: prefab entity '%s' failed to resolve; "
+                                            "kept but not drawable",
+                                            scene.entities[i].name.c_str());
+                        }
+                        const iron::SceneEntity& se = scene.entities[i];
+                        world.add<iron::Transform>(entity, se.transform);
+                        world.add<iron::MeshRef>(entity, se.mesh);
+                        world.add<iron::MaterialDef>(entity, se.material);
+                        sceneIndexToEntity.push_back(entity);
+                    }
+                    mirrorParents();   // M69: Parent links for the new range
+                    if (newRoot >= 0) selectedIndex = newRoot;
+                    structuralEdit = true;   // M57: rides the whole-scene undo snapshot
+                } else {
+                    iron::Log::error("sandbox: failed to load prefab %s",
+                                     pbRes.prefabPath.c_str());
+                }
+            }
         }
 
         // --- M57: undo/redo apply + coalescing (Edit mode only) ---
