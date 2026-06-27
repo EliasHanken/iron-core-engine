@@ -138,5 +138,15 @@ int main() {
         CHECK_NEAR(ctx.outputs.at("flag").asFloat(), 1.0f);   // SetVar ran (via tr->then)
     }
 
+    // M71: nextRandomU32 is deterministic per seed and advances.
+    {
+        std::uint32_t a = 2463534242u, b = 2463534242u;
+        const std::uint32_t a1 = nextRandomU32(a);
+        const std::uint32_t b1 = nextRandomU32(b);
+        CHECK(a1 == b1);            // same seed -> same value
+        CHECK(a1 != 2463534242u);   // it actually changed
+        CHECK(nextRandomU32(a) == nextRandomU32(b));  // sequences stay in lockstep
+    }
+
     return iron_test_result();
 }
