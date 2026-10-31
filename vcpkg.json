@@ -11,5 +11,8 @@
     "glslang",
     "vulkan-memory-allocator",
     { "name": "imgui", "features": ["glfw-binding", "vulkan-binding", "docking-experimental"] }
+  ],
+  "overrides": [
+    { "name": "tinygltf", "version": "3.0.0", "port-version": 1 }
   ]
 }
