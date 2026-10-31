@@ -1,5 +1,6 @@
 // Tests for Forge: reading documents, helpful errors, and generated shaders.
 #include "forge/Forge.h"
+#include "forge/ForgeEdit.h"
 #include "forge/ForgePlayer.h"
 
 #include <algorithm>
@@ -238,6 +239,67 @@ void testOrbExampleIsValid() {
     assert(checkShaders(compiled).empty());
 }
 
+void testEveryTemplateWorks() {
+    for (const std::string& name : templateNames()) {
+        const Document doc = makeTemplate(name);
+        const Compiled compiled = compile(doc);
+        assert(compiled.ok());
+        assert(checkShaders(compiled).empty());
+    }
+}
+
+void testAddingAShapeBlockCreatesAShape() {
+    Document doc = makeTemplate("Sparks");
+    assert(doc.shapes.empty());
+    addBlock(doc, doc.layers[0], Stack::Move, "StickToShape");
+    assert(doc.shapes.size() == 1);
+    assert(compile(doc).ok());
+}
+
+void testAnyBlockCanBeAddedAndStillCompile() {
+    for (const BlockDesc& block : blocks()) {
+        if (block.stack == Stack::Surface) continue;
+        Document doc = makeTemplate("Sparks");
+        addBlock(doc, doc.layers[0], block.stack, block.name);
+        assert(compile(doc).ok());
+    }
+}
+
+void testRemovingABlockKeepsWiresOnTheirTargets() {
+    Document doc = makeTemplate("Sparks");
+    const std::string path = valuePath(0, Stack::Move, 2, "amount");
+    driveValue(doc, path, "Sine");
+
+    removeBlock(doc, 0, Stack::Move, 0);
+    assert(driverOf(doc, valuePath(0, Stack::Move, 1, "amount")) == "drive1");
+
+    removeBlock(doc, 0, Stack::Move, 1);
+    assert(doc.wires.empty());
+}
+
+void testMovingABlockKeepsWiresOnTheirTargets() {
+    Document doc = makeTemplate("Sparks");
+    driveValue(doc, valuePath(0, Stack::Move, 2, "amount"), "Sine");
+    moveBlock(doc, 0, Stack::Move, 2, -1);
+    assert(doc.layers[0].move[1].block == "Drag");
+    assert(driverOf(doc, valuePath(0, Stack::Move, 1, "amount")) == "drive1");
+    assert(compile(doc).ok());
+}
+
+void testDrivingAValueAndStopping() {
+    Document doc = makeTemplate("Sparks");
+    const std::string path = valuePath(0, Stack::Move, 2, "amount");
+    const std::string node = driveValue(doc, path, "Noise");
+    assert(doc.nodes.count(node) == 1);
+
+    const Compiled compiled = compile(doc);
+    assert(compiled.ok());
+    assert(compiled.layers[0].simulateGlsl.find("node_" + node) != std::string::npos);
+
+    undriveValue(doc, path);
+    assert(doc.nodes.empty() && doc.wires.empty());
+}
+
 void testNearestName() {
     assert(nearestName("Sphre", {"Sphere", "Box"}) == "Sphere");
     assert(nearestName("zzzzzzzz", {"Sphere", "Box"}).empty());
@@ -263,6 +325,12 @@ int main() {
     testEverySurfaceBlockCompiles();
     testCatalogDescribesEverything();
     testOrbExampleIsValid();
+    testEveryTemplateWorks();
+    testAddingAShapeBlockCreatesAShape();
+    testAnyBlockCanBeAddedAndStillCompile();
+    testRemovingABlockKeepsWiresOnTheirTargets();
+    testMovingABlockKeepsWiresOnTheirTargets();
+    testDrivingAValueAndStopping();
     testNearestName();
     std::puts("test_forge: all passed");
     return 0;

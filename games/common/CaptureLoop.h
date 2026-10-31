@@ -50,6 +50,7 @@ struct Options {
     std::vector<StillRequest> stills;
     std::string recordPath;
     bool benchmark = false;  // Fixed clock with no capture: every frame does full work.
+    bool captureUi = false;  // Capture the whole window, not just the scene.
     // Frame cap. An uncapped loop holds the GPU at full power to no benefit, so even
     // offline work is paced: output doesn't depend on this, only how long it takes.
     int maxFps = 0;  // 0 picks the default for the mode.
@@ -169,13 +170,13 @@ inline void runLoop(iron::Application& app, iron::Renderer& renderer, iron::Vulk
                             options.recordPath + "\"");
                 }
                 if (video->ok()) video->write(rgba, w, h);
-            });
+            }, options.captureUi);
         } else if (!stillsDone && seconds >= options.stills[nextStill].seconds) {
             const std::string path = options.stills[nextStill].path;
             vulkan.captureFrame([path](const std::uint8_t* rgba, int w, int h) {
                 FfmpegPipe still(w, h, "-frames:v 1 \"" + path + "\"");
                 if (still.ok()) still.write(rgba, w, h);
-            });
+            }, options.captureUi);
             stillsDone = ++nextStill == options.stills.size();
         }
 

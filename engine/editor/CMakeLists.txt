@@ -11,6 +11,7 @@ add_library(ironcore_editor STATIC
   SceneInspector.cpp
   EnvironmentPanel.cpp
   NodeGraphPanel.cpp
+  ForgePanel.cpp
   ReflectionInspector.cpp
   ViewGizmo.cpp
   EditorState.cpp

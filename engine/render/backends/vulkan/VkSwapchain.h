@@ -23,6 +23,7 @@ public:
     VkFormat       depthFormat() const { return VK_FORMAT_D32_SFLOAT; }
     VkExtent2D     extent()      const { return extent_; }
     std::uint32_t  imageCount()  const { return static_cast<std::uint32_t>(images_.size()); }
+    VkImage        image(std::uint32_t index) const { return images_[index]; }
     VkImageView    colorView(std::uint32_t i) const { return imageViews_[i]; }
     VkImageView    depthView()   const { return depthView_; }
 

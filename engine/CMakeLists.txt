@@ -127,6 +127,7 @@ if (IRON_RENDER_BACKEND STREQUAL "vulkan")
       forge/ForgeDocument.cpp
       forge/ForgeCompiler.cpp
       forge/ForgePlayer.cpp
+      forge/ForgeEdit.cpp
       render/backends/vulkan/VkDebugLines.cpp
       render/backends/vulkan/VkHud.cpp
       render/backends/vulkan/VkShadowMap.cpp

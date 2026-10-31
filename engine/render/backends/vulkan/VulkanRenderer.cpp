@@ -1393,7 +1393,11 @@ void VulkanRenderer::endFrame() {
         postProcess_.endViewportPass(cb);
     }
 
-    const bool capturing = pendingCapture_ && recordCaptureCopy(cb);
+    bool capturing = pendingCapture_ && !pendingCaptureUi_ &&
+                     recordCaptureCopy(cb, postProcess_.viewportColorImage(),
+                                       postProcess_.viewportExtent(),
+                                       VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                                       VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT);
 
     // --- M43a Pass 5: swapchain pass — blit the viewport image, then UI on top. ---
     {
@@ -1443,6 +1447,12 @@ void VulkanRenderer::endFrame() {
         vkCmdEndRenderPass(cb);
     }
 
+    if (pendingCapture_ && pendingCaptureUi_) {
+        capturing = recordCaptureCopy(cb, swapchain_.image(currentImageIndex_), swapchain_.extent(),
+                                      VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
+                                      VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT);
+    }
+
     VK_CHECK(vkEndCommandBuffer(cb));
 
     const VkPipelineStageFlags waitStages[] =
@@ -1486,8 +1496,8 @@ void VulkanRenderer::endFrame() {
     frames_.advance();
 }
 
-bool VulkanRenderer::recordCaptureCopy(VkCommandBuffer cb) {
-    const VkExtent2D extent = postProcess_.viewportExtent();
+bool VulkanRenderer::recordCaptureCopy(VkCommandBuffer cb, VkImage image, VkExtent2D extent,
+                                       VkImageLayout layout, VkPipelineStageFlags nextStage) {
     const VkDeviceSize bytes =
         static_cast<VkDeviceSize>(extent.width) * extent.height * 4;
 
@@ -1518,11 +1528,11 @@ bool VulkanRenderer::recordCaptureCopy(VkCommandBuffer cb) {
     toSrc.sType               = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
     toSrc.srcAccessMask       = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
     toSrc.dstAccessMask       = VK_ACCESS_TRANSFER_READ_BIT;
-    toSrc.oldLayout           = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    toSrc.oldLayout           = layout;
     toSrc.newLayout           = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
     toSrc.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
     toSrc.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-    toSrc.image               = postProcess_.viewportColorImage();
+    toSrc.image               = image;
     toSrc.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
     toSrc.subresourceRange.levelCount = 1;
     toSrc.subresourceRange.layerCount = 1;
@@ -1541,9 +1551,8 @@ bool VulkanRenderer::recordCaptureCopy(VkCommandBuffer cb) {
     toRead.srcAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
     toRead.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
     toRead.oldLayout     = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
-    toRead.newLayout     = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-    vkCmdPipelineBarrier(cb, VK_PIPELINE_STAGE_TRANSFER_BIT,
-                         VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0, 0, nullptr, 0, nullptr,
+    toRead.newLayout     = layout;
+    vkCmdPipelineBarrier(cb, VK_PIPELINE_STAGE_TRANSFER_BIT, nextStage, 0, 0, nullptr, 0, nullptr,
                          1, &toRead);
 
     VkBufferMemoryBarrier toHost{};
