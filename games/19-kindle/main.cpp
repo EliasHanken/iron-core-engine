@@ -46,7 +46,7 @@ namespace {
 namespace forge = iron::forge;
 using iron::Vec3;
 
-constexpr float kRecordSeconds = 100.0f;
+constexpr float kRecordSeconds = 78.0f;
 constexpr float kGateOpensInRecording = 32.0f;
 constexpr float kMouseTurn = 0.0022f;
 constexpr float kBaseFov = 62.0f;
@@ -169,7 +169,7 @@ public:
         if (end > 0.0f) {
             iron::HudDrawGroup shade;
             shade.texture = solid_;
-            appendBar(shade, 0.0f, w, h * 0.31f, h * 0.2f, {0.0f, 0.0f, 0.0f, end * 0.55f});
+            appendBar(shade, 0.0f, w, h * 0.31f, h * 0.2f, {0.0f, 0.0f, 0.0f, end * 0.78f});
             backdrop_ = std::move(shade);
             text::appendCentered(words, font_, "THE MACHINE IS AWAKE", center, h * 0.4f, unit * 0.46f, 0.5f,
                                  {1.0f, 0.90f, 0.78f, end});
