@@ -4,35 +4,28 @@
 // light falling through cracks in the roof, and shading in the corners. The roof
 // cracks appear in the air and on surfaces, so that one light stays in step.
 
+#include "forge/Forge.h"
+
 #include <string>
 
 namespace kindle {
 
 // A cold shaft is light falling from a crack in the ceiling, so asking whether a
 // point is in one means following the light back up to the ceiling.
+// The cracks themselves live in Forge, so that the dust in swarm.forge.json catches
+// exactly the same light as the air and the walls.
 inline const char* const kShaftsGlsl = R"GLSL(
 const vec3 kShaftColor = vec3(0.42, 0.58, 0.85);
 const vec3 kShaftFrom = vec3(0.34, 1.0, 0.18);
 const float kCeiling = 6.0;
 
-float crackLine(float v, float width) {
-    float d = abs(fract(v) - 0.5);
-    return 1.0 - smoothstep(width * 0.1, width, d);
-}
-
 float shaftAt(vec3 p) {
-    vec2 q = p.xz + kShaftFrom.xz * ((kCeiling - p.y) / kShaftFrom.y);
-    // Long cracks, slightly bent, broken into lengths.
-    float bend = sin(q.y * 0.21 + 1.3) * 1.1 + sin(q.y * 0.53) * 0.35;
-    float line = crackLine((q.x + bend) / 13.0 + 0.31, 0.055);
-    float cut = smoothstep(-0.25, 0.35, sin(q.y * 0.44 + floor(q.x / 13.0 + 0.31) * 2.4));
-    // Gaps along the crack split a flat sheet of light into separate beams.
-    float beams = 0.5 + 0.5 * sin(q.y * 1.7 + sin(q.y * 0.63) * 2.0) * sin(q.y * 3.9 + 1.1);
-    return line * cut * beams * step(-20.0, p.z);  // The chamber has no roof cracks.
+    // The chamber has no roof cracks.
+    return forgeRoofCracks(p, kShaftFrom, kCeiling, 13.0) * step(-20.0, p.z);
 }
 )GLSL";
 
-inline const std::string kAirGlsl = std::string(kShaftsGlsl) + R"GLSL(
+inline const std::string kAirGlsl = std::string(iron::forge::roofCracksGlsl()) + kShaftsGlsl + R"GLSL(
 void airAt(vec3 p, float time, inout float density, inout vec3 light) {
     // A thin cold haze, so that the far end of the hall fades instead of stopping.
     float falling = mix(0.3, 1.0, smoothstep(-6.0, 6.0, p.y));

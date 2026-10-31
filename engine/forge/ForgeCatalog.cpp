@@ -28,6 +28,10 @@ std::vector<BlockDesc> makeBlocks() {
          num("shell", 1.0f, 0.0f, 1.0f, "1 starts on the surface, 0 fills the inside."),
          vec("center", Vec3{0, 0, 0}, -30.0f, 30.0f, "Middle of the sphere.")},
         R"(pos = $center + randomDirection(seed) * $radius * mix(pow(rnd(seed + 7u), 0.3333), 1.0, $shell);)"});
+    list.push_back({"InBox", Stack::Spawn, "Start anywhere inside a box.",
+        {vec("size", Vec3{10, 5, 10}, 0.0f, 200.0f, "Half-size on each axis."),
+         vec("center", Vec3{0, 0, 0}, -200.0f, 200.0f, "Middle of the box.")},
+        R"(pos = $center + (vec3(rnd(seed), rnd(seed + 1u), rnd(seed + 2u)) * 2.0 - 1.0) * $size;)"});
     list.push_back({"Point", Stack::Spawn, "Start at one point.",
         {vec("position", Vec3{0, 0, 0}, -30.0f, 30.0f, "Where particles start."),
          num("spread", 0.0f, 0.0f, 5.0f, "Random offset in metres.")},
@@ -144,6 +148,28 @@ std::vector<BlockDesc> makeBlocks() {
         {num("in", 0.1f, 0.0f, 1.0f, "Share of life spent fading in."),
          num("out", 0.3f, 0.0f, 1.0f, "Share of life spent fading out.")},
         R"(alpha *= smoothstep(0.0, max($in, 1e-3), life01) * (1.0 - smoothstep(1.0 - max($out, 1e-3), 1.0, life01));)"});
+    list.push_back({"RoofLight", Stack::Look, "Only show where light falls from cracks in a ceiling.",
+        {color("color", Vec3{0.42f, 0.58f, 0.85f}, "Colour of the light."),
+         vec("lean", Vec3{0.34f, 1.0f, 0.18f}, -2.0f, 2.0f, "Direction the light comes from."),
+         num("ceiling", 6.0f, -200.0f, 200.0f, "Height of the ceiling."),
+         num("spacing", 13.0f, 0.5f, 100.0f, "Distance between cracks."),
+         num("base", 0.03f, 0.0f, 1.0f, "How visible it is out of the light.")},
+        R"({
+    float lit = forgeRoofCracks(x, $lean, $ceiling, $spacing);
+    alpha *= $base + lit * (1.0 - $base);
+    tint = mix(tint, $color, lit);
+})"});
+    list.push_back({"NearPoint", Stack::Look, "Light up close to a point, like dust beside a flame.",
+        {vec("point", Vec3{0, 0, 0}, -200.0f, 200.0f, "The point. Wire an InputVector here."),
+         num("radius", 4.0f, 0.1f, 60.0f, "How far the light reaches."),
+         num("amount", 1.0f, 0.0f, 20.0f, "How bright it gets."),
+         color("color", Vec3{1.0f, 0.5f, 0.2f}, "Colour of the light.")},
+        R"({
+    vec3 away = x - $point;
+    float near = exp(-dot(away, away) / ($radius * $radius));
+    alpha += near * $amount;
+    tint = mix(tint, $color, clamp(near * 2.0, 0.0, 1.0));
+})"});
     list.push_back({"FadeNearCamera", Stack::Look, "Fade out close to the camera, so that nothing blinds it.",
         {num("start", 3.0f, 0.0f, 50.0f, "Fully visible beyond this distance."),
          num("end", 0.5f, 0.0f, 50.0f, "Gone within this distance.")},

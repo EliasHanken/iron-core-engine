@@ -5,6 +5,8 @@
 
 #include <algorithm>
 #include <cassert>
+#include <cmath>
+#include <string>
 #include <cstdio>
 
 namespace {
@@ -285,6 +287,51 @@ void testCameraLeansIntoTurnsWithinALimit() {
     assert(std::abs(feel.roll()) < 0.01f);
 }
 
+void testEyesCloseFastAndOpenSlowly() {
+    kindle::EyeAdaptation eye;
+    const float dark = eye.exposure();
+    for (int i = 0; i < 60; ++i) eye.update(1.0f, kStep);
+    const float bright = eye.exposure();
+    assert(bright < dark - 0.3f);
+    for (int i = 0; i < 60; ++i) eye.update(0.0f, kStep);
+    assert(eye.exposure() < dark - 0.2f);  // One second on, still not recovered.
+    for (int i = 0; i < 1800; ++i) eye.update(0.0f, kStep);
+    assert(eye.exposure() > dark - 0.01f);
+}
+
+void testTimeSlowsAroundTheBlast() {
+    const Room room;
+    kindle::Story story;
+    assert(story.timeScale() == 1.0f);
+    while (!story.finale()) story.update(room, {0, 0, -48}, 1.0f, true, kStep);
+    assert(story.timeScale() == 1.0f);
+
+    float slowest = 1.0f;
+    while (story.sinceIgnition() < 3.0f) {
+        story.update(room, {0, 0, -48}, 1.0f, false, kStep);
+        slowest = std::min(slowest, story.timeScale());
+    }
+    assert(slowest < 0.3f);
+    assert(story.timeScale() == 1.0f);
+    assert(!story.over());
+    while (story.sinceIgnition() < kindle::Story::kEndSeconds) story.update(room, {0, 0, -48}, 1.0f, false, kStep);
+    assert(story.over());
+}
+
+void testSettingsRoundTrip() {
+    const std::string path = "test_kindle_settings.txt";
+    kindle::Settings saved;
+    saved.sound = 0.25f;
+    saved.look = 0.75f;
+    saved.fullscreen = true;
+    saved.save(path);
+    kindle::Settings loaded;
+    loaded.load(path);
+    assert(loaded.fullscreen);
+    assert(std::abs(loaded.sound - 0.25f) < 0.01f);
+    std::remove(path.c_str());
+}
+
 void testIgniteSpendsHeat() {
     const Room room;
     Swarm swarm({0, 0, 0});
@@ -317,6 +364,9 @@ int main() {
     testCoastsToAStop();
     testIgniteBurstsThenRests();
     testIgniteSpendsHeat();
+    testEyesCloseFastAndOpenSlowly();
+    testTimeSlowsAroundTheBlast();
+    testSettingsRoundTrip();
     testCameraShakeFadesAndSmallHitsStayGentle();
     testCameraLeansIntoTurnsWithinALimit();
     testMenuWrapsAndChooses();

@@ -54,6 +54,11 @@ layout(set = 0, binding = 0) uniform sampler2D uScene;
 layout(set = 0, binding = 1) uniform sampler2D uBloom;
 layout(set = 0, binding = 2) uniform sampler2D uDepth;
 layout(set = 0, binding = 3) uniform sampler2D uStreakBloom;  // A low, soft bloom mip.
+layout(set = 0, binding = 4) uniform Lens {
+    vec4 focus;    // distance, range, blur radius, unused
+    vec4 depth;    // projection a and b, for linear depth; subject radius; heat haze
+    vec4 subject;  // uv, aspect, unused
+} lens;
 layout(push_constant) uniform Push {
     mat4 reprojection;
     vec4 a;  // exposure, bloom, motion blur, chromatic aberration
@@ -96,18 +101,69 @@ vec3 shutter(vec2 uv, vec2 velocity, float jitter) {
     return sum / float(STEPS);
 }
 
+float linearDepth(float d) { return lens.depth.y / (d + lens.depth.x); }
+
+// How far a point is from the subject on screen, in screen heights.
+float toSubject(vec2 uv) {
+    return length((uv - lens.subject.xy) * vec2(lens.subject.z, 1.0));
+}
+
+// Width of the blur at a pixel, in screen heights.
+float confusion(vec2 uv) {
+    float depth = texelFetch(uDepth, ivec2(uv * vec2(textureSize(uDepth, 0))), 0).r;
+    float distanceFromFocus = abs(linearDepth(depth) - lens.focus.x) - lens.focus.y;
+    float blur = clamp(distanceFromFocus / max(lens.focus.x, 1.0), 0.0, 1.0) * lens.focus.z;
+    if (lens.depth.z > 0.0) blur *= smoothstep(lens.depth.z * 0.7, lens.depth.z * 1.5, toSubject(uv));
+    return blur;
+}
+
+// A disc of samples on a golden-angle spiral. A sharper sample can't bleed outward,
+// and bright ones count for more, which is what makes real lens bokeh.
+vec3 defocus(vec2 uv, float radius, float jitter) {
+    const int SAMPLES = 28;
+    vec3 sum = vec3(0.0);
+    float total = 0.0;
+    for (int i = 0; i < SAMPLES; ++i) {
+        float r = sqrt((float(i) + 0.5) / float(SAMPLES)) * radius;
+        float angle = (float(i) + jitter) * 2.39996323;
+        vec2 at = uv + vec2(cos(angle) / lens.subject.z, sin(angle)) * r;
+        vec3 color = sampleHdr(at);
+        float reach = smoothstep(r * 0.5, r, confusion(at) + 1e-4);
+        float weight = reach * (1.0 + min(dot(color, vec3(0.3, 0.6, 0.1)), 6.0));
+        sum += color * weight;
+        total += weight;
+    }
+    return total > 1e-4 ? sum / total : sampleHdr(uv);
+}
+
 void main() {
     vec2 centered = vUV - 0.5;
     float radial = dot(centered, centered);
     float jitter = noise(gl_FragCoord.xy + pc.b.w * 5.588238);
 
-    vec2 velocity = clamp(cameraVelocity(vUV), vec2(-0.04), vec2(0.04));
+    // Hot air bends what's behind it: strongest at the subject, and gone a little
+    // way out, so that the shimmer stays tied to the thing making the heat.
+    vec2 uv = vUV;
+    if (lens.depth.w > 0.0) {
+        float near = exp(-pow(toSubject(vUV) / max(lens.depth.z * 2.2, 0.02), 2.0));
+        float t = pc.b.w * 0.19;
+        vec2 ripple = vec2(sin(vUV.y * 83.0 + t * 1.7) + 0.6 * sin(vUV.y * 151.0 - t * 2.3 + vUV.x * 40.0),
+                           cos(vUV.x * 71.0 - t * 1.3) + 0.6 * cos(vUV.x * 127.0 + t * 2.1 + vUV.y * 37.0));
+        uv += ripple * near * lens.depth.w * 0.0035;
+    }
+
+    vec2 velocity = clamp(cameraVelocity(uv), vec2(-0.04), vec2(0.04));
 
     // Colour splits apart toward the edges of the lens.
     vec2 split = centered * radial * pc.a.w * 4.0;
-    vec3 hdr = vec3(shutter(vUV + split, velocity, jitter).r,
-                    shutter(vUV, velocity, jitter).g,
-                    shutter(vUV - split, velocity, jitter).b);
+    vec3 hdr = vec3(shutter(uv + split, velocity, jitter).r,
+                    shutter(uv, velocity, jitter).g,
+                    shutter(uv - split, velocity, jitter).b);
+
+    if (lens.focus.z > 0.0) {
+        float radius = confusion(uv);
+        if (radius * float(textureSize(uScene, 0).y) > 1.0) hdr = defocus(uv, radius, jitter);
+    }
 
     // Anamorphic streak: bright light smeared sideways, tinted cool.
     if (pc.b.z > 0.0) {
@@ -673,6 +729,12 @@ void VkPostProcess::destroy(VkContext& ctx) {
     blitDescSet_ = VK_NULL_HANDLE;  // freed with descPool_ below
 
     // Copy (composite) pipeline objects.
+    if (cinematicLensBuffer_) {
+        vmaDestroyBuffer(ctx.allocator(), cinematicLensBuffer_, cinematicLensAlloc_);
+        cinematicLensBuffer_ = VK_NULL_HANDLE;
+        cinematicLensAlloc_ = VK_NULL_HANDLE;
+        cinematicLensMapped_ = nullptr;
+    }
     if (cinematicPipeline_) { vkDestroyPipeline(ctx.device(), cinematicPipeline_, nullptr); cinematicPipeline_ = VK_NULL_HANDLE; }
     if (cinematicLayout_) { vkDestroyPipelineLayout(ctx.device(), cinematicLayout_, nullptr); cinematicLayout_ = VK_NULL_HANDLE; }
     if (cinematicSetLayout_) { vkDestroyDescriptorSetLayout(ctx.device(), cinematicSetLayout_, nullptr); cinematicSetLayout_ = VK_NULL_HANDLE; }
@@ -938,8 +1000,10 @@ void VkPostProcess::endViewportPass(VkCommandBuffer cb) const {
 }
 
 void VkPostProcess::setCinematic(const CinematicSettings& settings, const Mat4& reprojection,
-                                 std::uint32_t frame) {
+                                 std::uint32_t frame, float depthA, float depthB) {
     cinematic_ = settings;
+    cinematicDepthA_ = depthA;
+    cinematicDepthB_ = depthB;
     cinematicReprojection_ = reprojection;
     cinematicFrame_ = frame;
 }
@@ -974,9 +1038,19 @@ void VkPostProcess::recordCinematic(VkCommandBuffer cb, float exposure, float bl
     push.d[2] = s.highlightTint.z;
     push.d[3] = s.contrast;
 
+    // Each frame in flight has its own slot, so a frame the GPU is still reading
+    // is never written over.
+    const float aspect = static_cast<float>(viewportExtent().width) /
+                         static_cast<float>(std::max(viewportExtent().height, 1u));
+    const float lens[12] = {s.focusDistance, s.focusRange, s.blurRadius, 0.0f,
+                            cinematicDepthA_, cinematicDepthB_, s.subjectRadius, s.heatHaze,
+                            s.subject.x, s.subject.y, aspect, 0.0f};
+    const std::uint32_t slot = (cinematicFrame_ % VkFrameRing::kFramesInFlight) * kCinematicLensStride;
+    std::memcpy(static_cast<std::uint8_t*>(cinematicLensMapped_) + slot, lens, sizeof(lens));
+
     vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, cinematicPipeline_);
     vkCmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, cinematicLayout_, 0, 1,
-                            &cinematicSet_, 0, nullptr);
+                            &cinematicSet_, 1, &slot);
     vkCmdPushConstants(cb, cinematicLayout_, VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(Push), &push);
     vkCmdDraw(cb, 3, 1, 0, 0);
 }
@@ -2193,16 +2267,20 @@ void VkPostProcess::writeCinematicSet(VkContext& ctx) {
     const int streakMip = bloomMipViews_[2] != VK_NULL_HANDLE ? 2 : 0;
     images[3] = {bloomSampler_, bloomMipViews_[streakMip], VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
 
-    VkWriteDescriptorSet writes[4]{};
-    for (std::uint32_t i = 0; i < 4; ++i) {
+    VkDescriptorBufferInfo lens{cinematicLensBuffer_, 0, kCinematicLensBytes};
+
+    VkWriteDescriptorSet writes[5]{};
+    for (std::uint32_t i = 0; i < 5; ++i) {
         writes[i].sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
         writes[i].dstSet          = cinematicSet_;
         writes[i].dstBinding      = i;
-        writes[i].descriptorType  = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        writes[i].descriptorType  = i < 4 ? VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER
+                                          : VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC;
         writes[i].descriptorCount = 1;
-        writes[i].pImageInfo      = &images[i];
+        if (i < 4) writes[i].pImageInfo = &images[i];
+        else       writes[i].pBufferInfo = &lens;
     }
-    vkUpdateDescriptorSets(ctx.device(), 4, writes, 0, nullptr);
+    vkUpdateDescriptorSets(ctx.device(), 5, writes, 0, nullptr);
 }
 
 bool VkPostProcess::createCinematicPipeline(VkContext& ctx) {
@@ -2215,16 +2293,31 @@ bool VkPostProcess::createCinematicPipeline(VkContext& ctx) {
     samplerInfo.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
     VK_CHECK(vkCreateSampler(ctx.device(), &samplerInfo, nullptr, &cinematicDepthSampler_));
 
-    VkDescriptorSetLayoutBinding b[4]{};
-    for (std::uint32_t i = 0; i < 4; ++i) {
+    VkBufferCreateInfo lensInfo{};
+    lensInfo.sType       = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+    lensInfo.size        = VkDeviceSize{kCinematicLensStride} * VkFrameRing::kFramesInFlight;
+    lensInfo.usage       = VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT;
+    lensInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+    VmaAllocationCreateInfo lensAlloc{};
+    lensAlloc.usage = VMA_MEMORY_USAGE_AUTO;
+    lensAlloc.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT |
+                      VMA_ALLOCATION_CREATE_MAPPED_BIT;
+    VmaAllocationInfo lensMapped{};
+    VK_CHECK(vmaCreateBuffer(ctx.allocator(), &lensInfo, &lensAlloc, &cinematicLensBuffer_,
+                             &cinematicLensAlloc_, &lensMapped));
+    cinematicLensMapped_ = lensMapped.pMappedData;
+
+    VkDescriptorSetLayoutBinding b[5]{};
+    for (std::uint32_t i = 0; i < 5; ++i) {
         b[i].binding         = i;
-        b[i].descriptorType  = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        b[i].descriptorType  = i < 4 ? VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER
+                                     : VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC;
         b[i].descriptorCount = 1;
         b[i].stageFlags      = VK_SHADER_STAGE_FRAGMENT_BIT;
     }
     VkDescriptorSetLayoutCreateInfo setInfo{};
     setInfo.sType        = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-    setInfo.bindingCount = 4;
+    setInfo.bindingCount = 5;
     setInfo.pBindings    = b;
     VK_CHECK(vkCreateDescriptorSetLayout(ctx.device(), &setInfo, nullptr, &cinematicSetLayout_));
 
@@ -2239,12 +2332,13 @@ bool VkPostProcess::createCinematicPipeline(VkContext& ctx) {
     layoutInfo.pPushConstantRanges    = &push;
     VK_CHECK(vkCreatePipelineLayout(ctx.device(), &layoutInfo, nullptr, &cinematicLayout_));
 
-    VkDescriptorPoolSize poolSize{VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 4};
+    VkDescriptorPoolSize poolSizes[2] = {{VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 4},
+                                         {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC, 1}};
     VkDescriptorPoolCreateInfo poolInfo{};
     poolInfo.sType         = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
     poolInfo.maxSets       = 1;
-    poolInfo.poolSizeCount = 1;
-    poolInfo.pPoolSizes    = &poolSize;
+    poolInfo.poolSizeCount = 2;
+    poolInfo.pPoolSizes    = poolSizes;
     VK_CHECK(vkCreateDescriptorPool(ctx.device(), &poolInfo, nullptr, &cinematicPool_));
 
     VkDescriptorSetAllocateInfo allocInfo{};

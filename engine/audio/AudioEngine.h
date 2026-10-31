@@ -62,6 +62,10 @@ public:
     // Returns kInvalidSound on any failure.
     SoundHandle loadSound(const std::string& wavPath);
 
+    // The same, from a whole WAV file already in memory, as when it came out of a
+    // packed archive. These sounds can't hot reload. `label` names it in warnings.
+    SoundHandle loadSoundFromMemory(const void* wav, std::size_t size, const std::string& label);
+
     // Play `h` at `worldPos` with `gain` (1.0 = full).
     // If all sources are busy, voice-steals the oldest non-looping source.
     // No-op if `h == kInvalidSound` or the engine failed to init.

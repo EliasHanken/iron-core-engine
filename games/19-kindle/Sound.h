@@ -5,6 +5,7 @@
 // no one-shot plays twice at the same pitch. A log of what played gives a recording
 // the same mix afterwards, because the capture path has no audio of its own.
 
+#include "AudioPak.h"
 #include "Swarm.h"
 
 #include "audio/AudioEngine.h"
@@ -30,14 +31,22 @@ public:
     }
 
     // With `playAloud` false nothing is heard, and only the log is written. Each sound
-    // comes from `better` if it's there. That folder holds the licensed set, which
-    // only ships inside a packaged game, so `folder` must always be complete.
+    // comes from the packed set first, then from the licensed `better` folder of a
+    // local build, so `folder`, the free set, must always be complete.
     void init(const std::string& folder, const std::string& better, bool playAloud, const std::string& logPath) {
         if (!logPath.empty()) log_ = std::fopen(logPath.c_str(), "w");
         aloud_ = playAloud && audio_.init();
         if (!aloud_) return;
 
+        const auto pak = readAudioPak(folder + "../audio.pak");
+        const auto has = [&](const std::string& name) {
+            return pak.count(name) != 0 || std::filesystem::exists(better + name + ".wav");
+        };
         const auto load = [&](const std::string& name) {
+            const auto packed = pak.find(name);
+            if (packed != pak.end()) {
+                return audio_.loadSoundFromMemory(packed->second.data(), packed->second.size(), name);
+            }
             const std::string best = better + name + ".wav";
             return audio_.loadSound(std::filesystem::exists(best) ? best : folder + name + ".wav");
         };
@@ -50,12 +59,12 @@ public:
         creaks_ = {load("creak1"), load("creak2"), load("creak3"), load("chain"), load("bend")};
         whooshes_ = {load("whoosh1"), load("whoosh2"), load("whoosh3"), load("whoosh4")};
 
-        const bool hasUi = std::filesystem::exists(better + "ui-move.wav");
+        const bool hasUi = has("ui-move");
         uiMove_ = hasUi ? load("ui-move") : creaks_[3];
         uiConfirm_ = hasUi ? load("ui-confirm") : wake_;
 
         room_.voice = audio_.playLooping(load("room"), Vec3{}, 0.0f);
-        if (std::filesystem::exists(better + "chamber.wav")) {
+        if (has("chamber")) {
             chamber_.voice = audio_.playLooping(load("chamber"), Vec3{}, 0.0f);
             awake_.voice = audio_.playLooping(load("awake"), Vec3{}, 0.0f);
             drive_.voice = audio_.playLooping(load("drive"), Vec3{}, 0.0f);
@@ -82,6 +91,9 @@ public:
 
     // Paused, the world carries on behind a closed door.
     void setPaused(bool paused) { muffled_ = paused; }
+
+    // Slowed time drags the beds down in pitch, like a tape.
+    void setTimeScale(float scale) { dragged_ = 0.55f + 0.45f * scale; }
 
     void menuMove() { play(uiMove_, "ui-move", 0.3f, 1.0f); }
     void menuConfirm() { play(uiConfirm_, "ui-confirm", 0.5f, 1.0f); }
@@ -214,7 +226,7 @@ private:
     void glide(Bed& bed, const char* name, float gain, float pitch, float highs, float dt) {
         const float k = 1.0f - std::exp(-dt * 9.0f);
         bed.gain += (gain * kHeadroom - bed.gain) * k;
-        bed.pitch += (pitch - bed.pitch) * k;
+        bed.pitch += (pitch * dragged_ - bed.pitch) * k;
         bed.highs += (highs - bed.highs) * k;
         if (aloud_) {
             audio_.setVoiceGain(bed.voice, bed.gain);
@@ -319,6 +331,7 @@ private:
     float rise_ = 0.0f;
     float lifted_ = 0.0f;
     bool muffled_ = false;
+    float dragged_ = 1.0f;
 
     bool gateHeard_ = false;
     bool spoolHeard_ = false;

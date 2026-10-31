@@ -150,6 +150,30 @@
     {
       "from": "wispGlow",
       "to": "layers.1.look.3.intensity"
+    },
+    {
+      "from": "leader",
+      "to": "layers.4.move.2.point"
+    },
+    {
+      "from": "blast",
+      "to": "layers.4.move.2.amount"
+    },
+    {
+      "from": "leader",
+      "to": "layers.4.look.3.point"
+    },
+    {
+      "from": "leader",
+      "to": "layers.5.move.2.point"
+    },
+    {
+      "from": "blast",
+      "to": "layers.5.move.2.amount"
+    },
+    {
+      "from": "leader",
+      "to": "layers.5.look.3.point"
     }
   ],
   "layers": [
@@ -459,6 +483,158 @@
         {
           "block": "Glow",
           "intensity": 0.03
+        }
+      ]
+    },
+    {
+      "name": "hall dust",
+      "count": 80000,
+      "spawn": [
+        {
+          "block": "InBox",
+          "size": [
+            19.5,
+            5.8,
+            19.5
+          ]
+        },
+        {
+          "block": "Lifetime",
+          "min": 8,
+          "max": 16
+        }
+      ],
+      "move": [
+        {
+          "block": "CurlFlow",
+          "strength": 0.22,
+          "scale": 0.18,
+          "speed": 0.1
+        },
+        {
+          "block": "Drag",
+          "amount": 1.4
+        },
+        {
+          "block": "Blast",
+          "strength": 70,
+          "radius": 8
+        }
+      ],
+      "look": [
+        {
+          "block": "Color",
+          "color": [
+            0.62,
+            0.6,
+            0.58
+          ]
+        },
+        {
+          "block": "Size",
+          "size": 0.013,
+          "vary": 0.8
+        },
+        {
+          "block": "RoofLight",
+          "base": 0.018000000000000002
+        },
+        {
+          "block": "NearPoint",
+          "radius": 5,
+          "amount": 0.5
+        },
+        {
+          "block": "Fade",
+          "in": 0.2,
+          "out": 0.3
+        },
+        {
+          "block": "Glow",
+          "intensity": 1.6
+        },
+        {
+          "block": "FadeNearCamera",
+          "start": 2.5,
+          "end": 0.7
+        }
+      ]
+    },
+    {
+      "name": "chamber dust",
+      "count": 50000,
+      "spawn": [
+        {
+          "block": "Sphere",
+          "radius": 33,
+          "shell": 0,
+          "center": [
+            0,
+            0,
+            -60
+          ]
+        },
+        {
+          "block": "Lifetime",
+          "min": 8,
+          "max": 16
+        }
+      ],
+      "move": [
+        {
+          "block": "CurlFlow",
+          "strength": 0.22,
+          "scale": 0.18,
+          "speed": 0.1
+        },
+        {
+          "block": "Drag",
+          "amount": 1.4
+        },
+        {
+          "block": "Blast",
+          "strength": 70,
+          "radius": 8
+        }
+      ],
+      "look": [
+        {
+          "block": "Color",
+          "color": [
+            0.62,
+            0.6,
+            0.58
+          ]
+        },
+        {
+          "block": "Size",
+          "size": 0.013,
+          "vary": 0.8
+        },
+        {
+          "block": "RoofLight",
+          "base": 0.07500000000000001,
+          "spacing": 16,
+          "ceiling": 40
+        },
+        {
+          "block": "NearPoint",
+          "radius": 5,
+          "amount": 0.5
+        },
+        {
+          "block": "Fade",
+          "in": 0.2,
+          "out": 0.3
+        },
+        {
+          "block": "Glow",
+          "intensity": 1.6
+        },
+        {
+          "block": "FadeNearCamera",
+          "start": 2.5,
+          "end": 0.7
         }
       ]
     }

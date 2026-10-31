@@ -174,6 +174,10 @@ struct Compiled {
 
 Compiled compile(const Document& document);
 
+// float forgeRoofCracks(vec3 p, vec3 from, float ceiling, float spacing): 1 where light
+// from long cracks in a ceiling falls, for shaders outside Forge to stay in step with it.
+const char* roofCracksGlsl();
+
 // Suggests the nearest of `options` to a misspelt `name`, or "" when none is close.
 std::string nearestName(std::string_view name, const std::vector<std::string>& options);
 

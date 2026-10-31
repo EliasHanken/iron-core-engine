@@ -60,7 +60,7 @@ public:
     // Sets the camera for this frame's composite. `reprojection` maps this frame's
     // clip space to last frame's.
     void setCinematic(const CinematicSettings& settings, const Mat4& reprojection,
-                      std::uint32_t frame);
+                      std::uint32_t frame, float depthA, float depthB);
 
     // Pass that composite + debug + HUD overlays record into (M43a). Pipelines
     // recorded here must be built against it, not the swapchain pass — their
@@ -258,6 +258,15 @@ private:
     VkDescriptorPool      cinematicPool_ = VK_NULL_HANDLE;
     VkDescriptorSet       cinematicSet_ = VK_NULL_HANDLE;
     VkSampler             cinematicDepthSampler_ = VK_NULL_HANDLE;
+    // Push constants are full, so lens settings live in a small per-frame buffer.
+    // 256 is the largest minUniformBufferOffsetAlignment Vulkan allows.
+    static constexpr std::uint32_t kCinematicLensBytes = 48;
+    static constexpr std::uint32_t kCinematicLensStride = 256;
+    VkBuffer              cinematicLensBuffer_ = VK_NULL_HANDLE;
+    VmaAllocation         cinematicLensAlloc_ = VK_NULL_HANDLE;
+    void*                 cinematicLensMapped_ = nullptr;
+    float                 cinematicDepthA_ = 0.0f;
+    float                 cinematicDepthB_ = 1.0f;
     VkFramebuffer transparentFb_   = VK_NULL_HANDLE;
 
     // --- Mask target (R8_UINT color + D32 depth) ---

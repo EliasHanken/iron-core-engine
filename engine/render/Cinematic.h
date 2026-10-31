@@ -18,6 +18,18 @@ struct CinematicSettings {
     float contrast = 1.0f;
     Vec3  shadowTint{1.0f, 1.0f, 1.0f};     // Multiplies the darks.
     Vec3  highlightTint{1.0f, 1.0f, 1.0f};  // Multiplies the lights.
+
+    // Depth of field. A blur of 0 turns it off.
+    float focusDistance = 10.0f;       // Metres from the camera.
+    float focusRange = 4.0f;           // Metres around it that stay sharp.
+    float blurRadius = 0.0f;           // Widest blur, as a fraction of screen height.
+
+    // What the eye follows, in screen UV. Particles don't write depth, so depth of
+    // field alone would blur a spark by whatever wall is behind it. Inside
+    // subjectRadius (a fraction of screen height) the picture stays sharp.
+    Vec2  subject{0.5f, 0.5f};
+    float subjectRadius = 0.0f;
+    float heatHaze = 0.0f;             // Rippling air around the subject, 0..1.
 };
 
 }  // namespace iron

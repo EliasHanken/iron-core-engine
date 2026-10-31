@@ -120,6 +120,11 @@ bool initEffects(Impl& impl) {
 
 }  // namespace
 
+// Takes ownership of `pcm`. Returns 0 on failure.
+template <typename Impl>
+ALuint bufferFromPcm(Impl& impl, drwav_int16* pcm, unsigned int channels, unsigned int sampleRate,
+                     drwav_uint64 frameCount, const std::string& wavPath);
+
 AudioEngine::AudioEngine() : impl_(std::make_unique<Impl>()) {}
 
 AudioEngine::~AudioEngine() {
@@ -205,10 +210,38 @@ SoundHandle AudioEngine::loadSound(const std::string& wavPath) {
     drwav_uint64 frameCount = 0;
     drwav_int16* pcm = drwav_open_file_and_read_pcm_frames_s16(
         wavPath.c_str(), &channels, &sampleRate, &frameCount, nullptr);
+    const ALuint buffer = bufferFromPcm(*impl_, pcm, channels, sampleRate, frameCount, wavPath);
+    if (buffer == 0) return kInvalidSound;
+
+    const SoundHandle h = impl_->nextHandle++;
+    impl_->buffers[h] = Impl::LoadedSound{buffer, wavPath, fileMtime(wavPath)};
+    return h;
+}
+
+SoundHandle AudioEngine::loadSoundFromMemory(const void* wav, std::size_t size, const std::string& label) {
+    if (!impl_->initialized) return kInvalidSound;
+
+    unsigned int channels   = 0;
+    unsigned int sampleRate = 0;
+    drwav_uint64 frameCount = 0;
+    drwav_int16* pcm = drwav_open_memory_and_read_pcm_frames_s16(
+        wav, size, &channels, &sampleRate, &frameCount, nullptr);
+    const ALuint buffer = bufferFromPcm(*impl_, pcm, channels, sampleRate, frameCount, label);
+    if (buffer == 0) return kInvalidSound;
+
+    const SoundHandle h = impl_->nextHandle++;
+    impl_->buffers[h] = Impl::LoadedSound{buffer, std::string{}, 0};
+    return h;
+}
+
+// Takes ownership of `pcm`. Returns 0 on failure.
+template <typename Impl>
+ALuint bufferFromPcm(Impl& impl, drwav_int16* pcm, unsigned int channels, unsigned int sampleRate,
+                     drwav_uint64 frameCount, const std::string& wavPath) {
     if (!pcm || frameCount == 0) {
         Log::warn("AudioEngine: failed to decode WAV '%s'", wavPath.c_str());
         if (pcm) drwav_free(pcm, nullptr);
-        return kInvalidSound;
+        return 0;
     }
 
     ALenum format = AL_NONE;
@@ -218,13 +251,13 @@ SoundHandle AudioEngine::loadSound(const std::string& wavPath) {
         Log::warn("AudioEngine: unsupported channel count %u in '%s'",
                   channels, wavPath.c_str());
         drwav_free(pcm, nullptr);
-        return kInvalidSound;
+        return 0;
     }
 
-    if (channels == 2 && !impl_->warnedStereo) {
+    if (channels == 2 && !impl.warnedStereo) {
         Log::warn("AudioEngine: '%s' is stereo - OpenAL will play it non-"
                   "positionally. Ship mono for 3D SFX.", wavPath.c_str());
-        impl_->warnedStereo = true;
+        impl.warnedStereo = true;
     }
 
     ALuint buffer = 0;
@@ -237,12 +270,9 @@ SoundHandle AudioEngine::loadSound(const std::string& wavPath) {
     if (alGetError() != AL_NO_ERROR) {
         Log::warn("AudioEngine: alBufferData failed for '%s'", wavPath.c_str());
         alDeleteBuffers(1, &buffer);
-        return kInvalidSound;
+        return 0;
     }
-
-    const SoundHandle h = impl_->nextHandle++;
-    impl_->buffers[h] = Impl::LoadedSound{buffer, wavPath, fileMtime(wavPath)};
-    return h;
+    return buffer;
 }
 
 void AudioEngine::playSoundAt(SoundHandle h, Vec3 worldPos, float gain, float pitch) {
