@@ -379,6 +379,7 @@ int main(int argc, char** argv) {
     cfg.height = options.height;
     iron::Application app(cfg);
     if (!app.valid()) return 1;
+    glfwSetWindowTitle(app.window().handle(), "Kindle");
 
     auto rendererPtr = iron::createRenderer(app.window());
     auto* vulkan = dynamic_cast<iron::VulkanRenderer*>(rendererPtr.get());
@@ -507,7 +508,9 @@ int main(int argc, char** argv) {
     kindle::Settings settings;
     settings.load(settingsPath);
     sound.setVolume(settings.sound);
-    if (!scripted) app.window().setFullscreen(settings.fullscreen);
+    // --scene fullscreen lets a scripted run check the switch on a real frame.
+    if (scripted && options.scene == "fullscreen") settings.fullscreen = true;
+    if (!scripted || options.scene == "fullscreen") app.window().setFullscreen(settings.fullscreen);
     kindle::EyeAdaptation eyes;
 
     enum class Mode { Menu, Playing, Paused, End };

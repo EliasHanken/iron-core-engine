@@ -3,6 +3,7 @@
 #include "19-kindle/Sound.h"
 
 #include <cassert>
+#include <cstdlib>
 #include <cstdio>
 #include <filesystem>
 #include <string>
@@ -41,6 +42,8 @@ int main() {
         assert(kindle::readAudioPak(path).empty());
     }
 
+    // One engine at a time: each owns the process's current OpenAL context.
+    {
     iron::AudioEngine audio;
     if (audio.init()) {  // There may be no audio device on a build machine.
         // A sound decodes from memory just as it does from a file.
@@ -57,6 +60,21 @@ int main() {
                 assert(audio.loadSound(entry.path().string()) != iron::kInvalidSound);
             }
         }
+    }
+
+    }
+
+    // Given a built pack, every sound in it must decode.
+    if (const char* pakPath = std::getenv("KINDLE_PAK")) {
+        iron::AudioEngine decoder;
+        const auto pak = kindle::readAudioPak(pakPath);
+        assert(!pak.empty());
+        if (decoder.init()) {
+            for (const auto& [name, wav] : pak) {
+                assert(decoder.loadSoundFromMemory(wav.data(), wav.size(), name) != iron::kInvalidSound);
+            }
+        }
+        std::printf("%zu packed sounds decoded\n", pak.size());
     }
 
     // Starting and stopping every voice at silence must also be safe.
