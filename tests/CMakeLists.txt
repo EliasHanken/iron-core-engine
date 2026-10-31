@@ -156,6 +156,8 @@ if (IRON_RENDER_BACKEND STREQUAL "vulkan")
   iron_add_test(test_gpu_particles test_gpu_particles.cpp)
   iron_add_test(test_forge test_forge.cpp)
   target_compile_definitions(test_forge PRIVATE IRON_REPO_ROOT="${CMAKE_SOURCE_DIR}")
+  iron_add_test(test_kindle_swarm test_kindle_swarm.cpp)
+  target_include_directories(test_kindle_swarm PRIVATE ${CMAKE_SOURCE_DIR}/games)
 endif()
 
 # test_genie exercises the game-side timeline, terrain and shaders directly.

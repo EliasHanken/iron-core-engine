@@ -51,6 +51,14 @@ Any value you leave out uses its default, so a block with only a name works. The
 "wires": [{"from": "pulse", "to": "layers.0.move.0.strength"}]
 ```
 
+**Inputs.** An `Input` or `InputVector` node is a value the running game sets each frame, with `player.setInput("leader", position)`. Wire it like any other node. Inputs work on particles, not surfaces.
+
+```json
+"nodes": {"leader": {"type": "InputVector"}},
+"wires": [{"from": "leader", "to": "layers.0.move.0.target"}],
+"move": [{"block": "Follow", "spread": 1.5}]
+```
+
 **Surface shaders.** Set `"target": "surface"` and use a `"surface"` stack of blocks. Later blocks build on earlier ones:
 
 ```json

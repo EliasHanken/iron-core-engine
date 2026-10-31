@@ -39,7 +39,10 @@ vec3 skyColor(vec3 d) {
 )GLSL";
 }
 
-Player::Player(Renderer& renderer) : renderer_(renderer) {}
+Player::Player(Renderer& renderer) : renderer_(renderer) {
+    lightDesc_.bounds = VolumeBounds{{-14.0f, -14.0f, -14.0f}, {14.0f, 14.0f, 14.0f}};
+    lightDesc_.size = {96, 96, 96};
+}
 Player::~Player() = default;
 
 GpuParticlesDesc layerToDesc(const CompiledLayer& layer) {
@@ -133,10 +136,7 @@ void Player::updateLight() {
         return running.layer.emitsLight;
     });
     if (wanted && !light_) {
-        LightVolumeDesc desc;
-        desc.bounds = VolumeBounds{{-14.0f, -14.0f, -14.0f}, {14.0f, 14.0f, 14.0f}};
-        desc.size = {96, 96, 96};
-        light_ = createLightVolume(renderer_, desc);
+        light_ = createLightVolume(renderer_, lightDesc_);
         volumes_ = createVolumeRenderer(renderer_);
     }
 }
@@ -156,7 +156,7 @@ void Player::simulate(float dt) {
 void Player::render(const Mat4& view, const Mat4& projection) {
     if (light_ && volumes_) {
         VolumeRenderSettings settings;
-        settings.airDensity = 0.03f;
+        settings.airDensity = airDensity_;
         settings.steps = 32;
         volumes_->render(view, projection, *light_, nullptr, settings);
     }
@@ -165,6 +165,19 @@ void Player::render(const Mat4& view, const Mat4& projection) {
     for (const bool blockLight : {true, false}) {
         for (Running& running : layers_) {
             if (running.layer.blockLight == blockLight) running.effect->render(view, projection);
+        }
+    }
+}
+
+void Player::setInput(const std::string& name, Value value) {
+    for (Running& running : layers_) {
+        const auto found = running.layer.inputs.find(name);
+        if (found == running.layer.inputs.end()) continue;
+        for (const int slot : found->second) {
+            float* out = running.layer.slots.data() + static_cast<std::size_t>(slot) * 4;
+            out[0] = value.x;
+            out[1] = value.y;
+            out[2] = value.z;
         }
     }
 }

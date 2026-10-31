@@ -493,6 +493,10 @@ std::vector<Issue> validate(const Document& doc) {
         if (parts.size() == 2 && doc.nodes.count(parts[0]) != 0) {
             const NodeDesc* desc = findNode(doc.nodes.at(parts[0]).type);
             if (!desc) return false;
+            if (desc->runtime) {
+                fix = "The game sets this value, so a wire can't drive it.";
+                return false;
+            }
             for (const ParamDesc& p : desc->inputs) {
                 if (p.name == parts[1]) return true;
             }

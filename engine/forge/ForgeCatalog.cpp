@@ -101,6 +101,29 @@ std::vector<BlockDesc> makeBlocks() {
     }
 })", true});
 
+    list.push_back({"Follow", Stack::Move, "Chase a moving point, each particle at its own pace.",
+        {vec("target", Vec3{0, 0, 0}, -100.0f, 100.0f, "The point to chase. Wire an InputVector here."),
+         num("fast", 6.0f, 0.0f, 30.0f, "How quickly the keenest particles catch up."),
+         num("slow", 0.8f, 0.0f, 30.0f, "How quickly the laziest catch up. Lower makes a longer tail."),
+         num("grip", 8.0f, 0.1f, 30.0f, "How sharply they turn: lower swings wide."),
+         num("spread", 1.0f, 0.0f, 20.0f, "Size of the cloud around the point, in metres.")},
+        R"({
+    uint own = uint(seedValue * 4000000.0);
+    vec3 home = $target + randomDirection(own) * $spread * pow(rnd(own + 3u), 0.5);
+    float pace = mix($slow, $fast, seedValue * seedValue);
+    v = mix(v, (home - x) * pace, 1.0 - exp(-dt * $grip));
+})"});
+    list.push_back({"Blast", Stack::Move, "Throw particles away from a point.",
+        {vec("point", Vec3{0, 0, 0}, -100.0f, 100.0f, "Middle of the blast."),
+         num("amount", 0.0f, 0.0f, 1.0f, "0 is off, 1 is full force. Wire an Input here."),
+         num("strength", 120.0f, 0.0f, 600.0f, "Push in metres per second squared."),
+         num("radius", 12.0f, 0.1f, 60.0f, "How far it reaches.")},
+        R"({
+    vec3 away = x - $point;
+    float d = length(away) + 1e-4;
+    v += away / d * $amount * $strength * max(1.0 - d / $radius, 0.0) * dt;
+})"});
+
     // --- Look: tint, size, alpha, stretch, life01, x, v, n ----------------------------
     list.push_back({"Color", Stack::Look, "One colour.",
         {color("color", Vec3{1.0f, 0.5f, 0.2f}, "Linear colour.")},
@@ -220,6 +243,12 @@ std::vector<NodeDesc> makeNodes() {
          {num("scale", 1.0f, 0.01f, 30.0f, "Higher is finer."),
           num("speed", 0.5f, 0.0f, 10.0f, "How quickly it changes.")},
          ValueType::Float, "gradientNoise(forgePosition * $scale + vec3(0.0, forgeTime * $speed, 0.0))"},
+        {"Input", "A number the game sets while running.",
+         {num("value", 0.0f, -1000.0f, 1000.0f, "Value until the game sets one.")},
+         ValueType::Float, "", true},
+        {"InputVector", "A position or colour the game sets while running.",
+         {vec("value", Vec3{0, 0, 0}, -1000.0f, 1000.0f, "Value until the game sets one.")},
+         ValueType::Vec3, "", true},
         {"ColorMix", "Blend two colours.",
          {color("a", Vec3{0, 0, 0}, ""), color("b", Vec3{1, 1, 1}, ""),
           num("t", 0.5f, 0.0f, 1.0f, "0 is a, 1 is b.")},
@@ -254,6 +283,14 @@ std::vector<ShapeDesc> makeShapes() {
           vec("b", Vec3{0, 2, 0}, -30.0f, 30.0f, "Other end."),
           num("radius", 0.5f, 0.01f, 10.0f, "Thickness.")},
          "(length((p - $a) - ($b - $a) * clamp(dot(p - $a, $b - $a) / dot($b - $a, $b - $a), 0.0, 1.0)) - $radius)"},
+        {"Room", "The inside of a box: things stay in.",
+         {vec("size", Vec3{20, 6, 20}, 0.01f, 200.0f, "Half-size on each axis."),
+          vec("center", Vec3{0, 0, 0}, -100.0f, 100.0f, "Middle.")},
+         "forgeRoom(p, $center, $size)"},
+        {"Pillars", "An endless grid of square pillars.",
+         {num("spacing", 10.0f, 0.1f, 100.0f, "Distance between pillars."),
+          num("width", 0.8f, 0.01f, 50.0f, "Half-width of a pillar.")},
+         "forgePillars(p, $spacing, $width)"},
         {"Ground", "An endless flat floor.",
          {num("height", -3.0f, -30.0f, 30.0f, "Height of the floor.")},
          "(p.y - $height)"},

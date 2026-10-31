@@ -1,0 +1,8 @@
+{
+  "forge": 1,
+  "target": "surface",
+  "surface": [
+    {"block": "BaseColor", "color": [0.16, 0.16, 0.18]},
+    {"block": "Finish", "roughness": 0.55, "metallic": 0.0}
+  ]
+}

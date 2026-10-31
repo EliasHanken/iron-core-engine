@@ -427,6 +427,53 @@ void testLightBlockMakesALayerEmit() {
     assert(checkShaders(compiled).empty());
 }
 
+void testInputsCanBeSetAtRuntime() {
+    std::vector<Issue> issues;
+    const Document doc = parse(R"({
+      "nodes": {"leader": {"type": "InputVector", "value": [1, 2, 3]}, "kick": {"type": "Input"}},
+      "wires": [{"from": "leader", "to": "layers.0.move.0.target"},
+                {"from": "leader", "to": "layers.0.move.1.point"},
+                {"from": "kick", "to": "layers.0.move.1.amount"}],
+      "move": [{"block": "Follow"}, {"block": "Blast"}]
+    })", issues);
+    assert(issues.empty());
+
+    const Compiled compiled = compile(doc);
+    assert(compiled.ok());
+    assert(checkShaders(compiled).empty());
+
+    const CompiledLayer& layer = compiled.layers[0];
+    assert(layer.inputs.count("leader") == 1);
+    assert(layer.inputs.count("kick") == 1);
+    const int slot = layer.inputs.at("leader")[0];
+    assert(layer.slots[static_cast<std::size_t>(slot) * 4 + 2] == 3.0f);
+}
+
+void testInputsCantBeWiredOrUsedOnSurfaces() {
+    std::vector<Issue> issues;
+    parse(R"({"nodes": {"a": {"type": "Input"}, "b": {"type": "Sine"}},
+              "wires": [{"from": "b", "to": "a.value"}]})", issues);
+    assert(findCode(issues, "unknown-wire-target"));
+
+    issues.clear();
+    const Document doc = parse(R"({"target": "surface",
+      "nodes": {"a": {"type": "Input"}},
+      "wires": [{"from": "a", "to": "surface.0.intensity"}],
+      "surface": [{"block": "Emission"}]})", issues);
+    assert(issues.empty());
+    assert(findCode(compile(doc).issues, "surface-input"));
+}
+
+void testRoomAndPillarShapesCompile() {
+    std::vector<Issue> issues;
+    const Document doc = parse(R"({
+      "shapes": {"room": {"type": "Room"}, "posts": {"type": "Pillars"}},
+      "move": [{"block": "Bounce", "shape": "room"}, {"block": "Bounce", "shape": "posts"}]
+    })", issues);
+    assert(issues.empty());
+    assert(checkShaders(compile(doc)).empty());
+}
+
 void testNearestName() {
     assert(nearestName("Sphre", {"Sphere", "Box"}) == "Sphere");
     assert(nearestName("zzzzzzzz", {"Sphere", "Box"}).empty());
@@ -468,6 +515,9 @@ int main() {
     testStoppingOneDriverKeepsASharedNode();
     testUnknownSettingListsTheRealOnes();
     testNamesMustBeIdentifiers();
+    testInputsCanBeSetAtRuntime();
+    testInputsCantBeWiredOrUsedOnSurfaces();
+    testRoomAndPillarShapesCompile();
     testOneLightPerLayer();
     testLightBlockMakesALayerEmit();
     testNearestName();

@@ -77,6 +77,17 @@ float gradientNoise(vec3 p) {
     return clamp(0.5 + 0.7 * n, 0.0, 1.0);
 }
 
+float forgeRoom(vec3 p, vec3 center, vec3 size) {
+    vec3 d = abs(p - center) - size;
+    return -max(d.x, max(d.y, d.z));
+}
+
+float forgePillars(vec3 p, float spacing, float width) {
+    vec2 cell = mod(p.xz, spacing) - spacing * 0.5;
+    vec2 d = abs(cell) - width;
+    return length(max(d, vec2(0.0))) + min(max(d.x, d.y), 0.0);
+}
+
 float fbm(vec3 p, int octaves) {
     float sum = 0.0;
     float amplitude = 0.5;
@@ -171,6 +182,7 @@ public:
     }
 
     std::vector<float> takeSlots() { return std::move(slots_); }
+    std::map<std::string, std::vector<int>> takeInputs() { return std::move(inputs_); }
 
     std::string slot(Value value, ValueType type, const std::string& where) {
         if (inlineValues_) {
@@ -233,6 +245,23 @@ public:
         const NodeInstance& node = doc_.nodes.at(name);
         const NodeDesc* desc = findNode(node.type);
         if (!desc) return "0.0";
+
+        if (desc->runtime) {
+            if (inlineValues_) {
+                issues_.push_back({path, "surface-input", "Surfaces can't use an Input yet.",
+                                   "Use a fixed value here."});
+                return "0.0";
+            }
+            const auto value = node.values.find("value");
+            const int index = static_cast<int>(slots_.size() / 4);
+            const std::string expression =
+                slot(value != node.values.end() ? value->second : desc->inputs[0].defaultValue,
+                     desc->output, "nodes." + name);
+            inputs_[name].push_back(index);
+            lines.push_back("    " + typeOf(desc->output) + " " + variable + " = " + expression + ";");
+            built.insert(name);
+            return variable;
+        }
 
         visiting.push_back(name);
         std::string expression = desc->glsl;
@@ -315,6 +344,7 @@ private:
     std::map<std::string, std::string> wires_;
     bool inlineValues_ = false;
     std::vector<float> slots_;
+    std::map<std::string, std::vector<int>> inputs_;
     bool overflowed_ = false;
 };
 
@@ -367,6 +397,7 @@ CompiledLayer compileLayer(const Document& doc, const Layer& layer, std::size_t 
     out.blockLight = layer.blockLight;
     out.trail = layer.trail;
     out.slots = context.takeSlots();
+    out.inputs = context.takeInputs();
     if (out.slots.empty()) out.slots.assign(4, 0.0f);
 
     out.commonGlsl = std::string(R"GLSL(
