@@ -150,6 +150,14 @@ iron_add_test(test_tonemap test_tonemap.cpp)
 iron_add_test(test_pbr test_pbr.cpp)
 iron_add_test(test_ibl test_ibl.cpp)
 iron_add_test(test_bloom test_bloom.cpp)
+
+# test_genie exercises the game-side timeline, terrain and shaders directly.
+add_executable(test_genie
+  test_genie.cpp
+  ${CMAKE_SOURCE_DIR}/games/16-genie/GenieScene.cpp)
+target_link_libraries(test_genie PRIVATE ironcore)
+target_include_directories(test_genie PRIVATE ${CMAKE_SOURCE_DIR}/games/16-genie)
+add_test(NAME test_genie COMMAND test_genie)
 iron_add_test(test_ssao test_ssao.cpp)
 iron_add_test(test_parallax test_parallax.cpp)
 iron_add_test(test_reflection_probe test_reflection_probe.cpp)
