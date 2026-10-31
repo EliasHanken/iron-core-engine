@@ -17,7 +17,7 @@ const float kCeiling = 6.0;
 
 float crackLine(float v, float width) {
     float d = abs(fract(v) - 0.5);
-    return 1.0 - smoothstep(width * 0.5, width, d);
+    return 1.0 - smoothstep(width * 0.1, width, d);
 }
 
 float shaftAt(vec3 p) {
@@ -26,14 +26,17 @@ float shaftAt(vec3 p) {
     float bend = sin(q.y * 0.21 + 1.3) * 1.1 + sin(q.y * 0.53) * 0.35;
     float line = crackLine((q.x + bend) / 13.0 + 0.31, 0.055);
     float cut = smoothstep(-0.25, 0.35, sin(q.y * 0.44 + floor(q.x / 13.0 + 0.31) * 2.4));
-    return line * cut;
+    // Gaps along the crack split a flat sheet of light into separate beams.
+    float beams = 0.5 + 0.5 * sin(q.y * 1.7 + sin(q.y * 0.63) * 2.0) * sin(q.y * 3.9 + 1.1);
+    return line * cut * beams;
 }
 )GLSL";
 
 inline const std::string kAirGlsl = std::string(kShaftsGlsl) + R"GLSL(
 void airAt(vec3 p, float time, inout float density, inout vec3 light) {
     // A thin cold haze, so that the far end of the hall fades instead of stopping.
-    light = kShaftColor * (0.04 + shaftAt(p) * 5.0);
+    float falling = mix(0.3, 1.0, smoothstep(-6.0, 6.0, p.y));
+    light = kShaftColor * (0.04 + shaftAt(p) * 7.0 * falling);
 }
 )GLSL";
 

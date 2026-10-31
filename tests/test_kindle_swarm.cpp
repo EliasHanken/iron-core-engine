@@ -64,6 +64,21 @@ void testSqueezeIsFasterAndNarrower() {
     assert(squeeze.spread() < cruise.spread() * 0.5f);
 }
 
+void testBreathesOnlyWhenCalm() {
+    const Room room;
+    Swarm swarm({0, 0, 0});
+    const Controls idle;
+    float lowest = 100.0f;
+    float highest = 0.0f;
+    for (int i = 0; i < 600; ++i) {
+        swarm.update(room, idle, kStep);
+        lowest = std::min(lowest, swarm.spread());
+        highest = std::max(highest, swarm.spread());
+    }
+    assert(highest > lowest * 1.15f);
+    assert(swarm.pulse() >= 0.0f && swarm.pulse() <= 1.0f);
+}
+
 void testCoastsToAStop() {
     const Room room;
     Swarm swarm({0, 0, 0});
@@ -105,6 +120,7 @@ int main() {
     testStaysOutOfWallsAtFullSpeed();
     testDoesNotTunnelThroughAPillar();
     testSqueezeIsFasterAndNarrower();
+    testBreathesOnlyWhenCalm();
     testCoastsToAStop();
     testIgniteBurstsThenRests();
     std::puts("test_kindle_swarm: all passed");

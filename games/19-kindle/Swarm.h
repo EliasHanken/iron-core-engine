@@ -92,6 +92,7 @@ public:
             blast_ = 1.0f;
             flare_ = 1.0f;
         }
+        phase_ += dt * (2.2f + iron::length(velocity_) * 0.18f);
         blast_ *= std::exp(-dt * 7.0f);
         flare_ *= std::exp(-dt * 2.2f);
     }
@@ -103,9 +104,19 @@ public:
     float flare() const { return flare_; }    // The same, but lingering, for light.
     float squeeze() const { return squeeze_; }
 
+    // A slow heartbeat, quicker when moving, with a beat's sharp rise and long fall.
+    float pulse() const {
+        const float beat = 0.5f + 0.5f * std::sin(phase_);
+        return beat * beat * beat;
+    }
+
     // Radius of the cloud. A burst throws its home outward, so it swells and returns.
     float spread() const {
-        return kCruiseSpread + (kSqueezeSpread - kCruiseSpread) * squeeze_ + flare_ * 5.0f;
+        // It breathes when idle, and pulls in as it picks up speed.
+        const float calm = 1.0f - std::min(speed() / kCruiseSpeed, 1.0f);
+        const float breath = 1.0f + 0.22f * calm * pulse();
+        const float rest = (kCruiseSpread + (kSqueezeSpread - kCruiseSpread) * squeeze_) * breath;
+        return rest + flare_ * 3.5f;
     }
 
 private:
@@ -115,6 +126,7 @@ private:
     float blast_ = 0.0f;
     float flare_ = 0.0f;
     float rest_ = 0.0f;
+    float phase_ = 0.0f;
 };
 
 }  // namespace kindle

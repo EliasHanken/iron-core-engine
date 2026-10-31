@@ -8,8 +8,9 @@
 //   Click   ignite
 //   Esc     quit
 //
-// Any capture flag (--shot, --record) flies a scripted route instead. Saving
-// assets/swarm.forge.json next to the exe updates the running game.
+// Any capture flag (--shot, --record) flies a scripted route instead, and
+// --scene hall watches it from a fixed camera. Saving assets/swarm.forge.json
+// next to the exe updates the running game.
 
 #include "common/CaptureLoop.h"
 #include "HallGlsl.h"
@@ -302,6 +303,7 @@ int main(int argc, char** argv) {
         player.setInput("spread", {swarm.spread(), 0, 0});
         player.setInput("blast", {swarm.blast(), 0, 0});
         player.setInput("light", {0.00012f + swarm.flare() * 0.0012f, 0, 0});
+        player.setInput("pulse", {0.02f + swarm.pulse() * 0.02f + swarm.flare() * 0.06f, 0, 0});
 
         // The camera hangs back further the faster you go.
         const float rush = std::min(swarm.speed() / kindle::Swarm::kSqueezeSpeed, 1.0f);
@@ -309,7 +311,10 @@ int main(int argc, char** argv) {
         const Vec3 wantEye = clearEye(room, swarm.position(),
                                       swarm.position() - forward * (7.0f + 5.0f * rush + 4.0f * swarm.flare()) + Vec3{0, 1.6f, 0});
         eye = eye + (wantEye - eye) * (1.0f - std::exp(-dt * 9.0f));
-        const iron::Mat4 view = iron::lookAt(eye, swarm.position() + forward * 4.0f, {0, 1, 0});
+        const bool watching = options.scene == "hall";
+        if (watching) eye = Vec3{-18.5f, -3.0f, -18.5f};
+        const Vec3 lookTarget = watching ? Vec3{4.0f, -1.5f, 4.0f} : swarm.position() + forward * 4.0f;
+        const iron::Mat4 view = iron::lookAt(eye, lookTarget, {0, 1, 0});
         const iron::Mat4 projection = iron::perspective(
             (kBaseFov + kFovAtSpeed * rush) * std::numbers::pi_v<float> / 180.0f,
             static_cast<float>(width) / static_cast<float>(height), 0.1f, 200.0f);
@@ -368,14 +373,14 @@ int main(int argc, char** argv) {
         air.steps = 48;
         air.phase = 0.35f;
         air.powder = 0.5f;
-        air.airLight = 1.0f;
+        air.airLight = 0.3f;  // Direct light mostly shows where there's mist to catch it.
         air.lightIntensity = 0.8f;
         air.smokeDensity = kFogDensity;
         air.smokeAlbedo = {0.62f, 0.66f, 0.74f};
         air.heatIntensity = 0.0f;
         air.shadowDensity = 1.0f;
         air.lightPosition = pos;
-        air.lightColor = kEmber * (0.7f + flare * 5.0f);
+        air.lightColor = kEmber * (2.4f + flare * 12.0f);
         air.detail = 0.3f;
         air.detailScale = 0.8f;
         air.time = seconds;
