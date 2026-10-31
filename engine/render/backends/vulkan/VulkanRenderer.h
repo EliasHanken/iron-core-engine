@@ -191,6 +191,15 @@ public:
     void setSsaoPower(float v)    { pendingSsaoPower_ = v; }
     void setSsaoStrength(float v) { pendingSsaoStrength_ = v; }
 
+    // Copies this frame's final composited image (tonemapped, before any UI)
+    // and hands it to `fn` as tightly packed RGBA8 with alpha forced to 255,
+    // sRGB encoded when the swapchain is. Fires inside endFrame after a blocking
+    // GPU wait, so it's for screenshots and offline recording. Call between
+    // beginFrame and endFrame; `pixels` is only valid during the callback.
+    using FrameCaptureFn =
+        std::function<void(const std::uint8_t* pixels, int width, int height)>;
+    void captureFrame(FrameCaptureFn fn) { pendingCapture_ = std::move(fn); }
+
     // Engine-internal: external Vulkan subsystems register a deferred
     // render callback. Fires inside the scene render pass during endFrame,
     // after the geometry replay and before debug-lines + HUD.
@@ -224,8 +233,19 @@ private:
     // MaskPushConstants {mvp, effectId} and issues vkCmdDrawIndexed.
     void recordMaskDraw(VkCommandBuffer cb, const DrawCall& call);
     bool buildReflectionPipeline();
+    // Frame capture: recordCaptureCopy runs after the viewport pass, then
+    // deliverCapture runs after the submit once the GPU has finished.
+    bool recordCaptureCopy(VkCommandBuffer cb);
+    void deliverCapture();
+    void destroyCaptureBuffer();
 
     bool initOk_ = false;
+
+    FrameCaptureFn pendingCapture_;
+    VkBuffer       captureBuffer_ = VK_NULL_HANDLE;
+    VmaAllocation  captureAlloc_  = VK_NULL_HANDLE;
+    VkDeviceSize   captureBytes_  = 0;
+    VkExtent2D     captureExtent_{};
     std::unordered_set<std::string> warnedFeatures_;
 
     VkContext    context_;

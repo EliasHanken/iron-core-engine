@@ -66,6 +66,7 @@ public:
     // Full-screen blit of viewportColor into the (already-begun) swapchain pass.
     void blitToSwapchain(VkCommandBuffer cb) const;
 
+    VkImage       viewportColorImage() const { return viewportColor_; }
     VkImageView   viewportColorView() const { return viewportColorView_; }
     VkSampler     viewportSampler()   const { return sampler_; }
     VkExtent2D    viewportExtent()     const { return viewportExtent_; }

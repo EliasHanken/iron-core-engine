@@ -1794,7 +1794,8 @@ bool VkPostProcess::createViewportTarget(VkContext& ctx) {
         iInfo.samples       = VK_SAMPLE_COUNT_1_BIT;
         iInfo.tiling        = VK_IMAGE_TILING_OPTIMAL;
         iInfo.usage         = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT |
-                              VK_IMAGE_USAGE_SAMPLED_BIT;
+                              VK_IMAGE_USAGE_SAMPLED_BIT |
+                              VK_IMAGE_USAGE_TRANSFER_SRC_BIT;  // Frame capture.
         iInfo.sharingMode   = VK_SHARING_MODE_EXCLUSIVE;
         iInfo.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
 

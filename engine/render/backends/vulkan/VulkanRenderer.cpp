@@ -20,6 +20,7 @@ VulkanRenderer::VulkanRenderer() = default;
 VulkanRenderer::~VulkanRenderer() {
     if (initOk_) {
         vkDeviceWaitIdle(context_.device());
+        destroyCaptureBuffer();
         meshes_.destroyAll(context_);
         skinnedMeshes_.destroyAll(context_);  // M23
         textures_.destroyAll(context_);
@@ -1344,6 +1345,8 @@ void VulkanRenderer::endFrame() {
         postProcess_.endViewportPass(cb);
     }
 
+    const bool capturing = pendingCapture_ && recordCaptureCopy(cb);
+
     // --- M43a Pass 5: swapchain pass — blit the viewport image, then UI on top. ---
     {
         VkClearValue clears[2]{};
@@ -1410,6 +1413,11 @@ void VulkanRenderer::endFrame() {
     submit.pSignalSemaphores = &renderFinished;
     VK_CHECK(vkQueueSubmit(context_.graphicsQueue(), 1, &submit, f.inFlight));
 
+    if (capturing) {
+        vkWaitForFences(context_.device(), 1, &f.inFlight, VK_TRUE, UINT64_MAX);
+        deliverCapture();
+    }
+
     VkPresentInfoKHR present{};
     present.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR;
     present.waitSemaphoreCount = 1;
@@ -1428,6 +1436,110 @@ void VulkanRenderer::endFrame() {
     }
 
     frames_.advance();
+}
+
+bool VulkanRenderer::recordCaptureCopy(VkCommandBuffer cb) {
+    const VkExtent2D extent = postProcess_.viewportExtent();
+    const VkDeviceSize bytes =
+        static_cast<VkDeviceSize>(extent.width) * extent.height * 4;
+
+    if (bytes != captureBytes_) {
+        destroyCaptureBuffer();
+
+        VkBufferCreateInfo info{};
+        info.sType       = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+        info.size        = bytes;
+        info.usage       = VK_BUFFER_USAGE_TRANSFER_DST_BIT;
+        info.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+
+        VmaAllocationCreateInfo alloc{};
+        alloc.usage = VMA_MEMORY_USAGE_AUTO;
+        alloc.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_RANDOM_BIT;
+        if (vmaCreateBuffer(context_.allocator(), &info, &alloc, &captureBuffer_,
+                            &captureAlloc_, nullptr) != VK_SUCCESS) {
+            Log::error("VulkanRenderer: capture buffer allocation failed");
+            captureBuffer_ = VK_NULL_HANDLE;
+            pendingCapture_ = nullptr;
+            return false;
+        }
+        captureBytes_ = bytes;
+    }
+    captureExtent_ = extent;
+
+    VkImageMemoryBarrier toSrc{};
+    toSrc.sType               = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+    toSrc.srcAccessMask       = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+    toSrc.dstAccessMask       = VK_ACCESS_TRANSFER_READ_BIT;
+    toSrc.oldLayout           = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    toSrc.newLayout           = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+    toSrc.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    toSrc.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    toSrc.image               = postProcess_.viewportColorImage();
+    toSrc.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    toSrc.subresourceRange.levelCount = 1;
+    toSrc.subresourceRange.layerCount = 1;
+    vkCmdPipelineBarrier(cb, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+                         VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, nullptr, 0, nullptr,
+                         1, &toSrc);
+
+    VkBufferImageCopy region{};
+    region.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    region.imageSubresource.layerCount = 1;
+    region.imageExtent = {extent.width, extent.height, 1};
+    vkCmdCopyImageToBuffer(cb, toSrc.image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                           captureBuffer_, 1, &region);
+
+    VkImageMemoryBarrier toRead = toSrc;
+    toRead.srcAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+    toRead.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+    toRead.oldLayout     = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+    toRead.newLayout     = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    vkCmdPipelineBarrier(cb, VK_PIPELINE_STAGE_TRANSFER_BIT,
+                         VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0, 0, nullptr, 0, nullptr,
+                         1, &toRead);
+
+    VkBufferMemoryBarrier toHost{};
+    toHost.sType               = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER;
+    toHost.srcAccessMask       = VK_ACCESS_TRANSFER_WRITE_BIT;
+    toHost.dstAccessMask       = VK_ACCESS_HOST_READ_BIT;
+    toHost.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    toHost.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    toHost.buffer              = captureBuffer_;
+    toHost.size                = VK_WHOLE_SIZE;
+    vkCmdPipelineBarrier(cb, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_HOST_BIT,
+                         0, 0, nullptr, 1, &toHost, 0, nullptr);
+    return true;
+}
+
+void VulkanRenderer::deliverCapture() {
+    FrameCaptureFn fn = std::move(pendingCapture_);
+    pendingCapture_ = nullptr;
+
+    vmaInvalidateAllocation(context_.allocator(), captureAlloc_, 0, VK_WHOLE_SIZE);
+    void* mapped = nullptr;
+    if (vmaMapMemory(context_.allocator(), captureAlloc_, &mapped) != VK_SUCCESS) {
+        Log::error("VulkanRenderer: capture buffer map failed");
+        return;
+    }
+
+    const VkFormat format = swapchain_.colorFormat();
+    const bool bgra = format == VK_FORMAT_B8G8R8A8_SRGB || format == VK_FORMAT_B8G8R8A8_UNORM;
+    auto* pixels = static_cast<std::uint8_t*>(mapped);
+    for (VkDeviceSize i = 0; i < captureBytes_; i += 4) {
+        if (bgra) std::swap(pixels[i], pixels[i + 2]);
+        pixels[i + 3] = 255;
+    }
+
+    fn(pixels, static_cast<int>(captureExtent_.width),
+       static_cast<int>(captureExtent_.height));
+    vmaUnmapMemory(context_.allocator(), captureAlloc_);
+}
+
+void VulkanRenderer::destroyCaptureBuffer() {
+    if (captureBuffer_) vmaDestroyBuffer(context_.allocator(), captureBuffer_, captureAlloc_);
+    captureBuffer_ = VK_NULL_HANDLE;
+    captureAlloc_  = VK_NULL_HANDLE;
+    captureBytes_  = 0;
 }
 
 void VulkanRenderer::setViewport(int width, int height) {

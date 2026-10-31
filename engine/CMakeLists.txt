@@ -117,6 +117,7 @@ if (IRON_RENDER_BACKEND STREQUAL "vulkan")
       render/backends/vulkan/VkTexture.cpp
       render/backends/vulkan/VkComputePipeline.cpp
       render/backends/vulkan/VkParticleSystem.cpp
+      render/backends/vulkan/VkGpuParticles.cpp
       render/backends/vulkan/VkDebugLines.cpp
       render/backends/vulkan/VkHud.cpp
       render/backends/vulkan/VkShadowMap.cpp
