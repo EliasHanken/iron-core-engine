@@ -14,6 +14,7 @@
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
+#include <filesystem>
 #include <string>
 
 namespace kindle {
@@ -24,13 +25,18 @@ public:
         if (log_) std::fclose(log_);
     }
 
-    // With `playAloud` false nothing is heard, and only the log is written.
-    void init(const std::string& folder, bool playAloud, const std::string& logPath) {
+    // With `playAloud` false nothing is heard, and only the log is written. Each sound
+    // comes from `better` if it's there. That folder holds the licensed set, which
+    // only ships inside a packaged game, so `folder` must always be complete.
+    void init(const std::string& folder, const std::string& better, bool playAloud, const std::string& logPath) {
         if (!logPath.empty()) log_ = std::fopen(logPath.c_str(), "w");
         aloud_ = playAloud && audio_.init();
         if (!aloud_) return;
 
-        const auto load = [&](const std::string& name) { return audio_.loadSound(folder + name + ".wav"); };
+        const auto load = [&](const std::string& name) {
+            const std::string best = better + name + ".wav";
+            return audio_.loadSound(std::filesystem::exists(best) ? best : folder + name + ".wav");
+        };
         ignite_ = load("ignite");
         wake_ = load("wake");
         gate_ = load("gate");
@@ -40,7 +46,16 @@ public:
         creaks_ = {load("creak1"), load("creak2"), load("creak3"), load("chain"), load("bend")};
         whooshes_ = {load("whoosh1"), load("whoosh2"), load("whoosh3"), load("whoosh4")};
 
+        const bool hasUi = std::filesystem::exists(better + "ui-move.wav");
+        uiMove_ = hasUi ? load("ui-move") : creaks_[3];
+        uiConfirm_ = hasUi ? load("ui-confirm") : wake_;
+
         room_.voice = audio_.playLooping(load("room"), Vec3{}, 0.0f);
+        if (std::filesystem::exists(better + "chamber.wav")) {
+            chamber_.voice = audio_.playLooping(load("chamber"), Vec3{}, 0.0f);
+            awake_.voice = audio_.playLooping(load("awake"), Vec3{}, 0.0f);
+            drive_.voice = audio_.playLooping(load("drive"), Vec3{}, 0.0f);
+        }
         roar_.voice = audio_.playLooping(load("roar"), Vec3{}, 0.0f);
         crackle_.voice = audio_.playLooping(load("crackle"), Vec3{}, 0.0f);
         rush_.voice = audio_.playLooping(load("rush"), Vec3{}, 0.0f);
@@ -61,8 +76,8 @@ public:
     // Paused, the world carries on behind a closed door.
     void setPaused(bool paused) { muffled_ = paused; }
 
-    void menuMove() { play(creaks_[3], "chain", 0.14f, 1.7f); }
-    void menuConfirm() { play(wake_, "wake", 0.35f, 1.3f); }
+    void menuMove() { play(uiMove_, "ui-move", 0.3f, 1.0f); }
+    void menuConfirm() { play(uiConfirm_, "ui-confirm", 0.5f, 1.0f); }
 
     void update(float seconds, float dt, Vec3 eye, Vec3 forward, const Room& room, const Swarm& swarm,
                 const Story& story, bool freshWake, float presence) {
@@ -78,9 +93,18 @@ public:
 
         const float open = muffled_ ? 0.1f : 1.0f;
         const float behind = muffled_ ? 0.45f : 1.0f;
-        glide(room_, "room", (0.55f - (blown > 0.0f ? 0.2f : 0.0f)) * behind * (0.6f + 0.4f * ducked), 1.0f, open, dt);
-        glide(roar_, "roar", presence * (0.16f + 0.5f * speed + 0.35f * swarm.flare()) * ducked * behind,
-              0.75f + 0.55f * speed + 0.2f * squeeze, open, dt);
+        // Each space has its own bed. Once the core blows, the machine is running.
+        const float beds = behind * (0.6f + 0.4f * ducked);
+        const float alive = blown > 0.0f ? std::min(blown / 6.0f, 1.0f) : 0.0f;
+        const float inChamber = swarm.position().z < -24.0f ? 1.0f : 0.0f;
+        glide(room_, "room", 0.6f * (1.0f - inChamber) * (1.0f - alive) * beds, 1.0f, open, dt);
+        glide(chamber_, "chamber", 0.7f * inChamber * (1.0f - alive) * beds, 1.0f, open, dt);
+        glide(awake_, "awake", 0.65f * alive * beds, 0.92f + 0.08f * alive, open, dt);
+
+        // Two layers follow the swarm: fire on top, and a low engine that swells with speed.
+        glide(roar_, "roar", presence * (0.2f + 0.45f * speed + 0.35f * swarm.flare()) * ducked * behind,
+              0.85f + 0.4f * speed + 0.15f * squeeze, open, dt);
+        glide(drive_, "drive", presence * (0.12f + 0.55f * speed) * ducked * behind, 0.8f + 0.6f * speed, open, dt);
         glide(crackle_, "crackle", std::max(presence, 0.14f) * (0.3f + 0.4f * speed) * ducked * behind, 1.0f, open, dt);
         glide(rush_, "rush", presence * (squeeze * 0.6f + speed * 0.1f) * ducked * behind, 0.9f + 0.4f * squeeze,
               open, dt);
@@ -89,6 +113,7 @@ public:
             audio_.setListener(eye, forward, {0, 1, 0});
             const Vec3 close = eye + forward;
             audio_.setVoicePosition(roar_.voice, close);
+            audio_.setVoicePosition(drive_.voice, close);
             audio_.setVoicePosition(crackle_.voice, close);
             audio_.setVoicePosition(rush_.voice, close);
             updateAcoustics(swarm.position(), dt);
@@ -110,8 +135,8 @@ public:
         }
         if (blown > 0.0f && !finaleHeard_) {
             finaleHeard_ = true;
-            play(finale_, "finale", 1.0f, 0.85f);
-            play(wake_, "wake", 1.0f, 0.7f);
+            play(finale_, "finale", 1.0f, 1.0f);
+            play(wake_, "wake", 0.8f, 0.8f);
         }
 
         // Skimming past a surface at speed cuts the air.
@@ -249,10 +274,15 @@ private:
     iron::SoundHandle groan_ = iron::kInvalidSound;
     iron::SoundHandle spool_ = iron::kInvalidSound;
     iron::SoundHandle finale_ = iron::kInvalidSound;
+    iron::SoundHandle uiMove_ = iron::kInvalidSound;
+    iron::SoundHandle uiConfirm_ = iron::kInvalidSound;
     std::array<iron::SoundHandle, 5> creaks_{};
     std::array<iron::SoundHandle, 4> whooshes_{};
 
     Bed room_;
+    Bed chamber_;
+    Bed awake_;
+    Bed drive_;
     Bed roar_;
     Bed crackle_;
     Bed rush_;

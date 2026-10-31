@@ -29,7 +29,7 @@ int main() {
     // Starting and stopping every voice at silence must also be safe.
     {
         kindle::Sound sound;
-        sound.init(folder, true, "");
+        sound.init(folder, folder + "no-such-folder/", true, "");
     }
 
     std::puts("test_kindle_audio: all passed");

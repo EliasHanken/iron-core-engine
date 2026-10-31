@@ -1,7 +1,7 @@
 """Gives a Kindle recording its sound. The capture path only records pictures, so a
 scripted run logs what played, and this mixes that log and adds it to the video.
 
-    python mix_audio.py <video.mp4> <assets/audio folder> <output.mp4>
+    python mix_audio.py <video.mp4> <folder of sounds> <output.mp4>
 
 The log is <video.mp4>.sound.csv. Needs ffmpeg and numpy.
 """
@@ -55,6 +55,8 @@ def main():
 
     for name, rows in beds.items():
         rows = np.array(rows)
+        if rows[:, 1].max() <= 0.0 or not os.path.exists(os.path.join(folder, name + ".wav")):
+            continue
         mix_bed(out, sound(name), rows[:, 0], rows[:, 1], rows[:, 2])
     for time, name, gain, pitch in shots:
         x = sound(name)

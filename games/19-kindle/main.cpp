@@ -495,7 +495,7 @@ int main(int argc, char** argv) {
     float lastMenuMouseY = 0.0f;
 
     kindle::Sound sound;
-    sound.init(assets + "audio/", !scripted,
+    sound.init(assets + "audio/", assets + "audio-hq/", !scripted,
                options.recordPath.empty() ? std::string{} : options.recordPath + ".sound.csv");
     Autopilot autopilot;
 
