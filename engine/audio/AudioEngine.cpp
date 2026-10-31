@@ -7,12 +7,15 @@
 
 #include <AL/al.h>
 #include <AL/alc.h>
+#include <AL/efx.h>
 
+#include <algorithm>
 #include <array>
 #include <cstdint>
 #include <filesystem>
 #include <string>
 #include <system_error>
+#include <type_traits>
 #include <unordered_map>
 #include <vector>
 
@@ -56,10 +59,66 @@ struct AudioEngine::Impl {
     std::unordered_map<VoiceId, std::size_t> voiceSlot;
     VoiceId                                  nextVoice = 1;
 
+    // Effects are an extension, so their functions are looked up at runtime.
+    LPALGENEFFECTS                effectsGen = nullptr;
+    LPALDELETEEFFECTS             effectsDelete = nullptr;
+    LPALEFFECTI                   effectI = nullptr;
+    LPALEFFECTF                   effectF = nullptr;
+    LPALGENAUXILIARYEFFECTSLOTS   slotsGen = nullptr;
+    LPALDELETEAUXILIARYEFFECTSLOTS slotsDelete = nullptr;
+    LPALAUXILIARYEFFECTSLOTI      slotI = nullptr;
+    LPALGENFILTERS                filtersGen = nullptr;
+    LPALDELETEFILTERS             filtersDelete = nullptr;
+    LPALFILTERI                   filterI = nullptr;
+    LPALFILTERF                   filterF = nullptr;
+    ALuint                        reverbEffect = 0;
+    ALuint                        reverbSlot = 0;
+    std::array<ALuint, kSourcePoolSize> muffles{};  // One lowpass per source.
+    bool                          effects = false;
+
     bool initialized      = false;
     bool warnedStereo     = false;
     bool warnedExhaustion = false;
 };
+
+namespace {
+
+// Sends every source to one reverb, and gives each a filter of its own.
+template <typename Impl>
+bool initEffects(Impl& impl) {
+    if (!alcIsExtensionPresent(impl.device, ALC_EXT_EFX_NAME)) return false;
+
+    const auto find = [](auto& function, const char* name) {
+        function = reinterpret_cast<std::remove_reference_t<decltype(function)>>(alGetProcAddress(name));
+        return function != nullptr;
+    };
+    if (!find(impl.effectsGen, "alGenEffects") || !find(impl.effectsDelete, "alDeleteEffects") ||
+        !find(impl.effectI, "alEffecti") || !find(impl.effectF, "alEffectf") ||
+        !find(impl.slotsGen, "alGenAuxiliaryEffectSlots") ||
+        !find(impl.slotsDelete, "alDeleteAuxiliaryEffectSlots") ||
+        !find(impl.slotI, "alAuxiliaryEffectSloti") || !find(impl.filtersGen, "alGenFilters") ||
+        !find(impl.filtersDelete, "alDeleteFilters") || !find(impl.filterI, "alFilteri") ||
+        !find(impl.filterF, "alFilterf")) {
+        return false;
+    }
+
+    alGetError();
+    impl.effectsGen(1, &impl.reverbEffect);
+    impl.effectI(impl.reverbEffect, AL_EFFECT_TYPE, AL_EFFECT_REVERB);
+    impl.slotsGen(1, &impl.reverbSlot);
+    impl.slotI(impl.reverbSlot, AL_EFFECTSLOT_EFFECT, static_cast<ALint>(impl.reverbEffect));
+
+    impl.filtersGen(static_cast<ALsizei>(impl.muffles.size()), impl.muffles.data());
+    for (std::size_t i = 0; i < impl.sources.size(); ++i) {
+        impl.filterI(impl.muffles[i], AL_FILTER_TYPE, AL_FILTER_LOWPASS);
+        impl.filterF(impl.muffles[i], AL_LOWPASS_GAIN, 1.0f);
+        impl.filterF(impl.muffles[i], AL_LOWPASS_GAINHF, 1.0f);
+        alSource3i(impl.sources[i], AL_AUXILIARY_SEND_FILTER, static_cast<ALint>(impl.reverbSlot), 0, AL_FILTER_NULL);
+    }
+    return alGetError() == AL_NO_ERROR;
+}
+
+}  // namespace
 
 AudioEngine::AudioEngine() : impl_(std::make_unique<Impl>()) {}
 
@@ -75,7 +134,8 @@ bool AudioEngine::init() {
         Log::warn("AudioEngine: alcOpenDevice failed; audio disabled");
         return false;
     }
-    impl_->context = alcCreateContext(impl_->device, nullptr);
+    const ALCint attributes[] = {ALC_MAX_AUXILIARY_SENDS, 1, 0};
+    impl_->context = alcCreateContext(impl_->device, attributes);
     if (!impl_->context || !alcMakeContextCurrent(impl_->context)) {
         Log::warn("AudioEngine: alcCreateContext / MakeContextCurrent failed");
         if (impl_->context) alcDestroyContext(impl_->context);
@@ -98,6 +158,8 @@ bool AudioEngine::init() {
     }
 
     impl_->initialized = true;
+    impl_->effects = initEffects(*impl_);
+    if (!impl_->effects) Log::warn("AudioEngine: effects unavailable; playing without reverb");
     return true;
 }
 
@@ -107,6 +169,17 @@ void AudioEngine::shutdown() {
     // Stop everything before deletion.
     for (ALuint s : impl_->sources) {
         alSourceStop(s);
+        if (impl_->effects) {
+            alSource3i(s, AL_AUXILIARY_SEND_FILTER, AL_EFFECTSLOT_NULL, 0, AL_FILTER_NULL);
+            alSourcei(s, AL_DIRECT_FILTER, AL_FILTER_NULL);
+        }
+    }
+    if (impl_->effects) {
+        impl_->slotI(impl_->reverbSlot, AL_EFFECTSLOT_EFFECT, AL_EFFECT_NULL);
+        impl_->slotsDelete(1, &impl_->reverbSlot);
+        impl_->effectsDelete(1, &impl_->reverbEffect);
+        impl_->filtersDelete(static_cast<ALsizei>(impl_->muffles.size()), impl_->muffles.data());
+        impl_->effects = false;
     }
     alDeleteSources(static_cast<ALsizei>(impl_->sources.size()),
                     impl_->sources.data());
@@ -172,7 +245,7 @@ SoundHandle AudioEngine::loadSound(const std::string& wavPath) {
     return h;
 }
 
-void AudioEngine::playSoundAt(SoundHandle h, Vec3 worldPos, float gain) {
+void AudioEngine::playSoundAt(SoundHandle h, Vec3 worldPos, float gain, float pitch) {
     if (!impl_->initialized || h == kInvalidSound) return;
     auto it = impl_->buffers.find(h);
     if (it == impl_->buffers.end()) return;
@@ -210,11 +283,12 @@ void AudioEngine::playSoundAt(SoundHandle h, Vec3 worldPos, float gain) {
     alSource3f(chosen, AL_POSITION,         worldPos.x, worldPos.y, worldPos.z);
     alSource3f(chosen, AL_VELOCITY,         0.0f, 0.0f, 0.0f);
     alSourcef (chosen, AL_GAIN,             gain);
+    alSourcef (chosen, AL_PITCH,            pitch);
     alSourcei (chosen, AL_SOURCE_RELATIVE,  AL_FALSE);
     alSourcePlay(chosen);
 }
 
-void AudioEngine::playSoundLocal(SoundHandle h, float gain) {
+void AudioEngine::playSoundLocal(SoundHandle h, float gain, float pitch) {
     if (!impl_->initialized || h == kInvalidSound) return;
     auto it = impl_->buffers.find(h);
     if (it == impl_->buffers.end()) return;
@@ -253,6 +327,7 @@ void AudioEngine::playSoundLocal(SoundHandle h, float gain) {
     alSource3f(chosen, AL_POSITION,         0.0f, 0.0f, 0.0f);
     alSource3f(chosen, AL_VELOCITY,         0.0f, 0.0f, 0.0f);
     alSourcef (chosen, AL_GAIN,             gain);
+    alSourcef (chosen, AL_PITCH,            pitch);
     // AL_SOURCE_RELATIVE=TRUE means the source position is interpreted in
     // listener-local space; position (0,0,0) = "right at the listener", so
     // OpenAL skips spatialization and plays the sound centered.
@@ -326,6 +401,36 @@ void AudioEngine::setVoicePitch(VoiceId v, float pitch) {
     auto it = impl_->voiceSlot.find(v);
     if (it == impl_->voiceSlot.end()) return;
     alSourcef(impl_->sources[it->second], AL_PITCH, pitch);
+}
+
+void AudioEngine::setVoiceMuffle(VoiceId v, float highs) {
+    if (!impl_->initialized || !impl_->effects || v == kInvalidVoice) return;
+    auto it = impl_->voiceSlot.find(v);
+    if (it == impl_->voiceSlot.end()) return;
+    const std::size_t slot = it->second;
+    impl_->filterF(impl_->muffles[slot], AL_LOWPASS_GAINHF, std::clamp(highs, 0.0f, 1.0f));
+    alSourcei(impl_->sources[slot], AL_DIRECT_FILTER, static_cast<ALint>(impl_->muffles[slot]));
+}
+
+void AudioEngine::setReverb(const ReverbSettings& s) {
+    if (!impl_->initialized || !impl_->effects) return;
+    const ALuint e = impl_->reverbEffect;
+    impl_->effectF(e, AL_REVERB_DENSITY, std::clamp(s.density, 0.0f, 1.0f));
+    impl_->effectF(e, AL_REVERB_DIFFUSION, std::clamp(s.diffusion, 0.0f, 1.0f));
+    impl_->effectF(e, AL_REVERB_GAIN, std::clamp(s.gain, 0.0f, 1.0f));
+    impl_->effectF(e, AL_REVERB_GAINHF, std::clamp(s.gainHF, 0.0f, 1.0f));
+    impl_->effectF(e, AL_REVERB_DECAY_TIME, std::clamp(s.decaySeconds, 0.1f, 20.0f));
+    impl_->effectF(e, AL_REVERB_REFLECTIONS_GAIN, std::clamp(s.reflectionsGain, 0.0f, 3.16f));
+    impl_->effectF(e, AL_REVERB_REFLECTIONS_DELAY, std::clamp(s.reflectionsDelay, 0.0f, 0.3f));
+    impl_->effectF(e, AL_REVERB_LATE_REVERB_GAIN, std::clamp(s.lateGain, 0.0f, 10.0f));
+    impl_->effectF(e, AL_REVERB_LATE_REVERB_DELAY, std::clamp(s.lateDelay, 0.0f, 0.1f));
+    // A slot keeps its own copy of an effect, so a change only lands on re-attaching.
+    impl_->slotI(impl_->reverbSlot, AL_EFFECTSLOT_EFFECT, static_cast<ALint>(e));
+}
+
+void AudioEngine::setMasterGain(float gain) {
+    if (!impl_->initialized) return;
+    alListenerf(AL_GAIN, std::clamp(gain, 0.0f, 1.0f));
 }
 
 void AudioEngine::setListener(Vec3 cameraPos, Vec3 forward, Vec3 up) {

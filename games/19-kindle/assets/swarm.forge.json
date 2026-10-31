@@ -48,7 +48,7 @@
     },
     "spread": {
       "type": "Input",
-      "value": 1.5
+      "value": 0.7
     },
     "blast": {
       "type": "Input"
@@ -67,11 +67,11 @@
     },
     "sparkGlow": {
       "type": "Multiply",
-      "a": 0.035
+      "a": 0.012
     },
     "wispGlow": {
       "type": "Multiply",
-      "a": 0.5
+      "a": 0.28
     }
   },
   "wires": [
@@ -171,20 +171,20 @@
       "move": [
         {
           "block": "Follow",
-          "fast": 6,
-          "slow": 0.8,
-          "grip": 8
+          "fast": 9,
+          "slow": 2.2,
+          "grip": 10
         },
         {
           "block": "CurlFlow",
-          "strength": 3,
+          "strength": 1.4,
           "scale": 0.4,
           "speed": 0.3
         },
         {
           "block": "Blast",
-          "strength": 400,
-          "radius": 14
+          "strength": 180,
+          "radius": 9
         },
         {
           "block": "Bounce",
@@ -219,7 +219,7 @@
         },
         {
           "block": "Size",
-          "size": 0.012
+          "size": 0.008
         },
         {
           "block": "Fade",
@@ -228,8 +228,8 @@
         },
         {
           "block": "StretchWithSpeed",
-          "amount": 0.02,
-          "max": 0.28
+          "amount": 0.016,
+          "max": 0.2
         },
         {
           "block": "Glow",
@@ -237,8 +237,8 @@
         },
         {
           "block": "FadeNearCamera",
-          "start": 5,
-          "end": 1.5
+          "start": 6,
+          "end": 2.5
         },
         {
           "block": "LightTheScene",
@@ -269,20 +269,20 @@
       "move": [
         {
           "block": "Follow",
-          "fast": 4,
-          "slow": 1.5,
+          "fast": 6,
+          "slow": 2.5,
           "grip": 5
         },
         {
           "block": "CurlFlow",
-          "strength": 6,
+          "strength": 2.5,
           "scale": 0.3,
           "speed": 0.3
         },
         {
           "block": "Blast",
-          "strength": 300,
-          "radius": 14
+          "strength": 140,
+          "radius": 9
         },
         {
           "block": "Bounce",
@@ -313,7 +313,7 @@
         },
         {
           "block": "Size",
-          "size": 0.012
+          "size": 0.007
         },
         {
           "block": "Fade",
@@ -326,8 +326,8 @@
         },
         {
           "block": "FadeNearCamera",
-          "start": 5,
-          "end": 1.5
+          "start": 6,
+          "end": 2.5
         }
       ]
     },
@@ -434,7 +434,7 @@
           "fast": 16,
           "slow": 12,
           "grip": 20,
-          "spread": 0.22
+          "spread": 0.1
         }
       ],
       "look": [
@@ -442,13 +442,13 @@
           "block": "Color",
           "color": [
             1,
-            0.72,
-            0.38
+            0.62,
+            0.26
           ]
         },
         {
           "block": "Size",
-          "size": 0.24,
+          "size": 0.13,
           "vary": 0.7
         },
         {
