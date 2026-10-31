@@ -24,7 +24,8 @@ struct VolumeRenderSettings {
     Vec3  heatColor{1.0f, 0.35f, 0.08f};
     float heatIntensity = 1.0f;
     float shadowDensity = 1.5f;    // How strongly smoke shades itself.
-    Vec3  shadowLight{0.0f, 0.0f, 0.0f};   // Where self-shadow rays point.
+    Vec3  lightPosition{0.0f, 0.0f, 0.0f}; // The light smoke shades itself against.
+    Vec3  lightColor{0.0f, 0.0f, 0.0f};    // Its colour and intensity, for direct light.
     float detail = 0.5f;           // Noise erosion at smoke edges, 0 for none.
     float detailScale = 3.0f;      // Noise frequency, per metre.
 };

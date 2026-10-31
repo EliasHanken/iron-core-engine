@@ -1,6 +1,6 @@
 #pragma once
 
-#include "ParticleLib.h"
+#include "common/ParticleLib.h"
 
 #include "render/GpuParticles.h"
 
@@ -8,6 +8,9 @@
 #include <string>
 
 namespace genie {
+
+using vfx::kParticleLib;
+using vfx::kSoftDotFragment;
 
 // A sphere of light combed by a flow field. Most particles stay on the surface
 // and trace the field as hatched strokes; a few break free and stream away

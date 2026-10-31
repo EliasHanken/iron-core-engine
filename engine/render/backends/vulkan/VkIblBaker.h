@@ -46,6 +46,11 @@ public:
     CubemapHandle equirectFileToCubemap(VkContext& ctx, VkCubemapStore& store,
                                         const std::string& hdrPath, int faceSize);
 
+    // Bakes `skyGlsl`, which defines `vec3 skyColor(vec3 dir);`, into an RGBA16F
+    // cube. Blocks until the GPU finishes. Returns kInvalidHandle on failure.
+    CubemapHandle bakeSky(VkContext& ctx, VkCubemapStore& store,
+                          const std::string& skyGlsl, int faceSize);
+
     // Convolves a cosine-weighted irradiance cubemap from an environment cube
     // already in `store` (e.g. the skybox). Output is an RGBA16F cube
     // (faceSize x faceSize, 1 mip). Returns kInvalidHandle on failure.

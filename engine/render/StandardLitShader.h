@@ -1,5 +1,7 @@
 #pragma once
 
+#include <string>
+
 namespace iron {
 
 // Canonical Vulkan (GLSL 450) "standard lit" shader — shadow PCF + normal map +
@@ -494,6 +496,21 @@ void main() {
     gl_Position = u.mvp * vec4(localPos, 1.0);
 }
 )GLSL";
+}
+
+// The lit fragment shader with its emissive term replaced by `hookGlsl`, which
+// defines `vec3 surfaceEmission(vec3 worldPos, vec3 params);`. `params` is
+// Material::emissive, so a surface can animate from the CPU: molten veins, lava,
+// anything that glows in a pattern rather than a flat colour.
+inline std::string standardLitFragSourceWithEmission(const std::string& hookGlsl) {
+    const std::string term = "vec3 emissive = u.emissive.xyz * texture(uEmissiveMap, uv).rgb;";
+    const std::string entry = "void main() {";
+
+    std::string source = standardLitFragSource();
+    source.replace(source.find(term), term.size(),
+                   "vec3 emissive = surfaceEmission(vWorldPos, u.emissive.xyz);");
+    source.insert(source.find(entry), hookGlsl + "\n");
+    return source;
 }
 
 }  // namespace iron

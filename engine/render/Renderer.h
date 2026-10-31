@@ -132,6 +132,11 @@ public:
     ShaderHandle createStandardSkinnedLitShader() {
         return createSkinnedShader(standardSkinnedLitVertSource(), standardLitFragSource());
     }
+    // The standard lit shader with a custom emission pattern. See
+    // standardLitFragSourceWithEmission.
+    ShaderHandle createLitShaderWithEmission(const std::string& hookGlsl) {
+        return createShader(standardLitVertSource(), standardLitFragSourceWithEmission(hookGlsl));
+    }
     // M50b — convenience: engine-owned tessellated lit shader.
     ShaderHandle createStandardTessellatedLitShader() {
         return createTessellatedShader(standardLitTessVertSource(), standardLitTescSource(),

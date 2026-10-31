@@ -1,6 +1,6 @@
 #pragma once
 
-namespace genie {
+namespace vfx {
 
 // GLSL shared by the demo's effects. Goes in GpuParticlesDesc::commonGlsl.
 inline constexpr const char* kParticleLib = R"GLSL(
@@ -68,4 +68,4 @@ vec4 particleFragment(vec2 corner, vec4 color, vec4 data) {
 }
 )GLSL";
 
-}  // namespace genie
+}  // namespace vfx

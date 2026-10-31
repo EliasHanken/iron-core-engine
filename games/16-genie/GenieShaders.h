@@ -1,6 +1,6 @@
 #pragma once
 
-#include "ParticleLib.h"
+#include "common/ParticleLib.h"
 
 #include "render/GpuParticles.h"
 
@@ -8,6 +8,9 @@
 #include <string>
 
 namespace genie {
+
+using vfx::kParticleLib;
+using vfx::kSoftDotFragment;
 
 // Mirrors the GLSL Params block in kCommon (std140: vec4s only).
 struct GenieParams {

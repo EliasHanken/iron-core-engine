@@ -5,7 +5,10 @@
 #include "render/backends/vulkan/VkContext.h"
 #include "render/backends/vulkan/VkUtils.h"
 
+#include "core/Log.h"
+
 #include <cassert>
+#include <cstdlib>
 #include <cstring>
 
 namespace iron {
@@ -126,6 +129,11 @@ VkDeviceSize VkFrameRing::allocateUbo(const void* data, VkDeviceSize size) {
     constexpr VkDeviceSize kAlign = 256;
     Frame& f = current();
     const VkDeviceSize aligned = (f.uboCursor + kAlign - 1) & ~(kAlign - 1);
+    // Running past the end would silently overwrite whatever VMA placed next.
+    if (aligned + size > kUboBytesPerFrame) {
+        Log::error("VkFrameRing: per-frame UBO budget exhausted");
+        std::abort();
+    }
     f.uboCursor = aligned + size;
     std::memcpy(static_cast<char*>(f.uboMapped) + aligned, data, size);
     return aligned;

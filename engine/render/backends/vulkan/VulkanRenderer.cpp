@@ -1575,6 +1575,10 @@ void VulkanRenderer::destroyCaptureBuffer() {
     captureBytes_  = 0;
 }
 
+CubemapHandle VulkanRenderer::bakeSky(const std::string& skyGlsl, int faceSize) {
+    return iblBaker_.bakeSky(context_, cubemaps_, skyGlsl, faceSize);
+}
+
 void VulkanRenderer::setLightVolume(const LightVolume* volume, float intensity) {
     lightVolume_ = volume;
     lightVolumeIntensity_ = volume ? intensity : 0.0f;

@@ -34,6 +34,7 @@ layout(set = 0, binding = 5) uniform Ubo {
     vec4 smokeAlbedo;   // w = smoke density
     vec4 heatColor;     // w = heat intensity
     vec4 shadowLight;   // w = shadow density
+    vec4 pointLight;    // rgb = direct light on smoke
     vec4 params;        // x = air density, y = light intensity, z = detail, w = detail scale
     ivec4 counts;       // x = steps, y = frame index
 } u;
@@ -131,8 +132,11 @@ void main() {
             vec3 uvw = (p - u.fluidMin.xyz) * u.fluidInvSize.xyz;
             if (all(greaterThanEqual(uvw, vec3(0.0))) && all(lessThanEqual(uvw, vec3(1.0)))) {
                 if (texture(solidVolume, uvw).r > 0.5) break;
-                smoke = smokeAt(p, uvw);
-                heat = texture(scalarsVolume, uvw).g;
+                // Fading out near the walls means the box itself can never show.
+                vec3 toWall = min(uvw, 1.0 - uvw);
+                float edge = smoothstep(0.0, 0.08, min(toWall.x, min(toWall.y, toWall.z)));
+                smoke = smokeAt(p, uvw) * edge;
+                heat = texture(scalarsVolume, uvw).g * edge;
             }
         }
 
@@ -154,7 +158,8 @@ void main() {
                 occlusion += texture(scalarsVolume, (q - u.fluidMin.xyz) * u.fluidInvSize.xyz).r;
             }
             float shadow = exp(-occlusion * shadowStep * u.shadowLight.w);
-            scattered += radiance * smoke * u.smokeAlbedo.w * u.smokeAlbedo.rgb * shadow;
+            vec3 direct = u.pointLight.rgb / (1.0 + toLightLength * toLightLength * 0.1);
+            scattered += (radiance + direct) * smoke * u.smokeAlbedo.w * u.smokeAlbedo.rgb * shadow;
         }
 
         // Gas hot enough to glow by itself. It whitens as it heats.
@@ -225,6 +230,7 @@ struct RaymarchUbo {
     float smokeAlbedo[4];
     float heatColor[4];
     float shadowLight[4];
+    float pointLight[4];
     float params[4];
     std::int32_t counts[4];
 };
@@ -433,7 +439,8 @@ void VkVolumeRenderer::render(const Mat4& view, const Mat4& projection, const Li
     }
     setVec4(ubo.smokeAlbedo, settings.smokeAlbedo, settings.smokeDensity);
     setVec4(ubo.heatColor, settings.heatColor, settings.heatIntensity);
-    setVec4(ubo.shadowLight, settings.shadowLight, settings.shadowDensity);
+    setVec4(ubo.shadowLight, settings.lightPosition, settings.shadowDensity);
+    setVec4(ubo.pointLight, settings.lightColor, 0.0f);
     ubo.params[0] = settings.airDensity;
     ubo.params[1] = settings.lightIntensity;
     ubo.params[2] = settings.detail;
@@ -475,9 +482,8 @@ void VkVolumeRenderer::render(const Mat4& view, const Mat4& projection, const Li
                            VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, VK_ACCESS_SHADER_READ_BIT);
     });
 
-    const float linearize[2] = {projection.at(2, 2), projection.at(2, 3)};
-    const float a = linearize[0];
-    const float b = linearize[1];
+    const float a = projection.at(2, 2);
+    const float b = projection.at(2, 3);
 
     renderer_->enqueueDeferredScenePass([this, depthView, depthSampler, a, b](VkCommandBuffer cb) {
         VkContext& ctx = renderer_->context();

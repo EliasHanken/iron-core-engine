@@ -193,6 +193,10 @@ public:
     void setSsaoPower(float v)    { pendingSsaoPower_ = v; }
     void setSsaoStrength(float v) { pendingSsaoStrength_ = v; }
 
+    // Bakes `skyGlsl`, which defines `vec3 skyColor(vec3 dir);`, into an HDR
+    // cubemap usable with setSkybox. Blocks until the GPU finishes.
+    CubemapHandle bakeSky(const std::string& skyGlsl, int faceSize);
+
     // Lights lit surfaces from `volume`, or clears it with nullptr. The volume
     // must outlive its use, and must be resolved before endFrame.
     void setLightVolume(const LightVolume* volume, float intensity);
