@@ -113,6 +113,27 @@ void testIgniteBurstsThenRests() {
     assert(peak > 0.8f);
 }
 
+void testIgniteSpendsHeat() {
+    const Room room;
+    Swarm swarm({0, 0, 0});
+    Controls controls;
+    controls.ignite = true;
+    int bursts = 0;
+    float last = 0.0f;
+    for (int i = 0; i < 150; ++i) {  // 2.5 seconds, enough rest for five bursts.
+        swarm.update(room, controls, kStep);
+        if (swarm.blast() > last + 0.3f) ++bursts;
+        last = swarm.blast();
+    }
+    assert(bursts < 5);
+    assert(swarm.heat() < Swarm::kIgniteCost);
+
+    // Heat comes back with time.
+    controls.ignite = false;
+    for (int i = 0; i < 360; ++i) swarm.update(room, controls, kStep);
+    assert(swarm.heat() > Swarm::kIgniteCost);
+}
+
 }  // namespace
 
 int main() {
@@ -123,6 +144,7 @@ int main() {
     testBreathesOnlyWhenCalm();
     testCoastsToAStop();
     testIgniteBurstsThenRests();
+    testIgniteSpendsHeat();
     std::puts("test_kindle_swarm: all passed");
     return 0;
 }

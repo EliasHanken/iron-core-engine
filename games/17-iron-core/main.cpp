@@ -12,6 +12,7 @@
 #include "IronTimeline.h"
 
 #include "common/CaptureLoop.h"
+#include "common/TrackedText.h"
 
 #include "core/Application.h"
 #include "core/Log.h"
@@ -94,54 +95,6 @@ struct World {
     float fluidAccumulator = 0.0f;
 };
 
-bool loadFont(iron::Renderer& renderer, iron::FontAtlas& atlas) {
-    const std::string path = iron::executableDir() + "/assets/fonts/Michroma-Regular.ttf";
-    std::FILE* file = std::fopen(path.c_str(), "rb");
-    if (!file) return false;
-
-    std::fseek(file, 0, SEEK_END);
-    const long size = std::ftell(file);
-    std::fseek(file, 0, SEEK_SET);
-    std::vector<unsigned char> bytes(static_cast<std::size_t>(size));
-    const std::size_t read = std::fread(bytes.data(), 1, bytes.size(), file);
-    std::fclose(file);
-
-    if (read != bytes.size() ||
-        !atlas.bake(bytes.data(), static_cast<int>(bytes.size()), kTitleFontPixels)) {
-        return false;
-    }
-    atlas.texture = renderer.createTexture(atlas.width(), atlas.height(), atlas.pixels().data(),
-                                           /*srgb=*/false);
-    return true;
-}
-
-// Centred text with extra letter spacing, `tracking` in em.
-void appendCenteredText(iron::HudDrawGroup& group, const iron::FontAtlas& atlas,
-                        const std::string& text, float centerX, float baseline, float scale,
-                        float tracking, iron::Vec4 color) {
-    const float gap = atlas.pixelHeight() * tracking;
-    const float width = atlas.textWidth(text) + gap * static_cast<float>(text.size() - 1);
-
-    float penX = 0.0f;
-    float penY = 0.0f;
-    const float left = centerX - width * scale * 0.5f;
-    for (char c : text) {
-        const iron::GlyphQuad q = atlas.quadFor(c, penX, penY);
-        penX += gap;
-        if (q.min.x == q.max.x) continue;
-
-        const iron::Vec2 a{left + q.min.x * scale, baseline + q.min.y * scale};
-        const iron::Vec2 b{left + q.max.x * scale, baseline + q.max.y * scale};
-        const iron::HudVertex corners[4] = {
-            {{a.x, a.y}, {q.uvMin.x, q.uvMin.y}, color},
-            {{b.x, a.y}, {q.uvMax.x, q.uvMin.y}, color},
-            {{b.x, b.y}, {q.uvMax.x, q.uvMax.y}, color},
-            {{a.x, b.y}, {q.uvMin.x, q.uvMax.y}, color},
-        };
-        for (int i : {0, 1, 2, 0, 2, 3}) group.vertices.push_back(corners[i]);
-    }
-}
-
 void submitRock(iron::Renderer& renderer, const World& world, const RockInstance& rock,
                 iron::MeshHandle mesh, float t, iron::ShaderHandle shader, Vec3 emission) {
     iron::DrawCall draw;
@@ -210,7 +163,7 @@ int main(int argc, char** argv) {
                                                /*srgb=*/false);
 
     iron::FontAtlas font;
-    if (!loadFont(renderer, font)) {
+    if (!text::loadFont(renderer, font, "assets/fonts/Michroma-Regular.ttf", kTitleFontPixels)) {
         iron::Log::error("iron-core: title font failed to load");
         return 1;
     }
@@ -426,7 +379,7 @@ int main(int argc, char** argv) {
             iron::HudDrawGroup group;
             group.texture = font.texture;
             const float subtitle = smoothRamp(27.8f, 29.0f, t);
-            appendCenteredText(group, font, "RENDERED IN REAL TIME  /  CUSTOM VULKAN ENGINE", center,
+            text::appendCentered(group, font, "RENDERED IN REAL TIME  /  CUSTOM VULKAN ENGINE", center,
                                baseline, scale * kSubtitleScale, 0.42f,
                                {1.0f, 0.88f, 0.76f, subtitle * 0.72f});
             renderer.drawHud(iron::HudBatch{std::move(group)}, width, height);

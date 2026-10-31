@@ -13,6 +13,7 @@
 // next to the exe updates the running game.
 
 #include "common/CaptureLoop.h"
+#include "common/TrackedText.h"
 #include "HallGlsl.h"
 #include "HallMesh.h"
 #include "Swarm.h"
@@ -29,6 +30,7 @@
 #include "render/RendererFactory.h"
 #include "render/VolumeRenderer.h"
 #include "scene/Mesh.h"
+#include "ui/FontAtlas.h"
 #include "util/FileWatcher.h"
 
 #include <algorithm>
@@ -48,6 +50,13 @@ constexpr float kMouseTurn = 0.0022f;
 constexpr float kBaseFov = 62.0f;
 constexpr float kFovAtSpeed = 18.0f;  // Widens at top speed, for a sense of rush.
 constexpr float kFogDensity = 0.7f;   // Smoke extinction, per metre.
+constexpr float kFontPixels = 96.0f;
+constexpr float kIntroIgnite = 4.8f;  // Seconds of darkness before the swarm lights.
+
+float ramp(float from, float to, float t) {
+    const float k = std::clamp((t - from) / (to - from), 0.0f, 1.0f);
+    return k * k * (3.0f - 2.0f * k);
+}
 
 // Must match FogParams in HallGlsl.h.
 struct FogParams {
@@ -98,6 +107,85 @@ private:
     std::size_t next_ = 0;
 };
 
+// A title that comes and goes, one hint, and a thin line of heat that only shows
+// when it matters. Anything more would talk over the room.
+class Interface {
+public:
+    bool load(iron::Renderer& renderer) {
+        if (!text::loadFont(renderer, font_, "assets/fonts/Michroma-Regular.ttf", kFontPixels)) {
+            return false;
+        }
+        const std::uint8_t white[4] = {255, 255, 255, 255};
+        solid_ = renderer.createTexture(1, 1, white, /*srgb=*/false);
+        return true;
+    }
+
+    void draw(iron::Renderer& renderer, float seconds, float dt, const kindle::Swarm& swarm,
+              int width, int height) {
+        const float w = static_cast<float>(width);
+        const float h = static_cast<float>(height);
+        const float unit = h / 1080.0f;
+        const float center = w * 0.5f;
+
+        iron::HudDrawGroup words;
+        words.texture = font_.texture;
+
+        const float title = ramp(0.6f, 2.2f, seconds) * (1.0f - ramp(3.9f, 5.0f, seconds));
+        const float line = ramp(1.8f, 3.0f, seconds) * (1.0f - ramp(3.9f, 4.9f, seconds));
+        if (title > 0.0f) {
+            text::appendCentered(words, font_, "KINDLE", center, h * 0.36f, unit * 0.9f, 0.62f,
+                                 {1.0f, 0.86f, 0.70f, title});
+            text::appendCentered(words, font_, "THE MACHINE IS COLD", center, h * 0.36f + 62.0f * unit,
+                                 unit * 0.19f, 0.5f, {0.72f, 0.80f, 0.92f, line * 0.8f});
+        }
+
+        const float hint = ramp(6.4f, 7.6f, seconds) * (1.0f - ramp(13.0f, 15.0f, seconds));
+
+        // The heat line stays while it refills, then lingers a moment.
+        const float heat = swarm.heat();
+        heatShown_ = heat < 0.995f ? 1.0f : std::max(heatShown_ - dt * 0.6f, 0.0f);
+        iron::HudDrawGroup bars;
+        bars.texture = solid_;
+        if (hint > 0.0f) {
+            // A soft dark band, so that the words hold up against the sparks.
+            const float y = h - 112.0f * unit;
+            appendBar(bars, 0.0f, w, y, 46.0f * unit, {0.0f, 0.0f, 0.0f, hint * 0.45f});
+            text::appendCentered(words, font_, "WASD  FLY      SHIFT  SQUEEZE      CLICK  IGNITE", center,
+                                 y + 30.0f * unit, unit * 0.2f, 0.4f, {1.0f, 0.92f, 0.82f, hint * 0.95f});
+        }
+        if (heatShown_ > 0.0f) {
+            const float half = 150.0f * unit;
+            const float y = h - 56.0f * unit;
+            const float thick = 2.0f * unit;
+            const float ready = heat >= kindle::Swarm::kIgniteCost ? 1.0f : 0.45f;
+            appendBar(bars, center - half, center + half, y, thick, {1.0f, 1.0f, 1.0f, 0.12f * heatShown_});
+            appendBar(bars, center - half * heat, center + half * heat, y, thick,
+                      {1.0f, 0.55f, 0.2f, ready * heatShown_});
+        }
+
+        iron::HudBatch batch;
+        if (!bars.vertices.empty()) batch.push_back(std::move(bars));
+        if (!words.vertices.empty()) batch.push_back(std::move(words));
+        if (!batch.empty()) renderer.drawHud(batch, width, height);
+    }
+
+private:
+    static void appendBar(iron::HudDrawGroup& group, float left, float right, float y, float thick,
+                          iron::Vec4 color) {
+        const iron::HudVertex corners[4] = {
+            {{left, y}, {0, 0}, color},
+            {{right, y}, {1, 0}, color},
+            {{right, y + thick}, {1, 1}, color},
+            {{left, y + thick}, {0, 1}, color},
+        };
+        for (int i : {0, 1, 2, 0, 2, 3}) group.vertices.push_back(corners[i]);
+    }
+
+    iron::FontAtlas font_;
+    iron::TextureHandle solid_ = iron::kInvalidHandle;
+    float heatShown_ = 0.0f;
+};
+
 // Pulls the camera towards the swarm until nothing is in the way.
 Vec3 clearEye(const kindle::Room& room, Vec3 from, Vec3 to) {
     const Vec3 delta = to - from;
@@ -119,6 +207,7 @@ int main(int argc, char** argv) {
     capture::Options options;
     if (!capture::parseOptions(argc, argv, options)) return 1;
     const bool scripted = options.offline();
+    options.captureUi = true;
 
     iron::Application::Config cfg;
     cfg.title  = "Kindle";
@@ -220,6 +309,12 @@ int main(int argc, char** argv) {
         }
     });
 
+    Interface screen;
+    if (!screen.load(renderer)) {
+        iron::Log::error("kindle: the title font failed to load");
+        return 1;
+    }
+
     kindle::Swarm swarm({0.0f, 0.0f, -10.0f});
     Autopilot autopilot;
 
@@ -284,7 +379,10 @@ int main(int argc, char** argv) {
         player.setInput("leader", swarm.position());
         player.setInput("spread", {swarm.spread(), 0, 0});
         player.setInput("blast", {swarm.blast(), 0, 0});
-        player.setInput("light", {0.00012f + swarm.flare() * 0.0012f, 0, 0});
+        // It opens as one ember in a cold hall, and the swarm ignites as the title goes.
+        const float presence = std::max(ramp(kIntroIgnite, kIntroIgnite + 1.6f, seconds), swarm.flare());
+        player.setInput("presence", {presence, 0, 0});
+        player.setInput("light", {(0.00012f + swarm.flare() * 0.0012f) * presence, 0, 0});
         player.setInput("pulse", {0.02f + swarm.pulse() * 0.02f + swarm.flare() * 0.06f, 0, 0});
 
         // The camera hangs back further the faster you go.
@@ -307,10 +405,11 @@ int main(int argc, char** argv) {
         tailB = tailB + (tailA - tailB) * (1.0f - std::exp(-dt * 3.0f));
         constexpr Vec3 kEmber{1.0f, 0.52f, 0.2f};
         const float flare = swarm.flare();
+        const float glow = 0.12f + 0.88f * std::max(ramp(kIntroIgnite, kIntroIgnite + 1.6f, seconds), flare);
         const std::array<iron::PointLight, 3> lights{{
-            {swarm.position(), kEmber, 1.1f + flare * 7.0f, 20.0f + flare * 18.0f},
-            {tailA, kEmber, 0.35f, 18.0f},
-            {tailB, kEmber, 0.2f, 16.0f},
+            {swarm.position(), kEmber, (1.1f + flare * 7.0f) * glow, 20.0f + flare * 18.0f},
+            {tailA, kEmber, 0.35f * glow, 18.0f},
+            {tailB, kEmber, 0.2f * glow, 16.0f},
         }};
 
         iron::DirectionalLight dark;
@@ -359,13 +458,14 @@ int main(int argc, char** argv) {
         air.heatIntensity = 0.0f;
         air.shadowDensity = 1.0f;
         air.lightPosition = pos;
-        air.lightColor = kEmber * (2.4f + flare * 12.0f);
+        air.lightColor = kEmber * ((2.4f + flare * 12.0f) * glow);
         air.detail = 0.3f;
         air.detailScale = 0.8f;
         air.time = seconds;
         if (player.light()) volumes->render(view, projection, *player.light(), fog.get(), air);
 
         player.render(view, projection);
+        screen.draw(renderer, seconds, dt, swarm, width, height);
     };
 
     capture::runLoop(app, renderer, *vulkan, options, frame, kRecordSeconds);

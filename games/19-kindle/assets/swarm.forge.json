@@ -34,6 +34,18 @@
     "pulse": {
       "type": "Input",
       "value": 0.03
+    },
+    "presence": {
+      "type": "Input",
+      "value": 1
+    },
+    "sparkGlow": {
+      "type": "Multiply",
+      "a": 0.035
+    },
+    "wispGlow": {
+      "type": "Multiply",
+      "a": 0.5
     }
   },
   "wires": [
@@ -96,6 +108,22 @@
     {
       "from": "pulse",
       "to": "layers.3.look.3.intensity"
+    },
+    {
+      "from": "presence",
+      "to": "sparkGlow.b"
+    },
+    {
+      "from": "presence",
+      "to": "wispGlow.b"
+    },
+    {
+      "from": "sparkGlow",
+      "to": "layers.0.look.4.intensity"
+    },
+    {
+      "from": "wispGlow",
+      "to": "layers.1.look.3.intensity"
     }
   ],
   "layers": [

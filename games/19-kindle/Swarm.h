@@ -57,6 +57,8 @@ public:
     static constexpr float kSqueezeSpread = 0.2f;
     static constexpr float kIgniteRest = 0.45f;  // Seconds between bursts.
     static constexpr float kMargin = 0.7f;       // Keeps the cloud off the walls.
+    static constexpr float kIgniteCost = 0.34f;  // Two bursts and a bit from full heat.
+    static constexpr float kHeatPerSecond = 0.16f;
 
     explicit Swarm(Vec3 start) : position_(start) {}
 
@@ -87,8 +89,10 @@ public:
         }
 
         rest_ = std::max(rest_ - dt, 0.0f);
-        if (controls.ignite && rest_ <= 0.0f) {
+        heat_ = std::min(heat_ + kHeatPerSecond * dt, 1.0f);
+        if (controls.ignite && rest_ <= 0.0f && heat_ >= kIgniteCost) {
             rest_ = kIgniteRest;
+            heat_ -= kIgniteCost;
             blast_ = 1.0f;
             flare_ = 1.0f;
         }
@@ -103,6 +107,7 @@ public:
     float blast() const { return blast_; }    // 1 at a burst, gone in a moment.
     float flare() const { return flare_; }    // The same, but lingering, for light.
     float squeeze() const { return squeeze_; }
+    float heat() const { return heat_; }      // What ignite spends, from 0 to 1.
 
     // A slow heartbeat, quicker when moving, with a beat's sharp rise and long fall.
     float pulse() const {
@@ -127,6 +132,7 @@ private:
     float flare_ = 0.0f;
     float rest_ = 0.0f;
     float phase_ = 0.0f;
+    float heat_ = 1.0f;
 };
 
 }  // namespace kindle

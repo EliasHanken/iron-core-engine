@@ -7,5 +7,8 @@ if (IRON_RENDER_BACKEND STREQUAL "vulkan")
       COMMAND ${CMAKE_COMMAND} -E copy_directory
               ${CMAKE_CURRENT_SOURCE_DIR}/assets
               $<TARGET_FILE_DIR:kindle>/assets
+      COMMAND ${CMAKE_COMMAND} -E copy_directory
+              ${CMAKE_SOURCE_DIR}/games/17-iron-core/assets/fonts
+              $<TARGET_FILE_DIR:kindle>/assets/fonts
       COMMENT "Copying kindle assets")
 endif()
