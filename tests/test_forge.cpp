@@ -300,6 +300,22 @@ void testDrivingAValueAndStopping() {
     assert(doc.nodes.empty() && doc.wires.empty());
 }
 
+void testRibbonsCompile() {
+    std::vector<Issue> issues;
+    const Document doc = parse(R"({"count": 100, "trail": 32,
+      "spawn": [{"block": "Sphere"}], "move": [{"block": "CurlFlow"}],
+      "look": [{"block": "Color"}, {"block": "Size", "size": 0.03}]})", issues);
+    assert(issues.empty());
+    assert(doc.layers[0].trail == 32);
+    assert(checkShaders(compile(doc)).empty());
+}
+
+void testTrailLengthIsChecked() {
+    std::vector<Issue> issues;
+    parse(R"({"trail": 500})", issues);
+    assert(findCode(issues, "bad-trail"));
+}
+
 void testNearestName() {
     assert(nearestName("Sphre", {"Sphere", "Box"}) == "Sphere");
     assert(nearestName("zzzzzzzz", {"Sphere", "Box"}).empty());
@@ -331,6 +347,8 @@ int main() {
     testRemovingABlockKeepsWiresOnTheirTargets();
     testMovingABlockKeepsWiresOnTheirTargets();
     testDrivingAValueAndStopping();
+    testRibbonsCompile();
+    testTrailLengthIsChecked();
     testNearestName();
     std::puts("test_forge: all passed");
     return 0;

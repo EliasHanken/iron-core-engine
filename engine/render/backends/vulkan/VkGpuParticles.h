@@ -47,6 +47,8 @@ private:
     VkBuffer      ssbo_      = VK_NULL_HANDLE;
     VmaAllocation ssboAlloc_ = VK_NULL_HANDLE;
     bool          needsClear_ = true;
+    VkBuffer      trail_      = VK_NULL_HANDLE;
+    VmaAllocation trailAlloc_ = VK_NULL_HANDLE;
 
     VkDescriptorSetLayout setLayout_ = VK_NULL_HANDLE;
     VkComputePipeline     computePipeline_;

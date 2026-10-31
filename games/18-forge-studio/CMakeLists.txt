@@ -8,5 +8,8 @@ if (IRON_RENDER_BACKEND STREQUAL "vulkan")
       COMMAND ${CMAKE_COMMAND} -E copy_directory
               ${CMAKE_SOURCE_DIR}/games/11-sandbox/assets/fonts
               $<TARGET_FILE_DIR:forge-studio>/assets/fonts
-      COMMENT "Copying forge-studio fonts")
+      COMMAND ${CMAKE_COMMAND} -E copy_directory
+              ${CMAKE_SOURCE_DIR}/docs/forge/examples
+              $<TARGET_FILE_DIR:forge-studio>/assets/examples
+      COMMENT "Copying forge-studio fonts and examples")
 endif()

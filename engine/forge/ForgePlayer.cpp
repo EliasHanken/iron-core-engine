@@ -34,6 +34,7 @@ GpuParticlesDesc layerToDesc(const CompiledLayer& layer) {
     desc.vertexGlsl   = layer.vertexGlsl;
     desc.fragmentGlsl = layer.fragmentGlsl;
     desc.emissionGlsl = layer.emissionGlsl;
+    desc.trailSegments = layer.trail > 1 ? static_cast<std::uint32_t>(layer.trail) : 0u;
     return desc;
 }
 

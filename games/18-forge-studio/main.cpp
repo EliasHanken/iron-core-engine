@@ -15,7 +15,6 @@
 #include "math/Transform.h"
 #include "render/Fog.h"
 #include "render/Light.h"
-#include "render/ProceduralSky.h"
 #include "render/RendererFactory.h"
 #include "scene/Mesh.h"
 #include "util/FileWatcher.h"
@@ -99,6 +98,8 @@ float buildDemo(std::vector<DemoStep>& steps, std::vector<Tween>& tweens) {
         lastBlock(doc, Stack::Spawn).values["min"] = {0.6f, 0, 0};
         lastBlock(doc, Stack::Spawn).values["max"] = {1.8f, 0, 0};
         doc.layers[0].count = 700000;
+        auto& look = doc.layers[0].look;
+        look.back().values["intensity"] = {0.04f, 0, 0};
     }});
 
     steps.push_back({6.0f, "Stick to its surface, and flow", [=](forge::Document& doc) {
@@ -165,6 +166,7 @@ float buildDemo(std::vector<DemoStep>& steps, std::vector<Tween>& tweens) {
 
     steps.push_back({24.0f, "Shapes can change as easily as colours", [=](forge::Document& doc) {
         doc.shapes["orb"] = forge::ShapeInstance{"Torus", {{"major", {3.3f, 0, 0}}, {"minor", {0.9f, 0, 0}}}};
+        doc.layers[0].look.back().values["intensity"] = {0.22f, 0, 0};
     }});
 
     steps.push_back({28.0f, "The same tool builds shaders", [=](forge::Document& doc) {
@@ -175,8 +177,11 @@ float buildDemo(std::vector<DemoStep>& steps, std::vector<Tween>& tweens) {
         forge::addBlock(doc, scratch, Stack::Surface, "Fresnel");
     }});
 
-    steps.push_back({35.0f, "Every effect is a small file an AI can write", nullptr});
-    return 38.0f;
+    steps.push_back({35.0f, "This one was written by an AI, as a small text file", [=](forge::Document& doc) {
+        std::vector<forge::Issue> issues;
+        doc = forge::loadDocument(iron::executableDir() + "/assets/examples/aurora.forge.json", issues);
+    }});
+    return 42.0f;
 }
 
 void writeText(const std::string& path, const std::string& text) {
@@ -245,7 +250,15 @@ int main(int argc, char** argv) {
 
     // Surface preview.
     const iron::MeshHandle sphere = renderer.createMesh(iron::makeUVSphere(3.0f, 128));
-    const iron::CubemapHandle sky = iron::createSunsetSkybox(renderer, 128);
+    // A dim studio: dark, with soft lights for metal to reflect.
+    const iron::CubemapHandle sky = vulkan->bakeSky(R"GLSL(
+vec3 skyColor(vec3 d) {
+    vec3 color = mix(vec3(0.010, 0.010, 0.016), vec3(0.03, 0.03, 0.045), d.y * 0.5 + 0.5);
+    color += vec3(0.55, 0.60, 0.70) * pow(max(dot(d, normalize(vec3(-0.6, 0.6, 0.4))), 0.0), 40.0);
+    color += vec3(0.60, 0.28, 0.16) * pow(max(dot(d, normalize(vec3(0.8, -0.1, -0.3))), 0.0), 18.0);
+    return color;
+}
+)GLSL", 256);
     iron::ShaderHandle surfaceShader = iron::kInvalidHandle;
     std::string surfaceSource;
 

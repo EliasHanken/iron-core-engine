@@ -18,7 +18,7 @@ const char* const kSparks = R"({
            {"block": "Size", "size": 0.012},
            {"block": "Fade", "in": 0.02, "out": 0.6},
            {"block": "StretchWithSpeed", "amount": 0.05, "max": 0.5},
-           {"block": "Glow", "intensity": 1.1}]
+           {"block": "Glow", "intensity": 0.22}]
 })";
 
 const char* const kSmoke = R"({
