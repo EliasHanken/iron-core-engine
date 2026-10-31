@@ -1,0 +1,50 @@
+{
+  "forge": 1,
+  "target": "particles",
+  "shapes": {
+    "orb": {"type": "LumpySphere", "radius": 2.6}
+  },
+  "layers": [
+    {
+      "name": "shell",
+      "count": 700000,
+      "spawn": [
+        {"block": "OnShape", "shape": "orb", "reach": 3.6},
+        {"block": "Lifetime", "min": 0.6, "max": 1.8}
+      ],
+      "move": [
+        {"block": "StickToShape", "shape": "orb", "flow": 3.2, "scale": 0.75}
+      ],
+      "look": [
+        {"block": "Color", "color": [0.14, 0.26, 1.0]},
+        {"block": "Size", "size": 0.008},
+        {"block": "Strokes", "scale": 3.4, "sharpness": 7.0, "base": 0.06},
+        {"block": "Rim", "edge": 0.5, "back": 0.08},
+        {"block": "Fade", "in": 0.15, "out": 0.3},
+        {"block": "StretchWithSpeed", "amount": 0.11, "max": 0.3},
+        {"block": "Glow", "intensity": 0.42}
+      ]
+    },
+    {
+      "name": "streams",
+      "count": 100000,
+      "spawn": [
+        {"block": "Sphere", "radius": 2.6},
+        {"block": "Lifetime", "min": 1.0, "max": 3.5}
+      ],
+      "move": [
+        {"block": "CurlFlow", "strength": 1.1, "scale": 0.75, "speed": 0.22},
+        {"block": "Attract", "strength": -2.7},
+        {"block": "Drag", "amount": 1.0}
+      ],
+      "look": [
+        {"block": "ColorOverLife", "start": [0.30, 0.34, 1.0], "end": [0.42, 0.08, 1.0]},
+        {"block": "Size", "size": 0.01},
+        {"block": "SizeOverLife", "start": 1.0, "end": 0.4},
+        {"block": "Fade", "in": 0.1, "out": 0.8},
+        {"block": "StretchWithSpeed", "amount": 0.16, "max": 0.55},
+        {"block": "Glow", "intensity": 0.2}
+      ]
+    }
+  ]
+}

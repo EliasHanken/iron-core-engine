@@ -225,7 +225,11 @@ public:
     // beginFrame and endFrame; `pixels` is only valid during the callback.
     using FrameCaptureFn =
         std::function<void(const std::uint8_t* pixels, int width, int height)>;
-    void captureFrame(FrameCaptureFn fn) { pendingCapture_ = std::move(fn); }
+    // With `includeUi`, it copies the final window instead, UI included.
+    void captureFrame(FrameCaptureFn fn, bool includeUi = false) {
+        pendingCapture_ = std::move(fn);
+        pendingCaptureUi_ = includeUi;
+    }
 
     // Engine-internal: the pass transparent draws record into. Pipelines used
     // from enqueueDeferredScenePass must be built against this one.
@@ -281,7 +285,8 @@ private:
     void bindLightVolume(VkDescriptorSet set);
     // Frame capture: recordCaptureCopy runs after the viewport pass, then
     // deliverCapture runs after the submit once the GPU has finished.
-    bool recordCaptureCopy(VkCommandBuffer cb);
+    bool recordCaptureCopy(VkCommandBuffer cb, VkImage image, VkExtent2D extent,
+                           VkImageLayout layout, VkPipelineStageFlags nextStage);
     void deliverCapture();
     void destroyCaptureBuffer();
 
@@ -301,6 +306,7 @@ private:
     std::uint32_t      cinematicFrame_ = 0;
 
     FrameCaptureFn pendingCapture_;
+    bool           pendingCaptureUi_ = false;
     VkBuffer       captureBuffer_ = VK_NULL_HANDLE;
     VmaAllocation  captureAlloc_  = VK_NULL_HANDLE;
     VkDeviceSize   captureBytes_  = 0;

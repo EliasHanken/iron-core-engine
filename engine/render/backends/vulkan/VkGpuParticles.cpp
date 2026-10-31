@@ -125,6 +125,59 @@ void main() {
 }
 )";
 
+// Each particle owns a ring of its recent positions. frameIndex finds the newest.
+const char* const kTrailCompute = R"(
+layout(std430, set = 0, binding = 5) buffer Trail { vec4 trail[]; };
+)";
+
+const char* const kTrailVertex = R"(
+layout(std430, set = 0, binding = 5) readonly buffer Trail { vec4 trail[]; };
+)";
+
+const char* const kRibbonMain = R"(
+layout(location = 0) out vec2 vCorner;
+layout(location = 1) out vec4 vColor;
+layout(location = 2) out vec4 vData;
+
+const vec2 kCorner[6] = vec2[6](
+    vec2(-1.0, 0.0), vec2( 1.0, 0.0), vec2( 1.0, 1.0),
+    vec2(-1.0, 0.0), vec2( 1.0, 1.0), vec2(-1.0, 1.0)
+);
+
+vec3 trailPoint(uint id, uint back) {
+    uint slot = (frame.frameIndex + TRAIL_SEGMENTS * 1024u - back) % TRAIL_SEGMENTS;
+    return trail[id * TRAIL_SEGMENTS + slot].xyz;
+}
+
+void main() {
+    uint id = uint(gl_InstanceIndex);
+    uint segment = uint(gl_VertexIndex) / 6u;
+    vec2 corner = kCorner[gl_VertexIndex % 6];
+    vCorner = corner;
+
+    vec4 unusedClip;
+    particleVertex(particles[id], id, vec2(0.0), unusedClip, vColor, vData);
+
+    float along = (float(segment) + corner.y) / float(TRAIL_SEGMENTS - 1u);
+    vec3 a = trailPoint(id, segment);
+    vec3 b = trailPoint(id, segment + 1u);
+    vec3 world = mix(a, b, corner.y);
+
+    vec3 viewA = (frame.view * vec4(a, 1.0)).xyz;
+    vec3 viewB = (frame.view * vec4(b, 1.0)).xyz;
+    vec2 direction = viewB.xy - viewA.xy;
+    float len = length(direction);
+    direction = len > 1e-5 ? direction / len : vec2(0.0, 1.0);
+    vec2 side = vec2(-direction.y, direction.x);
+
+    vec4 viewPos = frame.view * vec4(world, 1.0);
+    viewPos.xy += side * corner.x * vData.x * (1.0 - along);
+    gl_Position = frame.projection * viewPos;
+
+    vColor *= (1.0 - along) * (1.0 - along);
+}
+)";
+
 const char* const kFragmentMain = R"(
 layout(location = 0) in vec2 vCorner;
 layout(location = 1) in vec4 vColor;
@@ -164,23 +217,40 @@ struct InjectPush {
 GpuParticleSources composeGpuParticleSources(const GpuParticlesDesc& desc) {
     GpuParticleSources out;
 
+    const bool trailed = desc.trailSegments > 1;
+    const std::string trailDefine =
+        trailed ? "\n#define TRAIL_SEGMENTS " + std::to_string(desc.trailSegments) + "u\n" : "";
+
     out.compute = std::string(kVersion) +
         "layout(local_size_x = " + std::to_string(kLocalSize) + ") in;\n" +
         kParticleStruct +
         "layout(std430, set = 0, binding = 0) buffer ParticleBuffer { Particle particles[]; };\n" +
-        kFrameBlock + desc.commonGlsl + desc.simulateGlsl + R"(
+        kFrameBlock + (trailed ? kTrailCompute : "") + desc.commonGlsl + desc.simulateGlsl +
+        trailDefine + R"(
 void main() {
     uint id = gl_GlobalInvocationID.x;
     if (id >= frame.count) return;
     Particle p = particles[id];
+    float ageBefore = p.position.w;
     particleSimulate(p, id);
     particles[id] = p;
+#ifdef TRAIL_SEGMENTS
+    // A newborn particle's whole trail starts where it is, or it would draw a
+    // streak back to the place the last one died.
+    uint first = id * TRAIL_SEGMENTS;
+    if (p.position.w < ageBefore || frame.frameIndex <= 1u) {
+        for (uint i = 0u; i < TRAIL_SEGMENTS; ++i) trail[first + i] = vec4(p.position.xyz, 1.0);
+    } else {
+        trail[first + frame.frameIndex % TRAIL_SEGMENTS] = vec4(p.position.xyz, 1.0);
+    }
+#endif
 }
 )";
 
     out.vertex = std::string(kVersion) + kParticleStruct +
         "layout(std430, set = 0, binding = 0) readonly buffer ParticleBuffer { Particle particles[]; };\n" +
-        kFrameBlock + kVertexHelpers + desc.commonGlsl + desc.vertexGlsl + kVertexMain;
+        kFrameBlock + kVertexHelpers + (trailed ? kTrailVertex : "") + desc.commonGlsl +
+        desc.vertexGlsl + trailDefine + (trailed ? kRibbonMain : kVertexMain);
 
     out.fragment = std::string(kVersion) + kParticleStruct + kFrameBlock + kFragmentHelpers +
         desc.commonGlsl + desc.fragmentGlsl + kFragmentMain;
@@ -207,6 +277,7 @@ VkGpuParticles::~VkGpuParticles() {
     computePipeline_.destroy(ctx);
     if (setLayout_)      vkDestroyDescriptorSetLayout(ctx.device(), setLayout_, nullptr);
     if (ssbo_)           vmaDestroyBuffer(ctx.allocator(), ssbo_, ssboAlloc_);
+    if (trail_)          vmaDestroyBuffer(ctx.allocator(), trail_, trailAlloc_);
 }
 
 bool VkGpuParticles::init(VulkanRenderer& renderer, const GpuParticlesDesc& desc) {
@@ -266,7 +337,21 @@ bool VkGpuParticles::createBuffer() {
     VmaAllocationCreateInfo alloc{};
     alloc.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE;
 
-    VK_CHECK(vmaCreateBuffer(ctx.allocator(), &info, &alloc, &ssbo_, &ssboAlloc_, nullptr));
+    if (vmaCreateBuffer(ctx.allocator(), &info, &alloc, &ssbo_, &ssboAlloc_, nullptr) != VK_SUCCESS) {
+        Log::error("GpuParticles: not enough GPU memory for %u particles", desc_.count);
+        ssbo_ = VK_NULL_HANDLE;
+        return false;
+    }
+
+    if (desc_.trailSegments > 1) {
+        info.size = static_cast<VkDeviceSize>(desc_.count) * desc_.trailSegments * 16;
+        info.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
+        if (vmaCreateBuffer(ctx.allocator(), &info, &alloc, &trail_, &trailAlloc_, nullptr) != VK_SUCCESS) {
+            Log::error("GpuParticles: not enough GPU memory for ribbons");
+            trail_ = VK_NULL_HANDLE;
+            return false;
+        }
+    }
     return ssbo_ != VK_NULL_HANDLE;
 }
 
@@ -335,7 +420,7 @@ bool VkGpuParticles::uploadInitialData() {
 bool VkGpuParticles::createSetLayout() {
     VkContext& ctx = renderer_->context();
 
-    VkDescriptorSetLayoutBinding b[5]{};
+    VkDescriptorSetLayoutBinding b[6]{};
     b[0].binding         = 0;
     b[0].descriptorType  = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
     b[0].descriptorCount = 1;
@@ -357,9 +442,14 @@ bool VkGpuParticles::createSetLayout() {
     b[4].descriptorCount = 1;
     b[4].stageFlags      = VK_SHADER_STAGE_FRAGMENT_BIT;
 
+    b[5].binding         = 5;
+    b[5].descriptorType  = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+    b[5].descriptorCount = 1;
+    b[5].stageFlags      = VK_SHADER_STAGE_COMPUTE_BIT | VK_SHADER_STAGE_VERTEX_BIT;
+
     VkDescriptorSetLayoutCreateInfo info{};
     info.sType        = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-    info.bindingCount = 5;
+    info.bindingCount = trail_ ? 6u : 5u;
     info.pBindings    = b;
     VK_CHECK(vkCreateDescriptorSetLayout(ctx.device(), &info, nullptr, &setLayout_));
     return setLayout_ != VK_NULL_HANDLE;
@@ -505,19 +595,24 @@ VkDescriptorSet VkGpuParticles::allocateSet(const FrameUbo& ubo) {
     paramsInfo.offset = ring.allocateUbo(params_.data(), params_.size());
     paramsInfo.range  = params_.size();
 
-    VkWriteDescriptorSet writes[3]{};
-    for (std::uint32_t i = 0; i < 3; ++i) {
+    VkDescriptorBufferInfo trailInfo{};
+    trailInfo.buffer = trail_;
+    trailInfo.range  = VK_WHOLE_SIZE;
+
+    VkWriteDescriptorSet writes[4]{};
+    for (std::uint32_t i = 0; i < 4; ++i) {
         writes[i].sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
         writes[i].dstSet          = set;
-        writes[i].dstBinding      = i;
+        writes[i].dstBinding      = i == 3 ? 5u : i;
         writes[i].descriptorCount = 1;
-        writes[i].descriptorType  = i == 0 ? VK_DESCRIPTOR_TYPE_STORAGE_BUFFER
-                                           : VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+        writes[i].descriptorType  = (i == 0 || i == 3) ? VK_DESCRIPTOR_TYPE_STORAGE_BUFFER
+                                                       : VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
     }
     writes[0].pBufferInfo = &ssboInfo;
     writes[1].pBufferInfo = &frameInfo;
     writes[2].pBufferInfo = &paramsInfo;
-    vkUpdateDescriptorSets(ctx.device(), 3, writes, 0, nullptr);
+    writes[3].pBufferInfo = &trailInfo;
+    vkUpdateDescriptorSets(ctx.device(), trail_ ? 4u : 3u, writes, 0, nullptr);
     return set;
 }
 
@@ -549,6 +644,7 @@ void VkGpuParticles::simulate(float dtSec) {
                              VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 1, &toCompute,
                              0, nullptr, 0, nullptr);
         needsClear_ = false;
+        frameIndex_ = 0;  // Ribbons refill their trails on the first frame.
     }
 
     time_ += dtSec;
@@ -684,7 +780,8 @@ void VkGpuParticles::render(const Mat4& view, const Mat4& projection) {
         vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, renderPipeline_);
         vkCmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, renderLayout_, 0, 1,
                                 &set, 0, nullptr);
-        vkCmdDraw(cb, 6, desc_.count, 0, 0);
+        const std::uint32_t vertices = trail_ ? 6u * (desc_.trailSegments - 1u) : 6u;
+        vkCmdDraw(cb, vertices, desc_.count, 0, 0);
     });
 }
 

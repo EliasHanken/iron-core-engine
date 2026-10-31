@@ -65,6 +65,10 @@ struct GpuParticlesDesc {
     std::string   vertexGlsl;
     std::string   fragmentGlsl;
     std::string   emissionGlsl;  // Light this effect adds to a LightVolume.
+    // Segments per ribbon. Above 1, each particle remembers where it has been
+    // and draws as a continuous strip through those points instead of a sprite.
+    // particleVertex still sets the look: data.x is the width.
+    std::uint32_t trailSegments = 0;
     // Optional starting state: 16 floats per particle, the Particle struct in
     // order. Empty means every particle starts zeroed.
     std::vector<float> initialData;

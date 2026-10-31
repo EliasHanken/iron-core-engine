@@ -23,6 +23,8 @@ public:
     VkFormat       depthFormat() const { return VK_FORMAT_D32_SFLOAT; }
     VkExtent2D     extent()      const { return extent_; }
     std::uint32_t  imageCount()  const { return static_cast<std::uint32_t>(images_.size()); }
+    VkImage        image(std::uint32_t index) const { return images_[index]; }
+    bool           canCapture() const { return canCapture_; }
     VkImageView    colorView(std::uint32_t i) const { return imageViews_[i]; }
     VkImageView    depthView()   const { return depthView_; }
 
@@ -36,6 +38,7 @@ private:
     VkFormat                   colorFormat_ = VK_FORMAT_UNDEFINED;
     VkExtent2D                 extent_      = {0, 0};
     std::vector<VkImage>       images_;        // owned by swapchain
+    bool                       canCapture_ = false;
     std::vector<VkImageView>   imageViews_;    // owned by us
     VkImage                    depthImage_  = VK_NULL_HANDLE;
     VmaAllocation              depthAlloc_  = VK_NULL_HANDLE;
