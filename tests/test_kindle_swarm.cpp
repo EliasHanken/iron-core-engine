@@ -409,6 +409,34 @@ void testTheGameCanBeFinished() {
     std::printf("a direct run reaches the finale in %.0f seconds\n", seconds);
 }
 
+void testQualityStepsDownInOrder() {
+    for (int i = 1; i < kindle::kQualityCount; ++i) {
+        assert(kindle::kQualities[i].particles > kindle::kQualities[i - 1].particles);
+        assert(kindle::kQualities[i].airSteps > kindle::kQualities[i - 1].airSteps);
+        assert(kindle::kQualities[i].fogEvery <= kindle::kQualities[i - 1].fogEvery);
+    }
+    assert(kindle::kQualities[kindle::kQualityCount - 1].particles == 1.0f);
+
+    // A bad number in the file can't select a level that doesn't exist.
+    const std::string path = "test_kindle_quality.txt";
+    std::FILE* file = std::fopen(path.c_str(), "w");
+    std::fputs("0.5 0.5 0 99\n", file);
+    std::fclose(file);
+    kindle::Settings settings;
+    settings.load(path);
+    assert(settings.quality == kindle::kQualityCount - 1);
+    std::remove(path.c_str());
+
+    // A settings file from before quality existed still loads.
+    file = std::fopen(path.c_str(), "w");
+    std::fputs("0.5 0.5 1\n", file);
+    std::fclose(file);
+    kindle::Settings older;
+    older.load(path);
+    assert(older.fullscreen && older.quality == kindle::kQualityCount - 1);
+    std::remove(path.c_str());
+}
+
 void testIgniteSpendsHeat() {
     const Room room;
     Swarm swarm({0, 0, 0});
@@ -441,6 +469,7 @@ int main() {
     testCoastsToAStop();
     testIgniteBurstsThenRests();
     testIgniteSpendsHeat();
+    testQualityStepsDownInOrder();
     testObjectiveFollowsTheGame();
     testTheGameCanBeFinished();
     testEyesCloseFastAndOpenSlowly();

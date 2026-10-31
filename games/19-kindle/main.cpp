@@ -37,6 +37,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cctype>
 #include <cmath>
 #include <numbers>
 #include <string>
@@ -85,14 +86,32 @@ void logIssues(const std::vector<forge::Issue>& issues) {
     }
 }
 
-forge::Compiled loadEffect(const std::string& path) {
+// Quality is a change to the effect file, not to the engine: the same document,
+// with fewer particles that each give proportionally more light.
+void scaleEffect(forge::Document& document, float share) {
+    const float gain = 1.0f / share;
+    for (forge::Layer& layer : document.layers) {
+        layer.count = std::max<std::uint64_t>(static_cast<std::uint64_t>(static_cast<float>(layer.count) * share), 500);
+        for (forge::BlockInstance& block : layer.look) {
+            const auto intensity = block.values.find("intensity");
+            if (block.block == "Glow" && intensity != block.values.end()) intensity->second.x *= gain;
+        }
+    }
+    for (auto& [name, node] : document.nodes) {
+        const auto a = node.values.find("a");
+        if (node.type == "Multiply" && a != node.values.end()) a->second.x *= gain;
+    }
+}
+
+forge::Compiled loadEffect(const std::string& path, float share = 1.0f) {
     std::vector<forge::Issue> issues;
-    const forge::Document document = forge::loadDocument(path, issues);
+    forge::Document document = forge::loadDocument(path, issues);
     if (!issues.empty()) {
         forge::Compiled failed;
         failed.issues = issues;
         return failed;
     }
+    if (share < 1.0f) scaleEffect(document, share);
     return forge::compile(document);
 }
 
@@ -490,8 +509,18 @@ int main(int argc, char** argv) {
     player.setLightVolume(lightGrid);
     player.setAirDensity(0.0f);  // The hall has its own air.
 
+    const std::string settingsPath = iron::executableDir() + "/kindle-settings.txt";
+    kindle::Settings settings;
+    settings.load(settingsPath);
+    // --scene quality-low and the like let a scripted run measure each level.
+    for (int i = 0; i < kindle::kQualityCount; ++i) {
+        std::string name = kindle::kQualities[i].name;
+        std::transform(name.begin(), name.end(), name.begin(), [](unsigned char c) { return std::tolower(c); });
+        if (options.scene == "quality-" + name) settings.quality = i;
+    }
+
     const std::string swarmPath = assets + "swarm.forge.json";
-    const forge::Compiled swarmEffect = loadEffect(swarmPath);
+    const forge::Compiled swarmEffect = loadEffect(swarmPath, kindle::kQualities[settings.quality].particles);
     std::vector<forge::Issue> issues = player.apply(swarmEffect);
     if (!issues.empty()) {
         logIssues(issues);
@@ -547,7 +576,7 @@ int main(int argc, char** argv) {
 
     iron::FileWatcher watcher;
     watcher.watch(swarmPath, [&](const std::string& path) {
-        const forge::Compiled next = loadEffect(path);
+        const forge::Compiled next = loadEffect(path, kindle::kQualities[settings.quality].particles);
         const std::vector<forge::Issue> found = player.apply(next);
         if (found.empty()) {
             player.setDensityVolume(fog.get(), kFogDensity);
@@ -577,9 +606,6 @@ int main(int argc, char** argv) {
     kindle::CameraFeel feel;
     float lastYaw = 0.0f;
 
-    const std::string settingsPath = iron::executableDir() + "/kindle-settings.txt";
-    kindle::Settings settings;
-    settings.load(settingsPath);
     sound.setVolume(settings.sound);
     // --scene fullscreen lets a scripted run check the switch on a real frame.
     if (scripted && options.scene == "fullscreen") settings.fullscreen = true;
@@ -595,12 +621,14 @@ int main(int argc, char** argv) {
     const kindle::Menu::Item soundRow{"SOUND", kindle::Choice::None, &settings.sound};
     const kindle::Menu::Item lookRow{"LOOK", kindle::Choice::None, &settings.look};
     const kindle::Menu::Item screenRow{"FULLSCREEN", kindle::Choice::Fullscreen};
+    const auto qualityLabel = [&]() { return std::string("QUALITY  ") + kindle::kQualities[settings.quality].name; };
     const auto showStartMenu = [&]() {
-        menu.show({{"BEGIN", kindle::Choice::Begin}, soundRow, lookRow, screenRow, {"QUIT", kindle::Choice::Quit}});
+        menu.show({{"BEGIN", kindle::Choice::Begin}, soundRow, lookRow, {qualityLabel(), kindle::Choice::Quality},
+                   screenRow, {"QUIT", kindle::Choice::Quit}});
     };
     const auto showPauseMenu = [&]() {
         menu.show({{"RESUME", kindle::Choice::Resume}, {"START OVER", kindle::Choice::Restart}, soundRow, lookRow,
-                   screenRow, {"QUIT", kindle::Choice::Quit}});
+                   {qualityLabel(), kindle::Choice::Quality}, screenRow, {"QUIT", kindle::Choice::Quit}});
     };
     const auto showEndMenu = [&]() {
         menu.show({{"PLAY AGAIN", kindle::Choice::Restart}, {"QUIT", kindle::Choice::Quit}});
@@ -626,6 +654,7 @@ int main(int argc, char** argv) {
         bool held = false;
     } menuInput;
     float fogAccumulator = 0.0f;
+    int fogFrame = 0;
 
     Vec3 eye = swarm.position() + Vec3{0.0f, 2.0f, 8.0f};
     Vec3 tailA = swarm.position();
@@ -665,6 +694,18 @@ int main(int argc, char** argv) {
         sound.setPaused(true);
         showPauseMenu();
         app.window().setCursorCaptured(false);
+    };
+    const auto cycleQuality = [&]() {
+        settings.quality = (settings.quality + 1) % kindle::kQualityCount;
+        const std::vector<forge::Issue> found =
+            player.apply(loadEffect(swarmPath, kindle::kQualities[settings.quality].particles));
+        if (found.empty()) {
+            player.setDensityVolume(fog.get(), kFogDensity);
+        } else {
+            logIssues(found);
+        }
+        menu.relabel(kindle::Choice::Quality, qualityLabel());
+        settings.save(settingsPath);
     };
     const auto toggleFullscreen = [&]() {
         settings.fullscreen = !settings.fullscreen;
@@ -734,6 +775,7 @@ int main(int argc, char** argv) {
                         case kindle::Choice::Resume: resume(); break;
                         case kindle::Choice::Restart: startOver(); break;
                         case kindle::Choice::Fullscreen: toggleFullscreen(); break;
+                        case kindle::Choice::Quality: cycleQuality(); break;
                         case kindle::Choice::Quit:
                             glfwSetWindowShouldClose(app.window().handle(), GLFW_TRUE);
                             break;
@@ -744,7 +786,8 @@ int main(int argc, char** argv) {
         }
 
         if (scripted && !scriptedStep && clock > 8.0f) {
-            scriptedStep = options.scene == "pause" || options.scene == "restart";
+            scriptedStep = options.scene == "pause" || options.scene == "restart" || options.scene == "quality-switch";
+            if (options.scene == "quality-switch") cycleQuality();
             if (options.scene == "pause") pause();
             if (options.scene == "restart") startOver();
         }
@@ -834,7 +877,8 @@ int main(int argc, char** argv) {
         const float shock = blown > 0.0f ? std::exp(-blown * 0.7f) : 0.0f;  // The core's light.
         // Squeezing packs every spark into a thin line, so each one has to give less.
         player.setInput("presence", {presence * (1.0f - 0.72f * swarm.squeeze()), 0, 0});
-        player.setInput("light", {(0.00012f + swarm.flare() * 0.0012f) * presence, 0, 0});
+        const float particleShare = kindle::kQualities[settings.quality].particles;
+        player.setInput("light", {(0.00012f + swarm.flare() * 0.0012f) * presence / particleShare, 0, 0});
         if (blown > 0.0f && blown < dt * 1.5f) swarm.burst();
         player.setInput("pulse", {0.012f + swarm.pulse() * 0.012f + swarm.flare() * 0.03f, 0, 0});
 
@@ -930,10 +974,11 @@ int main(int argc, char** argv) {
         lens.subject = onScreen ? iron::Vec2{row(0) / clipW * 0.5f + 0.5f, 0.5f - row(1) / clipW * 0.5f}
                                 : iron::Vec2{0.5f, 0.5f};
         lens.subjectRadius = onScreen ? std::clamp(1.6f / clipW, 0.06f, 0.3f) : 0.0f;
-        lens.heatHaze = onScreen ? std::min(0.5f * presence + 1.4f * swarm.flare(), 1.0f) : 0.0f;
+        const kindle::Quality& level = kindle::kQualities[settings.quality];
+        lens.heatHaze = onScreen && level.heatHaze ? std::min(0.5f * presence + 0.5f * swarm.flare(), 1.0f) : 0.0f;
         lens.focusDistance = iron::length(swarm.position() - eye);
         lens.focusRange = 3.0f;
-        lens.blurRadius = mode == Mode::Playing ? 0.009f : 0.016f;
+        lens.blurRadius = !level.depthOfField ? 0.0f : (mode == Mode::Playing ? 0.009f : 0.016f);
 
         // The lens reacts: bursts flare and split colour, and squeezing closes the view in.
         lens.chromaticAberration = 0.002f + 0.007f * swarm.flare() + 0.003f * swarm.squeeze();
@@ -986,14 +1031,17 @@ int main(int argc, char** argv) {
         fogParams.velocity[2] = vel.z;
         fogParams.kick[0] = swarm.blast();
         fog->setParams(&fogParams);
+        const kindle::Quality& quality = kindle::kQualities[settings.quality];
         const int steps = iron::fluidStepsThisFrame(dt, fogAccumulator);
-        for (int i = 0; i < steps; ++i) fog->step();
+        if (++fogFrame % quality.fogEvery == 0) {
+            for (int i = 0; i < steps; ++i) fog->step();
+        }
 
         volumes->setOccluders(pos, {}, 0.95f, columns);
 
         iron::VolumeRenderSettings air;
         air.airDensity = 0.012f;
-        air.steps = 48;
+        air.steps = quality.airSteps;
         air.phase = 0.35f;
         air.powder = 0.5f;
         air.airLight = 0.3f;  // Direct light mostly shows where there's mist to catch it.

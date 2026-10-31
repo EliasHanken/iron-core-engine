@@ -11,10 +11,30 @@
 
 namespace kindle {
 
+// What each quality level costs and keeps. Fewer sparks each give more light, so
+// that the picture holds its brightness as the count falls.
+struct Quality {
+    const char* name = "";
+    float particles = 1.0f;     // Share of every layer's count.
+    int   airSteps = 48;        // Raymarch steps through the fog.
+    int   fogEvery = 1;         // Steps the fog simulation one frame in this many.
+    bool  depthOfField = true;
+    bool  heatHaze = true;
+};
+
+inline constexpr Quality kQualities[] = {
+    {"LOW", 0.2f, 18, 3, false, false},
+    {"MEDIUM", 0.45f, 28, 2, false, true},
+    {"HIGH", 0.75f, 38, 1, true, true},
+    {"ULTRA", 1.0f, 48, 1, true, true},
+};
+inline constexpr int kQualityCount = 4;
+
 struct Settings {
     float sound = 0.8f;
     float look = 0.5f;  // 0.5 is the normal turning speed.
     bool  fullscreen = false;
+    int   quality = kQualityCount - 1;
 
     void load(const std::string& path) {
         std::FILE* file = std::fopen(path.c_str(), "r");
@@ -22,24 +42,26 @@ struct Settings {
         float a = sound;
         float b = look;
         int c = 0;
-        const int read = std::fscanf(file, "%f %f %d", &a, &b, &c);
+        int d = quality;
+        const int read = std::fscanf(file, "%f %f %d %d", &a, &b, &c, &d);
         if (read >= 2) {
             sound = std::clamp(a, 0.0f, 1.0f);
             look = std::clamp(b, 0.0f, 1.0f);
         }
-        if (read == 3) fullscreen = c != 0;
+        if (read >= 3) fullscreen = c != 0;
+        if (read == 4) quality = std::clamp(d, 0, kQualityCount - 1);
         std::fclose(file);
     }
 
     void save(const std::string& path) const {
         std::FILE* file = std::fopen(path.c_str(), "w");
         if (!file) return;
-        std::fprintf(file, "%.3f %.3f %d\n", sound, look, fullscreen ? 1 : 0);
+        std::fprintf(file, "%.3f %.3f %d %d\n", sound, look, fullscreen ? 1 : 0, quality);
         std::fclose(file);
     }
 };
 
-enum class Choice { None, Begin, Resume, Restart, Fullscreen, Quit };
+enum class Choice { None, Begin, Resume, Restart, Fullscreen, Quality, Quit };
 
 class Menu {
 public:
@@ -85,6 +107,12 @@ public:
         if (next == *slider) return false;
         *slider = next;
         return true;
+    }
+
+    void relabel(Choice choice, std::string label) {
+        for (Item& item : items_) {
+            if (item.choice == choice) item.label = std::move(label);
+        }
     }
 
     // Enter or a click on the selected item.
