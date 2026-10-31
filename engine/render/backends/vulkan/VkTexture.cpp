@@ -7,6 +7,7 @@
 
 #include <stb_image.h>
 
+#include <algorithm>
 #include <cstring>
 
 namespace iron {
@@ -24,10 +25,83 @@ VkSampler createLinearRepeatSampler(VkContext& ctx) {
     info.mipmapMode = VK_SAMPLER_MIPMAP_MODE_LINEAR;
     info.minLod = 0.0f;
     info.maxLod = VK_LOD_CLAMP_NONE;
-    info.anisotropyEnable = VK_FALSE;
+    // Keeps surfaces seen at a grazing angle sharp instead of smearing them.
+    constexpr float kMaxAnisotropy = 16.0f;
+    if (ctx.samplerAnisotropy()) {
+        VkPhysicalDeviceProperties props{};
+        vkGetPhysicalDeviceProperties(ctx.physicalDevice(), &props);
+        info.anisotropyEnable = VK_TRUE;
+        info.maxAnisotropy = std::min(kMaxAnisotropy, props.limits.maxSamplerAnisotropy);
+    }
     VkSampler s = VK_NULL_HANDLE;
     VK_CHECK(vkCreateSampler(ctx.device(), &info, nullptr, &s));
     return s;
+}
+
+std::uint32_t mipLevelsFor(int width, int height) {
+    std::uint32_t levels = 1;
+    for (int size = std::max(width, height); size > 1; size /= 2) ++levels;
+    return levels;
+}
+
+// Fills every mip below 0 by repeatedly halving the level above, and leaves the
+// whole image in SHADER_READ_ONLY_OPTIMAL. Expects all levels in
+// TRANSFER_DST_OPTIMAL.
+void generateMips(VkCommandBuffer cb, VkImage image, int width, int height,
+                  std::uint32_t levels) {
+    VkImageMemoryBarrier barrier{};
+    barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+    barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    barrier.image = image;
+    barrier.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+
+    std::int32_t mipWidth = width;
+    std::int32_t mipHeight = height;
+    for (std::uint32_t level = 0; level + 1 < levels; ++level) {
+        // The finished level becomes the blit source, then is sampled.
+        barrier.subresourceRange.baseMipLevel = level;
+        barrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+        barrier.newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+        barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+        barrier.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+        vkCmdPipelineBarrier(cb, VK_PIPELINE_STAGE_TRANSFER_BIT,
+                             VK_PIPELINE_STAGE_TRANSFER_BIT, 0,
+                             0, nullptr, 0, nullptr, 1, &barrier);
+
+        const std::int32_t nextWidth = std::max(mipWidth / 2, 1);
+        const std::int32_t nextHeight = std::max(mipHeight / 2, 1);
+
+        VkImageBlit blit{};
+        blit.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, level, 0, 1};
+        blit.srcOffsets[1] = {mipWidth, mipHeight, 1};
+        blit.dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, level + 1, 0, 1};
+        blit.dstOffsets[1] = {nextWidth, nextHeight, 1};
+        vkCmdBlitImage(cb, image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                       image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                       1, &blit, VK_FILTER_LINEAR);
+
+        barrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+        barrier.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        barrier.srcAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+        barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+        vkCmdPipelineBarrier(cb, VK_PIPELINE_STAGE_TRANSFER_BIT,
+                             VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0,
+                             0, nullptr, 0, nullptr, 1, &barrier);
+
+        mipWidth = nextWidth;
+        mipHeight = nextHeight;
+    }
+
+    // The smallest level was only ever a destination.
+    barrier.subresourceRange.baseMipLevel = levels - 1;
+    barrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+    barrier.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+    barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+    vkCmdPipelineBarrier(cb, VK_PIPELINE_STAGE_TRANSFER_BIT,
+                         VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0,
+                         0, nullptr, 0, nullptr, 1, &barrier);
 }
 
 VkBuffer createStagingBuffer(VkContext& ctx, VkDeviceSize size,
@@ -83,6 +157,7 @@ void VkTextureStore::uploadRgba(VkContext& ctx, VkTextureResource& tex,
                                 bool srgb) {
     const VkFormat fmt = srgb ? VK_FORMAT_R8G8B8A8_SRGB : VK_FORMAT_R8G8B8A8_UNORM;
     const VkDeviceSize size = static_cast<VkDeviceSize>(width) * height * 4;
+    const std::uint32_t levels = mipLevelsFor(width, height);
 
     VmaAllocation stagingAlloc = VK_NULL_HANDLE;
     void* stagingMap = nullptr;
@@ -94,11 +169,12 @@ void VkTextureStore::uploadRgba(VkContext& ctx, VkTextureResource& tex,
     imgInfo.imageType = VK_IMAGE_TYPE_2D;
     imgInfo.format = fmt;
     imgInfo.extent = {static_cast<std::uint32_t>(width), static_cast<std::uint32_t>(height), 1};
-    imgInfo.mipLevels = 1;
+    imgInfo.mipLevels = levels;
     imgInfo.arrayLayers = 1;
     imgInfo.samples = VK_SAMPLE_COUNT_1_BIT;
     imgInfo.tiling = VK_IMAGE_TILING_OPTIMAL;
-    imgInfo.usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+    imgInfo.usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT |
+                    VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
     imgInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
     imgInfo.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
 
@@ -134,7 +210,7 @@ void VkTextureStore::uploadRgba(VkContext& ctx, VkTextureResource& tex,
     toDst.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
     toDst.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
     toDst.image = tex.image;
-    toDst.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+    toDst.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, levels, 0, 1};
     toDst.srcAccessMask = 0;
     toDst.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
     vkCmdPipelineBarrier(cb, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
@@ -147,14 +223,7 @@ void VkTextureStore::uploadRgba(VkContext& ctx, VkTextureResource& tex,
     vkCmdCopyBufferToImage(cb, staging, tex.image,
                            VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
 
-    VkImageMemoryBarrier toShader = toDst;
-    toShader.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
-    toShader.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-    toShader.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
-    toShader.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
-    vkCmdPipelineBarrier(cb, VK_PIPELINE_STAGE_TRANSFER_BIT,
-                         VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0,
-                         0, nullptr, 0, nullptr, 1, &toShader);
+    generateMips(cb, tex.image, width, height, levels);
 
     VK_CHECK(vkEndCommandBuffer(cb));
 
@@ -174,7 +243,7 @@ void VkTextureStore::uploadRgba(VkContext& ctx, VkTextureResource& tex,
     viewInfo.image = tex.image;
     viewInfo.viewType = VK_IMAGE_VIEW_TYPE_2D;
     viewInfo.format = fmt;
-    viewInfo.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+    viewInfo.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, levels, 0, 1};
     VK_CHECK(vkCreateImageView(ctx.device(), &viewInfo, nullptr, &tex.view));
     tex.sampler = sharedSampler_;
     tex.width  = static_cast<std::uint32_t>(width);

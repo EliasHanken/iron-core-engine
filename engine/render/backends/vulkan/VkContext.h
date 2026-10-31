@@ -35,6 +35,7 @@ public:
     // True if the wideLines device feature was enabled (lets line pipelines use
     // lineWidth > 1). False on devices that don't support it (lines stay 1px).
     bool             wideLines()       const { return wideLines_; }
+    bool samplerAnisotropy() const { return samplerAnisotropy_; }
 
 private:
     bool createInstance();
@@ -54,6 +55,7 @@ private:
     std::uint32_t     graphicsFamily_ = ~0u;
     VmaAllocator      allocator_      = VK_NULL_HANDLE;
     bool              wideLines_      = false;
+    bool samplerAnisotropy_ = false;
 };
 
 }  // namespace iron
