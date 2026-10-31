@@ -586,7 +586,7 @@ bool VkParticleSystem::initRender() {
     info.pColorBlendState = &cb;
     info.pDynamicState = &dynInfo;
     info.layout = renderPipelineLayout_;
-    info.renderPass = renderer_->scenePass();
+    info.renderPass = renderer_->transparentPass();
     info.subpass = 0;
 
     VK_CHECK(vkCreateGraphicsPipelines(ctx.device(), VK_NULL_HANDLE, 1, &info,

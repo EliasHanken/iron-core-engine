@@ -1,5 +1,7 @@
 #pragma once
 
+#include <string>
+
 namespace iron {
 
 // Canonical Vulkan (GLSL 450) "standard lit" shader — shadow PCF + normal map +
@@ -153,6 +155,9 @@ layout(set = 0, binding = 0) uniform LitUbo {
     vec4 probeBoxMin;   // M49 xyz=box min; w=tessellation factor (M50b tess)
     vec4 probeBoxMax;   // M49
     vec4 probeCenter;   // M49 — w = probeActive
+    vec4 volumeMin;     // M73 — xyz = LightVolume min; w = intensity (0 = no volume)
+    vec4 volumeInvSize; // M73 — xyz = 1 / LightVolume extent
+    vec4 pointShadow;   // M73 — xyz = shadow centre; w = strength (0 = off)
 } u;
 
 layout(set = 0, binding = 1) uniform sampler2D uDiffuse;
@@ -167,6 +172,8 @@ layout(set = 0, binding = 10) uniform samplerCube uIrradianceCube;  // M46b diff
 layout(set = 0, binding = 11) uniform samplerCube uPrefiltered;   // M46c specular IBL
 layout(set = 0, binding = 12) uniform sampler2D   uBrdfLut;       // M46c split-sum LUT
 layout(set = 0, binding = 13) uniform sampler2D   uHeightMap;     // M50a — POM height (white=peak), samples .r
+layout(set = 0, binding = 14) uniform sampler3D   uLightVolume;   // M73 — light from particles
+layout(set = 0, binding = 15) uniform sampler2D   uPointShadow;   // M73 — occluder distance, latitude-longitude
 
 float shadowFactor(vec4 lightSpacePos, float bias) {
     vec3 proj = lightSpacePos.xyz / lightSpacePos.w;
@@ -295,6 +302,18 @@ void main() {
         float falloff   = 1.0 - smoothstep(0.0, range, dist);
         float intensity = u.pointPositions[i].w;
         vec3 radiance = u.pointColors[i].xyz * intensity * falloff;
+        // M73 — the first point light can cast shadows. The bias is generous because
+        // occluders are spheres, so a lumpy rock must not shade its own lit face.
+        if (i == 0 && u.pointShadow.w > 0.0) {
+            vec3 d = vWorldPos - u.pointShadow.xyz;
+            float r = length(d);
+            d /= max(r, 1e-3);
+            vec2 suv = vec2(atan(d.z, d.x) / (2.0 * 3.14159265) + 0.5,
+                            acos(clamp(d.y, -1.0, 1.0)) / 3.14159265);
+            float occluder = textureLod(uPointShadow, suv, 0.0).r;
+            float lit = 1.0 - smoothstep(occluder + 0.9, occluder + 1.8, r);
+            radiance *= mix(1.0, lit, u.pointShadow.w);
+        }
         Lo += pbrContrib(N_, V, Lp, albedo, metallic, roughness, F0, radiance);
     }
 
@@ -330,6 +349,16 @@ void main() {
     } else {
         ambient = u.ambient.xyz * albedo * ao;
     }
+    // M73 — light from a LightVolume. Metals have no diffuse response, so they
+    // also sample along the reflection, which is what lets them pick it up.
+    if (u.volumeMin.w > 0.0) {
+        vec3 uvwDiffuse  = (vWorldPos + N_ * 0.35 - u.volumeMin.xyz) * u.volumeInvSize.xyz;
+        vec3 uvwSpecular = (vWorldPos + reflect(-V, N_) * 0.8 - u.volumeMin.xyz) * u.volumeInvSize.xyz;
+        vec3 diffuseV  = texture(uLightVolume, uvwDiffuse).rgb * albedo * (1.0 - metallic);
+        vec3 specularV = texture(uLightVolume, uvwSpecular).rgb * F0;
+        Lo += (diffuseV + specularV) * u.volumeMin.w * ao;
+    }
+
     vec3 emissive = u.emissive.xyz * texture(uEmissiveMap, uv).rgb;
     vec3 color = ambient + Lo + emissive;
 
@@ -481,6 +510,21 @@ void main() {
     gl_Position = u.mvp * vec4(localPos, 1.0);
 }
 )GLSL";
+}
+
+// The lit fragment shader with its emissive term replaced by `hookGlsl`, which
+// defines `vec3 surfaceEmission(vec3 worldPos, vec3 params);`. `params` is
+// Material::emissive, so a surface can animate from the CPU: molten veins, lava,
+// anything that glows in a pattern rather than a flat colour.
+inline std::string standardLitFragSourceWithEmission(const std::string& hookGlsl) {
+    const std::string term = "vec3 emissive = u.emissive.xyz * texture(uEmissiveMap, uv).rgb;";
+    const std::string entry = "void main() {";
+
+    std::string source = standardLitFragSource();
+    source.replace(source.find(term), term.size(),
+                   "vec3 emissive = surfaceEmission(vWorldPos, u.emissive.xyz);");
+    source.insert(source.find(entry), hookGlsl + "\n");
+    return source;
 }
 
 }  // namespace iron

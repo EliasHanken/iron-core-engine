@@ -150,6 +150,28 @@ iron_add_test(test_tonemap test_tonemap.cpp)
 iron_add_test(test_pbr test_pbr.cpp)
 iron_add_test(test_ibl test_ibl.cpp)
 iron_add_test(test_bloom test_bloom.cpp)
+iron_add_test(test_volume_bounds test_volume_bounds.cpp)
+iron_add_test(test_fluid_step test_fluid_step.cpp)
+if (IRON_RENDER_BACKEND STREQUAL "vulkan")
+  iron_add_test(test_gpu_particles test_gpu_particles.cpp)
+endif()
+
+# test_genie exercises the game-side timeline, terrain and shaders directly.
+add_executable(test_genie
+  test_genie.cpp
+  ${CMAKE_SOURCE_DIR}/games/16-genie/GenieScene.cpp)
+target_link_libraries(test_genie PRIVATE ironcore gamecommon)
+target_include_directories(test_genie PRIVATE ${CMAKE_SOURCE_DIR}/games/16-genie)
+add_test(NAME test_genie COMMAND test_genie)
+
+# test_iron_core exercises the game-side timeline, geometry and shaders directly.
+add_executable(test_iron_core
+  test_iron_core.cpp
+  ${CMAKE_SOURCE_DIR}/games/17-iron-core/IronScene.cpp)
+target_link_libraries(test_iron_core PRIVATE ironcore gamecommon)
+target_include_directories(test_iron_core PRIVATE ${CMAKE_SOURCE_DIR}/games/17-iron-core)
+target_compile_definitions(test_iron_core PRIVATE IRON_REPO_ROOT="${CMAKE_SOURCE_DIR}")
+add_test(NAME test_iron_core COMMAND test_iron_core)
 iron_add_test(test_ssao test_ssao.cpp)
 iron_add_test(test_parallax test_parallax.cpp)
 iron_add_test(test_reflection_probe test_reflection_probe.cpp)

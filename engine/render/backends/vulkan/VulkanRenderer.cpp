@@ -3,6 +3,7 @@
 // and the per-frame pipeline.
 
 #include "render/backends/vulkan/VulkanRenderer.h"
+#include "render/backends/vulkan/VkLightVolume.h"
 #include "render/backends/vulkan/VkUtils.h"
 #include "render/PostChainPlan.h"
 #include "core/Log.h"
@@ -20,6 +21,10 @@ VulkanRenderer::VulkanRenderer() = default;
 VulkanRenderer::~VulkanRenderer() {
     if (initOk_) {
         vkDeviceWaitIdle(context_.device());
+        destroyCaptureBuffer();
+        blackVolume_.destroy(context_);
+        if (volumeSampler_) vkDestroySampler(context_.device(), volumeSampler_, nullptr);
+        if (depthSampler_) vkDestroySampler(context_.device(), depthSampler_, nullptr);
         meshes_.destroyAll(context_);
         skinnedMeshes_.destroyAll(context_);  // M23
         textures_.destroyAll(context_);
@@ -166,6 +171,11 @@ bool VulkanRenderer::init(Window& window) {
         VK_CHECK(vkQueueSubmit(context_.graphicsQueue(), 1, &submit, VK_NULL_HANDLE));
         VK_CHECK(vkQueueWaitIdle(context_.graphicsQueue()));
         vkDestroyCommandPool(context_.device(), pool, nullptr);
+    }
+
+    if (!initVolumeDefaults()) {
+        Log::error("VulkanRenderer: volume defaults failed");
+        return false;
     }
 
     initOk_ = true;
@@ -383,8 +393,19 @@ struct LitUbo {
     Vec4 probeBoxMin;         // 16  M49 — xyz = probe AABB min (world); w = tessellation factor (M50b)
     Vec4 probeBoxMax;         // 16  M49 — xyz = probe AABB max (world); w unused
     Vec4 probeCenter;         // 16  M49 — xyz = probe center; w = probeActive (0/1)
+    Vec4 volumeMin;           // 16  M73 — xyz = LightVolume min; w = intensity
+    Vec4 volumeInvSize;       // 16  M73 — xyz = 1 / LightVolume extent
+    Vec4 pointShadow;         // 16  M73 — xyz = shadow centre; w = strength
 };
-static_assert(sizeof(LitUbo) == 1008, "LitUbo std140 layout (M49 reflection probes)");
+static_assert(sizeof(LitUbo) == 1056, "LitUbo std140 layout (M73 light volume, point shadow)");
+
+void fillLightVolumeUbo(LitUbo& ubo, const LightVolume* volume, float intensity) {
+    if (!volume) return;
+    const VolumeBounds& b = volume->bounds();
+    ubo.volumeMin = Vec4{b.min.x, b.min.y, b.min.z, intensity};
+    ubo.volumeInvSize = Vec4{1.0f / (b.max.x - b.min.x), 1.0f / (b.max.y - b.min.y),
+                             1.0f / (b.max.z - b.min.z), 0.0f};
+}
 
 // Extracts the camera's world-space position from a view matrix.
 // Assumes view is a pure rigid transform [R | t; 0 0 0 1] (rotation +
@@ -597,6 +618,7 @@ void VulkanRenderer::beginFrame(Vec3 clearColor, const DirectionalLight& light,
     sceneDraws_.clear();
     skinnedDraws_.clear();
     skinnedBoneMatricesStash_.clear();
+    deferredSceneCompute_.clear();
     deferredScenePass_.clear();
     deferredUiPass_.clear();
     pendingDebugFlush_ = false;
@@ -635,6 +657,9 @@ void VulkanRenderer::recordSceneDraw(VkCommandBuffer cb, const DrawCall& call) {
         pendingShadowBias_,
     };
     ubo.materialParams2 = Vec4{call.material.metallic, call.material.ao, call.material.normalScale, 0.0f};
+    fillLightVolumeUbo(ubo, lightVolume_, lightVolumeIntensity_);
+    ubo.pointShadow = Vec4{pointShadowCenter_.x, pointShadowCenter_.y, pointShadowCenter_.z,
+                           pointShadowStrength_};
     ubo.materialParams2.w = cubemaps_.has(pendingIrradiance_) ? 1.0f : 0.0f;  // M46b iblEnabled
     // M50a — pack heightScale into baseColorFactor.w; 0 when no height map (POM no-op).
     const float pomScale = textures_.has(call.material.heightMap) ? call.material.heightScale : 0.0f;
@@ -847,6 +872,7 @@ void VulkanRenderer::recordSceneDraw(VkCommandBuffer cb, const DrawCall& call) {
     writes[12].pImageInfo      = &imgInfos[11];
     vkUpdateDescriptorSets(context_.device(), 13, writes, 0, nullptr);
 
+    bindLightVolume(set);
     vkCmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_GRAPHICS,
                             sh.pipelineLayout, 0, 1, &set, 0, nullptr);
 
@@ -891,6 +917,9 @@ void VulkanRenderer::recordSkinnedDraw(VkCommandBuffer cb,
         pendingShadowBias_,
     };
     ubo.materialParams2 = Vec4{call.material.metallic, call.material.ao, call.material.normalScale, 0.0f};
+    fillLightVolumeUbo(ubo, lightVolume_, lightVolumeIntensity_);
+    ubo.pointShadow = Vec4{pointShadowCenter_.x, pointShadowCenter_.y, pointShadowCenter_.z,
+                           pointShadowStrength_};
     ubo.materialParams2.w = cubemaps_.has(pendingIrradiance_) ? 1.0f : 0.0f;  // M46b iblEnabled
     // M50a — pack heightScale into baseColorFactor.w; 0 when no height map (POM no-op).
     const float pomScale = textures_.has(call.material.heightMap) ? call.material.heightScale : 0.0f;
@@ -1104,6 +1133,7 @@ void VulkanRenderer::recordSkinnedDraw(VkCommandBuffer cb,
     writes[13].pImageInfo      = &imgInfos[11];
     vkUpdateDescriptorSets(context_.device(), 14, writes, 0, nullptr);
 
+    bindLightVolume(set);
     vkCmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_GRAPHICS,
                             sh.pipelineLayout, 0, 1, &set, 0, nullptr);
 
@@ -1248,13 +1278,22 @@ void VulkanRenderer::endFrame() {
             recordSkinnedDraw(cb, skinnedDraws_[i], skinnedBoneMatricesStash_[i]);
         }
 
-        // Deferred scene callbacks (e.g. particles) fire here in the offscreen pass.
+        postProcess_.endScenePass(cb);
+
+        // Depth is complete and readable here, outside any render pass.
+        for (auto& fn : deferredSceneCompute_) {
+            fn(cb);
+        }
+        deferredSceneCompute_.clear();
+
+        // Transparent draws (e.g. particles) continue the same HDR image.
+        postProcess_.beginTransparentPass(cb);
+        setSceneViewport(cb, postProcess_.extent());
         for (auto& fn : deferredScenePass_) {
             fn(cb);
         }
         deferredScenePass_.clear();
-
-        postProcess_.endScenePass(cb);
+        postProcess_.endTransparentPass(cb);
     }
 
     // --- M36: derive per-frame active effects from actually-tagged draws ---
@@ -1320,6 +1359,16 @@ void VulkanRenderer::endFrame() {
         // Composite chain (Copy/Outline/GlowComposite/XRay) — UV-space; the
         // plain positive-height viewport set by beginViewportPass is correct.
         {
+            // The camera's motion since last frame, as a map from this frame's clip
+            // space to last frame's.
+            const Mat4 viewProjection = pendingProjection_ * pendingView_;
+            const Mat4 reprojection = hasPreviousViewProjection_
+                ? previousViewProjection_ * iron::inverse(viewProjection)
+                : Mat4::identity();
+            postProcess_.setCinematic(cinematic_, reprojection, cinematicFrame_++);
+            previousViewProjection_ = viewProjection;
+            hasPreviousViewProjection_ = true;
+
             const std::vector<PostPass> passes = planPostChain(activeKindsThisFrame);
             postProcess_.runChain(cb, passes, effects_, postProcess_.viewportExtent(),
                                   pendingExposure_, pendingBloomIntensity_,
@@ -1343,6 +1392,8 @@ void VulkanRenderer::endFrame() {
 
         postProcess_.endViewportPass(cb);
     }
+
+    const bool capturing = pendingCapture_ && recordCaptureCopy(cb);
 
     // --- M43a Pass 5: swapchain pass — blit the viewport image, then UI on top. ---
     {
@@ -1410,6 +1461,11 @@ void VulkanRenderer::endFrame() {
     submit.pSignalSemaphores = &renderFinished;
     VK_CHECK(vkQueueSubmit(context_.graphicsQueue(), 1, &submit, f.inFlight));
 
+    if (capturing) {
+        vkWaitForFences(context_.device(), 1, &f.inFlight, VK_TRUE, UINT64_MAX);
+        deliverCapture();
+    }
+
     VkPresentInfoKHR present{};
     present.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR;
     present.waitSemaphoreCount = 1;
@@ -1428,6 +1484,210 @@ void VulkanRenderer::endFrame() {
     }
 
     frames_.advance();
+}
+
+bool VulkanRenderer::recordCaptureCopy(VkCommandBuffer cb) {
+    const VkExtent2D extent = postProcess_.viewportExtent();
+    const VkDeviceSize bytes =
+        static_cast<VkDeviceSize>(extent.width) * extent.height * 4;
+
+    if (bytes != captureBytes_) {
+        destroyCaptureBuffer();
+
+        VkBufferCreateInfo info{};
+        info.sType       = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+        info.size        = bytes;
+        info.usage       = VK_BUFFER_USAGE_TRANSFER_DST_BIT;
+        info.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+
+        VmaAllocationCreateInfo alloc{};
+        alloc.usage = VMA_MEMORY_USAGE_AUTO;
+        alloc.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_RANDOM_BIT;
+        if (vmaCreateBuffer(context_.allocator(), &info, &alloc, &captureBuffer_,
+                            &captureAlloc_, nullptr) != VK_SUCCESS) {
+            Log::error("VulkanRenderer: capture buffer allocation failed");
+            captureBuffer_ = VK_NULL_HANDLE;
+            pendingCapture_ = nullptr;
+            return false;
+        }
+        captureBytes_ = bytes;
+    }
+    captureExtent_ = extent;
+
+    VkImageMemoryBarrier toSrc{};
+    toSrc.sType               = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+    toSrc.srcAccessMask       = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+    toSrc.dstAccessMask       = VK_ACCESS_TRANSFER_READ_BIT;
+    toSrc.oldLayout           = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    toSrc.newLayout           = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+    toSrc.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    toSrc.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    toSrc.image               = postProcess_.viewportColorImage();
+    toSrc.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    toSrc.subresourceRange.levelCount = 1;
+    toSrc.subresourceRange.layerCount = 1;
+    vkCmdPipelineBarrier(cb, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+                         VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, nullptr, 0, nullptr,
+                         1, &toSrc);
+
+    VkBufferImageCopy region{};
+    region.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    region.imageSubresource.layerCount = 1;
+    region.imageExtent = {extent.width, extent.height, 1};
+    vkCmdCopyImageToBuffer(cb, toSrc.image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                           captureBuffer_, 1, &region);
+
+    VkImageMemoryBarrier toRead = toSrc;
+    toRead.srcAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+    toRead.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+    toRead.oldLayout     = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+    toRead.newLayout     = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    vkCmdPipelineBarrier(cb, VK_PIPELINE_STAGE_TRANSFER_BIT,
+                         VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0, 0, nullptr, 0, nullptr,
+                         1, &toRead);
+
+    VkBufferMemoryBarrier toHost{};
+    toHost.sType               = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER;
+    toHost.srcAccessMask       = VK_ACCESS_TRANSFER_WRITE_BIT;
+    toHost.dstAccessMask       = VK_ACCESS_HOST_READ_BIT;
+    toHost.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    toHost.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    toHost.buffer              = captureBuffer_;
+    toHost.size                = VK_WHOLE_SIZE;
+    vkCmdPipelineBarrier(cb, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_HOST_BIT,
+                         0, 0, nullptr, 1, &toHost, 0, nullptr);
+    return true;
+}
+
+void VulkanRenderer::deliverCapture() {
+    FrameCaptureFn fn = std::move(pendingCapture_);
+    pendingCapture_ = nullptr;
+
+    vmaInvalidateAllocation(context_.allocator(), captureAlloc_, 0, VK_WHOLE_SIZE);
+    void* mapped = nullptr;
+    if (vmaMapMemory(context_.allocator(), captureAlloc_, &mapped) != VK_SUCCESS) {
+        Log::error("VulkanRenderer: capture buffer map failed");
+        return;
+    }
+
+    const VkFormat format = swapchain_.colorFormat();
+    const bool bgra = format == VK_FORMAT_B8G8R8A8_SRGB || format == VK_FORMAT_B8G8R8A8_UNORM;
+    auto* pixels = static_cast<std::uint8_t*>(mapped);
+    for (VkDeviceSize i = 0; i < captureBytes_; i += 4) {
+        if (bgra) std::swap(pixels[i], pixels[i + 2]);
+        pixels[i + 3] = 255;
+    }
+
+    fn(pixels, static_cast<int>(captureExtent_.width),
+       static_cast<int>(captureExtent_.height));
+    vmaUnmapMemory(context_.allocator(), captureAlloc_);
+}
+
+void VulkanRenderer::destroyCaptureBuffer() {
+    if (captureBuffer_) vmaDestroyBuffer(context_.allocator(), captureBuffer_, captureAlloc_);
+    captureBuffer_ = VK_NULL_HANDLE;
+    captureAlloc_  = VK_NULL_HANDLE;
+    captureBytes_  = 0;
+}
+
+CubemapHandle VulkanRenderer::bakeSky(const std::string& skyGlsl, int faceSize) {
+    return iblBaker_.bakeSky(context_, cubemaps_, skyGlsl, faceSize);
+}
+
+void VulkanRenderer::setPointShadow(VkImageView map, Vec3 center, float strength) {
+    pointShadowView_ = map;
+    pointShadowCenter_ = center;
+    pointShadowStrength_ = map ? strength : 0.0f;
+}
+
+void VulkanRenderer::setLightVolume(const LightVolume* volume, float intensity) {
+    lightVolume_ = volume;
+    lightVolumeIntensity_ = volume ? intensity : 0.0f;
+}
+
+void VulkanRenderer::bindLightVolume(VkDescriptorSet set) {
+    VkDescriptorImageInfo shadowImage{};
+    const auto& white = textures_.get(textures_.whiteTexture());
+    shadowImage.sampler     = volumeSampler_;
+    shadowImage.imageView   = pointShadowView_ ? pointShadowView_ : white.view;
+    shadowImage.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+
+    VkDescriptorImageInfo image{};
+    image.sampler = volumeSampler_;
+    image.imageView = lightVolume_ ? static_cast<const VkLightVolume*>(lightVolume_)->resolvedView()
+                                   : blackVolume_.view();
+    image.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+
+    VkWriteDescriptorSet writes[2]{};
+    for (int i = 0; i < 2; ++i) {
+        writes[i].sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        writes[i].dstSet          = set;
+        writes[i].dstBinding      = 14 + static_cast<std::uint32_t>(i);
+        writes[i].descriptorType  = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        writes[i].descriptorCount = 1;
+    }
+    writes[0].pImageInfo = &image;
+    writes[1].pImageInfo = &shadowImage;
+    vkUpdateDescriptorSets(context_.device(), 2, writes, 0, nullptr);
+}
+
+bool VulkanRenderer::initVolumeDefaults() {
+    VkSamplerCreateInfo info{};
+    info.sType        = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
+    info.magFilter    = VK_FILTER_LINEAR;
+    info.minFilter    = VK_FILTER_LINEAR;
+    info.addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+    info.addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+    info.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+    VK_CHECK(vkCreateSampler(context_.device(), &info, nullptr, &volumeSampler_));
+
+    info.magFilter = VK_FILTER_NEAREST;
+    info.minFilter = VK_FILTER_NEAREST;
+    VK_CHECK(vkCreateSampler(context_.device(), &info, nullptr, &depthSampler_));
+
+    if (!blackVolume_.create(context_, VolumeSize{1, 1, 1}, VK_FORMAT_R16G16B16A16_SFLOAT,
+                             VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT)) {
+        return false;
+    }
+
+    VkCommandPoolCreateInfo poolInfo{};
+    poolInfo.sType            = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
+    poolInfo.queueFamilyIndex = context_.graphicsFamily();
+    poolInfo.flags            = VK_COMMAND_POOL_CREATE_TRANSIENT_BIT;
+    VkCommandPool pool = VK_NULL_HANDLE;
+    VK_CHECK(vkCreateCommandPool(context_.device(), &poolInfo, nullptr, &pool));
+
+    VkCommandBufferAllocateInfo cbInfo{};
+    cbInfo.sType              = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
+    cbInfo.commandPool        = pool;
+    cbInfo.level              = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+    cbInfo.commandBufferCount = 1;
+    VkCommandBuffer cb = VK_NULL_HANDLE;
+    VK_CHECK(vkAllocateCommandBuffers(context_.device(), &cbInfo, &cb));
+
+    VkCommandBufferBeginInfo begin{};
+    begin.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+    begin.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+    VK_CHECK(vkBeginCommandBuffer(cb, &begin));
+
+    blackVolume_.transition(cb, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                            VK_PIPELINE_STAGE_TRANSFER_BIT, VK_ACCESS_TRANSFER_WRITE_BIT);
+    const VkClearColorValue black{};
+    const VkImageSubresourceRange range{VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+    vkCmdClearColorImage(cb, blackVolume_.image(), VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &black, 1,
+                         &range);
+    blackVolume_.transition(cb, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                            VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, VK_ACCESS_SHADER_READ_BIT);
+
+    VK_CHECK(vkEndCommandBuffer(cb));
+    VkSubmitInfo submit{};
+    submit.sType              = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+    submit.commandBufferCount = 1;
+    submit.pCommandBuffers    = &cb;
+    VK_CHECK(vkQueueSubmit(context_.graphicsQueue(), 1, &submit, VK_NULL_HANDLE));
+    VK_CHECK(vkQueueWaitIdle(context_.graphicsQueue()));
+    vkDestroyCommandPool(context_.device(), pool, nullptr);
+    return true;
 }
 
 void VulkanRenderer::setViewport(int width, int height) {
@@ -1462,6 +1722,10 @@ VkRenderPass VulkanRenderer::scenePass() const {
     return postProcess_.scenePass();
 }
 
+VkRenderPass VulkanRenderer::transparentPass() const { return postProcess_.transparentPass(); }
+VkImageView VulkanRenderer::sceneDepthView() const { return postProcess_.sceneDepthView(); }
+VkExtent2D VulkanRenderer::sceneExtent() const { return postProcess_.extent(); }
+
 VkRenderPass VulkanRenderer::swapchainPass() const {
     // The swapchain (final) render pass — only the viewport blit and ImGui
     // actually record into this pass. Composite, debug-line, and HUD pipelines
@@ -1477,6 +1741,11 @@ VkSampler   VulkanRenderer::viewportSampler()   const { return postProcess_.view
 
 void VulkanRenderer::resizeViewport(uint32_t width, uint32_t height) {
     postProcess_.resizeViewport(context_, VkExtent2D{width, height});
+}
+
+void VulkanRenderer::enqueueSceneCompute(std::function<void(VkCommandBuffer)> fn) {
+    if (skipFrame_) return;
+    deferredSceneCompute_.push_back(std::move(fn));
 }
 
 void VulkanRenderer::enqueueDeferredScenePass(

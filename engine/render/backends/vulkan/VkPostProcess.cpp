@@ -45,6 +45,100 @@ void main() {
 // kCopyFrag; the only additions are the uBloom binding, the bloomIntensity push
 // field, and the `scene + bloom * intensity` add. (M47) M48 adds the uSsao
 // binding (2), the aoStrength push field, and the `scene * ao` multiply.
+// A film camera, in the order light meets it: the shutter smears the image, the
+// lens splits colour and streaks highlights, and the grade and grain come last.
+const char* const kCinematicFrag = R"(#version 450
+layout(location = 0) in vec2 vUV;
+layout(location = 0) out vec4 outColor;
+layout(set = 0, binding = 0) uniform sampler2D uScene;
+layout(set = 0, binding = 1) uniform sampler2D uBloom;
+layout(set = 0, binding = 2) uniform sampler2D uDepth;
+layout(set = 0, binding = 3) uniform sampler2D uStreakBloom;  // A low, soft bloom mip.
+layout(push_constant) uniform Push {
+    mat4 reprojection;
+    vec4 a;  // exposure, bloom, motion blur, chromatic aberration
+    vec4 b;  // vignette, grain, streak, frame
+    vec4 c;  // shadow tint, saturation
+    vec4 d;  // highlight tint, contrast
+} pc;
+
+vec3 aces(vec3 x) {
+    return clamp((x * (2.51 * x + 0.03)) / (x * (2.43 * x + 0.59) + 0.14), 0.0, 1.0);
+}
+
+float noise(vec2 p) {
+    return fract(52.9829189 * fract(dot(p, vec2(0.06711056, 0.00583715))));
+}
+
+// Camera motion blur: where this pixel was last frame, from its depth.
+vec2 cameraVelocity(vec2 uv) {
+    float depth = texelFetch(uDepth, ivec2(uv * vec2(textureSize(uDepth, 0))), 0).r;
+    vec4 clip = vec4(uv.x * 2.0 - 1.0, 1.0 - uv.y * 2.0, depth, 1.0);
+    vec4 previous = pc.reprojection * clip;
+    previous /= previous.w;
+    vec2 previousUv = vec2(previous.x * 0.5 + 0.5, 0.5 - previous.y * 0.5);
+    return (uv - previousUv) * pc.a.z;
+}
+
+vec3 sampleHdr(vec2 uv) {
+    return texture(uScene, uv).rgb + texture(uBloom, uv).rgb * pc.a.y;
+}
+
+vec3 shutter(vec2 uv, vec2 velocity, float jitter) {
+    const int STEPS = 8;
+    float speed = length(velocity * vec2(textureSize(uScene, 0)));
+    if (speed < 0.5) return sampleHdr(uv);
+    vec3 sum = vec3(0.0);
+    for (int i = 0; i < STEPS; ++i) {
+        float t = (float(i) + jitter) / float(STEPS) - 0.5;
+        sum += sampleHdr(uv + velocity * t);
+    }
+    return sum / float(STEPS);
+}
+
+void main() {
+    vec2 centered = vUV - 0.5;
+    float radial = dot(centered, centered);
+    float jitter = noise(gl_FragCoord.xy + pc.b.w * 5.588238);
+
+    vec2 velocity = clamp(cameraVelocity(vUV), vec2(-0.04), vec2(0.04));
+
+    // Colour splits apart toward the edges of the lens.
+    vec2 split = centered * radial * pc.a.w * 4.0;
+    vec3 hdr = vec3(shutter(vUV + split, velocity, jitter).r,
+                    shutter(vUV, velocity, jitter).g,
+                    shutter(vUV - split, velocity, jitter).b);
+
+    // Anamorphic streak: bright light smeared sideways, tinted cool.
+    if (pc.b.z > 0.0) {
+        vec3 streak = vec3(0.0);
+        float total = 0.0;
+        float texel = 1.0 / float(textureSize(uStreakBloom, 0).x);
+        for (int i = -24; i <= 24; ++i) {
+            float weight = exp(-abs(float(i)) * 0.11);
+            streak += texture(uStreakBloom, vUV + vec2(float(i) * texel * 1.5, 0.0)).rgb * weight;
+            total += weight;
+        }
+        hdr += streak / total * vec3(0.55, 0.65, 1.0) * pc.b.z;
+    }
+
+    vec3 color = aces(hdr * pc.a.x);
+
+    // The grade works on the tonemapped image, as a colourist would.
+    float luma = dot(color, vec3(0.2126, 0.7152, 0.0722));
+    color *= mix(pc.c.rgb, pc.d.rgb, smoothstep(0.0, 0.6, luma));
+    color = mix(vec3(luma), color, pc.c.a);
+    color = clamp((color - 0.18) * pc.d.a + 0.18, 0.0, 1.0);
+
+    color *= 1.0 - pc.b.x * smoothstep(0.08, 0.72, radial * 2.0);
+
+    float grain = noise(gl_FragCoord.xy * 1.37 + pc.b.w * 17.31) - 0.5;
+    color += grain * pc.b.y * (1.0 - luma * 0.7) * 0.09;
+
+    outColor = vec4(clamp(color, 0.0, 1.0), 1.0);
+}
+)";
+
 const char* kCompositeFrag = R"(#version 450
 layout(location = 0) in vec2 vUV;
 layout(location = 0) out vec4 outColor;
@@ -504,6 +598,7 @@ bool VkPostProcess::init(VkContext& ctx, VkFormat colorFormat, VkFormat depthFor
     // by createTargets(ctx) above and rebuilt on resize in createTargets()/destroyTargets();
     // the pipelines/layouts/set-layout are persistent (built once here, torn down in destroy()).
     if (!createBloomPipelines())                   { destroy(ctx); return false; }
+    if (!createCinematicPipeline(ctx))             { destroy(ctx); return false; }
 
     // M48 SSAO pipelines: built against ssaoPass_, which createTargets(ctx) above
     // created (via createSsaoTargets). Persistent (torn down in destroy()).
@@ -578,6 +673,11 @@ void VkPostProcess::destroy(VkContext& ctx) {
     blitDescSet_ = VK_NULL_HANDLE;  // freed with descPool_ below
 
     // Copy (composite) pipeline objects.
+    if (cinematicPipeline_) { vkDestroyPipeline(ctx.device(), cinematicPipeline_, nullptr); cinematicPipeline_ = VK_NULL_HANDLE; }
+    if (cinematicLayout_) { vkDestroyPipelineLayout(ctx.device(), cinematicLayout_, nullptr); cinematicLayout_ = VK_NULL_HANDLE; }
+    if (cinematicSetLayout_) { vkDestroyDescriptorSetLayout(ctx.device(), cinematicSetLayout_, nullptr); cinematicSetLayout_ = VK_NULL_HANDLE; }
+    if (cinematicPool_) { vkDestroyDescriptorPool(ctx.device(), cinematicPool_, nullptr); cinematicPool_ = VK_NULL_HANDLE; }
+    if (cinematicDepthSampler_) { vkDestroySampler(ctx.device(), cinematicDepthSampler_, nullptr); cinematicDepthSampler_ = VK_NULL_HANDLE; }
     if (copyPipeline_)   { vkDestroyPipeline(ctx.device(), copyPipeline_, nullptr); copyPipeline_ = VK_NULL_HANDLE; }
     if (copyPipeLayout_) { vkDestroyPipelineLayout(ctx.device(), copyPipeLayout_, nullptr); copyPipeLayout_ = VK_NULL_HANDLE; }
     if (copySetLayout_)  { vkDestroyDescriptorSetLayout(ctx.device(), copySetLayout_, nullptr); copySetLayout_ = VK_NULL_HANDLE; }
@@ -600,6 +700,7 @@ void VkPostProcess::destroy(VkContext& ctx) {
     if (glowPass_)     { vkDestroyRenderPass(ctx.device(), glowPass_, nullptr);     glowPass_ = VK_NULL_HANDLE; }
     if (maskPass_)     { vkDestroyRenderPass(ctx.device(), maskPass_, nullptr);     maskPass_ = VK_NULL_HANDLE; }
     if (scenePass_)    { vkDestroyRenderPass(ctx.device(), scenePass_, nullptr);    scenePass_ = VK_NULL_HANDLE; }
+    if (transparentPass_) { vkDestroyRenderPass(ctx.device(), transparentPass_, nullptr); transparentPass_ = VK_NULL_HANDLE; }
 }
 
 bool VkPostProcess::resize(VkContext& ctx, VkExtent2D extent) {
@@ -643,6 +744,7 @@ bool VkPostProcess::resize(VkContext& ctx, VkExtent2D extent) {
         writes[2].descriptorCount = 1;
         writes[2].pImageInfo      = &imgInfos[2];
         vkUpdateDescriptorSets(ctx.device(), 3, writes, 0, nullptr);
+        writeCinematicSet(ctx);
     }
 
     // Re-write the outline descriptor set to point at the new views.
@@ -784,6 +886,20 @@ void VkPostProcess::endScenePass(VkCommandBuffer cb) const {
     vkCmdEndRenderPass(cb);
 }
 
+void VkPostProcess::beginTransparentPass(VkCommandBuffer cb) const {
+    VkRenderPassBeginInfo rpBegin{};
+    rpBegin.sType             = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
+    rpBegin.renderPass        = transparentPass_;
+    rpBegin.framebuffer       = transparentFb_;
+    rpBegin.renderArea.offset = {0, 0};
+    rpBegin.renderArea.extent = extent_;
+    vkCmdBeginRenderPass(cb, &rpBegin, VK_SUBPASS_CONTENTS_INLINE);
+}
+
+void VkPostProcess::endTransparentPass(VkCommandBuffer cb) const {
+    vkCmdEndRenderPass(cb);
+}
+
 void VkPostProcess::beginViewportPass(VkCommandBuffer cb, const float clearColor[4]) const {
     VkClearValue clears[2]{};
     clears[0].color.float32[0] = clearColor[0];
@@ -821,8 +937,56 @@ void VkPostProcess::endViewportPass(VkCommandBuffer cb) const {
     vkCmdEndRenderPass(cb);
 }
 
+void VkPostProcess::setCinematic(const CinematicSettings& settings, const Mat4& reprojection,
+                                 std::uint32_t frame) {
+    cinematic_ = settings;
+    cinematicReprojection_ = reprojection;
+    cinematicFrame_ = frame;
+}
+
+void VkPostProcess::recordCinematic(VkCommandBuffer cb, float exposure, float bloomIntensity) const {
+    struct Push {
+        Mat4  reprojection;
+        float a[4];  // exposure, bloom, motion blur, chromatic aberration
+        float b[4];  // vignette, grain, streak, frame
+        float c[4];  // shadow tint, saturation
+        float d[4];  // highlight tint, contrast
+    };
+    static_assert(sizeof(Push) == 128, "Vulkan guarantees only 128 bytes of push constants");
+
+    const CinematicSettings& s = cinematic_;
+    Push push{};
+    push.reprojection = cinematicReprojection_;
+    push.a[0] = exposure;
+    push.a[1] = bloomIntensity;
+    push.a[2] = s.motionBlur;
+    push.a[3] = s.chromaticAberration;
+    push.b[0] = s.vignette;
+    push.b[1] = s.grain;
+    push.b[2] = s.streak;
+    push.b[3] = static_cast<float>(cinematicFrame_ % 4096u);
+    push.c[0] = s.shadowTint.x;
+    push.c[1] = s.shadowTint.y;
+    push.c[2] = s.shadowTint.z;
+    push.c[3] = s.saturation;
+    push.d[0] = s.highlightTint.x;
+    push.d[1] = s.highlightTint.y;
+    push.d[2] = s.highlightTint.z;
+    push.d[3] = s.contrast;
+
+    vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, cinematicPipeline_);
+    vkCmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, cinematicLayout_, 0, 1,
+                            &cinematicSet_, 0, nullptr);
+    vkCmdPushConstants(cb, cinematicLayout_, VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(Push), &push);
+    vkCmdDraw(cb, 3, 1, 0, 0);
+}
+
 void VkPostProcess::recordComposite(VkCommandBuffer cb, float exposure,
                                     float bloomIntensity, float aoStrength) const {
+    if (cinematic_.enabled && cinematicPipeline_ != VK_NULL_HANDLE) {
+        recordCinematic(cb, exposure, bloomIntensity);
+        return;
+    }
     vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, copyPipeline_);
     vkCmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_GRAPHICS,
                             copyPipeLayout_, 0, 1, &copyDescSet_, 0, nullptr);
@@ -1013,7 +1177,8 @@ bool VkPostProcess::createTargets(VkContext& ctx) {
     deps[2].srcSubpass    = 0;
     deps[2].dstSubpass    = VK_SUBPASS_EXTERNAL;
     deps[2].srcStageMask  = VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT;
-    deps[2].dstStageMask  = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
+    deps[2].dstStageMask  = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT |
+                            VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT;  // Between-pass compute.
     deps[2].srcAccessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
     deps[2].dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
 
@@ -1032,6 +1197,49 @@ bool VkPostProcess::createTargets(VkContext& ctx) {
     if (scenePass_ == VK_NULL_HANDLE)
         VK_CHECK(vkCreateRenderPass(ctx.device(), &rpInfo, nullptr, &scenePass_));
 
+    // --- Transparent scene pass: continues the scene image with depth read-only ---
+    // Colour stays in SHADER_READ_ONLY_OPTIMAL between the passes because that's
+    // the scene pass's finalLayout, which the composite relies on.
+    if (transparentPass_ == VK_NULL_HANDLE) {
+        VkAttachmentDescription loaded[2] = {attachments[0], attachments[1]};
+        loaded[0].loadOp        = VK_ATTACHMENT_LOAD_OP_LOAD;
+        loaded[0].initialLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        loaded[1].loadOp        = VK_ATTACHMENT_LOAD_OP_LOAD;
+        loaded[1].initialLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL;
+
+        VkAttachmentReference readOnlyDepthRef{1, VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL};
+        VkSubpassDescription transparentSubpass = subpass;
+        transparentSubpass.pDepthStencilAttachment = &readOnlyDepthRef;
+
+        VkSubpassDependency transparentDeps[2]{};
+        // Entry: the opaque pass and any compute between the passes are finished.
+        transparentDeps[0].srcSubpass    = VK_SUBPASS_EXTERNAL;
+        transparentDeps[0].dstSubpass    = 0;
+        transparentDeps[0].srcStageMask  = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT |
+                                           VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT |
+                                           VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT;
+        transparentDeps[0].dstStageMask  = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT |
+                                           VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT |
+                                           VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT |
+                                           VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
+        transparentDeps[0].srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT |
+                                           VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT |
+                                           VK_ACCESS_SHADER_WRITE_BIT;
+        transparentDeps[0].dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_READ_BIT |
+                                           VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT |
+                                           VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT |
+                                           VK_ACCESS_SHADER_READ_BIT;
+        // Exit: the composite and bloom can sample colour.
+        transparentDeps[1] = deps[1];
+
+        VkRenderPassCreateInfo transparentInfo = rpInfo;
+        transparentInfo.pAttachments    = loaded;
+        transparentInfo.pSubpasses      = &transparentSubpass;
+        transparentInfo.dependencyCount = 2;
+        transparentInfo.pDependencies   = transparentDeps;
+        VK_CHECK(vkCreateRenderPass(ctx.device(), &transparentInfo, nullptr, &transparentPass_));
+    }
+
     // --- Scene framebuffer ---
     {
         VkImageView views[2] = {sceneColorView_, sceneDepthView_};
@@ -1044,6 +1252,8 @@ bool VkPostProcess::createTargets(VkContext& ctx) {
         fbInfo.height          = extent_.height;
         fbInfo.layers          = 1;
         VK_CHECK(vkCreateFramebuffer(ctx.device(), &fbInfo, nullptr, &sceneFb_));
+        fbInfo.renderPass = transparentPass_;
+        VK_CHECK(vkCreateFramebuffer(ctx.device(), &fbInfo, nullptr, &transparentFb_));
     }
 
     // -----------------------------------------------------------------------
@@ -1342,6 +1552,7 @@ void VkPostProcess::destroyTargets(VkContext& ctx) {
 
     // Scene offscreen target.
     if (sceneFb_)         { vkDestroyFramebuffer(ctx.device(), sceneFb_, nullptr); sceneFb_ = VK_NULL_HANDLE; }
+    if (transparentFb_)   { vkDestroyFramebuffer(ctx.device(), transparentFb_, nullptr); transparentFb_ = VK_NULL_HANDLE; }
     if (sceneColorView_)  { vkDestroyImageView(ctx.device(), sceneColorView_, nullptr); sceneColorView_ = VK_NULL_HANDLE; }
     if (sceneDepthView_)  { vkDestroyImageView(ctx.device(), sceneDepthView_, nullptr); sceneDepthView_ = VK_NULL_HANDLE; }
     if (sceneColor_)      { vmaDestroyImage(ctx.allocator(), sceneColor_, sceneColorAlloc_); sceneColor_ = VK_NULL_HANDLE; sceneColorAlloc_ = VK_NULL_HANDLE; }
@@ -1794,7 +2005,8 @@ bool VkPostProcess::createViewportTarget(VkContext& ctx) {
         iInfo.samples       = VK_SAMPLE_COUNT_1_BIT;
         iInfo.tiling        = VK_IMAGE_TILING_OPTIMAL;
         iInfo.usage         = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT |
-                              VK_IMAGE_USAGE_SAMPLED_BIT;
+                              VK_IMAGE_USAGE_SAMPLED_BIT |
+                              VK_IMAGE_USAGE_TRANSFER_SRC_BIT;  // Frame capture.
         iInfo.sharingMode   = VK_SHARING_MODE_EXCLUSIVE;
         iInfo.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
 
@@ -1967,6 +2179,161 @@ bool VkPostProcess::resizeViewport(VkContext& ctx, VkExtent2D extent) {
         vkUpdateDescriptorSets(ctx.device(), 1, &write, 0, nullptr);
     }
     return true;
+}
+
+const char* kCinematicSrc() { return kCinematicFrag; }
+
+void VkPostProcess::writeCinematicSet(VkContext& ctx) {
+    if (cinematicSet_ == VK_NULL_HANDLE) return;
+
+    VkDescriptorImageInfo images[4]{};
+    images[0] = {bloomSampler_, sceneColorView_, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+    images[1] = {bloomSampler_, bloomMipViews_[0], VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+    images[2] = {cinematicDepthSampler_, sceneDepthView_, VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL};
+    const int streakMip = bloomMipViews_[2] != VK_NULL_HANDLE ? 2 : 0;
+    images[3] = {bloomSampler_, bloomMipViews_[streakMip], VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+
+    VkWriteDescriptorSet writes[4]{};
+    for (std::uint32_t i = 0; i < 4; ++i) {
+        writes[i].sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        writes[i].dstSet          = cinematicSet_;
+        writes[i].dstBinding      = i;
+        writes[i].descriptorType  = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        writes[i].descriptorCount = 1;
+        writes[i].pImageInfo      = &images[i];
+    }
+    vkUpdateDescriptorSets(ctx.device(), 4, writes, 0, nullptr);
+}
+
+bool VkPostProcess::createCinematicPipeline(VkContext& ctx) {
+    VkSamplerCreateInfo samplerInfo{};
+    samplerInfo.sType        = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
+    samplerInfo.magFilter    = VK_FILTER_NEAREST;
+    samplerInfo.minFilter    = VK_FILTER_NEAREST;
+    samplerInfo.addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+    samplerInfo.addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+    samplerInfo.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+    VK_CHECK(vkCreateSampler(ctx.device(), &samplerInfo, nullptr, &cinematicDepthSampler_));
+
+    VkDescriptorSetLayoutBinding b[4]{};
+    for (std::uint32_t i = 0; i < 4; ++i) {
+        b[i].binding         = i;
+        b[i].descriptorType  = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        b[i].descriptorCount = 1;
+        b[i].stageFlags      = VK_SHADER_STAGE_FRAGMENT_BIT;
+    }
+    VkDescriptorSetLayoutCreateInfo setInfo{};
+    setInfo.sType        = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+    setInfo.bindingCount = 4;
+    setInfo.pBindings    = b;
+    VK_CHECK(vkCreateDescriptorSetLayout(ctx.device(), &setInfo, nullptr, &cinematicSetLayout_));
+
+    VkPushConstantRange push{};
+    push.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+    push.size       = 128;
+    VkPipelineLayoutCreateInfo layoutInfo{};
+    layoutInfo.sType                  = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+    layoutInfo.setLayoutCount         = 1;
+    layoutInfo.pSetLayouts            = &cinematicSetLayout_;
+    layoutInfo.pushConstantRangeCount = 1;
+    layoutInfo.pPushConstantRanges    = &push;
+    VK_CHECK(vkCreatePipelineLayout(ctx.device(), &layoutInfo, nullptr, &cinematicLayout_));
+
+    VkDescriptorPoolSize poolSize{VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 4};
+    VkDescriptorPoolCreateInfo poolInfo{};
+    poolInfo.sType         = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
+    poolInfo.maxSets       = 1;
+    poolInfo.poolSizeCount = 1;
+    poolInfo.pPoolSizes    = &poolSize;
+    VK_CHECK(vkCreateDescriptorPool(ctx.device(), &poolInfo, nullptr, &cinematicPool_));
+
+    VkDescriptorSetAllocateInfo allocInfo{};
+    allocInfo.sType              = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+    allocInfo.descriptorPool     = cinematicPool_;
+    allocInfo.descriptorSetCount = 1;
+    allocInfo.pSetLayouts        = &cinematicSetLayout_;
+    VK_CHECK(vkAllocateDescriptorSets(ctx.device(), &allocInfo, &cinematicSet_));
+    writeCinematicSet(ctx);
+
+    const auto vspv = compileGlsl(VK_SHADER_STAGE_VERTEX_BIT, kFullscreenVert);
+    const auto fspv = compileGlsl(VK_SHADER_STAGE_FRAGMENT_BIT, kCinematicFrag);
+    if (vspv.empty() || fspv.empty()) {
+        Log::error("VkPostProcess: cinematic shader compile failed");
+        return false;
+    }
+
+    VkShaderModule vmod = VK_NULL_HANDLE, fmod = VK_NULL_HANDLE;
+    VkShaderModuleCreateInfo moduleInfo{};
+    moduleInfo.sType    = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
+    moduleInfo.codeSize = vspv.size() * sizeof(std::uint32_t);
+    moduleInfo.pCode    = vspv.data();
+    VK_CHECK(vkCreateShaderModule(ctx.device(), &moduleInfo, nullptr, &vmod));
+    moduleInfo.codeSize = fspv.size() * sizeof(std::uint32_t);
+    moduleInfo.pCode    = fspv.data();
+    VK_CHECK(vkCreateShaderModule(ctx.device(), &moduleInfo, nullptr, &fmod));
+
+    VkPipelineShaderStageCreateInfo stages[2]{};
+    stages[0].sType  = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+    stages[0].stage  = VK_SHADER_STAGE_VERTEX_BIT;
+    stages[0].module = vmod;
+    stages[0].pName  = "main";
+    stages[1].sType  = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+    stages[1].stage  = VK_SHADER_STAGE_FRAGMENT_BIT;
+    stages[1].module = fmod;
+    stages[1].pName  = "main";
+
+    VkPipelineVertexInputStateCreateInfo vertexInput{};
+    vertexInput.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
+    VkPipelineInputAssemblyStateCreateInfo assembly{};
+    assembly.sType    = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO;
+    assembly.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+    VkPipelineViewportStateCreateInfo viewport{};
+    viewport.sType         = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO;
+    viewport.viewportCount = 1;
+    viewport.scissorCount  = 1;
+    VkPipelineRasterizationStateCreateInfo raster{};
+    raster.sType       = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO;
+    raster.polygonMode = VK_POLYGON_MODE_FILL;
+    raster.cullMode    = VK_CULL_MODE_NONE;
+    raster.lineWidth   = 1.0f;
+    VkPipelineMultisampleStateCreateInfo multisample{};
+    multisample.sType                = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO;
+    multisample.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
+    VkPipelineDepthStencilStateCreateInfo depth{};
+    depth.sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO;
+    VkPipelineColorBlendAttachmentState blend{};
+    blend.colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT |
+                           VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
+    VkPipelineColorBlendStateCreateInfo colorBlend{};
+    colorBlend.sType           = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO;
+    colorBlend.attachmentCount = 1;
+    colorBlend.pAttachments    = &blend;
+    const VkDynamicState dynamicStates[] = {VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR};
+    VkPipelineDynamicStateCreateInfo dynamicInfo{};
+    dynamicInfo.sType             = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO;
+    dynamicInfo.dynamicStateCount = 2;
+    dynamicInfo.pDynamicStates    = dynamicStates;
+
+    VkGraphicsPipelineCreateInfo info{};
+    info.sType               = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
+    info.stageCount          = 2;
+    info.pStages             = stages;
+    info.pVertexInputState   = &vertexInput;
+    info.pInputAssemblyState = &assembly;
+    info.pViewportState      = &viewport;
+    info.pRasterizationState = &raster;
+    info.pMultisampleState   = &multisample;
+    info.pDepthStencilState  = &depth;
+    info.pColorBlendState    = &colorBlend;
+    info.pDynamicState       = &dynamicInfo;
+    info.layout              = cinematicLayout_;
+    info.renderPass          = viewportPass_;
+    VK_CHECK(vkCreateGraphicsPipelines(ctx.device(), VK_NULL_HANDLE, 1, &info, nullptr,
+                                       &cinematicPipeline_));
+
+    vkDestroyShaderModule(ctx.device(), vmod, nullptr);
+    vkDestroyShaderModule(ctx.device(), fmod, nullptr);
+    return cinematicPipeline_ != VK_NULL_HANDLE;
 }
 
 bool VkPostProcess::createCopyPipeline(VkContext& ctx) {

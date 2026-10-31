@@ -21,6 +21,12 @@ int main() {
     CHECK(!vert.empty());
     CHECK(!skinned.empty());
     CHECK(!frag.empty());
+    CHECK(std::string(standardLitFragSource()).find("uLightVolume") != std::string::npos);
+    // The emission hook replaces the term and still compiles.
+    const std::string hooked = standardLitFragSourceWithEmission(
+        "vec3 surfaceEmission(vec3 worldPos, vec3 params) { return params * worldPos; }");
+    CHECK(hooked.find("uEmissiveMap, uv") == std::string::npos);
+    CHECK(!compileGlsl(VK_SHADER_STAGE_FRAGMENT_BIT, hooked).empty());
 
     // M50b — tessellation sources.
     const auto tessVert = compileGlsl(VK_SHADER_STAGE_VERTEX_BIT,

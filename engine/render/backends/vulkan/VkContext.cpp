@@ -222,6 +222,12 @@ bool VkContext::createLogicalDevice() {
     // use lineWidth > 1. Falls back to 1px lines on devices without it.
     wideLines_ = (supported.wideLines == VK_TRUE);
     features.wideLines = wideLines_ ? VK_TRUE : VK_FALSE;
+    // M73 — the fluid's single- and dual-channel storage images need this.
+    if (supported.shaderStorageImageExtendedFormats != VK_TRUE)
+        Log::error("VkContext: shaderStorageImageExtendedFormats unsupported — FluidVolume will fail");
+    features.shaderStorageImageExtendedFormats = supported.shaderStorageImageExtendedFormats;
+    samplerAnisotropy_ = (supported.samplerAnisotropy == VK_TRUE);
+    features.samplerAnisotropy = samplerAnisotropy_ ? VK_TRUE : VK_FALSE;
 
     VkDeviceCreateInfo info{};
     info.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO;

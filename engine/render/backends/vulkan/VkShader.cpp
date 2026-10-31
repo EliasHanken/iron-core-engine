@@ -99,7 +99,7 @@ ShaderHandle VkShaderStore::create(VkContext& ctx,
     // binding 10 = irradiance cubemap (M46b) + binding 11 = prefiltered specular cubemap +
     // binding 12 = BRDF integration LUT (M46c split-sum) +
     // binding 13 = height map (M50a POM; white fallback = depth 0 = POM no-op).
-    VkDescriptorSetLayoutBinding bindings[13]{};
+    VkDescriptorSetLayoutBinding bindings[16]{};
     bindings[0].binding = 0;
     bindings[0].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
     bindings[0].descriptorCount = 1;
@@ -153,9 +153,18 @@ ShaderHandle VkShaderStore::create(VkContext& ctx,
     bindings[12].descriptorCount = 1;
     bindings[12].stageFlags      = VK_SHADER_STAGE_FRAGMENT_BIT;
 
+    bindings[13].binding         = 14;  // M73 — light volume
+    bindings[13].descriptorType  = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    bindings[13].descriptorCount = 1;
+    bindings[13].stageFlags      = VK_SHADER_STAGE_FRAGMENT_BIT;
+    bindings[14].binding         = 15;  // M73 — point shadow
+    bindings[14].descriptorType  = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    bindings[14].descriptorCount = 1;
+    bindings[14].stageFlags      = VK_SHADER_STAGE_FRAGMENT_BIT;
+
     VkDescriptorSetLayoutCreateInfo dslInfo{};
     dslInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-    dslInfo.bindingCount = 13;
+    dslInfo.bindingCount = 15;
     dslInfo.pBindings = bindings;
     VK_CHECK(vkCreateDescriptorSetLayout(ctx.device(), &dslInfo, nullptr, &s.setLayout));
 
@@ -207,7 +216,7 @@ ShaderHandle VkShaderStore::createSkinned(VkContext& ctx,
     // binding 12 = BRDF integration LUT (M46c split-sum) +
     // binding 13 = height map (M50a POM; white fallback = depth 0 = POM no-op).
     // Bones moved 7→8→9 to keep sampler bindings consistent with the shared frag shader.
-    VkDescriptorSetLayoutBinding bindings[14]{};
+    VkDescriptorSetLayoutBinding bindings[16]{};
     bindings[0].binding = 0;
     bindings[0].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
     bindings[0].descriptorCount = 1;
@@ -239,9 +248,18 @@ ShaderHandle VkShaderStore::createSkinned(VkContext& ctx,
     bindings[13].descriptorCount = 1;
     bindings[13].stageFlags      = VK_SHADER_STAGE_FRAGMENT_BIT;
 
+    bindings[14].binding         = 14;  // M73 — light volume
+    bindings[14].descriptorType  = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    bindings[14].descriptorCount = 1;
+    bindings[14].stageFlags      = VK_SHADER_STAGE_FRAGMENT_BIT;
+    bindings[15].binding         = 15;  // M73 — point shadow
+    bindings[15].descriptorType  = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    bindings[15].descriptorCount = 1;
+    bindings[15].stageFlags      = VK_SHADER_STAGE_FRAGMENT_BIT;
+
     VkDescriptorSetLayoutCreateInfo dslInfo{};
     dslInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-    dslInfo.bindingCount = 14;
+    dslInfo.bindingCount = 16;
     dslInfo.pBindings = bindings;
     VK_CHECK(vkCreateDescriptorSetLayout(ctx.device(), &dslInfo, nullptr, &s.setLayout));
 
@@ -304,7 +322,7 @@ ShaderHandle VkShaderStore::createTessellated(VkContext& ctx,
     // binding 10 = irradiance cubemap (M46b) + binding 11 = prefiltered specular cubemap +
     // binding 12 = BRDF integration LUT (M46c split-sum) +
     // binding 13 = height map (M50a POM; white fallback = depth 0 = POM no-op).
-    VkDescriptorSetLayoutBinding bindings[13]{};
+    VkDescriptorSetLayoutBinding bindings[16]{};
     bindings[0].binding = 0;
     bindings[0].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
     bindings[0].descriptorCount = 1;
@@ -361,9 +379,18 @@ ShaderHandle VkShaderStore::createTessellated(VkContext& ctx,
     bindings[12].stageFlags      = VK_SHADER_STAGE_FRAGMENT_BIT
                                  | VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT;
 
+    bindings[13].binding         = 14;  // M73 — light volume
+    bindings[13].descriptorType  = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    bindings[13].descriptorCount = 1;
+    bindings[13].stageFlags      = VK_SHADER_STAGE_FRAGMENT_BIT;
+    bindings[14].binding         = 15;  // M73 — point shadow
+    bindings[14].descriptorType  = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    bindings[14].descriptorCount = 1;
+    bindings[14].stageFlags      = VK_SHADER_STAGE_FRAGMENT_BIT;
+
     VkDescriptorSetLayoutCreateInfo dslInfo{};
     dslInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-    dslInfo.bindingCount = 13;
+    dslInfo.bindingCount = 15;
     dslInfo.pBindings = bindings;
     VK_CHECK(vkCreateDescriptorSetLayout(ctx.device(), &dslInfo, nullptr, &s.setLayout));
 

@@ -595,6 +595,156 @@ CubemapHandle VkIblBaker::equirectFileToCubemap(
     return handle;
 }
 
+std::string composeSkyBakeSource(const std::string& skyGlsl) {
+    return std::string(R"(#version 450
+layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
+layout(binding = 0, rgba16f) uniform writeonly image2DArray uOut;
+)") + skyGlsl + R"(
+// Cube-face direction, matching ProceduralSky / Ibl.h face convention.
+vec3 faceDir(int face, float u, float v) {
+    vec3 d;
+    if      (face == 0) d = vec3( 1.0, -v,   -u);
+    else if (face == 1) d = vec3(-1.0, -v,    u);
+    else if (face == 2) d = vec3( u,    1.0,  v);
+    else if (face == 3) d = vec3( u,   -1.0, -v);
+    else if (face == 4) d = vec3( u,   -v,    1.0);
+    else                d = vec3(-u,   -v,   -1.0);
+    return normalize(d);
+}
+
+void main() {
+    ivec3 gid = ivec3(gl_GlobalInvocationID);
+    ivec2 size = imageSize(uOut).xy;
+    if (gid.x >= size.x || gid.y >= size.y) return;
+    float u = 2.0 * (float(gid.x) + 0.5) / float(size.x) - 1.0;
+    float v = 2.0 * (float(gid.y) + 0.5) / float(size.y) - 1.0;
+    imageStore(uOut, gid, vec4(skyColor(faceDir(gid.z, u, v)), 1.0));
+}
+)";
+}
+
+CubemapHandle VkIblBaker::bakeSky(VkContext& ctx, VkCubemapStore& store,
+                                  const std::string& skyGlsl, int faceSize) {
+    const auto spirv = compileGlsl(VK_SHADER_STAGE_COMPUTE_BIT, composeSkyBakeSource(skyGlsl));
+    if (spirv.empty()) {
+        Log::error("VkIblBaker: sky shader compile failed");
+        return kInvalidHandle;
+    }
+
+    const CubemapHandle handle = store.createHdr(ctx, faceSize, /*mipLevels=*/1);
+    if (handle == kInvalidHandle) return kInvalidHandle;
+    const VkCubemapResource& cube = store.get(handle);
+
+    VkDescriptorSetLayoutBinding binding{};
+    binding.binding         = 0;
+    binding.descriptorType  = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+    binding.descriptorCount = 1;
+    binding.stageFlags      = VK_SHADER_STAGE_COMPUTE_BIT;
+    VkDescriptorSetLayoutCreateInfo layoutInfo{};
+    layoutInfo.sType        = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+    layoutInfo.bindingCount = 1;
+    layoutInfo.pBindings    = &binding;
+    VkDescriptorSetLayout setLayout = VK_NULL_HANDLE;
+    VK_CHECK(vkCreateDescriptorSetLayout(ctx.device(), &layoutInfo, nullptr, &setLayout));
+
+    VkComputePipeline pipeline;
+    if (!pipeline.init(ctx, spirv, setLayout)) {
+        vkDestroyDescriptorSetLayout(ctx.device(), setLayout, nullptr);
+        return kInvalidHandle;
+    }
+
+    VkDescriptorPoolSize poolSize{VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1};
+    VkDescriptorPoolCreateInfo poolInfo{};
+    poolInfo.sType         = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
+    poolInfo.maxSets       = 1;
+    poolInfo.poolSizeCount = 1;
+    poolInfo.pPoolSizes    = &poolSize;
+    VkDescriptorPool descriptorPool = VK_NULL_HANDLE;
+    VK_CHECK(vkCreateDescriptorPool(ctx.device(), &poolInfo, nullptr, &descriptorPool));
+
+    VkDescriptorSetAllocateInfo setInfo{};
+    setInfo.sType              = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+    setInfo.descriptorPool     = descriptorPool;
+    setInfo.descriptorSetCount = 1;
+    setInfo.pSetLayouts        = &setLayout;
+    VkDescriptorSet set = VK_NULL_HANDLE;
+    VK_CHECK(vkAllocateDescriptorSets(ctx.device(), &setInfo, &set));
+
+    VkDescriptorImageInfo imageInfo{};
+    imageInfo.imageView   = cube.storageViews[0];
+    imageInfo.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
+    VkWriteDescriptorSet write{};
+    write.sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    write.dstSet          = set;
+    write.descriptorType  = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+    write.descriptorCount = 1;
+    write.pImageInfo      = &imageInfo;
+    vkUpdateDescriptorSets(ctx.device(), 1, &write, 0, nullptr);
+
+    VkCommandPoolCreateInfo commandPoolInfo{};
+    commandPoolInfo.sType            = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
+    commandPoolInfo.queueFamilyIndex = ctx.graphicsFamily();
+    commandPoolInfo.flags            = VK_COMMAND_POOL_CREATE_TRANSIENT_BIT;
+    VkCommandPool commandPool = VK_NULL_HANDLE;
+    VK_CHECK(vkCreateCommandPool(ctx.device(), &commandPoolInfo, nullptr, &commandPool));
+
+    VkCommandBufferAllocateInfo cbInfo{};
+    cbInfo.sType              = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
+    cbInfo.commandPool        = commandPool;
+    cbInfo.level              = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+    cbInfo.commandBufferCount = 1;
+    VkCommandBuffer cb = VK_NULL_HANDLE;
+    VK_CHECK(vkAllocateCommandBuffers(ctx.device(), &cbInfo, &cb));
+
+    VkCommandBufferBeginInfo begin{};
+    begin.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+    begin.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+    VK_CHECK(vkBeginCommandBuffer(cb, &begin));
+
+    const auto layoutBarrier = [&](VkImageLayout from, VkImageLayout to, VkAccessFlags srcAccess,
+                                   VkAccessFlags dstAccess, VkPipelineStageFlags srcStage,
+                                   VkPipelineStageFlags dstStage) {
+        VkImageMemoryBarrier barrier{};
+        barrier.sType               = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+        barrier.srcAccessMask       = srcAccess;
+        barrier.dstAccessMask       = dstAccess;
+        barrier.oldLayout           = from;
+        barrier.newLayout           = to;
+        barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        barrier.image               = cube.image;
+        barrier.subresourceRange    = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 6};
+        vkCmdPipelineBarrier(cb, srcStage, dstStage, 0, 0, nullptr, 0, nullptr, 1, &barrier);
+    };
+
+    layoutBarrier(VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL, 0, VK_ACCESS_SHADER_WRITE_BIT,
+                  VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
+
+    vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline.pipeline());
+    vkCmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline.pipelineLayout(), 0, 1,
+                            &set, 0, nullptr);
+    const std::uint32_t groups = (static_cast<std::uint32_t>(faceSize) + 7u) / 8u;
+    vkCmdDispatch(cb, groups, groups, 6);
+
+    layoutBarrier(VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                  VK_ACCESS_SHADER_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT,
+                  VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT);
+
+    VK_CHECK(vkEndCommandBuffer(cb));
+    VkSubmitInfo submit{};
+    submit.sType              = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+    submit.commandBufferCount = 1;
+    submit.pCommandBuffers    = &cb;
+    VK_CHECK(vkQueueSubmit(ctx.graphicsQueue(), 1, &submit, VK_NULL_HANDLE));
+    VK_CHECK(vkQueueWaitIdle(ctx.graphicsQueue()));
+
+    vkDestroyCommandPool(ctx.device(), commandPool, nullptr);
+    vkDestroyDescriptorPool(ctx.device(), descriptorPool, nullptr);
+    pipeline.destroy(ctx);
+    vkDestroyDescriptorSetLayout(ctx.device(), setLayout, nullptr);
+    return handle;
+}
+
 CubemapHandle VkIblBaker::bakeIrradiance(VkContext& ctx, VkCubemapStore& store,
                                          CubemapHandle envCube, int faceSize) {
     if (!store.has(envCube)) return kInvalidHandle;

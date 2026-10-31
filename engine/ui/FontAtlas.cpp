@@ -7,15 +7,25 @@ namespace iron {
 bool FontAtlas::bake(const unsigned char* ttf, int ttfLen, float pixelHeight) {
     if (!ttf || ttfLen <= 0 || pixelHeight <= 0.0f) return false;
 
-    width_ = 512;
-    height_ = 512;
     pixelHeight_ = pixelHeight;
 
-    std::vector<unsigned char> coverage(static_cast<std::size_t>(width_) * height_, 0);
+    // A negative row count means only some glyphs fit, so grow until all of them
+    // do. Stopping early would silently lose the later letters of the alphabet.
+    constexpr int kFirstAtlasSize = 512;
+    constexpr int kMaxAtlasSize = 4096;
+
+    std::vector<unsigned char> coverage;
     std::vector<stbtt_bakedchar> cd(kCount);
-    const int rows = stbtt_BakeFontBitmap(ttf, 0, pixelHeight, coverage.data(),
-                                          width_, height_, kFirst, kCount, cd.data());
-    if (rows == 0) return false;   // not a single row fit -> bad font / size
+    int rows = 0;
+    for (int size = kFirstAtlasSize; size <= kMaxAtlasSize; size *= 2) {
+        width_ = size;
+        height_ = size;
+        coverage.assign(static_cast<std::size_t>(width_) * height_, 0);
+        rows = stbtt_BakeFontBitmap(ttf, 0, pixelHeight, coverage.data(), width_, height_, kFirst,
+                                    kCount, cd.data());
+        if (rows > 0) break;
+    }
+    if (rows <= 0) return false;
 
     // Expand 8-bit coverage to RGBA8 white (tinted later by vertex color).
     pixels_.assign(static_cast<std::size_t>(width_) * height_ * 4, 0);
