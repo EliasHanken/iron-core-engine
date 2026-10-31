@@ -145,11 +145,11 @@ void main() {
     // way out, so that the shimmer stays tied to the thing making the heat.
     vec2 uv = vUV;
     if (lens.depth.w > 0.0) {
-        float near = exp(-pow(toSubject(vUV) / max(lens.depth.z * 2.2, 0.02), 2.0));
+        float near = exp(-pow(toSubject(vUV) / max(lens.depth.z * 1.5, 0.02), 2.0));
         float t = pc.b.w * 0.19;
         vec2 ripple = vec2(sin(vUV.y * 83.0 + t * 1.7) + 0.6 * sin(vUV.y * 151.0 - t * 2.3 + vUV.x * 40.0),
                            cos(vUV.x * 71.0 - t * 1.3) + 0.6 * cos(vUV.x * 127.0 + t * 2.1 + vUV.y * 37.0));
-        uv += ripple * near * lens.depth.w * 0.0035;
+        uv += ripple * near * lens.depth.w * 0.0012;
     }
 
     vec2 velocity = clamp(cameraVelocity(uv), vec2(-0.04), vec2(0.04));

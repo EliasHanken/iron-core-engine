@@ -1,0 +1,11 @@
+name = "kindle-download"
+main = "worker.js"
+compatibility_date = "2024-12-30"
+workers_dev = true
+
+[vars]
+PUBLIC_DOWNLOAD = "true"
+
+[[r2_buckets]]
+binding = "BUCKET"
+bucket_name = "kindle-builds"

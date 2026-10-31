@@ -42,3 +42,7 @@ tmp/
 
 # Licensed sounds: built locally, and only shipped inside a packaged game.
 games/19-kindle/assets/audio-hq/
+
+# Local Cloudflare Worker state.
+.wrangler/
+.dev.vars
