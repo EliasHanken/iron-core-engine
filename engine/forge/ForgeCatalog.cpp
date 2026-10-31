@@ -172,8 +172,8 @@ std::vector<BlockDesc> makeBlocks() {
 })"});
     list.push_back({"LavaCracks", Stack::Surface, "Glowing cracks across a dark crust.",
         {color("hot", Vec3{1.0f, 0.3f, 0.05f}, "Colour of the molten glow."),
-         num("intensity", 6.0f, 0.0f, 40.0f, "Brightness of the glow."),
-         num("width", 0.1f, 0.0f, 1.0f, "How wide the cracks open."),
+         num("intensity", 3.0f, 0.0f, 40.0f, "Brightness of the glow."),
+         num("width", 0.03f, 0.0f, 1.0f, "How wide the cracks open."),
          num("scale", 1.2f, 0.05f, 30.0f, "Size of the pattern: higher is finer."),
          num("speed", 0.1f, 0.0f, 3.0f, "How quickly it churns.")},
         R"({
@@ -219,7 +219,7 @@ std::vector<NodeDesc> makeNodes() {
         {"Noise", "Smooth random value at a position in time.",
          {num("scale", 1.0f, 0.01f, 30.0f, "Higher is finer."),
           num("speed", 0.5f, 0.0f, 10.0f, "How quickly it changes.")},
-         ValueType::Float, "valueNoise(forgePosition * $scale + vec3(0.0, forgeTime * $speed, 0.0))"},
+         ValueType::Float, "gradientNoise(forgePosition * $scale + vec3(0.0, forgeTime * $speed, 0.0))"},
         {"ColorMix", "Blend two colours.",
          {color("a", Vec3{0, 0, 0}, ""), color("b", Vec3{1, 1, 1}, ""),
           num("t", 0.5f, 0.0f, 1.0f, "0 is a, 1 is b.")},

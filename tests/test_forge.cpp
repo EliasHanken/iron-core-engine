@@ -398,6 +398,14 @@ void testStoppingOneDriverKeepsASharedNode() {
     assert(compile(doc).ok());
 }
 
+void testUnknownSettingListsTheRealOnes() {
+    std::vector<Issue> issues;
+    parse(R"({"look": [{"block": "LightTheScene", "power": 3}]})", issues);
+    const Issue* issue = findCode(issues, "unknown-value");
+    assert(issue);
+    assert(issue->fix.find("amount") != std::string::npos);
+}
+
 void testNamesMustBeIdentifiers() {
     std::vector<Issue> issues;
     parse(R"({"nodes": {"my-pulse": {"type": "Sine"}}})", issues);
@@ -458,6 +466,7 @@ int main() {
     testWireTargetsAreChecked();
     testBareWireMeansTheFirstLayerOnly();
     testStoppingOneDriverKeepsASharedNode();
+    testUnknownSettingListsTheRealOnes();
     testNamesMustBeIdentifiers();
     testOneLightPerLayer();
     testLightBlockMakesALayerEmit();

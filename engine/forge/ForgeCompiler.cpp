@@ -52,12 +52,37 @@ float valueNoise(vec3 p) {
         f.z);
 }
 
+vec3 hash33(vec3 p) {
+    p = fract(p * vec3(0.1031, 0.1030, 0.0973));
+    p += dot(p, p.yxz + 33.33);
+    return fract((p.xxy + p.yxx) * p.zyx) * 2.0 - 1.0;
+}
+
+float gradientCorner(vec3 cell, vec3 f, vec3 corner) {
+    return dot(hash33(cell + corner), f - corner);
+}
+
+// 0 to 1, centred on 0.5. Unlike value noise its contours don't line up with the
+// grid, so it stays clean when something thresholds it into sharp edges.
+float gradientNoise(vec3 p) {
+    vec3 i = floor(p);
+    vec3 f = fract(p);
+    vec3 u = f * f * f * (f * (f * 6.0 - 15.0) + 10.0);
+    float n = mix(
+        mix(mix(gradientCorner(i, f, vec3(0, 0, 0)), gradientCorner(i, f, vec3(1, 0, 0)), u.x),
+            mix(gradientCorner(i, f, vec3(0, 1, 0)), gradientCorner(i, f, vec3(1, 1, 0)), u.x), u.y),
+        mix(mix(gradientCorner(i, f, vec3(0, 0, 1)), gradientCorner(i, f, vec3(1, 0, 1)), u.x),
+            mix(gradientCorner(i, f, vec3(0, 1, 1)), gradientCorner(i, f, vec3(1, 1, 1)), u.x), u.y),
+        u.z);
+    return clamp(0.5 + 0.7 * n, 0.0, 1.0);
+}
+
 float fbm(vec3 p, int octaves) {
     float sum = 0.0;
     float amplitude = 0.5;
     float total = 0.0;
     for (int i = 0; i < octaves; ++i) {
-        sum += valueNoise(p) * amplitude;
+        sum += gradientNoise(p) * amplitude;
         total += amplitude;
         p = p * 2.03 + vec3(1.7, 9.2, 3.1);
         amplitude *= 0.5;

@@ -49,6 +49,18 @@ std::vector<std::string> paramNames(const std::vector<ParamDesc>& params) {
     return names;
 }
 
+// A close name if there is one, otherwise every setting, so that the fix is always
+// something the writer can act on.
+std::string settingHint(std::string_view name, const std::vector<ParamDesc>& params) {
+    std::string hint = suggestion(name, paramNames(params));
+    if (!hint.empty() || params.empty()) return hint;
+    hint = "Settings here:";
+    for (std::size_t i = 0; i < params.size(); ++i) {
+        hint += (i == 0 ? " " : ", ") + params[i].name;
+    }
+    return hint + ".";
+}
+
 // Accepts 1.5, [r,g,b] or "#rrggbb".
 bool readValue(const json& j, ValueType type, Value& out) {
     if (j.is_number()) {
@@ -85,7 +97,6 @@ template <typename Instance>
 void readValues(const json& j, const std::vector<ParamDesc>& params,
                 const std::vector<std::string>& skip, const std::string& where, Instance& out,
                 std::vector<Issue>& issues) {
-    const std::vector<std::string> names = paramNames(params);
     for (auto it = j.begin(); it != j.end(); ++it) {
         if (std::find(skip.begin(), skip.end(), it.key()) != skip.end()) continue;
 
@@ -93,7 +104,7 @@ void readValues(const json& j, const std::vector<ParamDesc>& params,
                                         [&](const ParamDesc& p) { return p.name == it.key(); });
         if (param == params.end()) {
             add(issues, where + "." + it.key(), "unknown-value",
-                "\"" + it.key() + "\" isn't a setting here.", suggestion(it.key(), names));
+                "\"" + it.key() + "\" isn't a setting here.", settingHint(it.key(), params));
             continue;
         }
         Value value{};
@@ -461,7 +472,7 @@ std::vector<Issue> validate(const Document& doc) {
             for (const ParamDesc& p : desc->params) {
                 if (p.name == param) return true;
             }
-            fix = suggestion(param, paramNames(desc->params));
+            fix = settingHint(param, desc->params);
             return false;
         };
 
@@ -485,7 +496,7 @@ std::vector<Issue> validate(const Document& doc) {
             for (const ParamDesc& p : desc->inputs) {
                 if (p.name == parts[1]) return true;
             }
-            fix = suggestion(parts[1], paramNames(desc->inputs));
+            fix = settingHint(parts[1], desc->inputs);
             return false;
         }
         if (!parts.empty() && parts[0] == "shapes") {
