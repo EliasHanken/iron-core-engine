@@ -14,6 +14,11 @@ import zipfile
 SYSTEM = os.path.join(os.environ["WINDIR"], "System32")
 RUNTIME = ["msvcp140.dll", "msvcp140_1.dll", "msvcp140_2.dll", "vcruntime140.dll", "vcruntime140_1.dll"]
 
+# Every library that ends up in the game, by its folder under vcpkg's share directory.
+LIBRARIES = ["abseil", "fmt", "gamenetworkingsockets", "glslang", "imgui", "joltphysics", "nlohmann-json",
+             "openal-soft", "openssl", "protobuf", "stb", "tinygltf", "utf8-range", "vulkan-headers",
+             "vulkan-loader", "vulkan-memory-allocator"]
+
 README = """KINDLE
 You are a swarm of light in a dead machine. Relight it, and wake the core.
 
@@ -22,6 +27,9 @@ Shift squeeze   Click ignite   Esc pause   F11 fullscreen
 
 Needs Windows 10 or 11 and a Vulkan 1.3 graphics card.
 Made with Iron Core Engine and Forge, by Elias Hanken.
+
+Licences for the software in this game are in the licenses folder. The sounds in
+audio.pak are licensed for this game only, and may not be extracted or passed on.
 """
 
 
@@ -44,6 +52,22 @@ def write_pak(folder, path):
     return len(names)
 
 
+def copy_licenses(build, game):
+    """The licences of everything shipped, which many of them require alongside a binary."""
+    root = os.path.abspath(os.path.join(build, "..", "..", ".."))
+    repo = os.path.abspath(os.path.join(root, ".."))
+    folder = os.path.join(game, "licenses")
+    os.makedirs(folder)
+    share = os.path.join(root, "vcpkg_installed", "x64-windows", "share")
+    for name in LIBRARIES:
+        shutil.copy(os.path.join(share, name, "copyright"), os.path.join(folder, name + ".txt"))
+    shutil.copy(os.path.join(root, "_deps", "glfw-src", "LICENSE.md"), os.path.join(folder, "glfw.txt"))
+    shutil.copy(os.path.join(repo, "third_party", "imgui-node-editor", "LICENSE"),
+                os.path.join(folder, "imgui-node-editor.txt"))
+    for name in ("LICENSE", "NOTICE", "THIRD_PARTY.md"):
+        shutil.copy(os.path.join(repo, name), os.path.join(folder, "iron-core-" + name))
+
+
 def main():
     build, out = sys.argv[1], sys.argv[2]
     game = os.path.join(out, "Kindle")
@@ -60,6 +84,7 @@ def main():
     shutil.copytree(os.path.join(build, "assets"), os.path.join(game, "assets"),
                     ignore=shutil.ignore_patterns("audio-hq"))
     count = write_pak(os.path.join(build, "assets", "audio-hq"), os.path.join(game, "assets", "audio.pak"))
+    copy_licenses(build, game)
     with open(os.path.join(game, "README.txt"), "w", encoding="utf-8", newline="\r\n") as f:
         f.write(README)
 

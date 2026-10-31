@@ -99,7 +99,7 @@ PBR is a future track).
 
 ### Visual validator: `games/10-gltf-viewer`
 
-Loads the Khronos "Damaged Helmet" CC0 sample. Vulkan-only; free-fly
+Loads the Khronos "Damaged Helmet" sample (non-commercial, see `THIRD_PARTY.md`). Vulkan-only; free-fly
 camera; HUD shows vert/tri counts. Run with:
 
 ```
@@ -112,7 +112,7 @@ proves both the loader and the M22.5 texture pipeline work end-to-end.
 
 ### Test assets
 
-Three small Khronos CC0 samples are vendored under
+Three small Khronos samples (see `THIRD_PARTY.md`) are vendored under
 `tests/assets/gltf/`:
 - `Box.gltf` + `Box0.bin` — 24-vertex unit cube; positive test for the
   basic load path.
