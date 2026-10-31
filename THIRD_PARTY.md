@@ -61,14 +61,21 @@ The Damaged Helmet is only a viewer and editor sample. Anyone building a commerc
 | Asset | Where | Credit | Licence |
 |---|---|---|---|
 | Kindle's free sound set | `games/19-kindle/assets/audio/` | Listed in `CREDITS.md` there | CC0 |
-| Rocket explosion | `games/07-net-shooter/assets/sfx/` | tommccann, freesound.org 235968 | CC0 |
+| Rocket explosion | `games/07-net-shooter/assets/sfx/` | tommccann, [freesound.org 235968](https://freesound.org/s/235968/) | CC0 |
+| Rifle shot | `games/07-net-shooter/assets/sfx/` | kyles, [freesound.org 450852](https://freesound.org/s/450852/) | CC0 |
+| Rocket launch | `games/07-net-shooter/assets/sfx/` | Jarusca, [freesound.org 521377](https://freesound.org/s/521377/) | CC0 |
+| Footsteps | `games/07-net-shooter/assets/sfx/` | Fission9, [freesound.org 521587](https://freesound.org/s/521587/) | CC0 |
+| Hit | `games/07-net-shooter/assets/sfx/` | insanity54, [freesound.org 276600](https://freesound.org/s/276600/) | CC0 |
+| Jump | `games/07-net-shooter/assets/sfx/` | cartchaos, [freesound.org 678839](https://freesound.org/s/678839/) | CC0 |
+| Death | `games/07-net-shooter/assets/sfx/` | measly_whelp, [freesound.org 710650](https://freesound.org/s/710650/) | CC0 |
 
 ## Source not recorded
 
-These early files have no recorded author, so they aren't covered by `LICENSE` and no permission is offered for them:
+These files have no recorded author, so they aren't covered by `LICENSE` and no permission is offered for them:
 
 - `games/01-spinning-cube/assets/crate.jpg`, `games/02-strandbound/assets/crate.jpg`
-- `games/07-net-shooter/assets/sfx/`, except the rocket explosion. They were chosen as CC0, but the individual sources weren't kept.
+- `games/11-sandbox/assets/node-header-bg.png`
+- `tests/assets/sfx/test-beep.wav`
 
 ## Not in this repository
 
