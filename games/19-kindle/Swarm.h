@@ -234,6 +234,36 @@ private:
     std::size_t count_ = 0;
 };
 
+// What a camera operator's body adds: shake from a hit, and leaning into turns.
+class CameraFeel {
+public:
+    static constexpr float kMaxRoll = 0.22f;   // Radians.
+    static constexpr float kShakeMetres = 0.32f;
+
+    // A hit from 0 to 1. Hits add up, but only to a limit.
+    void hit(float strength) { trauma_ = std::min(trauma_ + strength, 1.0f); }
+
+    void update(float yawPerSecond, float dt) {
+        time_ += dt;
+        trauma_ = std::max(trauma_ - dt * 1.1f, 0.0f);
+        const float want = std::clamp(-yawPerSecond * 0.09f, -kMaxRoll, kMaxRoll);
+        roll_ += (want - roll_) * (1.0f - std::exp(-dt * 5.0f));
+    }
+
+    // Shake grows with the square of trauma, so small hits stay gentle.
+    float shake() const { return trauma_ * trauma_; }
+    float offsetX() const { return wave(31.0f, 47.0f) * shake() * kShakeMetres; }
+    float offsetY() const { return wave(37.0f, 53.0f) * shake() * kShakeMetres; }
+    float roll() const { return roll_ + wave(23.0f, 41.0f) * shake() * 0.05f; }
+
+private:
+    float wave(float a, float b) const { return 0.6f * std::sin(time_ * a) + 0.4f * std::sin(time_ * b + 1.3f); }
+
+    float trauma_ = 0.0f;
+    float roll_ = 0.0f;
+    float time_ = 0.0f;
+};
+
 // The whole game: relight the hall, go through the gate, feed the core.
 class Story {
 public:

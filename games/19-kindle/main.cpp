@@ -98,7 +98,7 @@ forge::Compiled loadEffect(const std::string& path) {
 class Autopilot {
 public:
     kindle::Controls fly(const kindle::Swarm& swarm, const kindle::Story& story, float seconds) {
-        if (!story.sealed()) return toTheCore(swarm);
+        if (!story.sealed()) return toTheCore(swarm, story.finale());
 
         constexpr std::array<Vec3, 8> route{{{-10, -2, -12}, {-10, 2, 0}, {-10, -3, 12}, {0, 3, 14},
                                              {10, -2, 12},   {10, 3, 0},  {10, -1, -12}, {0, 2, -14}}};
@@ -115,14 +115,14 @@ public:
 
 private:
     // Through the slit, across the chamber, and ignite at the core.
-    kindle::Controls toTheCore(const kindle::Swarm& swarm) {
+    kindle::Controls toTheCore(const kindle::Swarm& swarm, bool finished) {
         constexpr std::array<Vec3, 5> route{{{0, 0, -10}, {0, 0, -17}, {0, 0, -31}, {-9, 5, -44}, {0, 3, -49}}};
         if (leg_ + 1 < route.size() && iron::length(route[leg_] - swarm.position()) < 2.5f) ++leg_;
 
         kindle::Controls controls;
         controls.wish = iron::normalize(route[leg_] - swarm.position());
         controls.squeeze = leg_ <= 2;
-        controls.ignite = leg_ == route.size() - 1 && swarm.heat() >= kindle::Swarm::kIgniteCost;
+        controls.ignite = leg_ == route.size() - 1 && swarm.heat() >= kindle::Swarm::kIgniteCost && !finished;
         return controls;
     }
 
@@ -498,6 +498,8 @@ int main(int argc, char** argv) {
     sound.init(assets + "audio/", assets + "audio-hq/", !scripted,
                options.recordPath.empty() ? std::string{} : options.recordPath + ".sound.csv");
     Autopilot autopilot;
+    kindle::CameraFeel feel;
+    float lastYaw = 0.0f;
 
     const std::string settingsPath = iron::executableDir() + "/kindle-settings.txt";
     kindle::Settings settings;
@@ -733,14 +735,27 @@ int main(int argc, char** argv) {
         eye = eye + (wantEye - eye) * (1.0f - std::exp(-dt * 9.0f));
         sound.update(worldTime, realDt, eye, forward, room, swarm, story, freshWake, presence);
 
+        // Ignites kick the camera, and the core's blast hits hardest of all.
+        if (swarm.ignited()) feel.hit(0.55f);
+        if (blown > 0.0f && blown < dt * 1.5f) feel.hit(1.0f);
+        if (story.pulling()) feel.hit(dt * 1.2f);
+        const float yawRate = dt > 0.0f ? (yaw - lastYaw) / dt : 0.0f;
+        lastYaw = yaw;
+        if (dt > 0.0f) feel.update(yawRate, dt);
+
         const bool watching = options.scene == "hall";
         if (watching) eye = Vec3{-18.5f, -3.0f, -18.5f};
         // On the start screen the ember sits low, below the menu.
         const Vec3 raise{0.0f, mode == Mode::Menu ? 4.2f : 0.0f, 0.0f};
         const Vec3 lookTarget = watching ? Vec3{4.0f, -1.5f, 4.0f} : swarm.position() + forward * 4.0f + raise;
-        const iron::Mat4 view = iron::lookAt(eye, lookTarget, {0, 1, 0});
+        const Vec3 side = iron::normalize(iron::cross(forward, {0, 1, 0}));
+        const Vec3 lift = iron::normalize(iron::cross(side, forward));
+        const Vec3 shaken = eye + side * feel.offsetX() + lift * feel.offsetY();
+        const float roll = watching ? 0.0f : feel.roll();
+        const iron::Mat4 view =
+            iron::lookAt(shaken, lookTarget, lift * std::cos(roll) + side * std::sin(roll));
         const iron::Mat4 projection = iron::perspective(
-            (kBaseFov + kFovAtSpeed * rush) * std::numbers::pi_v<float> / 180.0f,
+            (kBaseFov + kFovAtSpeed * rush + 9.0f * swarm.blast()) * std::numbers::pi_v<float> / 180.0f,
             static_cast<float>(width) / static_cast<float>(height), 0.1f, 200.0f);
 
         // Real lights carry the glow to the far walls: one at the head, and two
@@ -767,6 +782,13 @@ int main(int argc, char** argv) {
                                              : room.coreRadius - 2.0f + story.fed() * 5.0f;
         lights.push_back({room.coreCenter, kEmber, shock * 2.0f, coreReach});
         vulkan->setExposure(1.0f - 0.5f * shock);
+
+        // The lens reacts: bursts flare and split colour, and squeezing closes the view in.
+        lens.chromaticAberration = 0.002f + 0.007f * swarm.flare() + 0.003f * swarm.squeeze();
+        lens.vignette = 0.35f + 0.28f * swarm.squeeze();
+        lens.streak = 0.1f + 0.3f * swarm.flare();
+        lens.motionBlur = 0.15f + 0.12f * rush;
+        vulkan->setCinematic(lens);
 
         iron::DirectionalLight dark;
         dark.color = {0.0f, 0.0f, 0.0f};

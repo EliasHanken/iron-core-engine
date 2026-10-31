@@ -21,6 +21,10 @@ namespace kindle {
 
 class Sound {
 public:
+    // Everything sits well below full scale, so that the loudest moments stay clean
+    // and can stand out. The finale is the only thing allowed near the top.
+    static constexpr float kHeadroom = 0.32f;
+
     ~Sound() {
         if (log_) std::fclose(log_);
     }
@@ -55,6 +59,9 @@ public:
             chamber_.voice = audio_.playLooping(load("chamber"), Vec3{}, 0.0f);
             awake_.voice = audio_.playLooping(load("awake"), Vec3{}, 0.0f);
             drive_.voice = audio_.playLooping(load("drive"), Vec3{}, 0.0f);
+            scoreCold_.voice = audio_.playLooping(load("score-cold"), Vec3{}, 0.0f);
+            scoreRise_.voice = audio_.playLooping(load("score-rise"), Vec3{}, 0.0f);
+            scoreAwake_.voice = audio_.playLooping(load("score-awake"), Vec3{}, 0.0f);
         }
         roar_.voice = audio_.playLooping(load("roar"), Vec3{}, 0.0f);
         crackle_.voice = audio_.playLooping(load("crackle"), Vec3{}, 0.0f);
@@ -97,14 +104,29 @@ public:
         const float beds = behind * (0.6f + 0.4f * ducked);
         const float alive = blown > 0.0f ? std::min(blown / 6.0f, 1.0f) : 0.0f;
         const float inChamber = swarm.position().z < -24.0f ? 1.0f : 0.0f;
-        glide(room_, "room", 0.6f * (1.0f - inChamber) * (1.0f - alive) * beds, 1.0f, open, dt);
-        glide(chamber_, "chamber", 0.7f * inChamber * (1.0f - alive) * beds, 1.0f, open, dt);
-        glide(awake_, "awake", 0.65f * alive * beds, 0.92f + 0.08f * alive, open, dt);
+        glide(room_, "room", 0.75f * (1.0f - inChamber) * (1.0f - alive) * beds, 1.0f, open, dt);
+        glide(chamber_, "chamber", 0.9f * inChamber * (1.0f - alive) * beds, 1.0f, open, dt);
+        glide(awake_, "awake", 2.0f * alive * beds, 0.92f + 0.08f * alive, open, dt);
+
+        // The score moves far more slowly than the beds: the cold hall, then a rise
+        // that grows as the core wakes, then the whole machine alive. Ignites only
+        // dip it a little, so that it holds the scene together.
+        const float wantCold = story.sealed() ? 1.0f - alive : 0.0f;
+        const float wantRise = story.sealed() ? 0.0f : (1.0f - alive) * (0.6f + 0.6f * story.fed());
+        const float wantAwake = alive * 1.3f;
+        const float slow = 1.0f - std::exp(-dt * 0.45f);
+        cold_ += (wantCold - cold_) * slow;
+        rise_ += (wantRise - rise_) * slow;
+        lifted_ += (wantAwake - lifted_) * slow;
+        const float scored = behind * (0.8f + 0.2f * ducked);
+        glide(scoreCold_, "score-cold", cold_ * scored, 1.0f, open, dt);
+        glide(scoreRise_, "score-rise", rise_ * scored, 1.0f, open, dt);
+        glide(scoreAwake_, "score-awake", lifted_ * scored, 1.0f, open, dt);
 
         // Two layers follow the swarm: fire on top, and a low engine that swells with speed.
-        glide(roar_, "roar", presence * (0.2f + 0.45f * speed + 0.35f * swarm.flare()) * ducked * behind,
+        glide(roar_, "roar", presence * (0.25f + 0.5f * speed + 0.3f * swarm.flare()) * ducked * behind,
               0.85f + 0.4f * speed + 0.15f * squeeze, open, dt);
-        glide(drive_, "drive", presence * (0.12f + 0.55f * speed) * ducked * behind, 0.8f + 0.6f * speed, open, dt);
+        glide(drive_, "drive", presence * (0.15f + 0.6f * speed) * ducked * behind, 0.8f + 0.6f * speed, open, dt);
         glide(crackle_, "crackle", std::max(presence, 0.14f) * (0.3f + 0.4f * speed) * ducked * behind, 1.0f, open, dt);
         glide(rush_, "rush", presence * (squeeze * 0.6f + speed * 0.1f) * ducked * behind, 0.9f + 0.4f * squeeze,
               open, dt);
@@ -121,32 +143,32 @@ public:
 
         if (muffled_) return;
 
-        if (swarm.ignited()) play(ignite_, "ignite", 0.9f, varied());
-        if (freshWake) play(wake_, "wake", 0.7f, varied());
+        if (swarm.ignited()) play(ignite_, "ignite", 1.0f, varied());
+        if (freshWake) play(wake_, "wake", 0.6f, varied());
 
         if (story.gate() > 0.0f && !gateHeard_) {
             gateHeard_ = true;
-            play(gate_, "gate", 1.0f, 1.0f);
-            play(groan_, "groan", 0.5f, 1.0f);
+            play(gate_, "gate", 1.6f, 1.0f);
+            play(groan_, "groan", 0.6f, 1.0f);
         }
         if (story.pulling() && !spoolHeard_) {
             spoolHeard_ = true;
-            play(spool_, "spool", 0.9f, 1.0f);
+            play(spool_, "spool", 1.3f, 1.0f);
         }
         if (blown > 0.0f && !finaleHeard_) {
             finaleHeard_ = true;
-            play(finale_, "finale", 1.0f, 1.0f);
-            play(wake_, "wake", 0.8f, 0.8f);
+            play(finale_, "finale", 3.0f, 1.0f);  // The one moment at full scale.
+            play(wake_, "wake", 1.0f, 0.8f);
         }
 
         // Skimming past a surface at speed cuts the air.
         whooshIn_ -= dt;
         const float clearance = roomDistance(room, swarm.position());
-        if (whooshIn_ <= 0.0f && speed > 0.42f && clearance < 2.4f) {
-            whooshIn_ = 0.55f;
+        if (whooshIn_ <= 0.0f && speed > 0.45f && clearance < 2.0f) {
+            whooshIn_ = 1.6f;  // Often enough to feel the speed, not enough to tire of.
             const std::size_t which = differentFrom(lastWhoosh_, whooshes_.size());
             lastWhoosh_ = which;
-            play(whooshes_[which], kWhooshNames[which], 0.3f + 0.45f * speed, 0.85f + 0.4f * speed);
+            play(whooshes_[which], kWhooshNames[which], 0.25f + 0.35f * speed, 0.85f + 0.3f * speed);
         }
 
         // The machine shifts in its sleep, somewhere off in the dark.
@@ -191,7 +213,7 @@ private:
 
     void glide(Bed& bed, const char* name, float gain, float pitch, float highs, float dt) {
         const float k = 1.0f - std::exp(-dt * 9.0f);
-        bed.gain += (gain - bed.gain) * k;
+        bed.gain += (gain * kHeadroom - bed.gain) * k;
         bed.pitch += (pitch - bed.pitch) * k;
         bed.highs += (highs - bed.highs) * k;
         if (aloud_) {
@@ -252,15 +274,15 @@ private:
     }
 
     void play(iron::SoundHandle sound, const char* name, float gain, float pitch) {
-        if (aloud_) audio_.playSoundLocal(sound, gain, pitch);
-        if (log_) std::fprintf(log_, "%.4f,shot,%s,%.4f,%.4f\n", time_, name, gain, pitch);
+        if (aloud_) audio_.playSoundLocal(sound, gain * kHeadroom, pitch);
+        if (log_) std::fprintf(log_, "%.4f,shot,%s,%.4f,%.4f\n", time_, name, gain * kHeadroom, pitch);
     }
 
     void playFar(std::size_t which, Vec3 position) {
         const float pitch = varied();
         // Mono voices fall off with distance, so this is loud at the source.
-        if (aloud_) audio_.playSoundAt(creaks_[which], position, 7.0f, pitch);
-        if (log_) std::fprintf(log_, "%.4f,shot,%s,0.35,%.4f\n", time_, kCreakNames[which], pitch);
+        if (aloud_) audio_.playSoundAt(creaks_[which], position, 7.0f * kHeadroom, pitch);
+        if (log_) std::fprintf(log_, "%.4f,shot,%s,%.4f,%.4f\n", time_, kCreakNames[which], 0.35f * kHeadroom, pitch);
     }
 
     iron::AudioEngine audio_;
@@ -283,6 +305,9 @@ private:
     Bed chamber_;
     Bed awake_;
     Bed drive_;
+    Bed scoreCold_;
+    Bed scoreRise_;
+    Bed scoreAwake_;
     Bed roar_;
     Bed crackle_;
     Bed rush_;
@@ -290,6 +315,9 @@ private:
     iron::ReverbSettings reverb_;
     float reverbIn_ = 0.0f;
     float duck_ = 0.0f;
+    float cold_ = 0.0f;
+    float rise_ = 0.0f;
+    float lifted_ = 0.0f;
     bool muffled_ = false;
 
     bool gateHeard_ = false;

@@ -261,6 +261,30 @@ void testMenuSlidersClamp() {
     assert(settings.sound == 0.0f);
 }
 
+void testCameraShakeFadesAndSmallHitsStayGentle() {
+    kindle::CameraFeel small;
+    kindle::CameraFeel big;
+    small.hit(0.3f);
+    big.hit(0.9f);
+    assert(big.shake() > small.shake() * 8.0f);
+    for (int i = 0; i < 180; ++i) {
+        small.update(0.0f, kStep);
+        big.update(0.0f, kStep);
+    }
+    assert(big.shake() == 0.0f);
+    big.hit(5.0f);
+    assert(big.shake() == 1.0f);
+}
+
+void testCameraLeansIntoTurnsWithinALimit() {
+    kindle::CameraFeel feel;
+    for (int i = 0; i < 300; ++i) feel.update(100.0f, kStep);
+    assert(feel.roll() < 0.0f);
+    assert(feel.roll() >= -kindle::CameraFeel::kMaxRoll - 0.001f);
+    for (int i = 0; i < 300; ++i) feel.update(0.0f, kStep);
+    assert(std::abs(feel.roll()) < 0.01f);
+}
+
 void testIgniteSpendsHeat() {
     const Room room;
     Swarm swarm({0, 0, 0});
@@ -293,6 +317,8 @@ int main() {
     testCoastsToAStop();
     testIgniteBurstsThenRests();
     testIgniteSpendsHeat();
+    testCameraShakeFadesAndSmallHitsStayGentle();
+    testCameraLeansIntoTurnsWithinALimit();
     testMenuWrapsAndChooses();
     testMenuSlidersClamp();
     testSlitNeedsASqueeze();
