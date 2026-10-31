@@ -11,6 +11,7 @@
   <img src="https://img.shields.io/badge/C%2B%2B-23-00599C?logo=cplusplus" alt="C++23">
   <img src="https://img.shields.io/badge/Vulkan-1.3-A41E22?logo=vulkan" alt="Vulkan 1.3">
   <img src="https://img.shields.io/badge/platform-Windows-0078D6" alt="Windows">
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache--2.0-blue" alt="Apache-2.0"></a>
   <a href="https://github.com/EliasHanken/iron-core-engine/actions/workflows/ci.yml"><img src="https://github.com/EliasHanken/iron-core-engine/actions/workflows/ci.yml/badge.svg?branch=main" alt="CI"></a>
 </p>
 
@@ -141,6 +142,12 @@ ctest --test-dir build -C Debug --output-on-failure
 ```
 
 A build from this repo runs Kindle with its free CC0 sounds. The download uses licensed recordings and a score, which can't be redistributed here.
+
+## Licence
+
+Iron Core's code is licensed under [Apache-2.0](LICENSE), so you can use, change and ship it, including commercially, as long as you keep the notices. The names and logos aren't included.
+
+Fonts, models, textures, sounds and libraries keep their own terms, which are listed in [THIRD_PARTY.md](THIRD_PARTY.md). One sample model, the Damaged Helmet, is non-commercial only.
 
 ## Layout
 
