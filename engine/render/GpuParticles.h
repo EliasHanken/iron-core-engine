@@ -13,6 +13,7 @@
 
 namespace iron {
 
+class LightVolume;
 class Renderer;
 
 enum class ParticleBlend {
@@ -41,6 +42,7 @@ enum class ParticleBlend {
 //                                     out vec4 clipPos, out vec4 color,
 //                                     out vec4 data);
 //   fragmentGlsl: vec4 particleFragment(vec2 corner, vec4 color, vec4 data);
+//   emissionGlsl: vec3 particleEmission(Particle p, uint id);   (optional)
 //
 // `corner` runs -1..1 across the sprite. particleFragment returns the blended
 // colour directly, so PremultipliedAlpha effects must premultiply it.
@@ -53,6 +55,7 @@ struct GpuParticlesDesc {
     std::string   simulateGlsl;
     std::string   vertexGlsl;
     std::string   fragmentGlsl;
+    std::string   emissionGlsl;  // Light this effect adds to a LightVolume.
 };
 
 class GpuParticles {
@@ -73,6 +76,11 @@ public:
     // write depth.
     virtual void render(const Mat4& view, const Mat4& projection) = 0;
 
+    // Adds each particle's emission to `volume`. Call between
+    // LightVolume::beginInject and resolve. Does nothing when the effect has no
+    // emissionGlsl.
+    virtual void injectLight(LightVolume& volume) = 0;
+
     // Zeroes every particle on the next simulate().
     virtual void reset() = 0;
 
@@ -85,6 +93,7 @@ struct GpuParticleSources {
     std::string compute;
     std::string vertex;
     std::string fragment;
+    std::string inject;    // Empty when the effect has no emissionGlsl.
 };
 GpuParticleSources composeGpuParticleSources(const GpuParticlesDesc& desc);
 

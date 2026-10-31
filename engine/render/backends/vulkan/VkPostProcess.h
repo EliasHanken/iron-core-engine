@@ -51,6 +51,10 @@ public:
     bool resize(VkContext& ctx, VkExtent2D extent);
 
     VkRenderPass  scenePass()        const { return scenePass_; }
+    // Second half of the scene: loads colour and depth, with depth read-only so
+    // it can be sampled at the same time. Transparent draws (particles, volume
+    // composites) record here and their pipelines must be built against it.
+    VkRenderPass  transparentPass()  const { return transparentPass_; }
     // Pass that composite + debug + HUD overlays record into (M43a). Pipelines
     // recorded here must be built against it, not the swapchain pass — their
     // dependencyCount differs and that breaks render-pass compatibility.
@@ -60,6 +64,8 @@ public:
 
     void beginScenePass(VkCommandBuffer cb, const float clearColor[4]) const;
     void endScenePass(VkCommandBuffer cb) const;
+    void beginTransparentPass(VkCommandBuffer cb) const;
+    void endTransparentPass(VkCommandBuffer cb) const;
     void recordComposite(VkCommandBuffer cb, float exposure,
                          float bloomIntensity = 0.0f,
                          float aoStrength = 0.0f) const;
@@ -232,6 +238,8 @@ private:
     VkImageView   sceneDepthView_  = VK_NULL_HANDLE;
     VkRenderPass  scenePass_       = VK_NULL_HANDLE;
     VkFramebuffer sceneFb_         = VK_NULL_HANDLE;
+    VkRenderPass  transparentPass_ = VK_NULL_HANDLE;
+    VkFramebuffer transparentFb_   = VK_NULL_HANDLE;
 
     // --- Mask target (R8_UINT color + D32 depth) ---
     VkImage       maskColor_      = VK_NULL_HANDLE;

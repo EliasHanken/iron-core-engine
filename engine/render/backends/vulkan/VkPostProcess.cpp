@@ -600,6 +600,7 @@ void VkPostProcess::destroy(VkContext& ctx) {
     if (glowPass_)     { vkDestroyRenderPass(ctx.device(), glowPass_, nullptr);     glowPass_ = VK_NULL_HANDLE; }
     if (maskPass_)     { vkDestroyRenderPass(ctx.device(), maskPass_, nullptr);     maskPass_ = VK_NULL_HANDLE; }
     if (scenePass_)    { vkDestroyRenderPass(ctx.device(), scenePass_, nullptr);    scenePass_ = VK_NULL_HANDLE; }
+    if (transparentPass_) { vkDestroyRenderPass(ctx.device(), transparentPass_, nullptr); transparentPass_ = VK_NULL_HANDLE; }
 }
 
 bool VkPostProcess::resize(VkContext& ctx, VkExtent2D extent) {
@@ -781,6 +782,20 @@ void VkPostProcess::beginScenePass(VkCommandBuffer cb, const float clearColor[4]
 }
 
 void VkPostProcess::endScenePass(VkCommandBuffer cb) const {
+    vkCmdEndRenderPass(cb);
+}
+
+void VkPostProcess::beginTransparentPass(VkCommandBuffer cb) const {
+    VkRenderPassBeginInfo rpBegin{};
+    rpBegin.sType             = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
+    rpBegin.renderPass        = transparentPass_;
+    rpBegin.framebuffer       = transparentFb_;
+    rpBegin.renderArea.offset = {0, 0};
+    rpBegin.renderArea.extent = extent_;
+    vkCmdBeginRenderPass(cb, &rpBegin, VK_SUBPASS_CONTENTS_INLINE);
+}
+
+void VkPostProcess::endTransparentPass(VkCommandBuffer cb) const {
     vkCmdEndRenderPass(cb);
 }
 
@@ -1013,7 +1028,8 @@ bool VkPostProcess::createTargets(VkContext& ctx) {
     deps[2].srcSubpass    = 0;
     deps[2].dstSubpass    = VK_SUBPASS_EXTERNAL;
     deps[2].srcStageMask  = VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT;
-    deps[2].dstStageMask  = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
+    deps[2].dstStageMask  = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT |
+                            VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT;  // Between-pass compute.
     deps[2].srcAccessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
     deps[2].dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
 
@@ -1032,6 +1048,49 @@ bool VkPostProcess::createTargets(VkContext& ctx) {
     if (scenePass_ == VK_NULL_HANDLE)
         VK_CHECK(vkCreateRenderPass(ctx.device(), &rpInfo, nullptr, &scenePass_));
 
+    // --- Transparent scene pass: continues the scene image with depth read-only ---
+    // Colour stays in SHADER_READ_ONLY_OPTIMAL between the passes because that's
+    // the scene pass's finalLayout, which the composite relies on.
+    if (transparentPass_ == VK_NULL_HANDLE) {
+        VkAttachmentDescription loaded[2] = {attachments[0], attachments[1]};
+        loaded[0].loadOp        = VK_ATTACHMENT_LOAD_OP_LOAD;
+        loaded[0].initialLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        loaded[1].loadOp        = VK_ATTACHMENT_LOAD_OP_LOAD;
+        loaded[1].initialLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL;
+
+        VkAttachmentReference readOnlyDepthRef{1, VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL};
+        VkSubpassDescription transparentSubpass = subpass;
+        transparentSubpass.pDepthStencilAttachment = &readOnlyDepthRef;
+
+        VkSubpassDependency transparentDeps[2]{};
+        // Entry: the opaque pass and any compute between the passes are finished.
+        transparentDeps[0].srcSubpass    = VK_SUBPASS_EXTERNAL;
+        transparentDeps[0].dstSubpass    = 0;
+        transparentDeps[0].srcStageMask  = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT |
+                                           VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT |
+                                           VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT;
+        transparentDeps[0].dstStageMask  = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT |
+                                           VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT |
+                                           VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT |
+                                           VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
+        transparentDeps[0].srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT |
+                                           VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT |
+                                           VK_ACCESS_SHADER_WRITE_BIT;
+        transparentDeps[0].dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_READ_BIT |
+                                           VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT |
+                                           VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT |
+                                           VK_ACCESS_SHADER_READ_BIT;
+        // Exit: the composite and bloom can sample colour.
+        transparentDeps[1] = deps[1];
+
+        VkRenderPassCreateInfo transparentInfo = rpInfo;
+        transparentInfo.pAttachments    = loaded;
+        transparentInfo.pSubpasses      = &transparentSubpass;
+        transparentInfo.dependencyCount = 2;
+        transparentInfo.pDependencies   = transparentDeps;
+        VK_CHECK(vkCreateRenderPass(ctx.device(), &transparentInfo, nullptr, &transparentPass_));
+    }
+
     // --- Scene framebuffer ---
     {
         VkImageView views[2] = {sceneColorView_, sceneDepthView_};
@@ -1044,6 +1103,8 @@ bool VkPostProcess::createTargets(VkContext& ctx) {
         fbInfo.height          = extent_.height;
         fbInfo.layers          = 1;
         VK_CHECK(vkCreateFramebuffer(ctx.device(), &fbInfo, nullptr, &sceneFb_));
+        fbInfo.renderPass = transparentPass_;
+        VK_CHECK(vkCreateFramebuffer(ctx.device(), &fbInfo, nullptr, &transparentFb_));
     }
 
     // -----------------------------------------------------------------------
@@ -1342,6 +1403,7 @@ void VkPostProcess::destroyTargets(VkContext& ctx) {
 
     // Scene offscreen target.
     if (sceneFb_)         { vkDestroyFramebuffer(ctx.device(), sceneFb_, nullptr); sceneFb_ = VK_NULL_HANDLE; }
+    if (transparentFb_)   { vkDestroyFramebuffer(ctx.device(), transparentFb_, nullptr); transparentFb_ = VK_NULL_HANDLE; }
     if (sceneColorView_)  { vkDestroyImageView(ctx.device(), sceneColorView_, nullptr); sceneColorView_ = VK_NULL_HANDLE; }
     if (sceneDepthView_)  { vkDestroyImageView(ctx.device(), sceneDepthView_, nullptr); sceneDepthView_ = VK_NULL_HANDLE; }
     if (sceneColor_)      { vmaDestroyImage(ctx.allocator(), sceneColor_, sceneColorAlloc_); sceneColor_ = VK_NULL_HANDLE; sceneColorAlloc_ = VK_NULL_HANDLE; }

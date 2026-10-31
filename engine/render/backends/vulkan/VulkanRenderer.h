@@ -9,6 +9,7 @@
 #include "render/backends/vulkan/VkShader.h"
 #include "render/backends/vulkan/VkSwapchain.h"
 #include "render/backends/vulkan/VkDebugLines.h"
+#include "render/backends/vulkan/VkVolumeImage.h"
 #include "render/backends/vulkan/VkHud.h"
 #include "render/backends/vulkan/VkShadowMap.h"
 #include "render/backends/vulkan/VkTexture.h"
@@ -31,6 +32,7 @@
 
 namespace iron {
 
+class LightVolume;
 class Window;
 
 // Vulkan backend for iron::Renderer. Built only when
@@ -191,6 +193,13 @@ public:
     void setSsaoPower(float v)    { pendingSsaoPower_ = v; }
     void setSsaoStrength(float v) { pendingSsaoStrength_ = v; }
 
+    // Lights lit surfaces from `volume`, or clears it with nullptr. The volume
+    // must outlive its use, and must be resolved before endFrame.
+    void setLightVolume(const LightVolume* volume, float intensity);
+
+    // Engine-internal: clamped trilinear sampler for 3D volumes.
+    VkSampler volumeSampler() const { return volumeSampler_; }
+
     // Copies this frame's final composited image (tonemapped, before any UI)
     // and hands it to `fn` as tightly packed RGBA8 with alpha forced to 255,
     // sRGB encoded when the swapchain is. Fires inside endFrame after a blocking
@@ -200,9 +209,26 @@ public:
         std::function<void(const std::uint8_t* pixels, int width, int height)>;
     void captureFrame(FrameCaptureFn fn) { pendingCapture_ = std::move(fn); }
 
+    // Engine-internal: the pass transparent draws record into. Pipelines used
+    // from enqueueDeferredScenePass must be built against this one.
+    VkRenderPass transparentPass() const;
+
+    // Engine-internal: scene depth, sampleable in
+    // DEPTH_STENCIL_READ_ONLY_OPTIMAL from enqueueSceneCompute and
+    // enqueueDeferredScenePass callbacks.
+    VkImageView sceneDepthView() const;
+
+    // Engine-internal: the HDR scene's extent.
+    VkExtent2D sceneExtent() const;
+
+    // Engine-internal: compute recorded during endFrame between the opaque and
+    // transparent passes, when scene depth is complete and readable. Cleared
+    // each beginFrame. Same lifetime rule as enqueueDeferredScenePass.
+    void enqueueSceneCompute(std::function<void(VkCommandBuffer)> fn);
+
     // Engine-internal: external Vulkan subsystems register a deferred
-    // render callback. Fires inside the scene render pass during endFrame,
-    // after the geometry replay and before debug-lines + HUD.
+    // render callback. Fires inside the transparent scene pass during endFrame,
+    // after the opaque geometry and before debug-lines + HUD.
     //
     // LIFETIME: the callback may capture this/other-state by reference or
     // raw pointer. The caller MUST guarantee that any captured objects
@@ -233,6 +259,8 @@ private:
     // MaskPushConstants {mvp, effectId} and issues vkCmdDrawIndexed.
     void recordMaskDraw(VkCommandBuffer cb, const DrawCall& call);
     bool buildReflectionPipeline();
+    bool initVolumeDefaults();
+    void bindLightVolume(VkDescriptorSet set);
     // Frame capture: recordCaptureCopy runs after the viewport pass, then
     // deliverCapture runs after the submit once the GPU has finished.
     bool recordCaptureCopy(VkCommandBuffer cb);
@@ -240,6 +268,11 @@ private:
     void destroyCaptureBuffer();
 
     bool initOk_ = false;
+
+    const LightVolume* lightVolume_ = nullptr;
+    float              lightVolumeIntensity_ = 0.0f;
+    VkVolumeImage      blackVolume_;
+    VkSampler          volumeSampler_ = VK_NULL_HANDLE;
 
     FrameCaptureFn pendingCapture_;
     VkBuffer       captureBuffer_ = VK_NULL_HANDLE;
@@ -317,6 +350,7 @@ private:
 
     // M14 — frame-flow state for defer-and-replay rendering.
     std::vector<DrawCall> sceneDraws_;
+    std::vector<std::function<void(VkCommandBuffer)>> deferredSceneCompute_;
     std::vector<std::function<void(VkCommandBuffer)>> deferredScenePass_;
 
     // M36/M43a -- UI/overlay callbacks recorded in the swapchain pass after the viewport blit.

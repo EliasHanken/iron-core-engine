@@ -21,6 +21,7 @@ int main() {
     CHECK(!vert.empty());
     CHECK(!skinned.empty());
     CHECK(!frag.empty());
+    CHECK(std::string(standardLitFragSource()).find("uLightVolume") != std::string::npos);
 
     // M50b — tessellation sources.
     const auto tessVert = compileGlsl(VK_SHADER_STAGE_VERTEX_BIT,

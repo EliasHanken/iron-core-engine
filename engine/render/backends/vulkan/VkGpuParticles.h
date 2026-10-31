@@ -2,6 +2,7 @@
 
 #include "render/GpuParticles.h"
 #include "render/backends/vulkan/VkComputePipeline.h"
+#include "render/backends/vulkan/VkComputeStage.h"
 
 #include <vulkan/vulkan.h>
 #include <vk_mem_alloc.h>
@@ -26,6 +27,7 @@ public:
     void setParams(const void* params) override;
     void simulate(float dtSec) override;
     void render(const Mat4& view, const Mat4& projection) override;
+    void injectLight(LightVolume& volume) override;
     void reset() override { needsClear_ = true; }
     std::uint32_t count() const override { return desc_.count; }
 
@@ -48,6 +50,8 @@ private:
     VkComputePipeline     computePipeline_;
     VkPipelineLayout      renderLayout_   = VK_NULL_HANDLE;
     ::VkPipeline          renderPipeline_ = VK_NULL_HANDLE;
+    VkComputeStage        injectStage_;
+    bool                  hasInject_ = false;
 
     std::vector<unsigned char> params_;
     float         time_       = 0.0f;

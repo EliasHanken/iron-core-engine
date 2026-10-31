@@ -153,6 +153,8 @@ layout(set = 0, binding = 0) uniform LitUbo {
     vec4 probeBoxMin;   // M49 xyz=box min; w=tessellation factor (M50b tess)
     vec4 probeBoxMax;   // M49
     vec4 probeCenter;   // M49 — w = probeActive
+    vec4 volumeMin;     // M73 — xyz = LightVolume min; w = intensity (0 = no volume)
+    vec4 volumeInvSize; // M73 — xyz = 1 / LightVolume extent
 } u;
 
 layout(set = 0, binding = 1) uniform sampler2D uDiffuse;
@@ -167,6 +169,7 @@ layout(set = 0, binding = 10) uniform samplerCube uIrradianceCube;  // M46b diff
 layout(set = 0, binding = 11) uniform samplerCube uPrefiltered;   // M46c specular IBL
 layout(set = 0, binding = 12) uniform sampler2D   uBrdfLut;       // M46c split-sum LUT
 layout(set = 0, binding = 13) uniform sampler2D   uHeightMap;     // M50a — POM height (white=peak), samples .r
+layout(set = 0, binding = 14) uniform sampler3D   uLightVolume;   // M73 — light from particles
 
 float shadowFactor(vec4 lightSpacePos, float bias) {
     vec3 proj = lightSpacePos.xyz / lightSpacePos.w;
@@ -330,6 +333,16 @@ void main() {
     } else {
         ambient = u.ambient.xyz * albedo * ao;
     }
+    // M73 — light from a LightVolume. Metals have no diffuse response, so they
+    // also sample along the reflection, which is what lets them pick it up.
+    if (u.volumeMin.w > 0.0) {
+        vec3 uvwDiffuse  = (vWorldPos + N_ * 0.35 - u.volumeMin.xyz) * u.volumeInvSize.xyz;
+        vec3 uvwSpecular = (vWorldPos + reflect(-V, N_) * 0.8 - u.volumeMin.xyz) * u.volumeInvSize.xyz;
+        vec3 diffuseV  = texture(uLightVolume, uvwDiffuse).rgb * albedo * (1.0 - metallic);
+        vec3 specularV = texture(uLightVolume, uvwSpecular).rgb * F0;
+        Lo += (diffuseV + specularV) * u.volumeMin.w * ao;
+    }
+
     vec3 emissive = u.emissive.xyz * texture(uEmissiveMap, uv).rgb;
     vec3 color = ambient + Lo + emissive;
 

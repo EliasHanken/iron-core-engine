@@ -150,6 +150,10 @@ iron_add_test(test_tonemap test_tonemap.cpp)
 iron_add_test(test_pbr test_pbr.cpp)
 iron_add_test(test_ibl test_ibl.cpp)
 iron_add_test(test_bloom test_bloom.cpp)
+iron_add_test(test_volume_bounds test_volume_bounds.cpp)
+if (IRON_RENDER_BACKEND STREQUAL "vulkan")
+  iron_add_test(test_gpu_particles test_gpu_particles.cpp)
+endif()
 
 # test_genie exercises the game-side timeline, terrain and shaders directly.
 add_executable(test_genie

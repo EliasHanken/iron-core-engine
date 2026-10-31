@@ -3,6 +3,7 @@
 #include "render/backends/vulkan/VkGpuParticles.h"
 #include "render/backends/vulkan/VulkanRenderer.h"
 #include "render/backends/vulkan/VkContext.h"
+#include "render/backends/vulkan/VkLightVolume.h"
 #include "render/backends/vulkan/VkShader.h"
 #include "render/backends/vulkan/VkUtils.h"
 
@@ -60,6 +61,35 @@ void main() {
 }
 )";
 
+const char* const kInjectMain = R"(
+layout(std430, set = 0, binding = 3) buffer Light { uint light[]; };
+layout(push_constant) uniform Inject {
+    vec4 boundsMin;
+    vec4 invSize;
+    ivec4 size;
+    float fixedPointScale;
+} inject;
+
+void main() {
+    uint id = gl_GlobalInvocationID.x;
+    if (id >= frame.count) return;
+
+    Particle p = particles[id];
+    vec3 emission = particleEmission(p, id);
+    if (emission == vec3(0.0)) return;
+
+    vec3 uvw = (p.position.xyz - inject.boundsMin.xyz) * inject.invSize.xyz;
+    if (any(lessThan(uvw, vec3(0.0))) || any(greaterThanEqual(uvw, vec3(1.0)))) return;
+
+    ivec3 v = ivec3(uvw * vec3(inject.size.xyz));
+    uint i = 3u * uint(v.x + inject.size.x * (v.y + inject.size.y * v.z));
+    uvec3 amount = uvec3(emission * inject.fixedPointScale);
+    atomicAdd(light[i], amount.r);
+    atomicAdd(light[i + 1u], amount.g);
+    atomicAdd(light[i + 2u], amount.b);
+}
+)";
+
 const char* const kFragmentMain = R"(
 layout(location = 0) in vec2 vCorner;
 layout(location = 1) in vec4 vColor;
@@ -85,6 +115,15 @@ struct VkGpuParticles::FrameUbo {
 };
 static_assert(sizeof(Mat4) == 64, "Frame UBO expects tightly packed matrices");
 
+namespace {
+struct InjectPush {
+    float        boundsMin[4];
+    float        invSize[4];
+    std::int32_t size[4];
+    float        fixedPointScale;
+};
+}  // namespace
+
 GpuParticleSources composeGpuParticleSources(const GpuParticlesDesc& desc) {
     GpuParticleSources out;
 
@@ -109,6 +148,14 @@ void main() {
     out.fragment = std::string(kVersion) + kParticleStruct + kFrameBlock +
         desc.commonGlsl + desc.fragmentGlsl + kFragmentMain;
 
+    if (!desc.emissionGlsl.empty()) {
+        out.inject = std::string(kVersion) +
+            "layout(local_size_x = " + std::to_string(kLocalSize) + ") in;\n" +
+            kParticleStruct +
+            "layout(std430, set = 0, binding = 0) readonly buffer ParticleBuffer { Particle particles[]; };\n" +
+            kFrameBlock + desc.commonGlsl + desc.emissionGlsl + kInjectMain;
+    }
+
     return out;
 }
 
@@ -119,6 +166,7 @@ VkGpuParticles::~VkGpuParticles() {
 
     if (renderPipeline_) vkDestroyPipeline(ctx.device(), renderPipeline_, nullptr);
     if (renderLayout_)   vkDestroyPipelineLayout(ctx.device(), renderLayout_, nullptr);
+    injectStage_.destroy(ctx);
     computePipeline_.destroy(ctx);
     if (setLayout_)      vkDestroyDescriptorSetLayout(ctx.device(), setLayout_, nullptr);
     if (ssbo_)           vmaDestroyBuffer(ctx.allocator(), ssbo_, ssboAlloc_);
@@ -150,6 +198,18 @@ bool VkGpuParticles::init(VulkanRenderer& renderer, const GpuParticlesDesc& desc
     if (!createBuffer() || !createSetLayout()) return false;
     if (!computePipeline_.init(renderer.context(), computeSpv, setLayout_)) return false;
     if (!createRenderPipeline(sources)) return false;
+
+    if (!sources.inject.empty()) {
+        if (!injectStage_.init(renderer.context(), sources.inject,
+                               {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+                                VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
+                                VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
+                                VK_DESCRIPTOR_TYPE_STORAGE_BUFFER},
+                               sizeof(InjectPush))) {
+            return false;
+        }
+        hasInject_ = true;
+    }
 
     Log::info("GpuParticles: %u particles (%.1f MB)", desc_.count,
               static_cast<double>(desc_.count) * 64.0 / (1024.0 * 1024.0));
@@ -299,7 +359,7 @@ bool VkGpuParticles::createRenderPipeline(const GpuParticleSources& sources) {
     info.pColorBlendState    = &cb;
     info.pDynamicState       = &dynInfo;
     info.layout              = renderLayout_;
-    info.renderPass          = renderer_->scenePass();
+    info.renderPass          = renderer_->transparentPass();
 
     VK_CHECK(vkCreateGraphicsPipelines(ctx.device(), VK_NULL_HANDLE, 1, &info, nullptr,
                                        &renderPipeline_));
@@ -414,8 +474,48 @@ void VkGpuParticles::simulate(float dtSec) {
     toRead.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
     toRead.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
     vkCmdPipelineBarrier(cb, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-                         VK_PIPELINE_STAGE_VERTEX_SHADER_BIT, 0, 1, &toRead,
-                         0, nullptr, 0, nullptr);
+                         VK_PIPELINE_STAGE_VERTEX_SHADER_BIT | VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                         0, 1, &toRead, 0, nullptr, 0, nullptr);
+}
+
+void VkGpuParticles::injectLight(LightVolume& volume) {
+    if (!hasInject_) return;
+    VkCommandBuffer cb = renderer_->currentCommandBuffer();
+    if (cb == VK_NULL_HANDLE) return;
+
+    auto& vkVolume = static_cast<VkLightVolume&>(volume);
+    VkFrameRing& ring = renderer_->frameRing();
+
+    FrameUbo ubo{};
+    ubo.dt         = lastDt_;
+    ubo.time       = time_;
+    ubo.count      = desc_.count;
+    ubo.frameIndex = frameIndex_;
+
+    const VolumeBounds& b = volume.bounds();
+    const VolumeSize s = volume.size();
+    InjectPush push{};
+    push.boundsMin[0] = b.min.x;
+    push.boundsMin[1] = b.min.y;
+    push.boundsMin[2] = b.min.z;
+    push.invSize[0] = 1.0f / (b.max.x - b.min.x);
+    push.invSize[1] = 1.0f / (b.max.y - b.min.y);
+    push.invSize[2] = 1.0f / (b.max.z - b.min.z);
+    push.size[0] = static_cast<std::int32_t>(s.x);
+    push.size[1] = static_cast<std::int32_t>(s.y);
+    push.size[2] = static_cast<std::int32_t>(s.z);
+    push.fixedPointScale = VkLightVolume::kFixedPointScale;
+
+    VkFrameRing::Frame& frame = ring.current();
+    const VkDeviceSize frameOffset = ring.allocateUbo(&ubo, sizeof(ubo));
+    const VkDeviceSize paramsOffset = ring.allocateUbo(params_.data(), params_.size());
+    injectStage_.dispatch(
+        *renderer_, cb,
+        {VkComputeResource::bufferRange(ssbo_, 0, static_cast<VkDeviceSize>(desc_.count) * 64),
+         VkComputeResource::bufferRange(frame.uboBuffer, frameOffset, sizeof(ubo)),
+         VkComputeResource::bufferRange(frame.uboBuffer, paramsOffset, params_.size()),
+         VkComputeResource::bufferRange(vkVolume.accumulationBuffer())},
+        &push, (desc_.count + kLocalSize - 1) / kLocalSize);
 }
 
 void VkGpuParticles::render(const Mat4& view, const Mat4& projection) {
