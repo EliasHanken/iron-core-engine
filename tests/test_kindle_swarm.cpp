@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <cassert>
+#include <iterator>
 #include <cmath>
 #include <string>
 #include <cstdio>
@@ -332,6 +333,82 @@ void testSettingsRoundTrip() {
     std::remove(path.c_str());
 }
 
+void testObjectiveFollowsTheGame() {
+    Room room;
+    kindle::Story story;
+    Swarm swarm({0, 0, 0});
+
+    kindle::Objective step = kindle::currentObjective(room, story, swarm, 0.275f);
+    assert(step.text.find("RELIGHT") != std::string::npos);
+    assert(std::abs(step.progress - 0.5f) < 0.01f);
+    assert(!step.hasTarget);
+
+    for (int i = 0; i < 300; ++i) story.update(room, {0, 0, 0}, 1.0f, false, kStep);
+    room.sealed = false;
+    step = kindle::currentObjective(room, story, swarm, 1.0f);
+    assert(step.hasTarget && step.text == "SQUEEZE THROUGH THE GATE");
+
+    Swarm atGate({0, 0, -15});
+    assert(kindle::currentObjective(room, story, atGate, 1.0f).text == "HOLD SHIFT TO SQUEEZE THROUGH");
+
+    Swarm far({0, 0, -31});
+    assert(kindle::currentObjective(room, story, far, 1.0f).text == "FLY TO THE CORE");
+    Swarm beside({0, 0, -48});
+    step = kindle::currentObjective(room, story, beside, 1.0f);
+    assert(step.text == "IGNITE TO FEED THE CORE");
+    assert(step.progress == 0.0f);
+
+    while (!story.finale()) story.update(room, {0, 0, -48}, 1.0f, true, kStep);
+    assert(kindle::currentObjective(room, story, beside, 1.0f).text.empty());
+}
+
+// Plays the whole game by its real rules, as a simple player would: relight four
+// corners, go through the gate, and feed the core. Proves it can be finished.
+void testTheGameCanBeFinished() {
+    Room room;
+    Swarm swarm({0, 0, -10});
+    kindle::Wakes wakes;
+    kindle::Story story;
+
+    struct Leg {
+        Vec3 to;
+        bool ignite;
+    };
+    const Leg legs[] = {{{-10, 0, -10}, true}, {{10, 0, -10}, true}, {{10, 0, 10}, true}, {{-10, 0, 10}, true},
+                        {{-10, 0, -10}, false}, {{0, 0, -10}, false}, {{0, 0, -31}, false}, {{0, 0, -48}, true}};
+    std::size_t leg = 0;
+    float seconds = 0.0f;
+    float waited = 0.0f;
+    while (!story.finale()) {
+        seconds += kStep;
+        assert(seconds < 600.0f);  // Stuck: something on the route can't be passed.
+
+        Controls controls;
+        const Leg& now = legs[leg];
+        const Vec3 toward = now.to - swarm.position();
+        const bool there = iron::length(toward) < 1.5f;
+        if (!there) controls.wish = iron::normalize(toward);
+        controls.squeeze = leg >= 5 && leg <= 6;
+        if (there) {
+            waited += kStep;
+            controls.ignite = now.ignite && swarm.heat() >= Swarm::kIgniteCost;
+            const bool gateLeg = leg == 4;  // Wait here until the way opens.
+            if (leg + 1 < std::size(legs) && waited > (now.ignite ? 2.5f : 0.0f) && (!gateLeg || !story.sealed())) {
+                ++leg;
+                waited = 0.0f;
+            }
+        }
+
+        room.sealed = story.sealed();
+        swarm.update(room, controls, kStep);
+        if (swarm.ignited() && swarm.position().z > -20.0f) wakes.ignite(swarm.position());
+        wakes.update(kStep);
+        story.update(room, swarm.position(), wakes.relit(room), swarm.ignited(), kStep);
+    }
+    assert(leg == std::size(legs) - 1);
+    std::printf("a direct run reaches the finale in %.0f seconds\n", seconds);
+}
+
 void testIgniteSpendsHeat() {
     const Room room;
     Swarm swarm({0, 0, 0});
@@ -364,6 +441,8 @@ int main() {
     testCoastsToAStop();
     testIgniteBurstsThenRests();
     testIgniteSpendsHeat();
+    testObjectiveFollowsTheGame();
+    testTheGameCanBeFinished();
     testEyesCloseFastAndOpenSlowly();
     testTimeSlowsAroundTheBlast();
     testSettingsRoundTrip();

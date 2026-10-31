@@ -60,6 +60,8 @@ constexpr float kHeadingPixels = 34.0f;
 constexpr float kBodyPixels = 25.0f;
 constexpr float kSmallPixels = 19.0f;
 constexpr float kIntroIgnite = 4.8f;  // Seconds of darkness before the swarm lights.
+constexpr const char* kControls =
+    "WASD  FLY     MOUSE  LOOK     SPACE / CTRL  RISE / SINK     SHIFT  SQUEEZE     CLICK  IGNITE";
 
 float ramp(float from, float to, float t) {
     const float k = std::clamp((t - from) / (to - from), 0.0f, 1.0f);
@@ -162,7 +164,7 @@ public:
     const std::vector<Row>& rows() const { return rows_; }
 
     void drawMenu(iron::Renderer& renderer, const kindle::Menu& menu, const std::string& heading,
-                  const std::string& line, float dim, int width, int height) {
+                  const std::string& line, const std::string& controls, float dim, int width, int height) {
         if (height != bakedHeight_) {
             if (++heightStable_ > 20) {
                 bake(renderer, height);
@@ -187,6 +189,12 @@ public:
         iron::HudDrawGroup big;
         big.texture = title_.texture;
         text::appendCentered(big, title_, heading, center, h * 0.32f, 1.0f, 0.5f, {1.0f, 0.9f, 0.76f, 1.0f});
+
+        // A band behind the menu, so that a shaft of light can't wash out its words.
+        const float bandTop = h * 0.48f - rowHeight * 0.9f;
+        const float bandHeight = rowHeight * (static_cast<float>(menu.items().size()) + 0.6f);
+        appendBar(bars, 0.0f, w, bandTop, bandHeight, {0.0f, 0.0f, 0.0f, 0.55f});
+        appendBar(bars, 0.0f, w, h - 96.0f * unit, 50.0f * unit, {0.0f, 0.0f, 0.0f, controls.empty() ? 0.0f : 0.45f});
 
         iron::HudDrawGroup under;
         under.texture = small_.texture;
@@ -225,6 +233,12 @@ public:
             y += rowHeight;
         }
 
+        // The controls are always one Esc away.
+        if (!controls.empty()) {
+            text::appendCentered(under, small_, controls, center, h - 64.0f * unit, 1.0f, 0.22f,
+                                 {0.92f, 0.86f, 0.78f, 0.8f});
+        }
+
         batch.push_back(std::move(bars));
         batch.push_back(std::move(big));
         if (!under.vertices.empty()) batch.push_back(std::move(under));
@@ -240,10 +254,18 @@ public:
     void restart() {
         gateSeconds_ = 0.0f;
         heatShown_ = 0.0f;
+        tipLeft_ = 0.0f;
+    }
+
+    // Shows a tip for a few seconds.
+    void tip(std::string text) {
+        tip_ = std::move(text);
+        tipLeft_ = 4.0f;
     }
 
     void draw(iron::Renderer& renderer, float seconds, float dt, const kindle::Swarm& swarm,
-              const kindle::Story& story, bool showTitle, int width, int height) {
+              const kindle::Story& story, const kindle::Objective& objective, iron::Vec2 marker, bool markerBehind,
+              bool showTitle, int width, int height) {
         const float w = static_cast<float>(width);
         const float h = static_cast<float>(height);
         const float unit = h / 1080.0f;
@@ -290,6 +312,54 @@ public:
 
         const float hint = ramp(6.4f, 7.6f, seconds) * (1.0f - ramp(13.0f, 15.0f, seconds));
 
+        // The objective stays at the top, until the very end.
+        const float showGoal = ramp(5.2f, 6.2f, seconds);
+        iron::HudDrawGroup goalBars;
+        goalBars.texture = solid_;
+        if (showGoal > 0.0f && !objective.text.empty()) {
+            const float y = 46.0f * unit;
+            appendBar(goalBars, 0.0f, w, y - 28.0f * unit, 62.0f * unit, {0.0f, 0.0f, 0.0f, showGoal * 0.62f});
+            text::appendCentered(smalls, small_, objective.text, center, y, 1.0f, 0.26f,
+                                 {1.0f, 0.92f, 0.82f, showGoal});
+            if (objective.progress >= 0.0f) {
+                const float half = 170.0f * unit;
+                const float barY = y + 14.0f * unit;
+                const float thick = std::max(2.0f * unit, 2.0f);
+                appendBar(goalBars, center - half, center + half, barY, thick, {1.0f, 1.0f, 1.0f, 0.18f * showGoal});
+                appendBar(goalBars, center - half, center - half + 2.0f * half * objective.progress, barY, thick,
+                          {1.0f, 0.55f, 0.2f, showGoal});
+            }
+        }
+
+        // A marker for where to go, held inside the screen edge when it's out of view.
+        if (showGoal > 0.0f && objective.hasTarget) {
+            const float margin = 54.0f * unit;
+            float x = marker.x * w;
+            float y = marker.y * h;
+            const bool offscreen = markerBehind || x < margin || x > w - margin || y < margin * 2.0f || y > h - margin;
+            if (markerBehind) {
+                // Behind you, the direction flips, and it sits on the nearest side.
+                x = x < center ? w - margin : margin;
+                y = h * 0.5f;
+            }
+            x = std::clamp(x, margin, w - margin);
+            y = std::clamp(y, margin * 2.0f, h - margin);
+            const float size = (offscreen ? 11.0f : 8.0f + 2.0f * std::sin(seconds * 3.5f)) * unit;
+            const iron::Vec4 color{1.0f, 0.62f, 0.26f, showGoal};
+            const iron::HudVertex top{{x, y - size}, {0, 0}, color};
+            const iron::HudVertex right{{x + size, y}, {1, 0}, color};
+            const iron::HudVertex bottom{{x, y + size}, {1, 1}, color};
+            const iron::HudVertex left{{x - size, y}, {0, 1}, color};
+            for (const iron::HudVertex& v : {top, right, bottom, top, bottom, left}) goalBars.vertices.push_back(v);
+        }
+
+        tipLeft_ = std::max(tipLeft_ - dt, 0.0f);
+        if (tipLeft_ > 0.0f) {
+            const float show = std::min(tipLeft_, 1.0f);
+            text::appendCentered(smalls, small_, tip_, center, h - 150.0f * unit, 1.0f, 0.26f,
+                                 {0.78f, 0.86f, 0.98f, show});
+        }
+
         // The heat line stays while it refills, then lingers a moment.
         const float heat = swarm.heat();
         heatShown_ = heat < 0.995f ? 1.0f : std::max(heatShown_ - dt * 0.6f, 0.0f);
@@ -314,6 +384,7 @@ public:
 
         iron::HudBatch batch;
         if (fadeOut > 0.0f) appendBar(bars, 0.0f, w, 0.0f, h, {0.0f, 0.0f, 0.0f, fadeOut * 0.8f});
+        if (!goalBars.vertices.empty()) batch.push_back(std::move(goalBars));
         if (end > 0.0f) batch.push_back(std::move(backdrop_));
         if (!bars.vertices.empty()) batch.push_back(std::move(bars));
         for (iron::HudDrawGroup* group : {&big, &heading, &words, &smalls}) {
@@ -346,6 +417,8 @@ private:
     iron::TextureHandle solid_ = iron::kInvalidHandle;
     float heatShown_ = 0.0f;
     float gateSeconds_ = 0.0f;
+    std::string tip_;
+    float tipLeft_ = 0.0f;
     iron::HudDrawGroup backdrop_;
 };
 
@@ -741,6 +814,12 @@ int main(int argc, char** argv) {
         const std::size_t wakesBefore = wakes.count();
         if (swarm.ignited() && inHall) wakes.ignite(swarm.position());
         const bool freshWake = wakes.count() > wakesBefore;
+        if (swarm.ignited() && story.sealed() && inHall && !freshWake) {
+            screen.tip("NEW GROUND BURNS FURTHER: IGNITE SOMEWHERE ELSE");
+        }
+        if (controls.ignite && !swarm.ignited() && swarm.heat() < kindle::Swarm::kIgniteCost && mode == Mode::Playing) {
+            screen.tip("OUT OF HEAT: IT COMES BACK WITH TIME");
+        }
         wakes.update(dt);
 
         const float relit = scripted && seconds > kGateOpensInRecording ? 1.0f : wakes.relit(room);
@@ -827,6 +906,20 @@ int main(int argc, char** argv) {
         // The lens follows the swarm: everything else softens with distance from it,
         // and the air around it ripples. A menu pulls focus away from the world.
         const iron::Mat4 viewProjection = projection * view;
+        const kindle::Objective objective = kindle::currentObjective(room, story, swarm, relit);
+        iron::Vec2 marker{0.5f, 0.5f};
+        bool markerBehind = false;
+        if (objective.hasTarget) {
+            const Vec3 t = objective.target;
+            const auto mark = [&](int r) {
+                return viewProjection.at(r, 0) * t.x + viewProjection.at(r, 1) * t.y +
+                       viewProjection.at(r, 2) * t.z + viewProjection.at(r, 3);
+            };
+            const float w = mark(3);
+            markerBehind = w <= 0.1f;
+            const float safe = markerBehind ? std::min(w, -0.1f) : w;
+            marker = {mark(0) / safe * 0.5f + 0.5f, 0.5f - mark(1) / safe * 0.5f};
+        }
         const Vec3 at = swarm.position();
         const auto row = [&](int r) {
             return viewProjection.at(r, 0) * at.x + viewProjection.at(r, 1) * at.y +
@@ -924,13 +1017,15 @@ int main(int argc, char** argv) {
             app.window().setCursorCaptured(false);
         }
 
-        if (mode == Mode::Playing) screen.draw(renderer, seconds, dt, swarm, story, scripted, width, height);
+        if (mode == Mode::Playing) {
+            screen.draw(renderer, seconds, dt, swarm, story, objective, marker, markerBehind, scripted, width, height);
+        }
         if (mode == Mode::Menu) {
-            screen.drawMenu(renderer, menu, "KINDLE", "THE MACHINE IS COLD", 0.34f, width, height);
+            screen.drawMenu(renderer, menu, "KINDLE", "THE MACHINE IS COLD", kControls, 0.34f, width, height);
         } else if (mode == Mode::Paused) {
-            screen.drawMenu(renderer, menu, "PAUSED", "", 0.62f, width, height);
+            screen.drawMenu(renderer, menu, "PAUSED", objective.text, kControls, 0.62f, width, height);
         } else if (mode == Mode::End) {
-            screen.drawMenu(renderer, menu, "AWAKE", "YOU WOKE THE IRON CORE", 0.8f, width, height);
+            screen.drawMenu(renderer, menu, "AWAKE", "YOU WOKE THE IRON CORE", "", 0.8f, width, height);
         }
     };
 
