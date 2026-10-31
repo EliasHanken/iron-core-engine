@@ -11,6 +11,7 @@
 #include <array>
 #include <cmath>
 #include <cstddef>
+#include <string>
 
 namespace kindle {
 
@@ -327,5 +328,42 @@ private:
     float fed_ = 0.0f;
     float finaleSeconds_ = 0.0f;
 };
+
+// What the player should do right now, and where.
+struct Objective {
+    std::string text;           // Empty once there's nothing left to do.
+    float progress = -1.0f;     // From 0 to 1, or below 0 for no bar.
+    bool  hasTarget = false;
+    Vec3  target{};
+};
+
+inline Objective currentObjective(const Room& room, const Story& story, const Swarm& swarm, float relit) {
+    Objective objective;
+    if (story.finale()) return objective;
+
+    const Vec3 at = swarm.position();
+    if (story.gate() <= 0.0f) {
+        objective.text = "IGNITE IN THE DARK TO RELIGHT THE HALL";
+        objective.progress = std::min(relit / Story::kRelitToOpen, 1.0f);
+        return objective;
+    }
+    if (at.z > room.slitFar) {
+        objective.hasTarget = true;
+        objective.target = {0.0f, 0.0f, room.slitNear};
+        const bool atTheGate = iron::length(at - objective.target) < 7.0f;
+        objective.text = atTheGate && swarm.squeeze() < 0.5f ? "HOLD SHIFT TO SQUEEZE THROUGH"
+                                                             : "SQUEEZE THROUGH THE GATE";
+        return objective;
+    }
+    objective.hasTarget = true;
+    objective.target = room.coreCenter;
+    if (iron::length(at - room.coreCenter) < Story::kFeedDistance) {
+        objective.text = "IGNITE TO FEED THE CORE";
+        objective.progress = story.fed();
+    } else {
+        objective.text = "FLY TO THE CORE";
+    }
+    return objective;
+}
 
 }  // namespace kindle
