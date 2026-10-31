@@ -87,9 +87,9 @@ void surfaceMaterial(vec3 worldPos, vec3 N, vec3 V, float surfaceTime, inout vec
         float flow = fbm(worldPos * 0.55 + vec3(0.0, surfaceTime * 0.06, 0.0), 5);
         float ridge = 1.0 - abs(2.0 * flow - 1.0);
         // Veins open from thin to wide as the warmth reaches them.
-        float vein = smoothstep(1.0 - 0.05 * warmth, 1.0 - 0.015 * warmth, ridge);
+        float vein = smoothstep(1.0 - 0.034 * warmth, 1.0 - 0.01 * warmth, ridge);
         float breath = 0.75 + 0.25 * sin(surfaceTime * 1.3 + flow * 12.0);
-        emissive += vec3(1.0, 0.27, 0.05) * vein * warmth * breath * 5.0;
+        emissive += vec3(1.0, 0.2, 0.03) * vein * warmth * breath * 2.8;
     }
 
     float crease = hallOcclusion(worldPos, N);

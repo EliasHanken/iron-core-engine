@@ -16,6 +16,7 @@
 #include "common/TrackedText.h"
 #include "HallGlsl.h"
 #include "HallMesh.h"
+#include "Sound.h"
 #include "Swarm.h"
 
 #include "core/Application.h"
@@ -166,6 +167,10 @@ public:
         const float end = ramp(5.0f, 7.0f, blown) * (1.0f - ramp(13.0f, 15.0f, blown));
         const float credit = ramp(7.5f, 9.0f, blown) * (1.0f - ramp(13.0f, 15.0f, blown));
         if (end > 0.0f) {
+            iron::HudDrawGroup shade;
+            shade.texture = solid_;
+            appendBar(shade, 0.0f, w, h * 0.31f, h * 0.2f, {0.0f, 0.0f, 0.0f, end * 0.55f});
+            backdrop_ = std::move(shade);
             text::appendCentered(words, font_, "THE MACHINE IS AWAKE", center, h * 0.4f, unit * 0.46f, 0.5f,
                                  {1.0f, 0.90f, 0.78f, end});
             text::appendCentered(words, font_, "IRON CORE ENGINE  /  FORGE", center, h * 0.4f + 50.0f * unit,
@@ -197,6 +202,7 @@ public:
         }
 
         iron::HudBatch batch;
+        if (end > 0.0f) batch.push_back(std::move(backdrop_));
         if (!bars.vertices.empty()) batch.push_back(std::move(bars));
         if (!words.vertices.empty()) batch.push_back(std::move(words));
         if (!batch.empty()) renderer.drawHud(batch, width, height);
@@ -218,6 +224,7 @@ private:
     iron::TextureHandle solid_ = iron::kInvalidHandle;
     float heatShown_ = 0.0f;
     float gateSeconds_ = 0.0f;
+    iron::HudDrawGroup backdrop_;
 };
 
 // Pulls the camera towards the swarm until nothing is in the way.
@@ -362,6 +369,10 @@ int main(int argc, char** argv) {
     kindle::Swarm swarm({0.0f, 0.0f, -10.0f});
     kindle::Wakes wakes;
     kindle::Story story;
+
+    kindle::Sound sound;
+    sound.init(assets + "audio/", !scripted,
+               options.recordPath.empty() ? std::string{} : options.recordPath + ".sound.csv");
     Autopilot autopilot;
 
     float yaw = 0.0f;
@@ -430,7 +441,9 @@ int main(int argc, char** argv) {
         room.sealed = story.sealed();
         swarm.update(room, controls, dt);
         const bool inHall = swarm.position().z > -20.0f;
+        const std::size_t wakesBefore = wakes.count();
         if (swarm.ignited() && inHall) wakes.ignite(swarm.position());
+        const bool freshWake = wakes.count() > wakesBefore;
         wakes.update(dt);
 
         const float relit = scripted && seconds > kGateOpensInRecording ? 1.0f : wakes.relit(room);
@@ -443,7 +456,8 @@ int main(int argc, char** argv) {
         // It opens as one ember in a cold hall, and the swarm ignites as the title goes.
         const float presence = std::max(ramp(kIntroIgnite, kIntroIgnite + 1.6f, seconds), swarm.flare());
         const float shock = blown > 0.0f ? std::exp(-blown * 0.7f) : 0.0f;  // The core's light.
-        player.setInput("presence", {presence, 0, 0});
+        // Squeezing packs every spark into a thin line, so each one has to give less.
+        player.setInput("presence", {presence * (1.0f - 0.72f * swarm.squeeze()), 0, 0});
         player.setInput("light", {(0.00012f + swarm.flare() * 0.0012f) * presence, 0, 0});
         if (blown > 0.0f && blown < dt * 1.5f) swarm.burst();
         player.setInput("pulse", {0.02f + swarm.pulse() * 0.02f + swarm.flare() * 0.06f, 0, 0});
@@ -454,6 +468,8 @@ int main(int argc, char** argv) {
         const Vec3 wantEye = clearEye(room, swarm.position(),
                                       swarm.position() - forward * (7.0f + 5.0f * rush + 4.0f * swarm.flare()) + Vec3{0, 1.6f, 0});
         eye = eye + (wantEye - eye) * (1.0f - std::exp(-dt * 9.0f));
+        sound.update(seconds, dt, eye, forward, swarm, story, freshWake, presence);
+
         const bool watching = options.scene == "hall";
         if (watching) eye = Vec3{-18.5f, -3.0f, -18.5f};
         const Vec3 lookTarget = watching ? Vec3{4.0f, -1.5f, 4.0f} : swarm.position() + forward * 4.0f;
@@ -472,7 +488,9 @@ int main(int argc, char** argv) {
         std::vector<iron::PointLight> lights{{
             {swarm.position(), kEmber, (1.1f + flare * 7.0f) * glow, 20.0f + flare * 18.0f},
             {tailA, kEmber, 0.35f * glow, 18.0f},
-            {tailB, kEmber, 0.2f * glow, 16.0f},
+            // In the chamber this one lights the room from the core, as it wakes.
+            inHall ? iron::PointLight{tailB, kEmber, 0.2f * glow, 16.0f}
+                   : iron::PointLight{room.coreCenter, kEmber, 0.25f + story.fed() * 1.6f + shock * 7.0f, 46.0f},
         }};
         // Relit places stay warm, and HallGlsl.h reads these lights to draw the veins.
         for (std::size_t i = 0; i < wakes.count(); ++i) {
@@ -482,8 +500,8 @@ int main(int argc, char** argv) {
         // through everything, and the whole machine lights.
         const float coreReach = blown > 0.0f ? room.coreRadius + blown * blown * 9.0f
                                              : room.coreRadius - 2.0f + story.fed() * 5.0f;
-        lights.push_back({room.coreCenter, kEmber, 3.0f * story.fed() + shock * 90.0f,
-                          std::max(coreReach, room.coreRadius + 26.0f * story.fed() + 1.0f)});
+        lights.push_back({room.coreCenter, kEmber, shock * 2.0f, coreReach});
+        vulkan->setExposure(1.0f - 0.5f * shock);
 
         iron::DirectionalLight dark;
         dark.color = {0.0f, 0.0f, 0.0f};
