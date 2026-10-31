@@ -129,7 +129,7 @@ int main(int argc, char** argv) {
 
     iron::CinematicSettings lens;
     lens.enabled = true;
-    lens.motionBlur = 0.5f;
+    lens.motionBlur = 0.2f;
     lens.chromaticAberration = 0.002f;
     lens.vignette = 0.35f;
     lens.grain = 0.06f;
@@ -259,13 +259,13 @@ int main(int argc, char** argv) {
         player.setInput("leader", swarm.position());
         player.setInput("spread", {swarm.spread(), 0, 0});
         player.setInput("blast", {swarm.blast(), 0, 0});
-        player.setInput("light", {0.004f + swarm.flare() * 0.03f, 0, 0});
+        player.setInput("light", {0.00012f + swarm.flare() * 0.0012f, 0, 0});
 
         // The camera hangs back further the faster you go.
         const float rush = std::min(swarm.speed() / kindle::Swarm::kSqueezeSpeed, 1.0f);
         const Vec3 forward = forwardOf(yaw, pitch);
         const Vec3 wantEye = clearEye(room, swarm.position(),
-                                      swarm.position() - forward * (7.0f + 5.0f * rush) + Vec3{0, 1.6f, 0});
+                                      swarm.position() - forward * (7.0f + 5.0f * rush + 4.0f * swarm.flare()) + Vec3{0, 1.6f, 0});
         eye = eye + (wantEye - eye) * (1.0f - std::exp(-dt * 9.0f));
         const iron::Mat4 view = iron::lookAt(eye, swarm.position() + forward * 4.0f, {0, 1, 0});
         const iron::Mat4 projection = iron::perspective(
@@ -279,9 +279,9 @@ int main(int argc, char** argv) {
         constexpr Vec3 kEmber{1.0f, 0.52f, 0.2f};
         const float flare = swarm.flare();
         const std::array<iron::PointLight, 3> lights{{
-            {swarm.position(), kEmber, 5.0f + flare * 60.0f, 22.0f + flare * 18.0f},
-            {tailA, kEmber, 2.5f, 16.0f},
-            {tailB, kEmber, 1.5f, 14.0f},
+            {swarm.position(), kEmber, 2.2f + flare * 16.0f, 24.0f + flare * 16.0f},
+            {tailA, kEmber, 1.0f, 18.0f},
+            {tailB, kEmber, 0.6f, 16.0f},
         }};
 
         iron::DirectionalLight dark;

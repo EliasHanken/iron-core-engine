@@ -2,6 +2,7 @@
 
 #include "19-kindle/Swarm.h"
 
+#include <algorithm>
 #include <cassert>
 #include <cstdio>
 
@@ -89,8 +90,12 @@ void testIgniteBurstsThenRests() {
     for (int i = 0; i < 12; ++i) swarm.update(room, controls, kStep);
     assert(swarm.blast() < first * 0.5f);
 
-    for (int i = 0; i < 30; ++i) swarm.update(room, controls, kStep);
-    assert(swarm.blast() > 0.5f);
+    float peak = 0.0f;
+    for (int i = 0; i < 30; ++i) {
+        swarm.update(room, controls, kStep);
+        peak = std::max(peak, swarm.blast());
+    }
+    assert(peak > 0.8f);
 }
 
 }  // namespace

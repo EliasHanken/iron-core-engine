@@ -9,7 +9,7 @@
     "leader": {"type": "InputVector"},
     "spread": {"type": "Input", "value": 1.5},
     "blast": {"type": "Input"},
-    "light": {"type": "Input", "value": 0.004}
+    "light": {"type": "Input", "value": 0.00012}
   },
   "wires": [
     {"from": "leader", "to": "layers.0.spawn.0.center"},
@@ -40,11 +40,11 @@
         {"block": "Bounce", "shape": "posts", "bounce": 0.3, "friction": 0.2}
       ],
       "look": [
-        {"block": "ColorOverLife", "start": [1, 0.8, 0.45], "end": [1, 0.16, 0.03]},
+        {"block": "ColorOverLife", "start": [1, 0.5, 0.14], "end": [1, 0.08, 0.01]},
         {"block": "Size", "size": 0.012},
         {"block": "Fade", "in": 0.04, "out": 0.5},
         {"block": "StretchWithSpeed", "amount": 0.03, "max": 0.5},
-        {"block": "Glow", "intensity": 0.3},
+        {"block": "Glow", "intensity": 0.035},
         {"block": "LightTheScene", "color": [1, 0.5, 0.18]}
       ]
     },
@@ -67,7 +67,7 @@
         {"block": "ColorOverLife", "start": [1, 0.9, 0.7], "end": [1, 0.3, 0.08]},
         {"block": "Size", "size": 0.012},
         {"block": "Fade", "in": 0.15, "out": 0.6},
-        {"block": "Glow", "intensity": 1.2}
+        {"block": "Glow", "intensity": 0.5}
       ]
     }
   ]
