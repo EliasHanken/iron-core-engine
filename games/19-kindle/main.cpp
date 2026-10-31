@@ -47,7 +47,7 @@ namespace {
 namespace forge = iron::forge;
 using iron::Vec3;
 
-constexpr float kRecordSeconds = 78.0f;
+constexpr float kRecordSeconds = 82.0f;
 constexpr float kGateOpensInRecording = 32.0f;
 constexpr float kMouseTurn = 0.0022f;
 constexpr float kBaseFov = 62.0f;
@@ -276,6 +276,7 @@ public:
         const float blown = story.sinceIgnition();
         const float end = ramp(5.0f, 7.0f, blown) * (1.0f - ramp(13.0f, 15.0f, blown));
         const float credit = ramp(7.5f, 9.0f, blown) * (1.0f - ramp(13.0f, 15.0f, blown));
+        const float fadeOut = ramp(14.5f, 17.0f, blown);
         if (end > 0.0f) {
             iron::HudDrawGroup shade;
             shade.texture = solid_;
@@ -312,6 +313,7 @@ public:
         }
 
         iron::HudBatch batch;
+        if (fadeOut > 0.0f) appendBar(bars, 0.0f, w, 0.0f, h, {0.0f, 0.0f, 0.0f, fadeOut * 0.8f});
         if (end > 0.0f) batch.push_back(std::move(backdrop_));
         if (!bars.vertices.empty()) batch.push_back(std::move(bars));
         for (iron::HudDrawGroup* group : {&big, &heading, &words, &smalls}) {
@@ -377,6 +379,7 @@ int main(int argc, char** argv) {
     cfg.height = options.height;
     iron::Application app(cfg);
     if (!app.valid()) return 1;
+    glfwSetWindowTitle(app.window().handle(), "Kindle");
 
     auto rendererPtr = iron::createRenderer(app.window());
     auto* vulkan = dynamic_cast<iron::VulkanRenderer*>(rendererPtr.get());
@@ -505,8 +508,12 @@ int main(int argc, char** argv) {
     kindle::Settings settings;
     settings.load(settingsPath);
     sound.setVolume(settings.sound);
+    // --scene fullscreen lets a scripted run check the switch on a real frame.
+    if (scripted && options.scene == "fullscreen") settings.fullscreen = true;
+    if (!scripted || options.scene == "fullscreen") app.window().setFullscreen(settings.fullscreen);
+    kindle::EyeAdaptation eyes;
 
-    enum class Mode { Menu, Playing, Paused };
+    enum class Mode { Menu, Playing, Paused, End };
     // --scene menu, pause and restart let a scripted run reach those paths too.
     Mode mode = scripted && options.scene != "menu" ? Mode::Playing : Mode::Menu;
     bool scriptedStep = false;
@@ -514,12 +521,16 @@ int main(int argc, char** argv) {
     kindle::Menu menu;
     const kindle::Menu::Item soundRow{"SOUND", kindle::Choice::None, &settings.sound};
     const kindle::Menu::Item lookRow{"LOOK", kindle::Choice::None, &settings.look};
+    const kindle::Menu::Item screenRow{"FULLSCREEN", kindle::Choice::Fullscreen};
     const auto showStartMenu = [&]() {
-        menu.show({{"BEGIN", kindle::Choice::Begin}, soundRow, lookRow, {"QUIT", kindle::Choice::Quit}});
+        menu.show({{"BEGIN", kindle::Choice::Begin}, soundRow, lookRow, screenRow, {"QUIT", kindle::Choice::Quit}});
     };
     const auto showPauseMenu = [&]() {
         menu.show({{"RESUME", kindle::Choice::Resume}, {"START OVER", kindle::Choice::Restart}, soundRow, lookRow,
-                   {"QUIT", kindle::Choice::Quit}});
+                   screenRow, {"QUIT", kindle::Choice::Quit}});
+    };
+    const auto showEndMenu = [&]() {
+        menu.show({{"PLAY AGAIN", kindle::Choice::Restart}, {"QUIT", kindle::Choice::Quit}});
     };
     showStartMenu();
 
@@ -537,6 +548,7 @@ int main(int argc, char** argv) {
         int adjust = 0;
         bool enter = false;
         bool escape = false;
+        bool fullscreen = false;
         bool click = false;
         bool held = false;
     } menuInput;
@@ -557,6 +569,7 @@ int main(int argc, char** argv) {
         menuInput.adjust += (pressed(GLFW_KEY_D, GLFW_KEY_RIGHT) ? 1 : 0) - (pressed(GLFW_KEY_A, GLFW_KEY_LEFT) ? 1 : 0);
         menuInput.enter = menuInput.enter || pressed(GLFW_KEY_ENTER, GLFW_KEY_SPACE);
         menuInput.escape = menuInput.escape || input.keyPressed(GLFW_KEY_ESCAPE);
+        menuInput.fullscreen = menuInput.fullscreen || input.keyPressed(GLFW_KEY_F11);
         menuInput.click = menuInput.click || input.mouseButtonPressed(GLFW_MOUSE_BUTTON_LEFT);
         menuInput.held = input.mouseButtonDown(GLFW_MOUSE_BUTTON_LEFT);
     };
@@ -580,10 +593,16 @@ int main(int argc, char** argv) {
         showPauseMenu();
         app.window().setCursorCaptured(false);
     };
+    const auto toggleFullscreen = [&]() {
+        settings.fullscreen = !settings.fullscreen;
+        app.window().setFullscreen(settings.fullscreen);
+        settings.save(settingsPath);
+    };
     const auto startOver = [&]() {
         swarm = kindle::Swarm({0.0f, 0.0f, -10.0f});
         wakes = kindle::Wakes{};
         story = kindle::Story{};
+        eyes = kindle::EyeAdaptation{};
         room.sealed = true;
         yaw = 0.0f;
         pitch = 0.0f;
@@ -596,15 +615,20 @@ int main(int argc, char** argv) {
     };
 
     const capture::FrameFn frame = [&](float, float realDt, int width, int height) {
+        if (app.window().consumeResized()) renderer.setViewport(width, height);
+
         // Menus come first, because they decide whether the game moves this frame.
         if (!scripted) {
             const MenuInput in = menuInput;
             menuInput = MenuInput{};
 
+            if (in.fullscreen) toggleFullscreen();
+
             if (mode == Mode::Playing && in.escape) {
                 pause();
             } else if (mode != Mode::Playing) {
                 if (in.escape && mode == Mode::Paused) resume();
+                if (in.escape && mode == Mode::End) glfwSetWindowShouldClose(app.window().handle(), GLFW_TRUE);
                 if (menu.move(in.move)) sound.menuMove();
                 if (in.adjust != 0 && menu.adjust(in.adjust)) {
                     sound.setVolume(settings.sound);
@@ -636,6 +660,7 @@ int main(int argc, char** argv) {
                         case kindle::Choice::Begin: startPlaying(); break;
                         case kindle::Choice::Resume: resume(); break;
                         case kindle::Choice::Restart: startOver(); break;
+                        case kindle::Choice::Fullscreen: toggleFullscreen(); break;
                         case kindle::Choice::Quit:
                             glfwSetWindowShouldClose(app.window().handle(), GLFW_TRUE);
                             break;
@@ -652,7 +677,11 @@ int main(int argc, char** argv) {
         }
 
         // The game clock stops in menus, and paused, the whole world holds still.
-        const float dt = mode == Mode::Paused ? 0.0f : realDt;
+        // Ignites hit with a tiny hitch, and the core's blast nearly stops the world.
+        const float hitch = swarm.blast() * swarm.blast() * swarm.blast();
+        const float timeScale = story.timeScale() * (1.0f - 0.55f * hitch);
+        sound.setTimeScale(timeScale);
+        const float dt = mode == Mode::Paused ? 0.0f : realDt * timeScale;
         if (mode == Mode::Playing) clock += dt;
         worldTime += dt;
         const float seconds = clock;
@@ -666,13 +695,16 @@ int main(int argc, char** argv) {
         kindle::Controls controls;
         if (scripted) {
             controls = autopilot.fly(swarm, story, seconds);
-            const Vec3 heading = iron::normalize(swarm.velocity() + forwardOf(yaw, pitch) * 0.01f);
-            const float wantYaw = std::atan2(heading.x, -heading.z);
-            const float wantPitch = std::asin(std::clamp(heading.y, -1.0f, 1.0f));
-            const float turn = std::remainder(wantYaw - yaw, 2.0f * std::numbers::pi_v<float>);
-            const float s = 1.0f - std::exp(-dt * 3.0f);
-            yaw += turn * s;
-            pitch += (wantPitch * 0.6f - pitch) * s;
+            // Nearly still, the heading is only noise, so the camera holds its line.
+            if (swarm.speed() > 2.0f) {
+                const Vec3 heading = iron::normalize(swarm.velocity());
+                const float wantYaw = std::atan2(heading.x, -heading.z);
+                const float wantPitch = std::asin(std::clamp(heading.y, -1.0f, 1.0f));
+                const float turn = std::remainder(wantYaw - yaw, 2.0f * std::numbers::pi_v<float>);
+                const float s = 1.0f - std::exp(-dt * 3.0f);
+                yaw += turn * s;
+                pitch += (wantPitch * 0.6f - pitch) * s;
+            }
         } else if (mode == Mode::Menu) {
             yaw += dt * 0.03f;  // The start screen drifts, slowly, round the ember.
         } else if (mode == Mode::Playing) {
@@ -781,7 +813,34 @@ int main(int argc, char** argv) {
         const float coreReach = blown > 0.0f ? room.coreRadius + blown * blown * 9.0f
                                              : room.coreRadius - 2.0f + story.fed() * 5.0f;
         lights.push_back({room.coreCenter, kEmber, shock * 2.0f, coreReach});
-        vulkan->setExposure(1.0f - 0.5f * shock);
+
+        // Eyes settle on what's around them: warm metal nearby, bursts, and the blast.
+        float warmth = 0.0f;
+        for (std::size_t i = 0; i < wakes.count(); ++i) {
+            warmth = std::max(warmth, 1.0f - iron::length(wakes[i].position - swarm.position()) /
+                                                 std::max(wakes[i].reach, 1.0f));
+        }
+        const float alive = blown > 0.0f ? std::min(blown / 2.0f, 1.0f) : 0.0f;
+        eyes.update(std::max({warmth * 0.55f, swarm.flare() * 0.6f, alive}), dt);
+        vulkan->setExposure(eyes.exposure() * (1.0f - 0.5f * shock));
+
+        // The lens follows the swarm: everything else softens with distance from it,
+        // and the air around it ripples. A menu pulls focus away from the world.
+        const iron::Mat4 viewProjection = projection * view;
+        const Vec3 at = swarm.position();
+        const auto row = [&](int r) {
+            return viewProjection.at(r, 0) * at.x + viewProjection.at(r, 1) * at.y +
+                   viewProjection.at(r, 2) * at.z + viewProjection.at(r, 3);
+        };
+        const float clipW = row(3);
+        const bool onScreen = clipW > 0.1f && !watching;
+        lens.subject = onScreen ? iron::Vec2{row(0) / clipW * 0.5f + 0.5f, 0.5f - row(1) / clipW * 0.5f}
+                                : iron::Vec2{0.5f, 0.5f};
+        lens.subjectRadius = onScreen ? std::clamp(1.6f / clipW, 0.06f, 0.3f) : 0.0f;
+        lens.heatHaze = onScreen ? std::min(0.5f * presence + 1.4f * swarm.flare(), 1.0f) : 0.0f;
+        lens.focusDistance = iron::length(swarm.position() - eye);
+        lens.focusRange = 3.0f;
+        lens.blurRadius = mode == Mode::Playing ? 0.009f : 0.016f;
 
         // The lens reacts: bursts flare and split colour, and squeezing closes the view in.
         lens.chromaticAberration = 0.002f + 0.007f * swarm.flare() + 0.003f * swarm.squeeze();
@@ -858,11 +917,20 @@ int main(int argc, char** argv) {
         if (player.light()) volumes->render(view, projection, *player.light(), fog.get(), air);
 
         player.render(view, projection);
+        if (mode == Mode::Playing && story.over()) {
+            mode = Mode::End;
+            showEndMenu();
+            sound.setPaused(true);
+            app.window().setCursorCaptured(false);
+        }
+
         if (mode == Mode::Playing) screen.draw(renderer, seconds, dt, swarm, story, scripted, width, height);
         if (mode == Mode::Menu) {
             screen.drawMenu(renderer, menu, "KINDLE", "THE MACHINE IS COLD", 0.34f, width, height);
         } else if (mode == Mode::Paused) {
             screen.drawMenu(renderer, menu, "PAUSED", "", 0.62f, width, height);
+        } else if (mode == Mode::End) {
+            screen.drawMenu(renderer, menu, "AWAKE", "YOU WOKE THE IRON CORE", 0.8f, width, height);
         }
     };
 

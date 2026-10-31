@@ -1365,7 +1365,8 @@ void VulkanRenderer::endFrame() {
             const Mat4 reprojection = hasPreviousViewProjection_
                 ? previousViewProjection_ * iron::inverse(viewProjection)
                 : Mat4::identity();
-            postProcess_.setCinematic(cinematic_, reprojection, cinematicFrame_++);
+            postProcess_.setCinematic(cinematic_, reprojection, cinematicFrame_++,
+                                      pendingProjection_.at(2, 2), pendingProjection_.at(2, 3));
             previousViewProjection_ = viewProjection;
             hasPreviousViewProjection_ = true;
 

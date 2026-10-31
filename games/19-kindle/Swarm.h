@@ -234,6 +234,24 @@ private:
     std::size_t count_ = 0;
 };
 
+// Eyes close quickly against bright light and open slowly in the dark. Brightness
+// comes from what the game knows is lighting the view, rather than a GPU readback.
+class EyeAdaptation {
+public:
+    static constexpr float kDarkExposure = 1.3f;
+    static constexpr float kBrightExposure = 0.72f;
+
+    void update(float brightness, float dt) {
+        const float rate = brightness > adapted_ ? 2.2f : 0.3f;
+        adapted_ += (std::clamp(brightness, 0.0f, 1.0f) - adapted_) * (1.0f - std::exp(-dt * rate));
+    }
+
+    float exposure() const { return kDarkExposure + (kBrightExposure - kDarkExposure) * adapted_; }
+
+private:
+    float adapted_ = 0.0f;
+};
+
 // What a camera operator's body adds: shake from a hit, and leaning into turns.
 class CameraFeel {
 public:
@@ -272,6 +290,7 @@ public:
     static constexpr float kFeedPerBurst = 0.26f;
     static constexpr float kFeedDistance = 24.0f;  // From the core's middle.
     static constexpr float kPullSeconds = 2.6f;    // The core drags you in, then blows.
+    static constexpr float kEndSeconds = 17.0f;    // After the blast, when it's over.
 
     void update(const Room& room, Vec3 swarm, float relit, bool ignited, float dt) {
         if (relit >= kRelitToOpen) opening_ = true;
@@ -289,6 +308,18 @@ public:
     float finaleSeconds() const { return finaleSeconds_; }
     bool  pulling() const { return finale() && finaleSeconds_ < kPullSeconds; }
     float sinceIgnition() const { return finaleSeconds_ - kPullSeconds; }  // Below 0 before it.
+    bool  over() const { return sinceIgnition() >= kEndSeconds; }
+
+    // How fast the world runs. It drags as the core's about to blow, nearly stops
+    // on the blast, then eases back to full speed.
+    float timeScale() const {
+        if (!finale()) return 1.0f;
+        const float blown = sinceIgnition();
+        if (blown < -0.5f) return 1.0f;
+        if (blown < 0.0f) return 1.0f - 0.75f * ((blown + 0.5f) / 0.5f);
+        const float k = std::clamp((blown - 0.25f) / 0.7f, 0.0f, 1.0f);
+        return 0.25f + 0.75f * k * k * (3.0f - 2.0f * k);
+    }
 
 private:
     bool  opening_ = false;

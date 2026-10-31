@@ -115,6 +115,20 @@ void Window::setCursorCaptured(bool captured) {
                      captured ? GLFW_CURSOR_DISABLED : GLFW_CURSOR_NORMAL);
 }
 
+void Window::setFullscreen(bool fullscreen) {
+    if (!handle_ || fullscreen == fullscreen_) return;
+    fullscreen_ = fullscreen;
+    if (fullscreen) {
+        glfwGetWindowPos(handle_, &windowedX_, &windowedY_);
+        glfwGetWindowSize(handle_, &windowedWidth_, &windowedHeight_);
+        GLFWmonitor* monitor = glfwGetPrimaryMonitor();
+        const GLFWvidmode* mode = glfwGetVideoMode(monitor);
+        glfwSetWindowMonitor(handle_, monitor, 0, 0, mode->width, mode->height, mode->refreshRate);
+    } else {
+        glfwSetWindowMonitor(handle_, nullptr, windowedX_, windowedY_, windowedWidth_, windowedHeight_, 0);
+    }
+}
+
 bool Window::consumeResized() {
     if (!resized_) return false;
     resized_ = false;

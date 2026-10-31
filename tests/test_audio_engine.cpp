@@ -86,6 +86,7 @@ int main() {
         eng.setVoiceGain(v, 0.5f);                              // no crash
         eng.setVoicePitch(v, 1.5f);                             // no crash
         eng.setVoiceMuffle(v, 0.2f);                            // no crash
+        CHECK(eng.loadSoundFromMemory("x", 1, "x") == iron::kInvalidSound);
         eng.setReverb(iron::ReverbSettings{});                  // no crash
         eng.setMasterGain(0.5f);                                // no crash
         eng.stop(v);                                            // no crash

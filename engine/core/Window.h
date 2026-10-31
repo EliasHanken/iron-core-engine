@@ -26,6 +26,9 @@ public:
     // Captured = cursor hidden and locked to the window (for mouse-look).
     void setCursorCaptured(bool captured);
 
+    // Borderless at the monitor's own resolution, or back to where the window was.
+    void setFullscreen(bool fullscreen);
+
     int width() const { return width_; }
     int height() const { return height_; }
     GLFWwindow* handle() const { return handle_; }
@@ -40,6 +43,11 @@ private:
     int width_ = 0;
     int height_ = 0;
     bool resized_ = false;
+    bool fullscreen_ = false;
+    int  windowedX_ = 0;
+    int  windowedY_ = 0;
+    int  windowedWidth_ = 0;
+    int  windowedHeight_ = 0;
 
     // Allow the file-scope callback to update width_/height_/resized_.
     friend void framebufferSizeCallback(GLFWwindow*, int, int);

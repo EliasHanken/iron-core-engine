@@ -103,6 +103,25 @@ float fbm(vec3 p, int octaves) {
 }
 )GLSL";
 
+// Light falling from a crack means following a point back up to the ceiling, along
+// the direction of the light, to see whether that spot is open.
+const char* const kRoofCracks = R"GLSL(
+float forgeCrackLine(float v, float width) {
+    return 1.0 - smoothstep(width * 0.1, width, abs(fract(v) - 0.5));
+}
+
+float forgeRoofCracks(vec3 p, vec3 from, float ceiling, float spacing) {
+    vec2 q = p.xz + from.xz * ((ceiling - p.y) / from.y);
+    // Long cracks, slightly bent, broken into lengths.
+    float bend = sin(q.y * 0.21 + 1.3) * 1.1 + sin(q.y * 0.53) * 0.35;
+    float line = forgeCrackLine((q.x + bend) / spacing + 0.31, 0.055);
+    float cut = smoothstep(-0.25, 0.35, sin(q.y * 0.44 + floor(q.x / spacing + 0.31) * 2.4));
+    // Gaps along the crack split a flat sheet of light into separate beams.
+    float beams = 0.5 + 0.5 * sin(q.y * 1.7 + sin(q.y * 0.63) * 2.0) * sin(q.y * 3.9 + 1.1);
+    return line * cut * beams;
+}
+)GLSL";
+
 const char* const kCurl = R"GLSL(
 vec3 potential(vec3 p) {
     return vec3(valueNoise(p), valueNoise(p + vec3(31.42, 17.13, 95.11)),
@@ -403,7 +422,7 @@ CompiledLayer compileLayer(const Document& doc, const Layer& layer, std::size_t 
 
     out.commonGlsl = std::string(R"GLSL(
 layout(set = 0, binding = 2) uniform Params { vec4 slots[)GLSL") + std::to_string(kMaxSlots) +
-                     "]; } params;\n" + kLibrary + kCurl + kSpriteHelper + shapeCode;
+                     "]; } params;\n" + kLibrary + kRoofCracks + kCurl + kSpriteHelper + shapeCode;
 
     out.simulateGlsl = R"GLSL(
 void particleSimulate(inout Particle p, uint id) {
@@ -477,7 +496,7 @@ CompiledSurface compileSurface(const Document& doc, std::vector<Issue>& issues) 
     const std::string body = context.stackCode(doc.surface, "surface");
 
     CompiledSurface out;
-    out.hookGlsl = std::string(kLibrary) + R"GLSL(
+    out.hookGlsl = std::string(kLibrary) + kRoofCracks + R"GLSL(
 void surfaceMaterial(vec3 worldPos, vec3 N, vec3 V, float surfaceTime, inout vec3 albedo,
                      inout float roughness, inout float metallic, inout vec3 emissive) {
     float forgeTime = surfaceTime;
@@ -487,6 +506,8 @@ void surfaceMaterial(vec3 worldPos, vec3 N, vec3 V, float surfaceTime, inout vec
 }
 
 }  // namespace
+
+const char* roofCracksGlsl() { return kRoofCracks; }
 
 Compiled compile(const Document& doc) {
     Compiled out;

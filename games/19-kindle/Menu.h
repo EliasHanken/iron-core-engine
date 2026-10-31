@@ -14,28 +14,32 @@ namespace kindle {
 struct Settings {
     float sound = 0.8f;
     float look = 0.5f;  // 0.5 is the normal turning speed.
+    bool  fullscreen = false;
 
     void load(const std::string& path) {
         std::FILE* file = std::fopen(path.c_str(), "r");
         if (!file) return;
         float a = sound;
         float b = look;
-        if (std::fscanf(file, "%f %f", &a, &b) == 2) {
+        int c = 0;
+        const int read = std::fscanf(file, "%f %f %d", &a, &b, &c);
+        if (read >= 2) {
             sound = std::clamp(a, 0.0f, 1.0f);
             look = std::clamp(b, 0.0f, 1.0f);
         }
+        if (read == 3) fullscreen = c != 0;
         std::fclose(file);
     }
 
     void save(const std::string& path) const {
         std::FILE* file = std::fopen(path.c_str(), "w");
         if (!file) return;
-        std::fprintf(file, "%.3f %.3f\n", sound, look);
+        std::fprintf(file, "%.3f %.3f %d\n", sound, look, fullscreen ? 1 : 0);
         std::fclose(file);
     }
 };
 
-enum class Choice { None, Begin, Resume, Restart, Quit };
+enum class Choice { None, Begin, Resume, Restart, Fullscreen, Quit };
 
 class Menu {
 public:
