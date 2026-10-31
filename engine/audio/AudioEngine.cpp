@@ -302,6 +302,7 @@ void AudioEngine::stop(VoiceId v) {
     alSourceStop(src);
     alSourcei(src, AL_LOOPING, AL_FALSE);
     alSourcei(src, AL_BUFFER,  0);
+    alSourcef(src, AL_PITCH,   1.0f);  // Sources are reused, so pitch mustn't carry over.
     impl_->reserved[slot] = false;
     impl_->voiceSlot.erase(it);
 }
@@ -311,6 +312,20 @@ void AudioEngine::setVoicePosition(VoiceId v, Vec3 worldPos) {
     auto it = impl_->voiceSlot.find(v);
     if (it == impl_->voiceSlot.end()) return;
     alSource3f(impl_->sources[it->second], AL_POSITION, worldPos.x, worldPos.y, worldPos.z);
+}
+
+void AudioEngine::setVoiceGain(VoiceId v, float gain) {
+    if (!impl_->initialized || v == kInvalidVoice) return;
+    auto it = impl_->voiceSlot.find(v);
+    if (it == impl_->voiceSlot.end()) return;
+    alSourcef(impl_->sources[it->second], AL_GAIN, gain);
+}
+
+void AudioEngine::setVoicePitch(VoiceId v, float pitch) {
+    if (!impl_->initialized || v == kInvalidVoice) return;
+    auto it = impl_->voiceSlot.find(v);
+    if (it == impl_->voiceSlot.end()) return;
+    alSourcef(impl_->sources[it->second], AL_PITCH, pitch);
 }
 
 void AudioEngine::setListener(Vec3 cameraPos, Vec3 forward, Vec3 up) {

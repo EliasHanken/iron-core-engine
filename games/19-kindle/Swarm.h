@@ -8,7 +8,9 @@
 #include "math/Vec.h"
 
 #include <algorithm>
+#include <array>
 #include <cmath>
+#include <cstddef>
 
 namespace kindle {
 
@@ -97,6 +99,7 @@ public:
             flare_ = 1.0f;
         }
         phase_ += dt * (2.2f + iron::length(velocity_) * 0.18f);
+        ignited_ = blast_ == 1.0f;
         blast_ *= std::exp(-dt * 7.0f);
         flare_ *= std::exp(-dt * 2.2f);
     }
@@ -108,6 +111,7 @@ public:
     float flare() const { return flare_; }    // The same, but lingering, for light.
     float squeeze() const { return squeeze_; }
     float heat() const { return heat_; }      // What ignite spends, from 0 to 1.
+    bool  ignited() const { return ignited_; } // True on the update of a burst.
 
     // A slow heartbeat, quicker when moving, with a beat's sharp rise and long fall.
     float pulse() const {
@@ -133,6 +137,72 @@ private:
     float rest_ = 0.0f;
     float phase_ = 0.0f;
     float heat_ = 1.0f;
+    bool  ignited_ = false;
+};
+
+// Where the hall has been relit. Each wake is a point of warmth that spreads out
+// through the metal and stays. Igniting close to an old wake feeds it instead of
+// starting another, so the player wakes the hall by going somewhere new.
+class Wakes {
+public:
+    static constexpr std::size_t kMax = 13;      // Lights left after the swarm's three.
+    static constexpr float kStartReach = 2.0f;
+    static constexpr float kFullReach = 13.0f;
+    static constexpr float kFeedReach = 4.0f;    // Growth from igniting on an old wake.
+    static constexpr float kSpreadPerSecond = 1.6f;
+    static constexpr float kMergeDistance = 7.0f;
+
+    struct Wake {
+        Vec3  position{};
+        float target = 0.0f;   // How far it's spreading to.
+        float reach = 0.0f;    // How far it's got, in metres.
+    };
+
+    void ignite(Vec3 position) {
+        for (std::size_t i = 0; i < count_; ++i) {
+            if (iron::length(wakes_[i].position - position) < kMergeDistance) {
+                wakes_[i].target = std::min(wakes_[i].target + kFeedReach, kFullReach);
+                return;
+            }
+        }
+        if (count_ == kMax) return;
+        wakes_[count_++] = {position, kFullReach * 0.6f, kStartReach};
+    }
+
+    void update(float dt) {
+        for (std::size_t i = 0; i < count_; ++i) {
+            wakes_[i].reach = std::min(wakes_[i].reach + kSpreadPerSecond * dt, wakes_[i].target);
+        }
+    }
+
+    std::size_t count() const { return count_; }
+    const Wake& operator[](std::size_t index) const { return wakes_[index]; }
+
+    // How much of the hall is relit, from 0 to 1, read off a grid across the floor.
+    float relit(const Room& room) const {
+        constexpr int kCells = 12;
+        int warm = 0;
+        for (int x = 0; x < kCells; ++x) {
+            for (int z = 0; z < kCells; ++z) {
+                const float u = (static_cast<float>(x) + 0.5f) / kCells * 2.0f - 1.0f;
+                const float v = (static_cast<float>(z) + 0.5f) / kCells * 2.0f - 1.0f;
+                const Vec3 cell{u * room.half.x, 0.0f, v * room.half.z};
+                for (std::size_t i = 0; i < count_; ++i) {
+                    Vec3 flat = wakes_[i].position - cell;
+                    flat.y = 0.0f;
+                    if (iron::length(flat) < wakes_[i].reach) {
+                        ++warm;
+                        break;
+                    }
+                }
+            }
+        }
+        return static_cast<float>(warm) / static_cast<float>(kCells * kCells);
+    }
+
+private:
+    std::array<Wake, kMax> wakes_{};
+    std::size_t count_ = 0;
 };
 
 }  // namespace kindle

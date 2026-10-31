@@ -83,6 +83,8 @@ int main() {
         const iron::VoiceId v = eng.playLooping(iron::kInvalidSound, iron::Vec3{}, 1.0f);
         CHECK(v == iron::kInvalidVoice);
         eng.setVoicePosition(v, iron::Vec3{1.0f, 2.0f, 3.0f});  // no crash
+        eng.setVoiceGain(v, 0.5f);                              // no crash
+        eng.setVoicePitch(v, 1.5f);                             // no crash
         eng.stop(v);                                            // no crash
     }
 

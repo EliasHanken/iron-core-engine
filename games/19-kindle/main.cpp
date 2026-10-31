@@ -316,6 +316,7 @@ int main(int argc, char** argv) {
     }
 
     kindle::Swarm swarm({0.0f, 0.0f, -10.0f});
+    kindle::Wakes wakes;
     Autopilot autopilot;
 
     float yaw = 0.0f;
@@ -375,6 +376,8 @@ int main(int argc, char** argv) {
         ignite = false;
 
         swarm.update(room, controls, dt);
+        if (swarm.ignited()) wakes.ignite(swarm.position());
+        wakes.update(dt);
 
         player.setInput("leader", swarm.position());
         player.setInput("spread", {swarm.spread(), 0, 0});
@@ -406,11 +409,15 @@ int main(int argc, char** argv) {
         constexpr Vec3 kEmber{1.0f, 0.52f, 0.2f};
         const float flare = swarm.flare();
         const float glow = 0.12f + 0.88f * std::max(ramp(kIntroIgnite, kIntroIgnite + 1.6f, seconds), flare);
-        const std::array<iron::PointLight, 3> lights{{
+        std::vector<iron::PointLight> lights{{
             {swarm.position(), kEmber, (1.1f + flare * 7.0f) * glow, 20.0f + flare * 18.0f},
             {tailA, kEmber, 0.35f * glow, 18.0f},
             {tailB, kEmber, 0.2f * glow, 16.0f},
         }};
+        // Relit places stay warm, and HallGlsl.h reads these lights to draw the veins.
+        for (std::size_t i = 0; i < wakes.count(); ++i) {
+            lights.push_back({wakes[i].position, kEmber, 0.5f, wakes[i].reach});
+        }
 
         iron::DirectionalLight dark;
         dark.color = {0.0f, 0.0f, 0.0f};

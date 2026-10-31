@@ -113,6 +113,60 @@ void testIgniteBurstsThenRests() {
     assert(peak > 0.8f);
 }
 
+void testIgnitedIsTrueForOneUpdate() {
+    const Room room;
+    Swarm swarm({0, 0, 0});
+    Controls controls;
+    controls.ignite = true;
+    swarm.update(room, controls, kStep);
+    assert(swarm.ignited());
+    swarm.update(room, controls, kStep);
+    assert(!swarm.ignited());
+}
+
+void testWakesSpreadAndStay() {
+    kindle::Wakes wakes;
+    wakes.ignite({0, 0, 0});
+    assert(wakes.count() == 1);
+    assert(wakes[0].reach < 3.0f);
+    for (int i = 0; i < 3000; ++i) wakes.update(kStep);
+    assert(wakes[0].reach == wakes[0].target);
+    assert(wakes[0].reach > 7.0f);
+}
+
+void testIgnitingNearAWakeFeedsIt() {
+    kindle::Wakes wakes;
+    wakes.ignite({0, 0, 0});
+    const float before = wakes[0].target;
+    wakes.ignite({3, 0, 0});
+    assert(wakes.count() == 1);
+    assert(wakes[0].target > before);
+
+    wakes.ignite({20, 0, 0});
+    assert(wakes.count() == 2);
+    for (int i = 0; i < 50; ++i) wakes.ignite({0, 0, 0});
+    assert(wakes[0].target == kindle::Wakes::kFullReach);
+}
+
+void testWakeCountIsCapped() {
+    kindle::Wakes wakes;
+    for (int i = 0; i < 40; ++i) wakes.ignite({static_cast<float>(i) * 10.0f, 0, 0});
+    assert(wakes.count() == kindle::Wakes::kMax);
+}
+
+void testRelitShareGrows() {
+    const Room room;
+    kindle::Wakes wakes;
+    assert(wakes.relit(room) == 0.0f);
+    wakes.ignite({-10, 0, -10});
+    for (int i = 0; i < 1200; ++i) wakes.update(kStep);
+    const float one = wakes.relit(room);
+    assert(one > 0.05f && one < 0.6f);
+    for (const Vec3 p : {Vec3{10, 0, -10}, Vec3{-10, 0, 10}, Vec3{10, 0, 10}}) wakes.ignite(p);
+    for (int i = 0; i < 1200; ++i) wakes.update(kStep);
+    assert(wakes.relit(room) > one * 2.0f);
+}
+
 void testIgniteSpendsHeat() {
     const Room room;
     Swarm swarm({0, 0, 0});
@@ -145,6 +199,11 @@ int main() {
     testCoastsToAStop();
     testIgniteBurstsThenRests();
     testIgniteSpendsHeat();
+    testIgnitedIsTrueForOneUpdate();
+    testWakesSpreadAndStay();
+    testIgnitingNearAWakeFeedsIt();
+    testWakeCountIsCapped();
+    testRelitShareGrows();
     std::puts("test_kindle_swarm: all passed");
     return 0;
 }
