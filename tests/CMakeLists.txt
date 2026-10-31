@@ -154,6 +154,8 @@ iron_add_test(test_volume_bounds test_volume_bounds.cpp)
 iron_add_test(test_fluid_step test_fluid_step.cpp)
 if (IRON_RENDER_BACKEND STREQUAL "vulkan")
   iron_add_test(test_gpu_particles test_gpu_particles.cpp)
+  iron_add_test(test_forge test_forge.cpp)
+  target_compile_definitions(test_forge PRIVATE IRON_REPO_ROOT="${CMAKE_SOURCE_DIR}")
 endif()
 
 # test_genie exercises the game-side timeline, terrain and shaders directly.

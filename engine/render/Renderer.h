@@ -137,6 +137,11 @@ public:
     ShaderHandle createLitShaderWithEmission(const std::string& hookGlsl) {
         return createShader(standardLitVertSource(), standardLitFragSourceWithEmission(hookGlsl));
     }
+    // The standard lit shader with a whole material from a Forge surface. See
+    // standardLitFragSourceWithSurface.
+    ShaderHandle createLitShaderWithSurface(const std::string& hookGlsl) {
+        return createShader(standardLitVertSource(), standardLitFragSourceWithSurface(hookGlsl));
+    }
     // M50b — convenience: engine-owned tessellated lit shader.
     ShaderHandle createStandardTessellatedLitShader() {
         return createTessellatedShader(standardLitTessVertSource(), standardLitTescSource(),

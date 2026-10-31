@@ -512,6 +512,26 @@ void main() {
 )GLSL";
 }
 
+// The lit fragment shader with a whole material driven by `hookGlsl`, which defines
+//   void surfaceMaterial(vec3 worldPos, vec3 N, vec3 V, float time, inout vec3 albedo,
+//                        inout float roughness, inout float metallic, inout vec3 emissive);
+// Material::emissive.x carries the time. This is the target Forge surfaces compile to.
+inline std::string standardLitFragSourceWithSurface(const std::string& hookGlsl) {
+    const std::string term = "vec3 emissive = u.emissive.xyz * texture(uEmissiveMap, uv).rgb;";
+    const std::string fresnel = "    vec3  F0        = mix(vec3(0.04), albedo, metallic);";
+    const std::string entry = "void main() {";
+
+    std::string source = standardLitFragSource();
+    source.replace(source.find(term), term.size(), "vec3 emissive = surfaceEmissive;");
+    source.insert(source.find(fresnel),
+                  "    vec3 surfaceEmissive = vec3(0.0);\n"
+                  "    surfaceMaterial(vWorldPos, perturbedN, normalize(u.cameraPos.xyz - vWorldPos),\n"
+                  "                    u.emissive.x, albedo, roughness, metallic, surfaceEmissive);\n"
+                  "    roughness = clamp(roughness, 0.04, 1.0);\n");
+    source.insert(source.find(entry), hookGlsl + "\n");
+    return source;
+}
+
 // The lit fragment shader with its emissive term replaced by `hookGlsl`, which
 // defines `vec3 surfaceEmission(vec3 worldPos, vec3 params);`. `params` is
 // Material::emissive, so a surface can animate from the CPU: molten veins, lava,
