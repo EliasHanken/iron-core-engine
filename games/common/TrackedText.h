@@ -7,6 +7,7 @@
 #include "render/Renderer.h"
 #include "ui/FontAtlas.h"
 
+#include <cmath>
 #include <cstdio>
 #include <string>
 #include <vector>
@@ -36,7 +37,9 @@ inline bool loadFont(iron::Renderer& renderer, iron::FontAtlas& atlas, const std
     return true;
 }
 
-// Centred text with extra letter spacing, `tracking` in em.
+// Centred text with extra letter spacing, `tracking` in em. For small text, bake a
+// font at the size it will show and pass a scale of 1: shrinking a big bake loses
+// thin strokes.
 inline void appendCentered(iron::HudDrawGroup& group, const iron::FontAtlas& atlas,
                            const std::string& text, float centerX, float baseline, float scale,
                            float tracking, iron::Vec4 color) {
@@ -51,8 +54,9 @@ inline void appendCentered(iron::HudDrawGroup& group, const iron::FontAtlas& atl
         penX += gap;
         if (q.min.x == q.max.x) continue;
 
-        const iron::Vec2 a{left + q.min.x * scale, baseline + q.min.y * scale};
-        const iron::Vec2 b{left + q.max.x * scale, baseline + q.max.y * scale};
+        // On whole pixels, so that text drawn at its baked size stays exactly as sharp.
+        const iron::Vec2 a{std::round(left + q.min.x * scale), std::round(baseline + q.min.y * scale)};
+        const iron::Vec2 b{a.x + (q.max.x - q.min.x) * scale, a.y + (q.max.y - q.min.y) * scale};
         const iron::HudVertex corners[4] = {
             {{a.x, a.y}, {q.uvMin.x, q.uvMin.y}, color},
             {{b.x, a.y}, {q.uvMax.x, q.uvMin.y}, color},

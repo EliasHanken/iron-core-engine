@@ -1,5 +1,6 @@
 // tests/test_kindle_swarm.cpp — the flight and collision rules of Kindle's swarm.
 
+#include "19-kindle/Menu.h"
 #include "19-kindle/Swarm.h"
 
 #include <algorithm>
@@ -99,7 +100,7 @@ void testIgniteBurstsThenRests() {
     swarm.update(room, controls, kStep);
     const float first = swarm.blast();
     assert(first > 0.8f);
-    assert(swarm.spread() > Swarm::kCruiseSpread + 3.0f);
+    assert(swarm.spread() > Swarm::kCruiseSpread + 1.5f);
 
     // Holding it down doesn't fire again until the rest is over.
     for (int i = 0; i < 12; ++i) swarm.update(room, controls, kStep);
@@ -230,6 +231,36 @@ void testStoryRunsToTheFinale() {
     assert(story.sinceIgnition() > 0.0f);
 }
 
+void testMenuWrapsAndChooses() {
+    using kindle::Choice;
+    kindle::Menu menu;
+    menu.show({{"RESUME", Choice::Resume}, {"RESTART", Choice::Restart}, {"QUIT", Choice::Quit}});
+    assert(menu.activate() == Choice::Resume);
+    assert(menu.move(-1));
+    assert(menu.activate() == Choice::Quit);
+    assert(menu.move(1));
+    assert(menu.activate() == Choice::Resume);
+    assert(menu.select(1));
+    assert(!menu.select(1));
+    assert(!menu.select(9));
+    assert(menu.activate() == Choice::Restart);
+}
+
+void testMenuSlidersClamp() {
+    kindle::Settings settings;
+    settings.sound = 0.98f;
+    kindle::Menu menu;
+    menu.show({{"BEGIN", kindle::Choice::Begin}, {"SOUND", kindle::Choice::None, &settings.sound}});
+    assert(!menu.adjust(1));  // An action has nothing to adjust.
+    menu.move(1);
+    assert(menu.adjust(1));
+    assert(settings.sound == 1.0f);
+    assert(!menu.adjust(1));
+    assert(menu.activate() == kindle::Choice::None);
+    assert(menu.setSlider(1, -3.0f));
+    assert(settings.sound == 0.0f);
+}
+
 void testIgniteSpendsHeat() {
     const Room room;
     Swarm swarm({0, 0, 0});
@@ -262,6 +293,8 @@ int main() {
     testCoastsToAStop();
     testIgniteBurstsThenRests();
     testIgniteSpendsHeat();
+    testMenuWrapsAndChooses();
+    testMenuSlidersClamp();
     testSlitNeedsASqueeze();
     testSealedHallHasNoWayOut();
     testCoreIsSolid();

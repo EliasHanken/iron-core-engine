@@ -85,6 +85,9 @@ int main() {
         eng.setVoicePosition(v, iron::Vec3{1.0f, 2.0f, 3.0f});  // no crash
         eng.setVoiceGain(v, 0.5f);                              // no crash
         eng.setVoicePitch(v, 1.5f);                             // no crash
+        eng.setVoiceMuffle(v, 0.2f);                            // no crash
+        eng.setReverb(iron::ReverbSettings{});                  // no crash
+        eng.setMasterGain(0.5f);                                // no crash
         eng.stop(v);                                            // no crash
     }
 

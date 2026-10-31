@@ -51,6 +51,10 @@ SHOTS = [
      "iron chain", 50.7, 3.0, 1),
     ("bend", "6c_bending_metal__NachtmahrTV_556714__PREVIEW.ogg", 556714, "NachtmahrTV",
      "bending metal", 0.0, 5.9, 1),
+    ("whoosh1", "3b_swish_x12__hz37_463763__PREVIEW.ogg", 463763, "hz37", "swish", 0.0, 1.3, 1),
+    ("whoosh2", "3b_swish_x12__hz37_463763__PREVIEW.ogg", 463763, "hz37", "swish", 1.65, 1.3, 1),
+    ("whoosh3", "3b_swish_x12__hz37_463763__PREVIEW.ogg", 463763, "hz37", "swish", 3.3, 1.3, 1),
+    ("whoosh4", "3b_swish_x12__hz37_463763__PREVIEW.ogg", 463763, "hz37", "swish", 4.95, 1.3, 1),
 ]
 
 

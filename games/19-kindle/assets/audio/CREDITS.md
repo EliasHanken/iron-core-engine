@@ -22,3 +22,7 @@ These come from Freesound's Ogg previews, not the uploaders' original files.
 | creak3.wav | creaks in a rotting ferry | allthingssound | https://freesound.org/s/425183/ |
 | chain.wav | iron chain | cabled_mess | https://freesound.org/s/571375/ |
 | bend.wav | bending metal | NachtmahrTV | https://freesound.org/s/556714/ |
+| whoosh1.wav | swish | hz37 | https://freesound.org/s/463763/ |
+| whoosh2.wav | swish | hz37 | https://freesound.org/s/463763/ |
+| whoosh3.wav | swish | hz37 | https://freesound.org/s/463763/ |
+| whoosh4.wav | swish | hz37 | https://freesound.org/s/463763/ |

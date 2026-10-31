@@ -25,6 +25,20 @@ constexpr VoiceId kInvalidVoice = 0;
 // If init() fails (no audio device on a headless box, etc.) the engine
 // becomes a silent no-op: loadSound / playSoundAt / setListener are all
 // still safe to call but do nothing.
+// The sound of a space, in OpenAL's standard reverb terms. The defaults are a
+// medium room.
+struct ReverbSettings {
+    float decaySeconds = 1.5f;       // How long the tail lasts.
+    float density = 1.0f;
+    float diffusion = 1.0f;
+    float gain = 0.32f;              // How much of the room you hear.
+    float gainHF = 0.89f;            // Below 1, soft surfaces swallow the highs.
+    float reflectionsGain = 0.05f;   // The first echoes, off nearby walls.
+    float reflectionsDelay = 0.007f;
+    float lateGain = 1.26f;          // The tail itself.
+    float lateDelay = 0.011f;
+};
+
 class AudioEngine {
 public:
     AudioEngine();
@@ -51,14 +65,14 @@ public:
     // Play `h` at `worldPos` with `gain` (1.0 = full).
     // If all sources are busy, voice-steals the oldest non-looping source.
     // No-op if `h == kInvalidSound` or the engine failed to init.
-    void playSoundAt(SoundHandle h, Vec3 worldPos, float gain = 1.0f);
+    void playSoundAt(SoundHandle h, Vec3 worldPos, float gain = 1.0f, float pitch = 1.0f);
 
     // Play `h` non-positionally (always centered at the listener with full
     // stereo balance, regardless of listener pose). Use for first-person
     // "ego sounds" — the local player's own gunshot, footsteps, jump, etc.
     // — where 3D spatialization causes panning artifacts as the camera moves.
     // No-op if `h == kInvalidSound` or the engine failed to init.
-    void playSoundLocal(SoundHandle h, float gain = 1.0f);
+    void playSoundLocal(SoundHandle h, float gain = 1.0f, float pitch = 1.0f);
 
     // Start a looping, positional voice and return a handle so it can be
     // stopped + repositioned later. Used by authored AudioEmitters (M42).
@@ -80,6 +94,17 @@ public:
     // No-op on kInvalidVoice or an unknown handle.
     void setVoiceGain(VoiceId v, float gain);
     void setVoicePitch(VoiceId v, float pitch);
+
+    // Cuts a voice's high frequencies, as if it were behind a wall: 1 is untouched,
+    // and 0 keeps only the lows. No-op without OpenAL's effects extension.
+    void setVoiceMuffle(VoiceId v, float highs);
+
+    // Sets the space every sound plays in. All voices feed one reverb, so this
+    // is the acoustics of the whole room. No-op without the effects extension.
+    void setReverb(const ReverbSettings& settings);
+
+    // Scales everything, from 0 to 1.
+    void setMasterGain(float gain);
 
     // Update the listener (camera) state. Call once per frame before any
     // playSoundAt calls. `forward` and `up` are unit vectors describing

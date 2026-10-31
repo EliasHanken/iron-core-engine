@@ -16,6 +16,7 @@
 #include "common/TrackedText.h"
 #include "HallGlsl.h"
 #include "HallMesh.h"
+#include "Menu.h"
 #include "Sound.h"
 #include "Swarm.h"
 
@@ -52,7 +53,12 @@ constexpr float kMouseTurn = 0.0022f;
 constexpr float kBaseFov = 62.0f;
 constexpr float kFovAtSpeed = 18.0f;  // Widens at top speed, for a sense of rush.
 constexpr float kFogDensity = 0.7f;   // Smoke extinction, per metre.
-constexpr float kFontPixels = 96.0f;
+
+// Text sizes on a 1080-line window. Each is baked at the size it shows.
+constexpr float kTitlePixels = 88.0f;
+constexpr float kHeadingPixels = 34.0f;
+constexpr float kBodyPixels = 25.0f;
+constexpr float kSmallPixels = 19.0f;
 constexpr float kIntroIgnite = 4.8f;  // Seconds of darkness before the swarm lights.
 
 float ramp(float from, float to, float t) {
@@ -128,39 +134,143 @@ private:
 // when it matters. Anything more would talk over the room.
 class Interface {
 public:
-    bool load(iron::Renderer& renderer) {
-        if (!text::loadFont(renderer, font_, "assets/fonts/Michroma-Regular.ttf", kFontPixels)) {
-            return false;
-        }
+    bool load(iron::Renderer& renderer, int height) {
         const std::uint8_t white[4] = {255, 255, 255, 255};
         solid_ = renderer.createTexture(1, 1, white, /*srgb=*/false);
-        return true;
+        return bake(renderer, height);
+    }
+
+    // Fonts are only sharp at the size they were baked, so a new window size needs
+    // a new bake, once it's stopped changing.
+    bool bake(iron::Renderer& renderer, int height) {
+        const float unit = static_cast<float>(height) / 1080.0f;
+        const char* const face = "assets/fonts/Michroma-Regular.ttf";
+        bakedHeight_ = height;
+        return text::loadFont(renderer, title_, face, std::round(kTitlePixels * unit)) &&
+               text::loadFont(renderer, heading_, face, std::round(kHeadingPixels * unit)) &&
+               text::loadFont(renderer, body_, face, std::round(kBodyPixels * unit)) &&
+               text::loadFont(renderer, small_, face, std::round(kSmallPixels * unit));
+    }
+
+    // A menu laid over the picture: the rows are kept, to find what the mouse is on.
+    struct Row {
+        float top = 0.0f;
+        float bottom = 0.0f;
+        float left = 0.0f;
+        float right = 0.0f;
+    };
+    const std::vector<Row>& rows() const { return rows_; }
+
+    void drawMenu(iron::Renderer& renderer, const kindle::Menu& menu, const std::string& heading,
+                  const std::string& line, float dim, int width, int height) {
+        if (height != bakedHeight_) {
+            if (++heightStable_ > 20) {
+                bake(renderer, height);
+                heightStable_ = 0;
+            }
+        } else {
+            heightStable_ = 0;
+        }
+
+        const float w = static_cast<float>(width);
+        const float h = static_cast<float>(height);
+        const float unit = h / 1080.0f;
+        const float center = w * 0.5f;
+        const float rowHeight = 64.0f * unit;
+        const float halfWidth = 230.0f * unit;
+
+        iron::HudBatch batch;
+        iron::HudDrawGroup bars;
+        bars.texture = solid_;
+        if (dim > 0.0f) appendBar(bars, 0.0f, w, 0.0f, h, {0.0f, 0.0f, 0.0f, dim});
+
+        iron::HudDrawGroup big;
+        big.texture = title_.texture;
+        text::appendCentered(big, title_, heading, center, h * 0.32f, 1.0f, 0.5f, {1.0f, 0.9f, 0.76f, 1.0f});
+
+        iron::HudDrawGroup under;
+        under.texture = small_.texture;
+        if (!line.empty()) {
+            text::appendCentered(under, small_, line, center, h * 0.32f + 58.0f * unit, 1.0f, 0.42f,
+                                 {0.72f, 0.80f, 0.92f, 0.9f});
+        }
+
+        iron::HudDrawGroup words;
+        words.texture = body_.texture;
+        rows_.clear();
+        float y = h * 0.48f;
+        for (std::size_t i = 0; i < menu.items().size(); ++i) {
+            const kindle::Menu::Item& item = menu.items()[i];
+            const bool on = i == menu.selected();
+            const iron::Vec4 color = on ? iron::Vec4{1.0f, 0.62f, 0.26f, 1.0f} : iron::Vec4{0.92f, 0.86f, 0.78f, 0.75f};
+            rows_.push_back({y - rowHeight * 0.62f, y + rowHeight * 0.38f, center - halfWidth, center + halfWidth});
+
+            if (item.slider) {
+                text::appendCentered(words, body_, item.label, center - 110.0f * unit, y, 1.0f, 0.22f, color);
+                const float left = center + 20.0f * unit;
+                const float right = center + 200.0f * unit;
+                const float mid = y - 9.0f * unit;
+                appendBar(bars, left, right, mid, 2.0f * unit, {1.0f, 1.0f, 1.0f, 0.2f});
+                appendBar(bars, left, left + (right - left) * *item.slider, mid, 2.0f * unit,
+                          {1.0f, 0.62f, 0.26f, 1.0f});
+                sliderLeft_ = left;
+                sliderRight_ = right;
+            } else {
+                text::appendCentered(words, body_, item.label, center, y, 1.0f, 0.22f, color);
+                if (on) {
+                    const float half = 18.0f * unit;
+                    appendBar(bars, center - half, center + half, y + 13.0f * unit, 2.0f * unit, color);
+                }
+            }
+            y += rowHeight;
+        }
+
+        batch.push_back(std::move(bars));
+        batch.push_back(std::move(big));
+        if (!under.vertices.empty()) batch.push_back(std::move(under));
+        batch.push_back(std::move(words));
+        renderer.drawHud(batch, width, height);
+    }
+
+    // Where along a slider a mouse x falls, from 0 to 1.
+    float sliderValueAt(float x) const {
+        return std::clamp((x - sliderLeft_) / std::max(sliderRight_ - sliderLeft_, 1.0f), 0.0f, 1.0f);
+    }
+
+    void restart() {
+        gateSeconds_ = 0.0f;
+        heatShown_ = 0.0f;
     }
 
     void draw(iron::Renderer& renderer, float seconds, float dt, const kindle::Swarm& swarm,
-              const kindle::Story& story, int width, int height) {
+              const kindle::Story& story, bool showTitle, int width, int height) {
         const float w = static_cast<float>(width);
         const float h = static_cast<float>(height);
         const float unit = h / 1080.0f;
         const float center = w * 0.5f;
 
+        iron::HudDrawGroup big;
+        big.texture = title_.texture;
+        iron::HudDrawGroup heading;
+        heading.texture = heading_.texture;
         iron::HudDrawGroup words;
-        words.texture = font_.texture;
+        words.texture = body_.texture;
+        iron::HudDrawGroup smalls;
+        smalls.texture = small_.texture;
 
-        const float title = ramp(0.6f, 2.2f, seconds) * (1.0f - ramp(3.9f, 5.0f, seconds));
-        const float line = ramp(1.8f, 3.0f, seconds) * (1.0f - ramp(3.9f, 4.9f, seconds));
+        const float title = showTitle ? ramp(0.6f, 2.2f, seconds) * (1.0f - ramp(3.9f, 5.0f, seconds)) : 0.0f;
+        const float line = showTitle ? ramp(1.8f, 3.0f, seconds) * (1.0f - ramp(3.9f, 4.9f, seconds)) : 0.0f;
         if (title > 0.0f) {
-            text::appendCentered(words, font_, "KINDLE", center, h * 0.36f, unit * 0.9f, 0.62f,
-                                 {1.0f, 0.86f, 0.70f, title});
-            text::appendCentered(words, font_, "THE MACHINE IS COLD", center, h * 0.36f + 62.0f * unit,
-                                 unit * 0.19f, 0.5f, {0.72f, 0.80f, 0.92f, line * 0.8f});
+            text::appendCentered(big, title_, "KINDLE", center, h * 0.36f, 1.0f, 0.62f, {1.0f, 0.86f, 0.70f, title});
+            text::appendCentered(smalls, small_, "THE MACHINE IS COLD", center, h * 0.36f + 58.0f * unit, 1.0f, 0.42f,
+                                 {0.72f, 0.80f, 0.92f, line * 0.9f});
         }
 
         // One line when the way opens, and the last words when it's over.
         gateSeconds_ += story.gate() > 0.0f ? dt : 0.0f;
         const float opened = ramp(0.5f, 1.5f, gateSeconds_) * (1.0f - ramp(6.0f, 7.5f, gateSeconds_));
         if (opened > 0.0f && !story.finale()) {
-            text::appendCentered(words, font_, "A WAY OPENS TO THE NORTH", center, h * 0.2f, unit * 0.24f, 0.5f,
+            text::appendCentered(words, body_, "A WAY OPENS TO THE NORTH", center, h * 0.2f, 1.0f, 0.3f,
                                  {1.0f, 0.86f, 0.70f, opened});
         }
         const float blown = story.sinceIgnition();
@@ -171,10 +281,10 @@ public:
             shade.texture = solid_;
             appendBar(shade, 0.0f, w, h * 0.31f, h * 0.2f, {0.0f, 0.0f, 0.0f, end * 0.78f});
             backdrop_ = std::move(shade);
-            text::appendCentered(words, font_, "THE MACHINE IS AWAKE", center, h * 0.4f, unit * 0.46f, 0.5f,
+            text::appendCentered(heading, heading_, "THE MACHINE IS AWAKE", center, h * 0.4f, 1.0f, 0.42f,
                                  {1.0f, 0.90f, 0.78f, end});
-            text::appendCentered(words, font_, "IRON CORE ENGINE  /  FORGE", center, h * 0.4f + 50.0f * unit,
-                                 unit * 0.17f, 0.5f, {1.0f, 0.82f, 0.62f, credit * 0.8f});
+            text::appendCentered(smalls, small_, "IRON CORE ENGINE  /  FORGE", center, h * 0.4f + 50.0f * unit,
+                                 1.0f, 0.42f, {1.0f, 0.82f, 0.62f, credit * 0.9f});
         }
 
         const float hint = ramp(6.4f, 7.6f, seconds) * (1.0f - ramp(13.0f, 15.0f, seconds));
@@ -188,8 +298,8 @@ public:
             // A soft dark band, so that the words hold up against the sparks.
             const float y = h - 112.0f * unit;
             appendBar(bars, 0.0f, w, y, 46.0f * unit, {0.0f, 0.0f, 0.0f, hint * 0.45f});
-            text::appendCentered(words, font_, "WASD  FLY      SHIFT  SQUEEZE      CLICK  IGNITE", center,
-                                 y + 30.0f * unit, unit * 0.2f, 0.4f, {1.0f, 0.92f, 0.82f, hint * 0.95f});
+            text::appendCentered(smalls, small_, "WASD  FLY       SHIFT  SQUEEZE       CLICK  IGNITE", center,
+                                 y + 30.0f * unit, 1.0f, 0.26f, {1.0f, 0.92f, 0.82f, hint});
         }
         if (heatShown_ > 0.0f) {
             const float half = 150.0f * unit;
@@ -204,7 +314,9 @@ public:
         iron::HudBatch batch;
         if (end > 0.0f) batch.push_back(std::move(backdrop_));
         if (!bars.vertices.empty()) batch.push_back(std::move(bars));
-        if (!words.vertices.empty()) batch.push_back(std::move(words));
+        for (iron::HudDrawGroup* group : {&big, &heading, &words, &smalls}) {
+            if (!group->vertices.empty()) batch.push_back(std::move(*group));
+        }
         if (!batch.empty()) renderer.drawHud(batch, width, height);
     }
 
@@ -220,7 +332,15 @@ private:
         for (int i : {0, 1, 2, 0, 2, 3}) group.vertices.push_back(corners[i]);
     }
 
-    iron::FontAtlas font_;
+    iron::FontAtlas title_;
+    iron::FontAtlas heading_;
+    iron::FontAtlas body_;
+    iron::FontAtlas small_;
+    int bakedHeight_ = 0;
+    int heightStable_ = 0;
+    std::vector<Row> rows_;
+    float sliderLeft_ = 0.0f;
+    float sliderRight_ = 1.0f;
     iron::TextureHandle solid_ = iron::kInvalidHandle;
     float heatShown_ = 0.0f;
     float gateSeconds_ = 0.0f;
@@ -249,6 +369,7 @@ int main(int argc, char** argv) {
     if (!capture::parseOptions(argc, argv, options)) return 1;
     const bool scripted = options.offline();
     options.captureUi = true;
+    options.escapeQuits = scripted;  // Playing, Esc is the pause menu.
 
     iron::Application::Config cfg;
     cfg.title  = "Kindle";
@@ -361,7 +482,7 @@ int main(int argc, char** argv) {
     });
 
     Interface screen;
-    if (!screen.load(renderer)) {
+    if (!screen.load(renderer, app.window().height())) {
         iron::Log::error("kindle: the title font failed to load");
         return 1;
     }
@@ -370,10 +491,35 @@ int main(int argc, char** argv) {
     kindle::Wakes wakes;
     kindle::Story story;
 
+    float lastMenuMouseX = 0.0f;
+    float lastMenuMouseY = 0.0f;
+
     kindle::Sound sound;
     sound.init(assets + "audio/", !scripted,
                options.recordPath.empty() ? std::string{} : options.recordPath + ".sound.csv");
     Autopilot autopilot;
+
+    const std::string settingsPath = iron::executableDir() + "/kindle-settings.txt";
+    kindle::Settings settings;
+    settings.load(settingsPath);
+    sound.setVolume(settings.sound);
+
+    enum class Mode { Menu, Playing, Paused };
+    // --scene menu, pause and restart let a scripted run reach those paths too.
+    Mode mode = scripted && options.scene != "menu" ? Mode::Playing : Mode::Menu;
+    bool scriptedStep = false;
+
+    kindle::Menu menu;
+    const kindle::Menu::Item soundRow{"SOUND", kindle::Choice::None, &settings.sound};
+    const kindle::Menu::Item lookRow{"LOOK", kindle::Choice::None, &settings.look};
+    const auto showStartMenu = [&]() {
+        menu.show({{"BEGIN", kindle::Choice::Begin}, soundRow, lookRow, {"QUIT", kindle::Choice::Quit}});
+    };
+    const auto showPauseMenu = [&]() {
+        menu.show({{"RESUME", kindle::Choice::Resume}, {"START OVER", kindle::Choice::Restart}, soundRow, lookRow,
+                   {"QUIT", kindle::Choice::Quit}});
+    };
+    showStartMenu();
 
     float yaw = 0.0f;
     float pitch = 0.0f;
@@ -381,21 +527,135 @@ int main(int argc, char** argv) {
     float mouseY = 0.0f;
     bool ignite = false;
     float pollTimer = 0.0f;
+    float clock = 0.0f;       // Game time, which stops in menus.
+    float worldTime = 0.0f;   // What the surfaces animate by, which stops when paused.
+
+    struct MenuInput {
+        int move = 0;
+        int adjust = 0;
+        bool enter = false;
+        bool escape = false;
+        bool click = false;
+        bool held = false;
+    } menuInput;
     float fogAccumulator = 0.0f;
 
     Vec3 eye = swarm.position() + Vec3{0.0f, 2.0f, 8.0f};
     Vec3 tailA = swarm.position();
     Vec3 tailB = swarm.position();
 
-    if (!scripted) app.window().setCursorCaptured(true);
     options.onInput = [&]() {
-        mouseX += static_cast<float>(app.input().mouseDeltaX());
-        mouseY += static_cast<float>(app.input().mouseDeltaY());
-        ignite = ignite || app.input().mouseButtonPressed(GLFW_MOUSE_BUTTON_LEFT);
+        const iron::Input& input = app.input();
+        mouseX += static_cast<float>(input.mouseDeltaX());
+        mouseY += static_cast<float>(input.mouseDeltaY());
+        ignite = ignite || input.mouseButtonPressed(GLFW_MOUSE_BUTTON_LEFT);
+
+        const auto pressed = [&](int a, int b) { return input.keyPressed(a) || input.keyPressed(b); };
+        menuInput.move += (pressed(GLFW_KEY_S, GLFW_KEY_DOWN) ? 1 : 0) - (pressed(GLFW_KEY_W, GLFW_KEY_UP) ? 1 : 0);
+        menuInput.adjust += (pressed(GLFW_KEY_D, GLFW_KEY_RIGHT) ? 1 : 0) - (pressed(GLFW_KEY_A, GLFW_KEY_LEFT) ? 1 : 0);
+        menuInput.enter = menuInput.enter || pressed(GLFW_KEY_ENTER, GLFW_KEY_SPACE);
+        menuInput.escape = menuInput.escape || input.keyPressed(GLFW_KEY_ESCAPE);
+        menuInput.click = menuInput.click || input.mouseButtonPressed(GLFW_MOUSE_BUTTON_LEFT);
+        menuInput.held = input.mouseButtonDown(GLFW_MOUSE_BUTTON_LEFT);
     };
 
-    const capture::FrameFn frame = [&](float seconds, float dt, int width, int height) {
-        pollTimer += dt;
+    const auto startPlaying = [&]() {
+        mode = Mode::Playing;
+        clock = kIntroIgnite - 0.5f;  // The menu was the opening, so the swarm lights now.
+        screen.restart();
+        sound.setPaused(false);
+        app.window().setCursorCaptured(true);
+    };
+    const auto resume = [&]() {
+        mode = Mode::Playing;
+        sound.setPaused(false);
+        app.window().setCursorCaptured(true);
+        settings.save(settingsPath);
+    };
+    const auto pause = [&]() {
+        mode = Mode::Paused;
+        sound.setPaused(true);
+        showPauseMenu();
+        app.window().setCursorCaptured(false);
+    };
+    const auto startOver = [&]() {
+        swarm = kindle::Swarm({0.0f, 0.0f, -10.0f});
+        wakes = kindle::Wakes{};
+        story = kindle::Story{};
+        room.sealed = true;
+        yaw = 0.0f;
+        pitch = 0.0f;
+        tailA = swarm.position();
+        tailB = swarm.position();
+        player.restart();
+        fog->reset();
+        sound.restart();
+        startPlaying();
+    };
+
+    const capture::FrameFn frame = [&](float, float realDt, int width, int height) {
+        // Menus come first, because they decide whether the game moves this frame.
+        if (!scripted) {
+            const MenuInput in = menuInput;
+            menuInput = MenuInput{};
+
+            if (mode == Mode::Playing && in.escape) {
+                pause();
+            } else if (mode != Mode::Playing) {
+                if (in.escape && mode == Mode::Paused) resume();
+                if (menu.move(in.move)) sound.menuMove();
+                if (in.adjust != 0 && menu.adjust(in.adjust)) {
+                    sound.setVolume(settings.sound);
+                    sound.menuMove();
+                }
+
+                // The mouse picks a row by hovering, and drags a slider directly.
+                const auto mx = static_cast<float>(app.input().mouseX());
+                const auto my = static_cast<float>(app.input().mouseY());
+                const std::vector<Interface::Row>& rows = screen.rows();
+                bool overRow = false;
+                for (std::size_t i = 0; i < rows.size(); ++i) {
+                    if (mx >= rows[i].left && mx <= rows[i].right && my >= rows[i].top && my <= rows[i].bottom) {
+                        overRow = true;
+                        if (std::abs(mx - lastMenuMouseX) + std::abs(my - lastMenuMouseY) > 0.5f && menu.select(i)) {
+                            sound.menuMove();
+                        }
+                        if (in.held && menu.setSlider(i, screen.sliderValueAt(mx))) sound.setVolume(settings.sound);
+                    }
+                }
+                lastMenuMouseX = mx;
+                lastMenuMouseY = my;
+
+                if (mode != Mode::Playing && (in.enter || (in.click && overRow))) {
+                    const kindle::Choice choice = menu.activate();
+                    if (choice != kindle::Choice::None) sound.menuConfirm();
+                    settings.save(settingsPath);
+                    switch (choice) {
+                        case kindle::Choice::Begin: startPlaying(); break;
+                        case kindle::Choice::Resume: resume(); break;
+                        case kindle::Choice::Restart: startOver(); break;
+                        case kindle::Choice::Quit:
+                            glfwSetWindowShouldClose(app.window().handle(), GLFW_TRUE);
+                            break;
+                        case kindle::Choice::None: break;
+                    }
+                }
+            }
+        }
+
+        if (scripted && !scriptedStep && clock > 8.0f) {
+            scriptedStep = options.scene == "pause" || options.scene == "restart";
+            if (options.scene == "pause") pause();
+            if (options.scene == "restart") startOver();
+        }
+
+        // The game clock stops in menus, and paused, the whole world holds still.
+        const float dt = mode == Mode::Paused ? 0.0f : realDt;
+        if (mode == Mode::Playing) clock += dt;
+        worldTime += dt;
+        const float seconds = clock;
+
+        pollTimer += realDt;
         if (pollTimer > 0.25f) {
             pollTimer = 0.0f;
             watcher.poll();
@@ -411,9 +671,12 @@ int main(int argc, char** argv) {
             const float s = 1.0f - std::exp(-dt * 3.0f);
             yaw += turn * s;
             pitch += (wantPitch * 0.6f - pitch) * s;
-        } else {
-            yaw += mouseX * kMouseTurn;
-            pitch = std::clamp(pitch - mouseY * kMouseTurn, -1.35f, 1.35f);
+        } else if (mode == Mode::Menu) {
+            yaw += dt * 0.03f;  // The start screen drifts, slowly, round the ember.
+        } else if (mode == Mode::Playing) {
+            const float turn = kMouseTurn * (0.3f + 1.4f * settings.look);
+            yaw += mouseX * turn;
+            pitch = std::clamp(pitch - mouseY * turn, -1.35f, 1.35f);
             const iron::Input& input = app.input();
             const Vec3 forward = forwardOf(yaw, pitch);
             const Vec3 right = iron::normalize(iron::cross(forward, {0, 1, 0}));
@@ -460,19 +723,21 @@ int main(int argc, char** argv) {
         player.setInput("presence", {presence * (1.0f - 0.72f * swarm.squeeze()), 0, 0});
         player.setInput("light", {(0.00012f + swarm.flare() * 0.0012f) * presence, 0, 0});
         if (blown > 0.0f && blown < dt * 1.5f) swarm.burst();
-        player.setInput("pulse", {0.02f + swarm.pulse() * 0.02f + swarm.flare() * 0.06f, 0, 0});
+        player.setInput("pulse", {0.012f + swarm.pulse() * 0.012f + swarm.flare() * 0.03f, 0, 0});
 
         // The camera hangs back further the faster you go.
         const float rush = std::min(swarm.speed() / kindle::Swarm::kSqueezeSpeed, 1.0f);
         const Vec3 forward = forwardOf(yaw, pitch);
         const Vec3 wantEye = clearEye(room, swarm.position(),
-                                      swarm.position() - forward * (7.0f + 5.0f * rush + 4.0f * swarm.flare()) + Vec3{0, 1.6f, 0});
+                                      swarm.position() - forward * (8.5f + 4.0f * rush + 2.0f * swarm.flare()) + Vec3{0, 1.8f, 0});
         eye = eye + (wantEye - eye) * (1.0f - std::exp(-dt * 9.0f));
-        sound.update(seconds, dt, eye, forward, swarm, story, freshWake, presence);
+        sound.update(worldTime, realDt, eye, forward, room, swarm, story, freshWake, presence);
 
         const bool watching = options.scene == "hall";
         if (watching) eye = Vec3{-18.5f, -3.0f, -18.5f};
-        const Vec3 lookTarget = watching ? Vec3{4.0f, -1.5f, 4.0f} : swarm.position() + forward * 4.0f;
+        // On the start screen the ember sits low, below the menu.
+        const Vec3 raise{0.0f, mode == Mode::Menu ? 4.2f : 0.0f, 0.0f};
+        const Vec3 lookTarget = watching ? Vec3{4.0f, -1.5f, 4.0f} : swarm.position() + forward * 4.0f + raise;
         const iron::Mat4 view = iron::lookAt(eye, lookTarget, {0, 1, 0});
         const iron::Mat4 projection = iron::perspective(
             (kBaseFov + kFovAtSpeed * rush) * std::numbers::pi_v<float> / 180.0f,
@@ -514,7 +779,7 @@ int main(int argc, char** argv) {
         iron::DrawCall draw;
         draw.mesh = hallMesh;
         draw.shader = wallShader;
-        draw.material.emissive = {seconds, 0.0f, 0.0f};  // Surfaces read their clock here.
+        draw.material.emissive = {worldTime, 0.0f, 0.0f};  // Surfaces read their clock here.
         renderer.submit(draw);
 
         // The gate's leaves slide apart into the wall.
@@ -532,7 +797,7 @@ int main(int argc, char** argv) {
         core.model = iron::translation(room.coreCenter);
         renderer.submit(core);
 
-        player.simulate(dt);
+        if (mode != Mode::Paused) player.simulate(dt);
 
         // Stirring radius grows with speed, so a fast pass leaves a wider wake.
         const Vec3 pos = swarm.position();
@@ -541,7 +806,7 @@ int main(int argc, char** argv) {
         fogParams.swarm[0] = pos.x;
         fogParams.swarm[1] = pos.y;
         fogParams.swarm[2] = pos.z;
-        fogParams.swarm[3] = 1.4f + swarm.spread() * 0.5f;
+        fogParams.swarm[3] = 1.4f + swarm.spread() * 0.8f;
         fogParams.velocity[0] = vel.x;
         fogParams.velocity[1] = vel.y;
         fogParams.velocity[2] = vel.z;
@@ -564,14 +829,19 @@ int main(int argc, char** argv) {
         air.heatIntensity = 0.0f;
         air.shadowDensity = 1.0f;
         air.lightPosition = pos;
-        air.lightColor = kEmber * ((2.4f + flare * 12.0f) * glow);
+        air.lightColor = kEmber * ((1.3f + flare * 8.0f) * glow);
         air.detail = 0.3f;
         air.detailScale = 0.8f;
-        air.time = seconds;
+        air.time = worldTime;
         if (player.light()) volumes->render(view, projection, *player.light(), fog.get(), air);
 
         player.render(view, projection);
-        screen.draw(renderer, seconds, dt, swarm, story, width, height);
+        if (mode == Mode::Playing) screen.draw(renderer, seconds, dt, swarm, story, scripted, width, height);
+        if (mode == Mode::Menu) {
+            screen.drawMenu(renderer, menu, "KINDLE", "THE MACHINE IS COLD", 0.34f, width, height);
+        } else if (mode == Mode::Paused) {
+            screen.drawMenu(renderer, menu, "PAUSED", "", 0.62f, width, height);
+        }
     };
 
     capture::runLoop(app, renderer, *vulkan, options, frame, kRecordSeconds);

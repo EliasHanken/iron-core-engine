@@ -44,7 +44,7 @@ def main():
             if kind == "bed":
                 beds.setdefault(name, []).append((float(time), float(gain), float(pitch)))
             else:
-                shots.append((float(time), name, float(gain)))
+                shots.append((float(time), name, float(gain), float(pitch)))
 
     seconds = float(subprocess.run(["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0", video],
                                    capture_output=True, text=True, check=True).stdout)
@@ -56,8 +56,12 @@ def main():
     for name, rows in beds.items():
         rows = np.array(rows)
         mix_bed(out, sound(name), rows[:, 0], rows[:, 1], rows[:, 2])
-    for time, name, gain in shots:
+    for time, name, gain, pitch in shots:
         x = sound(name)
+        if pitch != 1.0:
+            # Reads faster or slower through the sound, as a pitched voice does.
+            read = np.arange(0, x.shape[0] - 1, pitch)
+            x = np.stack([np.interp(read, np.arange(x.shape[0]), x[:, c]) for c in range(2)], axis=1)
         start = int(time * RATE)
         end = min(start + x.shape[0], out.shape[0])
         if start < end:

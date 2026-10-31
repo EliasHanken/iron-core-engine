@@ -76,8 +76,8 @@ class Swarm {
 public:
     static constexpr float kCruiseSpeed = 13.0f;
     static constexpr float kSqueezeSpeed = 26.0f;
-    static constexpr float kCruiseSpread = 1.5f;
-    static constexpr float kSqueezeSpread = 0.2f;
+    static constexpr float kCruiseSpread = 0.7f;
+    static constexpr float kSqueezeSpread = 0.1f;
     static constexpr float kIgniteRest = 0.45f;  // Seconds between bursts.
     static constexpr float kMargin = 1.15f;      // Keeps the cloud off the walls.
     static constexpr float kSqueezeMargin = 0.2f;  // A ribbon fits where a cloud can't.
@@ -154,7 +154,7 @@ public:
         const float calm = 1.0f - std::min(speed() / kCruiseSpeed, 1.0f);
         const float breath = 1.0f + 0.22f * calm * pulse();
         const float rest = (kCruiseSpread + (kSqueezeSpread - kCruiseSpread) * squeeze_) * breath;
-        return rest + flare_ * 3.5f;
+        return rest + flare_ * 2.0f;
     }
 
 private:
