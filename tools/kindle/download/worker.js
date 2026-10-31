@@ -2,7 +2,9 @@
 // a code's hash is stored, so a leaked config reveals nothing. To cut someone off,
 // remove their hash and redeploy.
 //
-// Codes live in the INVITE_HASHES secret, as comma-separated SHA-256 hex.
+// Codes live in the INVITE_HASHES secret, as comma-separated SHA-256 hex. Setting the
+// PUBLIC_DOWNLOAD variable to "true" opens the front page to anyone, and personal
+// links keep working.
 
 const FILE = "Kindle.zip";
 
@@ -32,19 +34,27 @@ async function allowed(code, env) {
 export default {
   async fetch(request, env) {
     const url = new URL(request.url);
+    const open = env.PUBLIC_DOWNLOAD === "true";
+    const publicPage = open && url.pathname === "/";
+    const publicFile = open && url.pathname === "/Kindle.zip";
+
     const match = url.pathname.match(/^\/d\/([A-Za-z0-9_-]{8,64})(\/Kindle\.zip)?$/);
-    if (!match) return page("KINDLE", "<p>This download is private. Use the link you were sent.</p>", 404);
-    if (!(await allowed(match[1], env))) {
+    if (!match && !publicPage && !publicFile) {
+      return page("KINDLE", "<p>This download is private. Use the link you were sent.</p>", 404);
+    }
+    if (match && !(await allowed(match[1], env))) {
       return page("KINDLE", "<p>That link isn't valid. Ask Elias for a new one.</p>", 403);
     }
 
-    if (!match[2]) {
+    if (publicPage || (match && !match[2])) {
       const info = await env.BUCKET.head(FILE);
       const size = info ? `${Math.round(info.size / 1e6)} MB` : "";
+      const link = publicPage ? "/Kindle.zip" : `${url.pathname}/Kindle.zip`;
+      const note = publicPage ? "" : "<br>This build is for you: please don't pass it on.";
       return page("KINDLE", `<p>You are a swarm of light in a dead machine. Relight it, and wake the core.</p>
-<a href="${url.pathname}/Kindle.zip">Download for Windows</a>
+<a href="${link}">Download for Windows</a>
 <p><small>${size}. Needs Windows 10 or 11 and a Vulkan 1.3 graphics card.<br>
-This build is for you: please don't pass it on.</small></p>`);
+Windows may warn about an unknown app, because the game isn't code-signed.${note}</small></p>`);
     }
 
     const object = await env.BUCKET.get(FILE);

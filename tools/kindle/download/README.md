@@ -17,3 +17,5 @@ wrangler secret put INVITE_HASHES
 ```
 
 To cut someone off, set the secret again without their hash. To ship a new build, repeat the `object put`.
+
+To open it to everyone, set `PUBLIC_DOWNLOAD` to `"true"` in `wrangler.toml` and deploy again. The front page then offers the download, and personal links keep working.
