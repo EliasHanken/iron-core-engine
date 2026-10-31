@@ -41,7 +41,10 @@ layout(set = 0, binding = 5) uniform Ubo {
     vec4 params;        // x = air density, y = light intensity, z = detail, w = detail scale
     vec4 shape;         // x = phase, y = powder, z = air light, w = shadows on
     ivec4 counts;       // x = steps, y = frame index
+    vec4 air;           // x = time for airAt
 } u;
+
+//@AIR_HOOK@
 
 float gradientNoise(vec2 p) {
     return fract(52.9829189 * fract(dot(p, vec2(0.06711056, 0.00583715))));
@@ -144,13 +147,16 @@ void main() {
     float stepLength = (t1 - t0) / float(steps);
     float jitter = gradientNoise(vec2(pixel) + 5.588238 * float(u.counts.y % 64));
 
-    float air = u.params.x;
     vec3 light = vec3(0.0);
     float transmittance = 1.0;
 
     for (int i = 0; i < steps; ++i) {
         vec3 p = ro + rd * (t0 + (float(i) + jitter) * stepLength);
         vec3 radiance = texture(lightVolume, (p - u.lightMin.xyz) * u.lightInvSize.xyz).rgb * u.params.y;
+
+        float air = u.params.x;
+        vec3 airGlow = vec3(0.0);
+        airAt(p, u.air.x, air, airGlow);
 
         float smoke = 0.0;
         float heat = 0.0;
@@ -177,7 +183,7 @@ void main() {
         vec3 direct = u.pointLight.rgb / (1.0 + toLightLength * toLightLength * 0.1);
         direct *= scatterPhase(dot(rd, toLight)) * lightVisibility(p);
 
-        vec3 scattered = radiance * air + direct * air * u.shape.z;
+        vec3 scattered = (radiance + airGlow) * air + direct * air * u.shape.z;
 
         if (smoke > 1e-3) {
             // Self-shadowing: this is what gives smoke dark folds and bright edges.
@@ -192,7 +198,7 @@ void main() {
             // Beer-powder: thin gas lets light straight through, so its edges read
             // darker and the billows gain the rounded look of real smoke.
             float powder = mix(1.0, 1.0 - exp(-optical * 2.0 - smoke * 2.0), u.shape.y);
-            scattered += (radiance + direct) * smoke * u.smokeAlbedo.w * u.smokeAlbedo.rgb * shadow * powder;
+            scattered += (radiance + direct + airGlow) * smoke * u.smokeAlbedo.w * u.smokeAlbedo.rgb * shadow * powder;
         }
 
         // Gas hot enough to glow by itself. It whitens as it heats.
@@ -217,6 +223,7 @@ layout(set = 0, binding = 1) uniform Ubo {
     vec4 light;
     ivec4 count;
     vec4 spheres[256];
+    vec4 columns[64];
 } u;
 
 void main() {
@@ -237,6 +244,20 @@ void main() {
         float offAxis = dot(toCenter, toCenter) - along * along;
         float radius2 = u.spheres[i].w * u.spheres[i].w;
         if (offAxis < radius2) nearest = min(nearest, along - sqrt(radius2 - offAxis));
+    }
+
+    // Columns are endless, so this is a circle in the ground plane. The distance
+    // along the flat ray stretches back to true length by dividing by its slope.
+    float flat2 = dot(dir.xz, dir.xz);
+    if (flat2 > 1e-6) {
+        for (int i = 0; i < u.count.y; ++i) {
+            vec2 toCenter = u.columns[i].xy - u.light.xz;
+            float along = dot(toCenter, dir.xz);
+            if (along <= 0.0) continue;
+            float offAxis = dot(toCenter, toCenter) - along * along / flat2;
+            float radius2 = u.columns[i].z * u.columns[i].z;
+            if (offAxis < radius2) nearest = min(nearest, (along - sqrt((radius2 - offAxis) * flat2)) / flat2);
+        }
     }
     imageStore(result, pixel, vec4(nearest));
 }
@@ -300,13 +321,19 @@ struct RaymarchUbo {
     float params[4];
     float shape[4];
     std::int32_t counts[4];
+    float air[4];
 };
 
 struct OccluderUbo {
     float        light[4];
     std::int32_t count[4];
     float        spheres[VolumeRenderer::kMaxOccluders][4];
+    float        columns[VolumeRenderer::kMaxColumns][4];
 };
+
+constexpr const char* kAirHookMarker = "//@AIR_HOOK@";
+constexpr const char* kNoAirHook =
+    "void airAt(vec3 p, float time, inout float density, inout vec3 light) {}\n";
 
 void setVec4(float out[4], Vec3 v, float w) {
     out[0] = v.x;
@@ -321,8 +348,11 @@ Vec3 inverseExtent(const VolumeBounds& b) {
 
 }  // namespace
 
-VolumeRendererSources volumeRendererSources() {
-    return {kRaymarchGlsl, kOccluderGlsl, kUpsampleVertGlsl, kUpsampleFragGlsl};
+VolumeRendererSources volumeRendererSources(const VolumeRendererDesc& desc) {
+    std::string raymarch = kRaymarchGlsl;
+    raymarch.replace(raymarch.find(kAirHookMarker), std::string(kAirHookMarker).size(),
+                     desc.airGlsl.empty() ? kNoAirHook : desc.airGlsl);
+    return {raymarch, kOccluderGlsl, kUpsampleVertGlsl, kUpsampleFragGlsl};
 }
 
 VkVolumeRenderer::~VkVolumeRenderer() {
@@ -339,11 +369,11 @@ VkVolumeRenderer::~VkVolumeRenderer() {
     target_.destroy(ctx);
 }
 
-bool VkVolumeRenderer::init(VulkanRenderer& renderer) {
+bool VkVolumeRenderer::init(VulkanRenderer& renderer, const VolumeRendererDesc& desc) {
     renderer_ = &renderer;
 
     constexpr VkDescriptorType kSampled = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-    if (!raymarchStage_.init(renderer.context(), kRaymarchGlsl,
+    if (!raymarchStage_.init(renderer.context(), volumeRendererSources(desc).raymarch,
                              {kSampled, kSampled, kSampled, kSampled,
                               VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
                               kSampled})) {
@@ -500,11 +530,12 @@ bool VkVolumeRenderer::ensureTarget() {
     return true;
 }
 
-void VkVolumeRenderer::setOccluders(Vec3 light, std::span<const Vec4> spheres, float strength) {
+void VkVolumeRenderer::setOccluders(Vec3 light, std::span<const Vec4> spheres, float strength,
+                                    std::span<const Vec3> columns) {
     VkCommandBuffer cb = renderer_->currentCommandBuffer();
     if (cb == VK_NULL_HANDLE) return;
 
-    if (spheres.empty()) {
+    if (spheres.empty() && columns.empty()) {
         shadowsOn_ = false;
         renderer_->setPointShadow(VK_NULL_HANDLE, light, 0.0f);
         return;
@@ -519,6 +550,13 @@ void VkVolumeRenderer::setOccluders(Vec3 light, std::span<const Vec4> spheres, f
         ubo->spheres[i][1] = spheres[i].y;
         ubo->spheres[i][2] = spheres[i].z;
         ubo->spheres[i][3] = spheres[i].w;
+    }
+    const std::size_t columnCount = std::min<std::size_t>(columns.size(), kMaxColumns);
+    ubo->count[1] = static_cast<std::int32_t>(columnCount);
+    for (std::size_t i = 0; i < columnCount; ++i) {
+        ubo->columns[i][0] = columns[i].x;
+        ubo->columns[i][1] = columns[i].z;
+        ubo->columns[i][2] = columns[i].y;
     }
 
     VkFrameRing& ring = renderer_->frameRing();
@@ -577,6 +615,7 @@ void VkVolumeRenderer::render(const Mat4& view, const Mat4& projection, const Li
     ubo.shape[3] = shadowsOn_ ? 1.0f : 0.0f;
     ubo.counts[0] = settings.steps;
     ubo.counts[1] = static_cast<std::int32_t>(frameIndex_++);
+    ubo.air[0] = settings.time;
 
     VkFrameRing& ring = renderer_->frameRing();
     const VkDeviceSize uboOffset = ring.allocateUbo(&ubo, sizeof(ubo));
@@ -663,14 +702,15 @@ void VkVolumeRenderer::render(const Mat4& view, const Mat4& projection, const Li
     });
 }
 
-std::unique_ptr<VolumeRenderer> createVolumeRenderer(Renderer& renderer) {
+std::unique_ptr<VolumeRenderer> createVolumeRenderer(Renderer& renderer,
+                                                     const VolumeRendererDesc& desc) {
     auto* vk = dynamic_cast<VulkanRenderer*>(&renderer);
     if (!vk) {
         Log::error("createVolumeRenderer: renderer is not a VulkanRenderer");
         return nullptr;
     }
     auto volumes = std::make_unique<VkVolumeRenderer>();
-    if (!volumes->init(*vk)) return nullptr;
+    if (!volumes->init(*vk, desc)) return nullptr;
     return volumes;
 }
 

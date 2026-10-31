@@ -19,18 +19,19 @@ struct VolumeRendererSources {
     std::string upsampleVertex;
     std::string upsampleFragment;
 };
-VolumeRendererSources volumeRendererSources();
+VolumeRendererSources volumeRendererSources(const VolumeRendererDesc& desc = {});
 
 class VkVolumeRenderer : public VolumeRenderer {
 public:
     VkVolumeRenderer() = default;
     ~VkVolumeRenderer() override;
 
-    bool init(VulkanRenderer& renderer);
+    bool init(VulkanRenderer& renderer, const VolumeRendererDesc& desc);
 
     void render(const Mat4& view, const Mat4& projection, const LightVolume& light,
                 const FluidVolume* fluid, const VolumeRenderSettings& settings) override;
-    void setOccluders(Vec3 light, std::span<const Vec4> spheres, float strength) override;
+    void setOccluders(Vec3 light, std::span<const Vec4> spheres, float strength,
+                      std::span<const Vec3> columns) override;
 
 private:
     bool createUpsamplePipeline();

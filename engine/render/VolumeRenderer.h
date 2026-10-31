@@ -9,6 +9,7 @@
 
 #include <memory>
 #include <span>
+#include <string>
 
 namespace iron {
 
@@ -32,6 +33,15 @@ struct VolumeRenderSettings {
     float airLight = 1.0f;         // Scales direct light in the air, which is what draws shafts.
     float detail = 0.5f;           // Noise erosion at smoke edges, 0 for none.
     float detailScale = 3.0f;      // Noise frequency, per metre.
+    float time = 0.0f;             // Passed to the air hook.
+};
+
+// `airGlsl` is game GLSL that shapes the air. It's optional, and provides:
+//   void airAt(vec3 p, float time, inout float density, inout vec3 light);
+// `density` starts at airDensity. `light` starts at zero, and is light that's
+// already in the air at p, such as shafts from a window, which needs no lamp.
+struct VolumeRendererDesc {
+    std::string airGlsl;
 };
 
 // Draws a LightVolume, and optionally a FluidVolume, as true volumetrics: a
@@ -44,10 +54,14 @@ public:
 
     // Casts shadows from a light through the air, smoke and lit surfaces, which is
     // what draws god rays. Each sphere is xyz = centre, w = radius, and at most
-    // kMaxOccluders are used. Call between beginFrame and endFrame, before render.
-    // An empty span turns shadows off.
+    // kMaxOccluders are used. Each column is an endless vertical pillar, with x and z
+    // as its position and y as its radius, which is sharper and far cheaper than a
+    // stack of spheres. At most kMaxColumns are used. Call between beginFrame and
+    // endFrame, before render. With nothing to cast them, shadows turn off.
     static constexpr int kMaxOccluders = 256;
-    virtual void setOccluders(Vec3 light, std::span<const Vec4> spheres, float strength) = 0;
+    static constexpr int kMaxColumns = 64;
+    virtual void setOccluders(Vec3 light, std::span<const Vec4> spheres, float strength,
+                              std::span<const Vec3> columns = {}) = 0;
 
     // Call between Renderer::beginFrame and endFrame, after any fluid steps and
     // before the frame's particle render calls, so that particles draw over it.
@@ -57,6 +71,7 @@ public:
 };
 
 // Returns nullptr on failure. Must be destroyed before the Renderer.
-std::unique_ptr<VolumeRenderer> createVolumeRenderer(Renderer& renderer);
+std::unique_ptr<VolumeRenderer> createVolumeRenderer(Renderer& renderer,
+                                                     const VolumeRendererDesc& desc = {});
 
 }  // namespace iron

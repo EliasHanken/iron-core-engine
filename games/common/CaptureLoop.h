@@ -55,6 +55,9 @@ struct Options {
     // Frame cap. An uncapped loop holds the GPU at full power to no benefit, so even
     // offline work is paced: output doesn't depend on this, only how long it takes.
     int maxFps = 0;  // 0 picks the default for the mode.
+    // Runs once per input sample. Mouse movement and key edges only exist here, so a
+    // game reads them here rather than in its frame.
+    std::function<void()> onInput;
 
     bool offline() const { return !stills.empty() || !recordPath.empty() || benchmark; }
 };
@@ -145,6 +148,7 @@ inline void runLoop(iron::Application& app, iron::Renderer& renderer, iron::Vulk
         if (options.escapeQuits && app.input().keyPressed(GLFW_KEY_ESCAPE)) {
             glfwSetWindowShouldClose(app.window().handle(), GLFW_TRUE);
         }
+        if (options.onInput) options.onInput();
     });
 
     app.setRender([&]() {

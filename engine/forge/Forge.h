@@ -52,6 +52,7 @@ struct NodeDesc {
     std::vector<ParamDesc> inputs;
     ValueType   output = ValueType::Float;
     std::string glsl;
+    bool        runtime = false;  // A value the game sets: see Player::setInput.
 };
 
 // A signed distance shape. `glsl` is a float expression in terms of `p`.
@@ -157,6 +158,7 @@ struct CompiledLayer {
     std::string   fragmentGlsl;
     std::string   emissionGlsl;
     std::vector<float> slots;  // 4 floats per slot.
+    std::map<std::string, std::vector<int>> inputs;  // Input node name to its slots.
 };
 
 struct CompiledSurface {

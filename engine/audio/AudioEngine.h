@@ -75,6 +75,12 @@ public:
     // No-op on kInvalidVoice or an unknown handle.
     void setVoicePosition(VoiceId v, Vec3 worldPos);
 
+    // Change a live voice while it plays, such as an engine rising with speed.
+    // Pitch 1 is the recording's own pitch, and 2 is an octave up, at double speed.
+    // No-op on kInvalidVoice or an unknown handle.
+    void setVoiceGain(VoiceId v, float gain);
+    void setVoicePitch(VoiceId v, float pitch);
+
     // Update the listener (camera) state. Call once per frame before any
     // playSoundAt calls. `forward` and `up` are unit vectors describing
     // the listener's orientation; match the rendering camera.

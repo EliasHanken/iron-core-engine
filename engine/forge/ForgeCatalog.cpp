@@ -101,6 +101,29 @@ std::vector<BlockDesc> makeBlocks() {
     }
 })", true});
 
+    list.push_back({"Follow", Stack::Move, "Chase a moving point, each particle at its own pace.",
+        {vec("target", Vec3{0, 0, 0}, -100.0f, 100.0f, "The point to chase. Wire an InputVector here."),
+         num("fast", 6.0f, 0.0f, 30.0f, "How quickly the keenest particles catch up."),
+         num("slow", 0.8f, 0.0f, 30.0f, "How quickly the laziest catch up. Lower makes a longer tail."),
+         num("grip", 8.0f, 0.1f, 30.0f, "How sharply they turn: lower swings wide."),
+         num("spread", 1.0f, 0.0f, 20.0f, "Size of the cloud around the point, in metres.")},
+        R"({
+    uint own = uint(seedValue * 4000000.0);
+    vec3 home = $target + randomDirection(own) * $spread * pow(rnd(own + 3u), 0.5);
+    float pace = mix($slow, $fast, seedValue * seedValue);
+    v = mix(v, (home - x) * pace, 1.0 - exp(-dt * $grip));
+})"});
+    list.push_back({"Blast", Stack::Move, "Throw particles away from a point.",
+        {vec("point", Vec3{0, 0, 0}, -100.0f, 100.0f, "Middle of the blast."),
+         num("amount", 0.0f, 0.0f, 1.0f, "0 is off, 1 is full force. Wire an Input here."),
+         num("strength", 120.0f, 0.0f, 600.0f, "Push in metres per second squared."),
+         num("radius", 12.0f, 0.1f, 60.0f, "How far it reaches.")},
+        R"({
+    vec3 away = x - $point;
+    float d = length(away) + 1e-4;
+    v += away / d * $amount * $strength * max(1.0 - d / $radius, 0.0) * dt;
+})"});
+
     // --- Look: tint, size, alpha, stretch, life01, x, v, n ----------------------------
     list.push_back({"Color", Stack::Look, "One colour.",
         {color("color", Vec3{1.0f, 0.5f, 0.2f}, "Linear colour.")},
@@ -121,6 +144,10 @@ std::vector<BlockDesc> makeBlocks() {
         {num("in", 0.1f, 0.0f, 1.0f, "Share of life spent fading in."),
          num("out", 0.3f, 0.0f, 1.0f, "Share of life spent fading out.")},
         R"(alpha *= smoothstep(0.0, max($in, 1e-3), life01) * (1.0 - smoothstep(1.0 - max($out, 1e-3), 1.0, life01));)"});
+    list.push_back({"FadeNearCamera", Stack::Look, "Fade out close to the camera, so that nothing blinds it.",
+        {num("start", 3.0f, 0.0f, 50.0f, "Fully visible beyond this distance."),
+         num("end", 0.5f, 0.0f, 50.0f, "Gone within this distance.")},
+        R"(alpha *= smoothstep($end, $start, length(x - frame.cameraPos.xyz));)"});
     list.push_back({"StretchWithSpeed", Stack::Look, "Draw as a streak along the motion.",
         {num("amount", 0.12f, 0.0f, 2.0f, "Seconds of motion to smear."),
          num("max", 0.3f, 0.0f, 5.0f, "Longest streak in metres.")},
@@ -161,6 +188,47 @@ std::vector<BlockDesc> makeBlocks() {
         {num("roughness", 0.5f, 0.0f, 1.0f, "0 is a mirror, 1 is chalk."),
          num("metallic", 0.0f, 0.0f, 1.0f, "1 is bare metal.")},
         R"(roughness = $roughness; metallic = $metallic;)"});
+    list.push_back({"Plating", Stack::Surface, "Bolted steel plates, with dark seams and rivets.",
+        {num("size", 2.5f, 0.1f, 20.0f, "Width of a plate in metres."),
+         num("seam", 0.02f, 0.0f, 0.3f, "Width of the gap between plates, in metres."),
+         num("vary", 0.5f, 0.0f, 1.0f, "How much plates differ from each other.")},
+        R"({
+    vec2 flat2 = abs(N.x) > 0.5 ? worldPos.zy : (abs(N.y) > 0.5 ? worldPos.xz : worldPos.xy);
+    vec2 plate = flat2 / $size;
+    vec2 id = floor(plate);
+    vec2 inner = (fract(plate) - 0.5) * $size;
+    vec2 toEdge = 0.5 * $size - abs(inner);
+    float edge = min(toEdge.x, toEdge.y);
+    float shade = hash31(vec3(id, 7.0));
+    albedo *= 1.0 + (shade - 0.5) * $vary;
+    roughness = clamp(roughness + (shade - 0.5) * 0.3 * $vary, 0.04, 1.0);
+    vec2 rivetCell = fract(flat2 / 0.4) - 0.5;
+    float rivet = (1.0 - smoothstep(0.1, 0.17, length(rivetCell))) * step(edge, 0.1);
+    albedo *= 1.0 + rivet * 0.5;
+    albedo *= smoothstep(0.0, $seam + 1e-3, edge - $seam);
+})"});
+    list.push_back({"Rust", Stack::Surface, "Patches of rust that run downward.",
+        {color("color", Vec3{0.20f, 0.075f, 0.03f}, "Colour of the rust."),
+         num("amount", 0.5f, 0.0f, 1.0f, "How much of the surface it covers."),
+         num("scale", 0.4f, 0.02f, 8.0f, "Size of the patches: higher is finer.")},
+        R"({
+    float patches = fbm(worldPos * vec3(1.0, 0.3, 1.0) * $scale + vec3(3.1), 5);
+    float fine = fbm(worldPos * $scale * 7.0, 3);
+    float rust = smoothstep(0.62 - $amount * 0.3, 0.7 - $amount * 0.3, patches + (fine - 0.5) * 0.25);
+    albedo = mix(albedo, $color * (0.6 + fine * 0.8), rust);
+    metallic = mix(metallic, 0.0, rust);
+    roughness = mix(roughness, 0.92, rust);
+})"});
+    list.push_back({"Grime", Stack::Surface, "Dirt that gathers low down and streaks down walls.",
+        {num("amount", 0.6f, 0.0f, 1.0f, "How dark it gets."),
+         num("height", -3.0f, -100.0f, 100.0f, "Where it starts, in metres. Lower down is dirtier.")},
+        R"({
+    float low = 1.0 - smoothstep($height - 3.0, $height + 3.0, worldPos.y);
+    float streaks = fbm(worldPos * vec3(1.6, 0.1, 1.6), 4);
+    float dirt = clamp(low * 0.7 + smoothstep(0.5, 0.75, streaks) * 0.7, 0.0, 1.0);
+    albedo *= 1.0 - dirt * $amount;
+    roughness = mix(roughness, 0.85, dirt * 0.6);
+})"});
     list.push_back({"Marble", Stack::Surface, "Veined stone between two colours.",
         {color("colorA", Vec3{0.05f, 0.05f, 0.06f}, "First colour."),
          color("colorB", Vec3{0.8f, 0.75f, 0.65f}, "Second colour."),
@@ -220,6 +288,12 @@ std::vector<NodeDesc> makeNodes() {
          {num("scale", 1.0f, 0.01f, 30.0f, "Higher is finer."),
           num("speed", 0.5f, 0.0f, 10.0f, "How quickly it changes.")},
          ValueType::Float, "gradientNoise(forgePosition * $scale + vec3(0.0, forgeTime * $speed, 0.0))"},
+        {"Input", "A number the game sets while running.",
+         {num("value", 0.0f, -1000.0f, 1000.0f, "Value until the game sets one.")},
+         ValueType::Float, "", true},
+        {"InputVector", "A position or colour the game sets while running.",
+         {vec("value", Vec3{0, 0, 0}, -1000.0f, 1000.0f, "Value until the game sets one.")},
+         ValueType::Vec3, "", true},
         {"ColorMix", "Blend two colours.",
          {color("a", Vec3{0, 0, 0}, ""), color("b", Vec3{1, 1, 1}, ""),
           num("t", 0.5f, 0.0f, 1.0f, "0 is a, 1 is b.")},
@@ -254,6 +328,24 @@ std::vector<ShapeDesc> makeShapes() {
           vec("b", Vec3{0, 2, 0}, -30.0f, 30.0f, "Other end."),
           num("radius", 0.5f, 0.01f, 10.0f, "Thickness.")},
          "(length((p - $a) - ($b - $a) * clamp(dot(p - $a, $b - $a) / dot($b - $a, $b - $a), 0.0, 1.0)) - $radius)"},
+        {"Room", "The inside of a box: things stay in.",
+         {vec("size", Vec3{20, 6, 20}, 0.01f, 200.0f, "Half-size on each axis."),
+          vec("center", Vec3{0, 0, 0}, -100.0f, 100.0f, "Middle.")},
+         "forgeRoom(p, $center, $size)"},
+        {"Pillars", "A grid of square pillars.",
+         {num("spacing", 10.0f, 0.1f, 100.0f, "Distance between pillars."),
+          num("width", 0.8f, 0.01f, 50.0f, "Half-width of a pillar."),
+          num("from", -1000.0f, -1000.0f, 1000.0f, "No pillars below this z.")},
+         "forgePillars(p, $spacing, $width, $from)"},
+        {"JoinedRooms", "The inside of two rooms and a round chamber, as one space.",
+         {vec("sizeA", Vec3{20, 6, 20}, 0.01f, 200.0f, "Half-size of the first room."),
+          vec("centerA", Vec3{0, 0, 0}, -200.0f, 200.0f, "Middle of the first room."),
+          vec("sizeB", Vec3{1, 3, 5}, 0.01f, 200.0f, "Half-size of the second room."),
+          vec("centerB", Vec3{0, 0, -24}, -200.0f, 200.0f, "Middle of the second room."),
+          vec("domeCenter", Vec3{0, 0, -60}, -200.0f, 200.0f, "Middle of the chamber."),
+          num("domeRadius", 34.0f, 0.01f, 200.0f, "Radius of the chamber.")},
+         "max(max(forgeRoom(p, $centerA, $sizeA), forgeRoom(p, $centerB, $sizeB)), "
+         "$domeRadius - length(p - $domeCenter))"},
         {"Ground", "An endless flat floor.",
          {num("height", -3.0f, -30.0f, 30.0f, "Height of the floor.")},
          "(p.y - $height)"},

@@ -76,11 +76,15 @@ int render(const std::string& path, int argc, char** argv) {
     std::string at = "3";
     std::string outDir = ".";
     float distance = 16.0f;
+    int width = 1280;
+    int height = 720;
     for (int i = 3; i + 1 < argc; i += 2) {
         const std::string arg = argv[i];
         if (arg == "--at") at = argv[i + 1];
         else if (arg == "--out") outDir = argv[i + 1];
         else if (arg == "--distance") distance = std::strtof(argv[i + 1], nullptr);
+        else if (arg == "--width") width = std::atoi(argv[i + 1]);
+        else if (arg == "--height") height = std::atoi(argv[i + 1]);
     }
 
     std::vector<forge::Issue> issues;
@@ -107,8 +111,8 @@ int render(const std::string& path, int argc, char** argv) {
 
     iron::Application::Config cfg;
     cfg.title = "Forge";
-    cfg.width = 1280;
-    cfg.height = 720;
+    cfg.width = width;
+    cfg.height = height;
     iron::Application app(cfg);
     if (!app.valid()) return 1;
 
@@ -168,7 +172,7 @@ int render(const std::string& path, int argc, char** argv) {
 
 void usage() {
     std::puts("usage: forge catalog | check <file> | compile <file> | "
-              "render <file> --at 1,3,5 --out <dir> [--distance 14]");
+              "render <file> --at 1,3,5 --out <dir> [--distance 14] [--width 1920] [--height 1080]");
 }
 
 }  // namespace

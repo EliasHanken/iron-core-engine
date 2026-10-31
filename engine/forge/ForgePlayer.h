@@ -7,6 +7,7 @@
 #include "forge/Forge.h"
 #include "math/Mat4.h"
 #include "render/GpuParticles.h"
+#include "render/LightVolume.h"
 
 #include <memory>
 #include <string>
@@ -14,7 +15,6 @@
 
 namespace iron {
 class FluidVolume;
-class LightVolume;
 class Renderer;
 class VolumeRenderer;
 }
@@ -47,6 +47,16 @@ public:
 
     void setDensityVolume(const FluidVolume* fluid, float density);
 
+    // Sets an Input or InputVector node by name, for this frame on. A name the
+    // effect doesn't use is ignored, so a game can feed effects that skip some.
+    void setInput(const std::string& name, Value value);
+
+    // Where light gathers, and how visible it is in the air. Bounds apply when
+    // the light is first needed, so set them before the first apply.
+    void setLightVolume(const LightVolumeDesc& desc) { lightDesc_ = desc; }
+    // At 0 the player doesn't draw air, for a game that runs its own VolumeRenderer.
+    void setAirDensity(float density) { airDensity_ = density; }
+
     // Restarts the effect from nothing.
     void restart();
 
@@ -67,6 +77,8 @@ private:
     std::vector<Running> layers_;
     std::unique_ptr<LightVolume> light_;
     std::unique_ptr<VolumeRenderer> volumes_;
+    LightVolumeDesc lightDesc_;
+    float airDensity_ = 0.03f;
 };
 
 }  // namespace iron::forge
