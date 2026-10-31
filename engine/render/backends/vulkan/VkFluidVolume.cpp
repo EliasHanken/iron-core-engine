@@ -451,7 +451,8 @@ void VkFluidVolume::step() {
     const VkDeviceSize paramsOffset = uploadParams();
     const R params = R::bufferRange(frame.uboBuffer, paramsOffset, params_.size());
 
-    if (firstStep || stepIndex_ % static_cast<std::uint32_t>(desc_.obstacleInterval) == 0) {
+    const auto interval = static_cast<std::uint32_t>(std::max(desc_.obstacleInterval, 1));
+    if (firstStep || stepIndex_ % interval == 0) {
         obstacleStage_.dispatch(*renderer_, cb, {image(solid_), image(velocity_[0]), params}, &push,
                                 gx, gy, gz);
         computeToComputeBarrier(cb);
@@ -499,8 +500,20 @@ void VkFluidVolume::step() {
         *renderer_, cb,
         {image(velocity_[0]), sampled(scalars_[0]), sampled(scalars_[1]), image(scalars_[2])}, &push,
         gx, gy, gz);
-    computeToComputeBarrier(cb);
     std::swap(scalars_[0], scalars_[2]);
+
+    // The raymarch reads the result from compute, and particles from their vertex
+    // shaders, so this step must be visible to both.
+    VkMemoryBarrier toRead{};
+    toRead.sType         = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
+    toRead.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+    toRead.dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT;
+    vkCmdPipelineBarrier(cb, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                         VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT |
+                             VK_PIPELINE_STAGE_VERTEX_SHADER_BIT |
+                             VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+                         0, 1, &toRead, 0, nullptr, 0, nullptr);
+    hasStepped_ = true;
 }
 
 std::unique_ptr<FluidVolume> createFluidVolume(Renderer& renderer, const FluidVolumeDesc& desc) {

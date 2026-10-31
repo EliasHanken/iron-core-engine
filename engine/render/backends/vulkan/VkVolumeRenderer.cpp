@@ -548,6 +548,7 @@ void VkVolumeRenderer::render(const Mat4& view, const Mat4& projection, const Li
 
     const auto& vkLight = static_cast<const VkLightVolume&>(light);
     const auto* vkFluid = static_cast<const VkFluidVolume*>(fluid);
+    if (vkFluid && !vkFluid->hasStepped()) vkFluid = nullptr;
 
     const Mat4 viewProjection = projection * view;
     const Mat4 invView = iron::inverse(view);

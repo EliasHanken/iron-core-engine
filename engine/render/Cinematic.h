@@ -5,7 +5,8 @@
 namespace iron {
 
 // What a film camera does to an image, applied while compositing. Off by default,
-// so that games which don't ask for it keep the plain composite.
+// so that games which don't ask for it keep the plain composite. SSAO isn't applied
+// on this path, so turn its strength down when enabling this.
 struct CinematicSettings {
     bool  enabled = false;
     float motionBlur = 0.0f;           // 1 = a full 180-degree shutter.

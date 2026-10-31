@@ -170,6 +170,7 @@ add_executable(test_iron_core
   ${CMAKE_SOURCE_DIR}/games/17-iron-core/IronScene.cpp)
 target_link_libraries(test_iron_core PRIVATE ironcore gamecommon)
 target_include_directories(test_iron_core PRIVATE ${CMAKE_SOURCE_DIR}/games/17-iron-core)
+target_compile_definitions(test_iron_core PRIVATE IRON_REPO_ROOT="${CMAKE_SOURCE_DIR}")
 add_test(NAME test_iron_core COMMAND test_iron_core)
 iron_add_test(test_ssao test_ssao.cpp)
 iron_add_test(test_parallax test_parallax.cpp)

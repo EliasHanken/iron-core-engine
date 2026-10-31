@@ -32,6 +32,10 @@ public:
     VkImageView scalarsView() const { return scalars_[0].view(); }
     VkImageView solidView() const { return solid_.view(); }
 
+    // False until the first step, when the grids have never been written and must
+    // not be sampled.
+    bool hasStepped() const { return hasStepped_; }
+
 private:
     struct Push;
 
@@ -64,6 +68,7 @@ private:
     float         time_ = 0.0f;
     std::uint32_t stepIndex_ = 0;
     bool          needsClear_ = true;
+    bool          hasStepped_ = false;
 };
 
 }  // namespace iron

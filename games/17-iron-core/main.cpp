@@ -327,6 +327,8 @@ int main(int argc, char** argv) {
         params.flare[2] = onLens * seen * (exposed * (0.8f + 0.9f * beat.rebirth) + 3.0f * beat.flash);
         params.flare[3] = static_cast<float>(width) / static_cast<float>(height);
         params.phaseC[0] = beat.title;
+        params.phaseC[1] = 2.0f / static_cast<float>(width);
+        params.phaseC[2] = 2.0f / static_cast<float>(height);
 
         const std::array<iron::PointLight, 1> lights = {{
             {{0.0f, 0.0f, 0.0f}, {1.0f, 0.46f, 0.20f}, coreLight, 90.0f},
@@ -414,7 +416,9 @@ int main(int argc, char** argv) {
         world.flare->render(view, projection);
         world.title->render(view, projection);
 
-        if (beat.title > 0.0f) {
+        // Drawn from the first frame, fully transparent until its moment: the HUD
+        // builds its pipeline on first use, which would hitch mid-film otherwise.
+        {
             const float scale = static_cast<float>(height) / 1080.0f;
             const float center = static_cast<float>(width) * 0.5f;
             const float baseline = static_cast<float>(height) * (0.5f - kTitleBaseline * 0.5f + 0.062f);

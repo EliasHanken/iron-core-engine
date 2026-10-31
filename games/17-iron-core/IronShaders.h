@@ -21,7 +21,7 @@ struct IronParams {
     float phaseA[4];  // veins, lightning, ignition, flash
     float phaseB[4];  // rebirth, shockRadius, seconds, solidRadius
     float flare[4];   // light's clip x, y; intensity; aspect
-    float phaseC[4];  // title, unused
+    float phaseC[4];  // title; clip-space size of one pixel, x and y
 };
 
 inline const iron::VolumeBounds kVolumeBounds{{-19.0f, -19.0f, -15.0f}, {19.0f, 19.0f, 15.0f}};
@@ -725,7 +725,7 @@ inline constexpr const char* kTitleVertex = R"GLSL(
 void particleVertex(Particle p, uint id, vec2 corner,
                     out vec4 clipPos, out vec4 color, out vec4 data) {
     float q = p.position.z;
-    vec2 pixel = 2.0 / vec2(1920.0, 1060.0);
+    vec2 pixel = params.phaseC.yz;
 
     // White hot in flight, cooling to molten gold as it lands.
     vec3 hot = vec3(1.0, 0.72, 0.42);
@@ -740,7 +740,7 @@ void particleVertex(Particle p, uint id, vec2 corner,
     // They wait in a dense crowd at the star, so they only light up once under way.
     float underWay = smoothstep(0.05, 0.6, q);
     float brightness = mix(0.022 * underWay, 0.10, settled) * shimmer + sweep * 0.45 * settled;
-    float alive = step(0.001, TITLE) * step(0.001, q);
+    float alive = step(0.001, TITLE) * step(0.001, q) * step(0.5, p.velocity.w);
 
     color = vec4(tint * brightness * alive, 1.0);
     data = vec4(0.0);

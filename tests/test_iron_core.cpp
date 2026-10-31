@@ -3,9 +3,14 @@
 #include "IronScene.h"
 #include "IronTimeline.h"
 
+#include "ui/FontAtlas.h"
+
 #include <cassert>
 #include <cmath>
 #include <cstdio>
+#include <fstream>
+#include <iterator>
+#include <vector>
 
 #ifdef IRON_RENDER_BACKEND_VULKAN
 #include "IronShaders.h"
@@ -39,7 +44,7 @@ void testStoryBeats() {
     assert(evaluateBeat(5.0f).veins == 0.0f);
     assert(evaluateBeat(20.0f).rebirth == 0.0f);
     assert(evaluateBeat(kFilmSeconds).rebirth == 1.0f);
-    assert(evaluateBeat(25.0f).title == 0.0f);
+    assert(evaluateBeat(23.9f).title == 0.0f);
     assert(evaluateBeat(kFilmSeconds).title == 1.0f);
 }
 
@@ -155,6 +160,33 @@ void testLightVisibility() {
     assert(lightVisibility(eye, light, 3.0f, behind) == 1.0f);
 }
 
+void testTitleParticlesLandOnTheText() {
+    std::ifstream file(IRON_REPO_ROOT "/games/17-iron-core/assets/fonts/Michroma-Regular.ttf",
+                       std::ios::binary);
+    assert(file.good());
+    const std::vector<unsigned char> bytes((std::istreambuf_iterator<char>(file)),
+                                           std::istreambuf_iterator<char>());
+    iron::FontAtlas font;
+    assert(font.bake(bytes.data(), static_cast<int>(bytes.size()), 64.0f));
+
+    constexpr int kCount = 2000;
+    const std::vector<float> data = makeTitleParticles(font, "IRON", kCount, 1.0f, -0.5f, 0.2f, 1.8f, 3u);
+    assert(data.size() == kCount * 16);
+
+    float minX = 10.0f;
+    float maxX = -10.0f;
+    for (int i = 0; i < kCount; ++i) {
+        const float* p = &data[static_cast<std::size_t>(i) * 16];
+        assert(p[7] == 1.0f);                       // Spawned, so it never resets.
+        assert(p[10] >= 0.0f && p[10] <= 1.0f);     // Start order runs left to right.
+        minX = std::min(minX, p[8]);
+        maxX = std::max(maxX, p[8]);
+    }
+    // Centred, and spanning about the width asked for.
+    assert(std::abs(minX + maxX) < 0.1f);
+    assert(maxX - minX > 0.8f && maxX - minX <= 1.02f);
+}
+
 #ifdef IRON_RENDER_BACKEND_VULKAN
 void checkCompiles(const iron::GpuParticlesDesc& desc) {
     const iron::GpuParticleSources s = iron::composeGpuParticleSources(desc);
@@ -198,6 +230,7 @@ int main() {
     testShellCoversTheSphere();
     testShellStaysStillUntilIgnition();
     testLightVisibility();
+    testTitleParticlesLandOnTheText();
 #ifdef IRON_RENDER_BACKEND_VULKAN
     testEffectsCompile();
     testFluidCompiles();

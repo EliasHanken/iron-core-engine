@@ -646,8 +646,8 @@ void VkGpuParticles::render(const Mat4& view, const Mat4& projection) {
 
     VkImageView densityView = renderer_->blackVolumeView();
     VkImageLayout densityLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-    if (densityVolume_) {
-        const auto* fluid = static_cast<const VkFluidVolume*>(densityVolume_);
+    const auto* fluid = static_cast<const VkFluidVolume*>(densityVolume_);
+    if (fluid && fluid->hasStepped()) {
         const VolumeBounds& b = fluid->bounds();
         ubo.fluidMin[0] = b.min.x;
         ubo.fluidMin[1] = b.min.y;

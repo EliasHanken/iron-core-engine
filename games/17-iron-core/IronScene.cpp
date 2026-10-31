@@ -484,8 +484,7 @@ std::vector<float> makeTitleParticles(const iron::FontAtlas& font, const std::st
         ++placed;
     }
 
-    // A font without enough ink is a caller bug, but the extras must stay harmless.
-    data.resize(static_cast<std::size_t>(count) * 16, 0.0f);
+    // Anything left unplaced keeps a zero lifetime, which the title never draws.
     return data;
 }
 
