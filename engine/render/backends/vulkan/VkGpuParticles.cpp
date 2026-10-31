@@ -233,6 +233,7 @@ bool VkGpuParticles::init(VulkanRenderer& renderer, const GpuParticlesDesc& desc
     // nothing to tear down on that failure path.
     renderer_ = &renderer;
     if (!createBuffer() || !createSetLayout()) return false;
+    if (!desc_.initialData.empty() && !uploadInitialData()) return false;
     if (!computePipeline_.init(renderer.context(), computeSpv, setLayout_)) return false;
     if (!createRenderPipeline(sources)) return false;
 
@@ -267,6 +268,68 @@ bool VkGpuParticles::createBuffer() {
 
     VK_CHECK(vmaCreateBuffer(ctx.allocator(), &info, &alloc, &ssbo_, &ssboAlloc_, nullptr));
     return ssbo_ != VK_NULL_HANDLE;
+}
+
+bool VkGpuParticles::uploadInitialData() {
+    VkContext& ctx = renderer_->context();
+    const VkDeviceSize bytes = static_cast<VkDeviceSize>(desc_.count) * 64;
+    if (desc_.initialData.size() * sizeof(float) != bytes) {
+        Log::error("GpuParticles: initialData must hold 16 floats per particle");
+        return false;
+    }
+
+    VkBufferCreateInfo info{};
+    info.sType       = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+    info.size        = bytes;
+    info.usage       = VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
+    info.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+    VmaAllocationCreateInfo alloc{};
+    alloc.usage = VMA_MEMORY_USAGE_AUTO;
+    alloc.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT |
+                  VMA_ALLOCATION_CREATE_MAPPED_BIT;
+    VkBuffer staging = VK_NULL_HANDLE;
+    VmaAllocation stagingAlloc = VK_NULL_HANDLE;
+    VmaAllocationInfo stagingInfo{};
+    VK_CHECK(vmaCreateBuffer(ctx.allocator(), &info, &alloc, &staging, &stagingAlloc, &stagingInfo));
+    std::memcpy(stagingInfo.pMappedData, desc_.initialData.data(), bytes);
+    vmaFlushAllocation(ctx.allocator(), stagingAlloc, 0, VK_WHOLE_SIZE);
+
+    VkCommandPoolCreateInfo poolInfo{};
+    poolInfo.sType            = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
+    poolInfo.queueFamilyIndex = ctx.graphicsFamily();
+    poolInfo.flags            = VK_COMMAND_POOL_CREATE_TRANSIENT_BIT;
+    VkCommandPool pool = VK_NULL_HANDLE;
+    VK_CHECK(vkCreateCommandPool(ctx.device(), &poolInfo, nullptr, &pool));
+
+    VkCommandBufferAllocateInfo cbInfo{};
+    cbInfo.sType              = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
+    cbInfo.commandPool        = pool;
+    cbInfo.level              = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+    cbInfo.commandBufferCount = 1;
+    VkCommandBuffer cb = VK_NULL_HANDLE;
+    VK_CHECK(vkAllocateCommandBuffers(ctx.device(), &cbInfo, &cb));
+
+    VkCommandBufferBeginInfo begin{};
+    begin.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+    begin.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+    VK_CHECK(vkBeginCommandBuffer(cb, &begin));
+    VkBufferCopy copy{};
+    copy.size = bytes;
+    vkCmdCopyBuffer(cb, staging, ssbo_, 1, &copy);
+    VK_CHECK(vkEndCommandBuffer(cb));
+
+    VkSubmitInfo submit{};
+    submit.sType              = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+    submit.commandBufferCount = 1;
+    submit.pCommandBuffers    = &cb;
+    VK_CHECK(vkQueueSubmit(ctx.graphicsQueue(), 1, &submit, VK_NULL_HANDLE));
+    VK_CHECK(vkQueueWaitIdle(ctx.graphicsQueue()));
+
+    vkDestroyCommandPool(ctx.device(), pool, nullptr);
+    vmaDestroyBuffer(ctx.allocator(), staging, stagingAlloc);
+    desc_.initialData.clear();
+    needsClear_ = false;
+    return true;
 }
 
 bool VkGpuParticles::createSetLayout() {

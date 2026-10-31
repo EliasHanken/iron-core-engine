@@ -5,6 +5,7 @@
 #endif
 
 #include "math/Mat4.h"
+#include "render/Cinematic.h"
 #include "render/PostChainPlan.h"
 #include "render/PostEffect.h"
 #include "render/backends/vulkan/VkFrameRing.h"  // kFramesInFlight (per-frame SSAO UBO)
@@ -26,6 +27,7 @@ const char* kBloomUpsampleSrc();       // mip[i+1] -> mip[i] (3x3 tent, additive
 
 // SSAO fragment shader sources (M48; exposed for compile-check tests; reuse the
 // existing kFullscreenVert for the vertex stage).
+const char* kCinematicSrc();  // Composite with film camera effects (M73).
 const char* kSsaoSrc();      // scene depth -> AO (R8)
 const char* kSsaoBlurSrc();  // 4x4 box blur of the AO
 
@@ -55,6 +57,11 @@ public:
     // it can be sampled at the same time. Transparent draws (particles, volume
     // composites) record here and their pipelines must be built against it.
     VkRenderPass  transparentPass()  const { return transparentPass_; }
+    // Sets the camera for this frame's composite. `reprojection` maps this frame's
+    // clip space to last frame's.
+    void setCinematic(const CinematicSettings& settings, const Mat4& reprojection,
+                      std::uint32_t frame);
+
     // Pass that composite + debug + HUD overlays record into (M43a). Pipelines
     // recorded here must be built against it, not the swapchain pass — their
     // dependencyCount differs and that breaks render-pass compatibility.
@@ -239,6 +246,18 @@ private:
     VkRenderPass  scenePass_       = VK_NULL_HANDLE;
     VkFramebuffer sceneFb_         = VK_NULL_HANDLE;
     VkRenderPass  transparentPass_ = VK_NULL_HANDLE;
+    bool createCinematicPipeline(VkContext& ctx);
+    void writeCinematicSet(VkContext& ctx);
+    void recordCinematic(VkCommandBuffer cb, float exposure, float bloomIntensity) const;
+    CinematicSettings     cinematic_;
+    Mat4                  cinematicReprojection_ = Mat4::identity();
+    std::uint32_t         cinematicFrame_ = 0;
+    ::VkPipeline          cinematicPipeline_ = VK_NULL_HANDLE;
+    VkPipelineLayout      cinematicLayout_ = VK_NULL_HANDLE;
+    VkDescriptorSetLayout cinematicSetLayout_ = VK_NULL_HANDLE;
+    VkDescriptorPool      cinematicPool_ = VK_NULL_HANDLE;
+    VkDescriptorSet       cinematicSet_ = VK_NULL_HANDLE;
+    VkSampler             cinematicDepthSampler_ = VK_NULL_HANDLE;
     VkFramebuffer transparentFb_   = VK_NULL_HANDLE;
 
     // --- Mask target (R8_UINT color + D32 depth) ---

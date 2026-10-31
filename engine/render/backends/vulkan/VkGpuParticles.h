@@ -36,6 +36,7 @@ private:
     struct FrameUbo;
 
     bool createBuffer();
+    bool uploadInitialData();
     bool createSetLayout();
     bool createRenderPipeline(const GpuParticleSources& sources);
     VkDescriptorSet allocateSet(const FrameUbo& frame);

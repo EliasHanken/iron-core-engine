@@ -55,7 +55,7 @@ bool VkFrameRing::initFrame(VkContext& ctx, Frame& f) {
     // so STORAGE_BUFFER capacity is required here.
     VkDescriptorPoolSize sizes[] = {
         {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,         2 * kMaxDescriptorSetsPerFrame},  // M23: skinned draws use 2 UBOs (scene + bones)
-        {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 13 * kMaxDescriptorSetsPerFrame},  // 13 samplers per lit set (M73: light volume at binding 14)
+        {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 14 * kMaxDescriptorSetsPerFrame},  // 14 samplers per lit set (M73: light volume and point shadow)
         {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,         kMaxDescriptorSetsPerFrame},
         {VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,          4 * kMaxDescriptorSetsPerFrame},  // M73: volume compute stages
     };

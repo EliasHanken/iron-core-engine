@@ -8,6 +8,8 @@
 
 #include <cstdint>
 #include <string>
+#include <utility>
+#include <vector>
 
 namespace ironcore {
 
@@ -18,6 +20,8 @@ using vfx::kSoftDotFragment;
 struct IronParams {
     float phaseA[4];  // veins, lightning, ignition, flash
     float phaseB[4];  // rebirth, shockRadius, seconds, solidRadius
+    float flare[4];   // light's clip x, y; intensity; aspect
+    float phaseC[4];  // title, unused
 };
 
 inline const iron::VolumeBounds kVolumeBounds{{-19.0f, -19.0f, -15.0f}, {19.0f, 19.0f, 15.0f}};
@@ -26,6 +30,8 @@ inline constexpr const char* kIronCommon = R"GLSL(
 layout(set = 0, binding = 2) uniform Params {
     vec4 phaseA;
     vec4 phaseB;
+    vec4 flare;
+    vec4 phaseC;
 } params;
 
 #define VEINS        params.phaseA.x
@@ -36,6 +42,7 @@ layout(set = 0, binding = 2) uniform Params {
 #define SHOCK_RADIUS params.phaseB.y
 #define SECONDS      params.phaseB.z
 #define SOLID_RADIUS params.phaseB.w
+#define TITLE        params.phaseC.x
 
 const float CORE_RADIUS = 3.0;
 
@@ -595,6 +602,155 @@ void particleVertex(Particle p, uint id, vec2 corner,
 }
 )GLSL";
 
+// --- Lens flare ---------------------------------------------------------------
+
+// Every element is a sprite in clip space, placed along the line from the light
+// through the centre of the lens, which is where real internal reflections land.
+inline constexpr std::uint32_t kFlareElements = 16;
+
+inline constexpr const char* kFlareSimulate = R"GLSL(
+void particleSimulate(inout Particle p, uint id) {}
+)GLSL";
+
+inline constexpr const char* kFlareVertex = R"GLSL(
+const float GHOST_PLACE[12] = float[12](0.72, 0.46, 0.24, -0.16, -0.34, -0.52, -0.71, -0.95,
+                                        -1.18, -1.42, -1.70, -2.05);
+const float GHOST_SIZE[12] = float[12](0.030, 0.052, 0.022, 0.040, 0.085, 0.030, 0.13, 0.060,
+                                       0.20, 0.070, 0.30, 0.11);
+const vec3 GHOST_TINT[12] = vec3[12](vec3(0.3, 0.6, 1.0), vec3(1.0, 0.5, 0.2), vec3(0.4, 1.0, 0.6),
+                                     vec3(1.0, 0.7, 0.3), vec3(0.3, 0.4, 1.0), vec3(1.0, 0.3, 0.5),
+                                     vec3(0.3, 0.8, 0.9), vec3(1.0, 0.6, 0.2), vec3(0.5, 0.3, 1.0),
+                                     vec3(0.2, 0.9, 0.7), vec3(1.0, 0.45, 0.3), vec3(0.4, 0.5, 1.0));
+
+void particleVertex(Particle p, uint id, vec2 corner,
+                    out vec4 clipPos, out vec4 color, out vec4 data) {
+    vec2 light = params.flare.xy;
+    float intensity = params.flare.z;
+    float aspect = params.flare.w;
+
+    vec2 center;
+    vec2 size;
+    vec3 tint;
+    float kind;
+
+    if (id == 0u) {          // Glare around the light itself.
+        center = light;
+        size = vec2(0.85 / aspect, 0.85);
+        tint = vec3(1.0, 0.78, 0.58) * 0.32;
+        kind = 0.0;
+    } else if (id == 1u) {   // Anamorphic streak.
+        center = light;
+        size = vec2(1.7, 0.016);
+        tint = vec3(0.45, 0.62, 1.0) * 0.55;
+        kind = 1.0;
+    } else if (id == 2u) {   // Its wider, softer halo.
+        center = light;
+        size = vec2(1.1, 0.075);
+        tint = vec3(0.30, 0.42, 1.0) * 0.20;
+        kind = 1.0;
+    } else if (id == 3u) {   // Diffraction ring on the lens.
+        center = light * 0.15;
+        size = vec2(0.62 / aspect, 0.62);
+        tint = vec3(0.9, 0.7, 0.55) * 0.05;
+        kind = 2.0;
+    } else {                 // Ghosts: internal reflections.
+        uint g = id - 4u;
+        center = light * GHOST_PLACE[g];
+        size = vec2(GHOST_SIZE[g] / aspect, GHOST_SIZE[g]);
+        tint = GHOST_TINT[g] * 0.085;
+        kind = 3.0;
+    }
+
+    color = vec4(tint * intensity, 1.0);
+    data = vec4(kind, 0.0, 0.0, 0.0);
+    clipPos = vec4(center + corner * size, 0.0, 1.0);
+}
+)GLSL";
+
+inline constexpr const char* kFlareFragment = R"GLSL(
+vec4 particleFragment(vec2 corner, vec4 color, vec4 data) {
+    float r = length(corner);
+    if (r >= 1.0) discard;
+    float kind = data.x;
+    float value;
+
+    if (kind < 0.5) {
+        // Glow, crossed by the fine rays of a lens's diffraction.
+        float angle = atan(corner.y, corner.x);
+        float rays = pow(abs(sin(angle * 7.0 + 0.4)) * abs(sin(angle * 13.0 + 1.1)), 3.0);
+        value = pow(1.0 - r, 5.0) + rays * pow(1.0 - r, 3.0) * 0.7;
+    } else if (kind < 1.5) {
+        value = exp(-abs(corner.y) * 4.0) * pow(1.0 - abs(corner.x), 2.0);
+    } else if (kind < 2.5) {
+        float ring = exp(-pow((r - 0.85) * 22.0, 2.0));
+        return vec4(mix(color.rgb * vec3(1.2, 0.6, 0.4), color.rgb * vec3(0.4, 0.7, 1.3), r) * ring, 0.0);
+    } else {
+        // A ghost is a faint disc with a bright rim, shaped by the aperture blades.
+        float angle = atan(corner.y, corner.x);
+        float blades = cos(mod(angle + 0.26, 1.0472) - 0.5236) / cos(0.5236);
+        float edge = r / blades;
+        if (edge >= 1.0) discard;
+        value = 0.35 * smoothstep(1.0, 0.86, edge) + 0.65 * smoothstep(0.80, 0.97, edge) * smoothstep(1.0, 0.97, edge);
+    }
+    return vec4(color.rgb * value, 0.0);
+}
+)GLSL";
+
+// --- Title --------------------------------------------------------------------
+
+// The letters are burning particles swept out of the disc, in clip space.
+inline constexpr const char* kTitleSimulate = R"GLSL(
+void particleSimulate(inout Particle p, uint id) {
+    if (TITLE <= 0.0) return;
+
+    float delay = p.a.z * 0.45 + p.a.w * 0.12;
+    float q = clamp((TITLE - delay) / 0.43, 0.0, 1.0);
+    q = q * q * (3.0 - 2.0 * q);
+
+    // They leave from around the star, and swirl before they settle.
+    float angle = 2.0 * PI * rnd(id * 3u + 1u);
+    float spread = 0.08 + 0.5 * rnd(id * 5u + 2u);
+    vec2 start = params.flare.xy + vec2(cos(angle), sin(angle)) * spread;
+
+    vec2 swirl = (curlNoise(vec3(p.a.xy * 2.2, SECONDS * 0.25)).xy) * 0.20 * (1.0 - q);
+    vec2 target = mix(start, p.a.xy, q) + swirl * sin(q * PI);
+
+    p.velocity.xy = target - p.position.xy;
+    p.position.xy = target;
+    p.position.z = q;
+}
+)GLSL";
+
+inline constexpr const char* kTitleVertex = R"GLSL(
+void particleVertex(Particle p, uint id, vec2 corner,
+                    out vec4 clipPos, out vec4 color, out vec4 data) {
+    float q = p.position.z;
+    vec2 pixel = 2.0 / vec2(1920.0, 1060.0);
+
+    // White hot in flight, cooling to molten gold as it lands.
+    vec3 hot = vec3(1.0, 0.72, 0.42);
+    vec3 gold = vec3(1.0, 0.56, 0.20);
+    vec3 tint = mix(hot, gold, smoothstep(0.7, 1.0, q));
+
+    // A band of light sweeps across the finished word.
+    float sweep = exp(-pow((p.a.x - (SECONDS - 27.6) * 0.55 + 0.9) * 5.0, 2.0));
+    float shimmer = 0.75 + 0.25 * sin(SECONDS * 3.0 + p.a.w * 40.0);
+
+    float settled = smoothstep(0.92, 1.0, q);
+    // They wait in a dense crowd at the star, so they only light up once under way.
+    float underWay = smoothstep(0.05, 0.6, q);
+    float brightness = mix(0.022 * underWay, 0.10, settled) * shimmer + sweep * 0.45 * settled;
+    float alive = step(0.001, TITLE) * step(0.001, q);
+
+    color = vec4(tint * brightness * alive, 1.0);
+    data = vec4(0.0);
+
+    float size = mix(1.5, 0.9, settled);
+    vec2 stretch = abs(p.velocity.xy) * 1.5;
+    clipPos = vec4(p.position.xy + corner * (pixel * size + stretch), 0.0, 1.0);
+}
+)GLSL";
+
 // --- Effect descriptions ------------------------------------------------------
 
 inline iron::GpuParticlesDesc makeEffect(std::uint32_t count, iron::ParticleBlend blend,
@@ -609,6 +765,23 @@ inline iron::GpuParticlesDesc makeEffect(std::uint32_t count, iron::ParticleBlen
     desc.vertexGlsl   = vertex;
     desc.fragmentGlsl = fragment;
     if (emission) desc.emissionGlsl = emission;
+    return desc;
+}
+
+inline iron::GpuParticlesDesc makeFlareEffect() {
+    iron::GpuParticlesDesc desc = makeEffect(kFlareElements, iron::ParticleBlend::Additive,
+                                             kFlareSimulate, kFlareVertex, kFlareFragment);
+    desc.depthTest = false;
+    return desc;
+}
+
+inline constexpr int kTitleParticles = 360'000;
+
+inline iron::GpuParticlesDesc makeTitleEffect(std::vector<float> particles) {
+    iron::GpuParticlesDesc desc = makeEffect(kTitleParticles, iron::ParticleBlend::Additive,
+                                             kTitleSimulate, kTitleVertex, kSoftDotFragment);
+    desc.depthTest = false;
+    desc.initialData = std::move(particles);
     return desc;
 }
 
@@ -693,6 +866,8 @@ inline constexpr const char* kIronFluidParams = R"GLSL(
 layout(set = 0, binding = 2) uniform Params {
     vec4 phaseA;
     vec4 phaseB;
+    vec4 flare;
+    vec4 phaseC;
 } params;
 
 #define VEINS        params.phaseA.x

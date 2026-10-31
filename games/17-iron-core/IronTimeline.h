@@ -106,7 +106,7 @@ inline Beat evaluateBeat(float t) {
     beat.flash = smoothRamp(kIgnitionTime, kIgnitionTime + 0.1f, t) *
                  (1.0f - smoothRamp(kIgnitionTime + 0.1f, kIgnitionTime + 0.7f, t));
     beat.rebirth = smoothRamp(21.0f, 27.0f, t);
-    beat.title = smoothRamp(25.5f, 27.0f, t);
+    beat.title = smoothRamp(24.0f, 28.2f, t);
     beat.shockRadius = shockRadiusAt(t);
 
     cameraAt(t, beat.cameraEye, beat.cameraTarget);

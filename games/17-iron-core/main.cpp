@@ -27,6 +27,7 @@
 #include "render/RendererFactory.h"
 #include "render/VolumeRenderer.h"
 #include "ui/FontAtlas.h"
+#include "render/Cinematic.h"
 #include "render/backends/vulkan/VulkanRenderer.h"
 
 #include <algorithm>
@@ -47,7 +48,11 @@ using namespace ironcore;
 constexpr float kFieldOfViewDegrees = 34.0f;
 constexpr int kSkyFaceSize = 2048;
 constexpr int kRockNormalSize = 1024;
-constexpr float kTitleFontPixels = 120.0f;
+constexpr float kTitleFontPixels = 160.0f;
+constexpr float kTitleWidth = 1.12f;        // In clip space, so 56% of the screen.
+constexpr float kTitleBaseline = -0.60f;
+constexpr float kTitleTracking = 0.20f;     // In em.
+constexpr float kSubtitleScale = 0.105f;
 
 // Rotation of `angle` radians about a unit `axis`.
 iron::Mat4 axisRotation(Vec3 axis, float angle) {
@@ -69,6 +74,8 @@ iron::Mat4 axisRotation(Vec3 axis, float angle) {
 
 struct World {
     std::array<std::unique_ptr<iron::GpuParticles>, 7> effects;
+    std::unique_ptr<iron::GpuParticles> flare;
+    std::unique_ptr<iron::GpuParticles> title;
     std::unique_ptr<iron::LightVolume> light;
     std::unique_ptr<iron::FluidVolume> fluid;
     std::unique_ptr<iron::VolumeRenderer> volumes;
@@ -88,7 +95,7 @@ struct World {
 };
 
 bool loadFont(iron::Renderer& renderer, iron::FontAtlas& atlas) {
-    const std::string path = iron::executableDir() + "/assets/fonts/Roboto-Medium.ttf";
+    const std::string path = iron::executableDir() + "/assets/fonts/Michroma-Regular.ttf";
     std::FILE* file = std::fopen(path.c_str(), "rb");
     if (!file) return false;
 
@@ -234,6 +241,17 @@ int main(int argc, char** argv) {
         }
     }
 
+    world.flare = iron::createGpuParticles(renderer, makeFlareEffect());
+    const float aspect = static_cast<float>(app.window().width()) /
+                         static_cast<float>(std::max(app.window().height(), 1));
+    world.title = iron::createGpuParticles(
+        renderer, makeTitleEffect(makeTitleParticles(font, "IRON CORE", kTitleParticles, kTitleWidth,
+                                                     kTitleBaseline, kTitleTracking, aspect, 11u)));
+    if (!world.flare || !world.title) {
+        iron::Log::error("iron-core: flare or title creation failed");
+        return 1;
+    }
+
     iron::LightVolumeDesc lightDesc;
     lightDesc.bounds = kVolumeBounds;
     world.light = iron::createLightVolume(renderer, lightDesc);
@@ -243,6 +261,22 @@ int main(int argc, char** argv) {
         iron::Log::error("iron-core: volume systems failed");
         return 1;
     }
+
+    iron::CinematicSettings camera;
+    camera.enabled = true;
+    camera.motionBlur = 0.75f;
+    camera.chromaticAberration = 0.0025f;
+    camera.vignette = 0.42f;
+    camera.grain = 0.32f;
+    camera.streak = 0.16f;
+    camera.saturation = 1.10f;
+    camera.contrast = 1.10f;
+    camera.shadowTint = {0.90f, 0.95f, 1.10f};
+    camera.highlightTint = {1.06f, 1.00f, 0.93f};
+    vulkan->setCinematic(camera);
+
+    std::vector<iron::Vec4> occluders;
+    occluders.reserve(world.rocks.size() + world.plates.size());
 
     const auto frame = [&](float seconds, float dt, int width, int height) {
         const float t = std::min(seconds, kFilmSeconds);
@@ -259,6 +293,17 @@ int main(int argc, char** argv) {
         params.phaseB[3] = kCoreRadius * (beat.ignition < 0.5f ? 1.0f : 0.0f) +
                            kCoreRadius * 0.93f * std::max(beat.rebirth * 2.0f - 1.0f, 0.0f);
 
+        // Everything that can block the core's light, this frame.
+        occluders.clear();
+        for (const RockInstance& rock : world.rocks) {
+            const Vec3 p = rockPosition(rock, t);
+            occluders.push_back({p.x, p.y, p.z, rock.shadowRadius});
+        }
+        for (const RockInstance& plate : world.plates) {
+            const Vec3 p = rockPosition(plate, t);
+            occluders.push_back({p.x, p.y, p.z, plate.shadowRadius});
+        }
+
         const iron::Mat4 view = iron::lookAt(beat.cameraEye, beat.cameraTarget, {0, 1, 0});
         const iron::Mat4 projection = iron::perspective(
             kFieldOfViewDegrees * std::numbers::pi_v<float> / 180.0f,
@@ -267,6 +312,22 @@ int main(int argc, char** argv) {
         const float coreLight = 1.2f * beat.veins * beat.veins * (1.0f - beat.ignition) +
                                 (4.5f + 4.0f * beat.rebirth) * beat.ignition +
                                 26.0f * beat.flash;
+
+        // The lens flare follows how much of the light the lens can actually see.
+        const iron::Vec4 clip = projection * (view * iron::Vec4{0.0f, 0.0f, 0.0f, 1.0f});
+        const float clipX = clip.x / clip.w;
+        const float clipY = clip.y / clip.w;
+        const float onLens = clip.w > 0.0f
+            ? 1.0f - smoothRamp(0.9f, 1.5f, std::max(std::abs(clipX), std::abs(clipY)))
+            : 0.0f;
+        const float exposed = beat.ignition > 0.5f ? 1.0f - 0.9f * (1.0f - beat.rebirth) * 0.0f : 0.0f;
+        const float seen = lightVisibility(beat.cameraEye, Vec3{0, 0, 0}, kCoreRadius * 0.8f, occluders);
+        params.flare[0] = clipX;
+        params.flare[1] = clipY;
+        params.flare[2] = onLens * seen * (exposed * (0.8f + 0.9f * beat.rebirth) + 3.0f * beat.flash);
+        params.flare[3] = static_cast<float>(width) / static_cast<float>(height);
+        params.phaseC[0] = beat.title;
+
         const std::array<iron::PointLight, 1> lights = {{
             {{0.0f, 0.0f, 0.0f}, {1.0f, 0.46f, 0.20f}, coreLight, 90.0f},
         }};
@@ -282,7 +343,7 @@ int main(int argc, char** argv) {
         // blast whites out for an instant, then detail comes up through it.
         const float iris = smoothRamp(kIgnitionTime + 0.15f, kIgnitionTime + 0.55f, t) *
                            (1.0f - smoothRamp(kIgnitionTime + 1.3f, kIgnitionTime + 3.6f, t));
-        vulkan->setExposure(1.0f - 0.82f * iris);
+        vulkan->setExposure(1.0f - 0.62f * iris);
 
         renderer.beginFrame(Vec3{0.0f, 0.0f, 0.0f}, rim, lights, noFog, view, projection);
 
@@ -294,6 +355,13 @@ int main(int argc, char** argv) {
         }
         world.light->resolve();
         vulkan->setLightVolume(world.light.get(), 2.0f);
+
+        world.flare->setParams(&params);
+        world.title->setParams(&params);
+        world.title->simulate(dt);
+
+        // Shadows fall from the core only once it can shine past its shell.
+        world.volumes->setOccluders(Vec3{0, 0, 0}, occluders, 0.9f);
 
         world.fluid->setParams(&params);
         world.fluid->setDissipation(0.04f + 0.25f * beat.rebirth * beat.rebirth);
@@ -321,15 +389,20 @@ int main(int argc, char** argv) {
         renderer.submit(core);
 
         iron::VolumeRenderSettings settings;
-        settings.airDensity = 0.012f;
+        settings.airDensity = 0.016f;
+        settings.steps = 72;
+        settings.phase = 0.40f;
+        settings.powder = 0.75f;
+        settings.airLight = 0.20f;
         settings.lightIntensity = 3.0f;
         settings.smokeDensity = 0.8f;
         settings.smokeAlbedo = {0.75f, 0.42f, 0.42f};
         settings.heatColor = {1.0f, 0.20f, 0.03f};
-        settings.heatIntensity = 1.8f;
+        settings.heatIntensity = 1.0f;
         settings.shadowDensity = 0.9f;
         settings.lightPosition = {0.0f, 0.0f, 0.0f};
-        settings.lightColor = Vec3{1.0f, 0.42f, 0.16f} * (coreLight * 0.9f);
+        settings.lightColor = Vec3{1.0f, 0.42f, 0.16f} *
+                              (std::min(coreLight, 9.0f) * (1.0f - 0.55f * beat.rebirth));
         settings.detail = 0.42f;
         settings.detailScale = 1.5f;
         world.volumes->render(view, projection, *world.light, world.fluid.get(), settings);
@@ -338,20 +411,20 @@ int main(int argc, char** argv) {
             effect->setDensityVolume(world.fluid.get(), settings.smokeDensity);
             effect->render(view, projection);
         }
+        world.flare->render(view, projection);
+        world.title->render(view, projection);
 
         if (beat.title > 0.0f) {
             const float scale = static_cast<float>(height) / 1080.0f;
             const float center = static_cast<float>(width) * 0.5f;
-            const float baseline = static_cast<float>(height) * 0.86f;
+            const float baseline = static_cast<float>(height) * (0.5f - kTitleBaseline * 0.5f + 0.062f);
 
             iron::HudDrawGroup group;
             group.texture = font.texture;
-            appendCenteredText(group, font, "IRON CORE", center, baseline, scale * 0.82f, 0.30f,
-                               {1.0f, 0.95f, 0.88f, beat.title});
-            const float subtitle = smoothRamp(26.5f, 28.0f, t);
-            appendCenteredText(group, font, "REALTIME. CUSTOM VULKAN ENGINE.", center,
-                               baseline + 58.0f * scale, scale * 0.17f, 0.34f,
-                               {1.0f, 0.86f, 0.74f, subtitle * 0.8f});
+            const float subtitle = smoothRamp(27.8f, 29.0f, t);
+            appendCenteredText(group, font, "RENDERED IN REAL TIME  /  CUSTOM VULKAN ENGINE", center,
+                               baseline, scale * kSubtitleScale, 0.42f,
+                               {1.0f, 0.88f, 0.76f, subtitle * 0.72f});
             renderer.drawHud(iron::HudBatch{std::move(group)}, width, height);
         }
     };

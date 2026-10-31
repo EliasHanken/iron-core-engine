@@ -45,8 +45,9 @@ struct Options {
     std::string scene;
     std::vector<StillRequest> stills;
     std::string recordPath;
+    bool benchmark = false;  // Fixed clock with no capture: every frame does full work.
 
-    bool offline() const { return !stills.empty() || !recordPath.empty(); }
+    bool offline() const { return !stills.empty() || !recordPath.empty() || benchmark; }
 };
 
 // Begins a frame and submits everything, leaving endFrame to the loop so that a
@@ -93,11 +94,13 @@ inline bool parseOptions(int argc, char** argv, Options& options) {
             i += 2;
         } else if (arg == "--record" && i + 1 < argc) {
             options.recordPath = argv[++i];
+        } else if (arg == "--benchmark") {
+            options.benchmark = true;
         } else if (arg == "--scene" && i + 1 < argc) {
             options.scene = argv[++i];
         } else {
             iron::Log::error("usage: [--scene <name>] [--shot <seconds> <file.png>]... "
-                             "[--record <file.mp4>]");
+                             "[--record <file.mp4>] [--benchmark]");
             return false;
         }
     }
@@ -120,6 +123,7 @@ inline void runLoop(iron::Application& app, iron::Renderer& renderer, iron::Vulk
     int framesSinceReport = 0;
     std::size_t nextStill = 0;
     bool stillsDone = options.stills.empty();
+    float worstMs = 0.0f;
 
     app.setUpdate([&](const iron::FrameTime&) {
         if (app.input().keyPressed(GLFW_KEY_ESCAPE)) {
@@ -131,6 +135,7 @@ inline void runLoop(iron::Application& app, iron::Renderer& renderer, iron::Vulk
         const double clock = glfwGetTime();
         const float realDt = static_cast<float>(clock - lastClock);
         lastClock = clock;
+        worstMs = std::max(worstMs, realDt * 1000.0f);
 
         // Stepping by real time mid-stall would tear the simulation, so a long
         // frame just runs the effect a little slower.
@@ -163,14 +168,17 @@ inline void runLoop(iron::Application& app, iron::Renderer& renderer, iron::Vulk
         renderer.endFrame();
 
         const bool recordingDone = seconds >= recordSeconds;
-        if (options.offline() && (recording ? recordingDone : stillsDone)) {
+        const bool benchmarkDone = options.benchmark && seconds >= recordSeconds;
+        if (options.offline() && (recording ? recordingDone : options.benchmark ? benchmarkDone : stillsDone)) {
             glfwSetWindowShouldClose(app.window().handle(), GLFW_TRUE);
         }
 
         if (++framesSinceReport == kFramesPerTimingReport) {
             const double elapsed = clock - reportClock;
-            iron::Log::info("%.2f ms/frame (%.0f fps)", elapsed * 1000.0 / framesSinceReport,
-                            framesSinceReport / elapsed);
+            iron::Log::info("%.2f ms/frame (%.0f fps), worst %.2f ms",
+                            elapsed * 1000.0 / framesSinceReport, framesSinceReport / elapsed,
+                            worstMs);
+            worstMs = 0.0f;
             reportClock = clock;
             framesSinceReport = 0;
         }

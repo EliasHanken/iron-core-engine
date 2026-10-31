@@ -1,6 +1,8 @@
 #include "IronScene.h"
 #include "IronTimeline.h"
 
+#include "ui/FontAtlas.h"
+
 #include <algorithm>
 #include <cmath>
 #include <map>
@@ -161,6 +163,7 @@ std::vector<RockInstance> makeRockField(std::uint32_t seed, int count) {
 
         const float sizeRoll = unit(rng);
         rock.scale = 0.22f + 1.2f * sizeRoll * sizeRoll * sizeRoll;
+        rock.shadowRadius = rock.scale * 1.05f;
         rock.variant = static_cast<int>(unit(rng) * kRockVariants) % kRockVariants;
         rock.ringRadius = 7.0f + 8.0f * unit(rng);
         rock.ringAngle = kTau * unit(rng);
@@ -307,6 +310,11 @@ std::vector<MeshData> makeShellPlates(int plateCount, float radius, std::uint32_
 
         RockInstance plate;
         plate.home = centroid;
+        float extent = 0.0f;
+        for (const Vertex& v : meshes.back().vertices) {
+            extent = std::max(extent, iron::length(v.position));
+        }
+        plate.shadowRadius = extent * 0.72f;
         const Vec3 tumble{unit(rng) - 0.5f, unit(rng) - 0.5f, unit(rng) - 0.5f};
         plate.axis = iron::normalize(tumble + Vec3{0.01f, 0.02f, 0.03f});
         plate.spin = 0.6f + 1.2f * unit(rng);
@@ -372,6 +380,113 @@ float rockAngle(const RockInstance& rock, float t) {
     }
     const float kick = t > kIgnitionTime ? (1.0f - std::exp(-(t - kIgnitionTime))) * 3.0f : 0.0f;
     return t * rock.spin + kick * rock.spin;
+}
+
+float lightVisibility(Vec3 eye, Vec3 light, float lightRadius, std::span<const iron::Vec4> spheres) {
+    constexpr int kRays = 13;
+    const float golden = std::numbers::pi_v<float> * (3.0f - std::sqrt(5.0f));
+
+    const Vec3 forward = iron::normalize(light - eye);
+    const Vec3 right = iron::normalize(iron::cross(forward, Vec3{0, 1, 0}));
+    const Vec3 up = iron::cross(right, forward);
+
+    int visible = 0;
+    for (int i = 0; i < kRays; ++i) {
+        // Rays spread evenly across the disc of the light.
+        const float r = lightRadius * std::sqrt((static_cast<float>(i) + 0.5f) / kRays);
+        const float angle = golden * static_cast<float>(i);
+        const Vec3 target = light + right * (std::cos(angle) * r) + up * (std::sin(angle) * r);
+        const Vec3 toTarget = target - eye;
+        const float length = iron::length(toTarget);
+        const Vec3 dir = toTarget * (1.0f / length);
+
+        bool blocked = false;
+        for (const iron::Vec4& s : spheres) {
+            const Vec3 toCenter = Vec3{s.x, s.y, s.z} - eye;
+            const float along = iron::dot(toCenter, dir);
+            if (along <= 0.0f || along >= length) continue;
+            const float offAxis = iron::dot(toCenter, toCenter) - along * along;
+            if (offAxis < s.w * s.w) {
+                blocked = true;
+                break;
+            }
+        }
+        if (!blocked) ++visible;
+    }
+    return static_cast<float>(visible) / kRays;
+}
+
+std::vector<float> makeTitleParticles(const iron::FontAtlas& font, const std::string& text,
+                                      int count, float width, float baselineY, float tracking,
+                                      float aspect, std::uint32_t seed) {
+    struct Box {
+        iron::GlyphQuad quad;
+        float area;
+    };
+
+    const float gap = font.pixelHeight() * tracking;
+    float penX = 0.0f;
+    float penY = 0.0f;
+    std::vector<Box> boxes;
+    float totalArea = 0.0f;
+    for (char c : text) {
+        const iron::GlyphQuad q = font.quadFor(c, penX, penY);
+        penX += gap;
+        const float area = (q.max.x - q.min.x) * (q.max.y - q.min.y);
+        if (area > 0.0f) {
+            boxes.push_back({q, area});
+            totalArea += area;
+        }
+    }
+    const float textWidth = std::max(penX - gap, 1.0f);
+    const float scale = width / textWidth;
+
+    std::mt19937 rng(seed);
+    std::uniform_real_distribution<float> unit(0.0f, 1.0f);
+    const auto& pixels = font.pixels();
+
+    std::vector<float> data(static_cast<std::size_t>(count) * 16, 0.0f);
+    int placed = 0;
+    int attempts = 0;
+    const int maxAttempts = count * 400;
+    while (placed < count && attempts < maxAttempts && !boxes.empty()) {
+        ++attempts;
+
+        float pick = unit(rng) * totalArea;
+        const Box* box = &boxes.back();
+        for (const Box& candidate : boxes) {
+            pick -= candidate.area;
+            if (pick <= 0.0f) {
+                box = &candidate;
+                break;
+            }
+        }
+
+        const float u = unit(rng);
+        const float v = unit(rng);
+        const iron::GlyphQuad& q = box->quad;
+        const float atlasU = q.uvMin.x + (q.uvMax.x - q.uvMin.x) * u;
+        const float atlasV = q.uvMin.y + (q.uvMax.y - q.uvMin.y) * v;
+        const int ax = std::clamp(static_cast<int>(atlasU * font.width()), 0, font.width() - 1);
+        const int ay = std::clamp(static_cast<int>(atlasV * font.height()), 0, font.height() - 1);
+        const std::size_t alpha = (static_cast<std::size_t>(ay) * font.width() + ax) * 4 + 3;
+        if (pixels[alpha] < 128) continue;
+
+        const float px = q.min.x + (q.max.x - q.min.x) * u;
+        const float py = q.min.y + (q.max.y - q.min.y) * v;
+
+        const std::size_t i = static_cast<std::size_t>(placed) * 16;
+        data[i + 7]  = 1.0f;  // Lifetime, so that a particle counts as spawned.
+        data[i + 8]  = (px - textWidth * 0.5f) * scale;
+        data[i + 9]  = baselineY - py * scale * aspect;  // Clip Y points up, text Y down.
+        data[i + 10] = px / textWidth;
+        data[i + 11] = unit(rng);
+        ++placed;
+    }
+
+    // A font without enough ink is a caller bug, but the extras must stay harmless.
+    data.resize(static_cast<std::size_t>(count) * 16, 0.0f);
+    return data;
 }
 
 std::vector<std::uint8_t> makeRockNormalMap(int size) {

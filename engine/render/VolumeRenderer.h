@@ -8,6 +8,7 @@
 #include "math/Vec.h"
 
 #include <memory>
+#include <span>
 
 namespace iron {
 
@@ -26,6 +27,9 @@ struct VolumeRenderSettings {
     float shadowDensity = 1.5f;    // How strongly smoke shades itself.
     Vec3  lightPosition{0.0f, 0.0f, 0.0f}; // The light smoke shades itself against.
     Vec3  lightColor{0.0f, 0.0f, 0.0f};    // Its colour and intensity, for direct light.
+    float phase = 0.0f;            // Forward scattering: 0 is even, 0.8 glows toward the light.
+    float powder = 0.0f;           // Darkens thin edges facing away from the light, 0..1.
+    float airLight = 1.0f;         // Scales direct light in the air, which is what draws shafts.
     float detail = 0.5f;           // Noise erosion at smoke edges, 0 for none.
     float detailScale = 3.0f;      // Noise frequency, per metre.
 };
@@ -37,6 +41,13 @@ struct VolumeRenderSettings {
 class VolumeRenderer {
 public:
     virtual ~VolumeRenderer() = default;
+
+    // Casts shadows from a light through the air, smoke and lit surfaces, which is
+    // what draws god rays. Each sphere is xyz = centre, w = radius, and at most
+    // kMaxOccluders are used. Call between beginFrame and endFrame, before render.
+    // An empty span turns shadows off.
+    static constexpr int kMaxOccluders = 256;
+    virtual void setOccluders(Vec3 light, std::span<const Vec4> spheres, float strength) = 0;
 
     // Call between Renderer::beginFrame and endFrame, after any fluid steps and
     // before the frame's particle render calls, so that particles draw over it.

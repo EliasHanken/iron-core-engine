@@ -10,6 +10,7 @@
 #include <cstdint>
 #include <memory>
 #include <string>
+#include <vector>
 
 namespace iron {
 
@@ -64,6 +65,9 @@ struct GpuParticlesDesc {
     std::string   vertexGlsl;
     std::string   fragmentGlsl;
     std::string   emissionGlsl;  // Light this effect adds to a LightVolume.
+    // Optional starting state: 16 floats per particle, the Particle struct in
+    // order. Empty means every particle starts zeroed.
+    std::vector<float> initialData;
 };
 
 class GpuParticles {

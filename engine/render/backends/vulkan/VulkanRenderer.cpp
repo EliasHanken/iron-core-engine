@@ -395,8 +395,9 @@ struct LitUbo {
     Vec4 probeCenter;         // 16  M49 — xyz = probe center; w = probeActive (0/1)
     Vec4 volumeMin;           // 16  M73 — xyz = LightVolume min; w = intensity
     Vec4 volumeInvSize;       // 16  M73 — xyz = 1 / LightVolume extent
+    Vec4 pointShadow;         // 16  M73 — xyz = shadow centre; w = strength
 };
-static_assert(sizeof(LitUbo) == 1040, "LitUbo std140 layout (M73 light volume)");
+static_assert(sizeof(LitUbo) == 1056, "LitUbo std140 layout (M73 light volume, point shadow)");
 
 void fillLightVolumeUbo(LitUbo& ubo, const LightVolume* volume, float intensity) {
     if (!volume) return;
@@ -657,6 +658,8 @@ void VulkanRenderer::recordSceneDraw(VkCommandBuffer cb, const DrawCall& call) {
     };
     ubo.materialParams2 = Vec4{call.material.metallic, call.material.ao, call.material.normalScale, 0.0f};
     fillLightVolumeUbo(ubo, lightVolume_, lightVolumeIntensity_);
+    ubo.pointShadow = Vec4{pointShadowCenter_.x, pointShadowCenter_.y, pointShadowCenter_.z,
+                           pointShadowStrength_};
     ubo.materialParams2.w = cubemaps_.has(pendingIrradiance_) ? 1.0f : 0.0f;  // M46b iblEnabled
     // M50a — pack heightScale into baseColorFactor.w; 0 when no height map (POM no-op).
     const float pomScale = textures_.has(call.material.heightMap) ? call.material.heightScale : 0.0f;
@@ -915,6 +918,8 @@ void VulkanRenderer::recordSkinnedDraw(VkCommandBuffer cb,
     };
     ubo.materialParams2 = Vec4{call.material.metallic, call.material.ao, call.material.normalScale, 0.0f};
     fillLightVolumeUbo(ubo, lightVolume_, lightVolumeIntensity_);
+    ubo.pointShadow = Vec4{pointShadowCenter_.x, pointShadowCenter_.y, pointShadowCenter_.z,
+                           pointShadowStrength_};
     ubo.materialParams2.w = cubemaps_.has(pendingIrradiance_) ? 1.0f : 0.0f;  // M46b iblEnabled
     // M50a — pack heightScale into baseColorFactor.w; 0 when no height map (POM no-op).
     const float pomScale = textures_.has(call.material.heightMap) ? call.material.heightScale : 0.0f;
@@ -1354,6 +1359,16 @@ void VulkanRenderer::endFrame() {
         // Composite chain (Copy/Outline/GlowComposite/XRay) — UV-space; the
         // plain positive-height viewport set by beginViewportPass is correct.
         {
+            // The camera's motion since last frame, as a map from this frame's clip
+            // space to last frame's.
+            const Mat4 viewProjection = pendingProjection_ * pendingView_;
+            const Mat4 reprojection = hasPreviousViewProjection_
+                ? previousViewProjection_ * iron::inverse(viewProjection)
+                : Mat4::identity();
+            postProcess_.setCinematic(cinematic_, reprojection, cinematicFrame_++);
+            previousViewProjection_ = viewProjection;
+            hasPreviousViewProjection_ = true;
+
             const std::vector<PostPass> passes = planPostChain(activeKindsThisFrame);
             postProcess_.runChain(cb, passes, effects_, postProcess_.viewportExtent(),
                                   pendingExposure_, pendingBloomIntensity_,
@@ -1579,26 +1594,41 @@ CubemapHandle VulkanRenderer::bakeSky(const std::string& skyGlsl, int faceSize) 
     return iblBaker_.bakeSky(context_, cubemaps_, skyGlsl, faceSize);
 }
 
+void VulkanRenderer::setPointShadow(VkImageView map, Vec3 center, float strength) {
+    pointShadowView_ = map;
+    pointShadowCenter_ = center;
+    pointShadowStrength_ = map ? strength : 0.0f;
+}
+
 void VulkanRenderer::setLightVolume(const LightVolume* volume, float intensity) {
     lightVolume_ = volume;
     lightVolumeIntensity_ = volume ? intensity : 0.0f;
 }
 
 void VulkanRenderer::bindLightVolume(VkDescriptorSet set) {
+    VkDescriptorImageInfo shadowImage{};
+    const auto& white = textures_.get(textures_.whiteTexture());
+    shadowImage.sampler     = volumeSampler_;
+    shadowImage.imageView   = pointShadowView_ ? pointShadowView_ : white.view;
+    shadowImage.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+
     VkDescriptorImageInfo image{};
     image.sampler = volumeSampler_;
     image.imageView = lightVolume_ ? static_cast<const VkLightVolume*>(lightVolume_)->resolvedView()
                                    : blackVolume_.view();
     image.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 
-    VkWriteDescriptorSet write{};
-    write.sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-    write.dstSet          = set;
-    write.dstBinding      = 14;
-    write.descriptorType  = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-    write.descriptorCount = 1;
-    write.pImageInfo      = &image;
-    vkUpdateDescriptorSets(context_.device(), 1, &write, 0, nullptr);
+    VkWriteDescriptorSet writes[2]{};
+    for (int i = 0; i < 2; ++i) {
+        writes[i].sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        writes[i].dstSet          = set;
+        writes[i].dstBinding      = 14 + static_cast<std::uint32_t>(i);
+        writes[i].descriptorType  = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        writes[i].descriptorCount = 1;
+    }
+    writes[0].pImageInfo = &image;
+    writes[1].pImageInfo = &shadowImage;
+    vkUpdateDescriptorSets(context_.device(), 2, writes, 0, nullptr);
 }
 
 bool VulkanRenderer::initVolumeDefaults() {

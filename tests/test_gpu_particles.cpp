@@ -1,6 +1,7 @@
 // Compile-checks the engine's generated particle and volume shaders. These need
 // no GPU: they prove the composed GLSL is valid.
 #include "render/GpuParticles.h"
+#include "render/backends/vulkan/VkPostProcess.h"
 #include "render/backends/vulkan/VkVolumeRenderer.h"
 #include "render/backends/vulkan/VkShader.h"
 
@@ -64,6 +65,8 @@ void testParticleHelpersCompile() {
 void testVolumeRendererCompiles() {
     const iron::VolumeRendererSources s = iron::volumeRendererSources();
     assert(compiles(VK_SHADER_STAGE_COMPUTE_BIT, s.raymarch));
+    assert(compiles(VK_SHADER_STAGE_COMPUTE_BIT, s.occluders));
+    assert(compiles(VK_SHADER_STAGE_FRAGMENT_BIT, iron::kCinematicSrc()));
     assert(compiles(VK_SHADER_STAGE_VERTEX_BIT, s.upsampleVertex));
     assert(compiles(VK_SHADER_STAGE_FRAGMENT_BIT, s.upsampleFragment));
 }

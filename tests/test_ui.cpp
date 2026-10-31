@@ -154,8 +154,8 @@ int main() {
             // the first atlas: 'Z' comes late in the bake order.
             FontAtlas large;
             CHECK(large.bake(bytes.data(), static_cast<int>(bytes.size()), 120.0f));
-            float penX = 0.0f, penY = 0.0f;
-            const GlyphQuad lastCapital = large.quadFor('Z', penX, penY);
+            float largePenX = 0.0f, largePenY = 0.0f;
+            const GlyphQuad lastCapital = large.quadFor('Z', largePenX, largePenY);
             CHECK(lastCapital.max.x > lastCapital.min.x);
             CHECK(large.width() > 512);
             CHECK(atlas.width() > 0);

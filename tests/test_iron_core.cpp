@@ -133,6 +133,28 @@ void testShellStaysStillUntilIgnition() {
     }
 }
 
+void testLightVisibility() {
+    const Vec3 eye{0, 0, 20};
+    const Vec3 light{0, 0, 0};
+
+    assert(lightVisibility(eye, light, 3.0f, {}) == 1.0f);
+
+    // A sphere filling the view hides everything, and one off to the side nothing.
+    const std::vector<iron::Vec4> full = {{0, 0, 10, 6}};
+    assert(lightVisibility(eye, light, 3.0f, full) == 0.0f);
+    const std::vector<iron::Vec4> aside = {{30, 0, 10, 2}};
+    assert(lightVisibility(eye, light, 3.0f, aside) == 1.0f);
+
+    // A small one partly covers it.
+    const std::vector<iron::Vec4> part = {{1.5f, 0, 10, 1}};
+    const float seen = lightVisibility(eye, light, 3.0f, part);
+    assert(seen > 0.0f && seen < 1.0f);
+
+    // Something behind the light can't block it.
+    const std::vector<iron::Vec4> behind = {{0, 0, -10, 6}};
+    assert(lightVisibility(eye, light, 3.0f, behind) == 1.0f);
+}
+
 #ifdef IRON_RENDER_BACKEND_VULKAN
 void checkCompiles(const iron::GpuParticlesDesc& desc) {
     const iron::GpuParticleSources s = iron::composeGpuParticleSources(desc);
@@ -152,6 +174,7 @@ void testEffectsCompile() {
     checkCompiles(makeArcEffect());
     checkCompiles(makeShockEffect());
     checkCompiles(makeEmberEffect());
+    checkCompiles(makeFlareEffect());
 }
 
 void testFluidCompiles() {
@@ -174,6 +197,7 @@ int main() {
     testRockMesh();
     testShellCoversTheSphere();
     testShellStaysStillUntilIgnition();
+    testLightVisibility();
 #ifdef IRON_RENDER_BACKEND_VULKAN
     testEffectsCompile();
     testFluidCompiles();

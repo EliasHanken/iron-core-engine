@@ -15,6 +15,8 @@ namespace iron {
 namespace {
 
 constexpr std::uint32_t kLocalSize = 8;
+constexpr std::uint32_t kShadowWidth = 1024;
+constexpr std::uint32_t kShadowHeight = 512;
 
 const char* const kRaymarchGlsl = R"GLSL(#version 450
 layout(local_size_x = 8, local_size_y = 8) in;
@@ -24,6 +26,7 @@ layout(set = 0, binding = 1) uniform sampler3D lightVolume;
 layout(set = 0, binding = 2) uniform sampler3D scalarsVolume;
 layout(set = 0, binding = 3) uniform sampler3D solidVolume;
 layout(rgba16f, set = 0, binding = 4) writeonly uniform image2D result;
+layout(set = 0, binding = 6) uniform sampler2D shadowMap;
 layout(set = 0, binding = 5) uniform Ubo {
     mat4 invViewProjection;
     vec4 cameraPos;
@@ -36,6 +39,7 @@ layout(set = 0, binding = 5) uniform Ubo {
     vec4 shadowLight;   // w = shadow density
     vec4 pointLight;    // rgb = direct light on smoke
     vec4 params;        // x = air density, y = light intensity, z = detail, w = detail scale
+    vec4 shape;         // x = phase, y = powder, z = air light, w = shadows on
     ivec4 counts;       // x = steps, y = frame index
 } u;
 
@@ -72,11 +76,33 @@ bool boxInterval(vec3 ro, vec3 rd, vec3 lo, vec3 hi, out float t0, out float t1)
     return t0 < t1;
 }
 
+// 1 where the light reaches this point, read from a map of the distance to the
+// nearest occluder in every direction from the light.
+float lightVisibility(vec3 p) {
+    if (u.shape.w <= 0.0) return 1.0;
+    vec3 d = p - u.shadowLight.xyz;
+    float r = length(d);
+    d /= max(r, 1e-3);
+    vec2 uv = vec2(atan(d.z, d.x) / (2.0 * 3.14159265) + 0.5,
+                   acos(clamp(d.y, -1.0, 1.0)) / 3.14159265);
+    float occluder = textureLod(shadowMap, uv, 0.0).r;
+    return 1.0 - smoothstep(occluder, occluder + 1.4, r);
+}
+
+// Henyey-Greenstein, scaled to 1 for even scattering. Gas glows brightest when
+// looking toward the light, which is how real haze and smoke behave.
+float scatterPhase(float cosine) {
+    float g = u.shape.x;
+    float g2 = g * g;
+    return (1.0 - g2) / pow(max(1.0 + g2 - 2.0 * g * cosine, 1e-4), 1.5);
+}
+
 // Thin, eroded density: edges break into wisps finer than the grid.
 float smokeAt(vec3 p, vec3 uvw) {
     float density = texture(scalarsVolume, uvw).r;
     if (density < 0.002 || u.params.z <= 0.0) return density;
-    float noise = valueNoise(p * u.params.w) * 0.6 + valueNoise(p * u.params.w * 2.3) * 0.4;
+    float noise = valueNoise(p * u.params.w) * 0.5 + valueNoise(p * u.params.w * 2.3) * 0.3 +
+                  valueNoise(p * u.params.w * 5.1) * 0.2;
     return max(density - u.params.z * noise * min(density * 2.0 + 0.1, 1.0), 0.0);
 }
 
@@ -144,26 +170,33 @@ void main() {
         if (extinction <= 1e-5 && heat <= 1e-4) continue;
 
         float stepTransmittance = exp(-extinction * stepLength);
-        vec3 scattered = radiance * air;
+
+        vec3 toLight = u.shadowLight.xyz - p;
+        float toLightLength = length(toLight);
+        toLight /= max(toLightLength, 1e-3);
+        vec3 direct = u.pointLight.rgb / (1.0 + toLightLength * toLightLength * 0.1);
+        direct *= scatterPhase(dot(rd, toLight)) * lightVisibility(p);
+
+        vec3 scattered = radiance * air + direct * air * u.shape.z;
 
         if (smoke > 1e-3) {
             // Self-shadowing: this is what gives smoke dark folds and bright edges.
-            vec3 toLight = u.shadowLight.xyz - p;
-            float toLightLength = length(toLight);
-            toLight /= max(toLightLength, 1e-3);
-            float shadowStep = min(toLightLength, 4.0) / 5.0;
+            float shadowStep = min(toLightLength, 4.0) / 6.0;
             float occlusion = 0.0;
-            for (int s = 1; s <= 5; ++s) {
+            for (int s = 1; s <= 6; ++s) {
                 vec3 q = p + toLight * shadowStep * (float(s) - 0.5 + jitter);
                 occlusion += texture(scalarsVolume, (q - u.fluidMin.xyz) * u.fluidInvSize.xyz).r;
             }
-            float shadow = exp(-occlusion * shadowStep * u.shadowLight.w);
-            vec3 direct = u.pointLight.rgb / (1.0 + toLightLength * toLightLength * 0.1);
-            scattered += (radiance + direct) * smoke * u.smokeAlbedo.w * u.smokeAlbedo.rgb * shadow;
+            float optical = occlusion * shadowStep * u.shadowLight.w;
+            float shadow = exp(-optical);
+            // Beer-powder: thin gas lets light straight through, so its edges read
+            // darker and the billows gain the rounded look of real smoke.
+            float powder = mix(1.0, 1.0 - exp(-optical * 2.0 - smoke * 2.0), u.shape.y);
+            scattered += (radiance + direct) * smoke * u.smokeAlbedo.w * u.smokeAlbedo.rgb * shadow * powder;
         }
 
         // Gas hot enough to glow by itself. It whitens as it heats.
-        vec3 ember = mix(u.heatColor.rgb, vec3(1.0, 0.85, 0.65), clamp(heat * 0.25, 0.0, 1.0));
+        vec3 ember = mix(u.heatColor.rgb, vec3(1.0, 0.70, 0.35), clamp(heat * 0.12, 0.0, 1.0));
         vec3 emission = ember * heat * heat * u.heatColor.w;
 
         float integral = extinction > 1e-5 ? (1.0 - stepTransmittance) / extinction : stepLength;
@@ -173,6 +206,39 @@ void main() {
     }
 
     imageStore(result, pixel, vec4(light, transmittance));
+}
+)GLSL";
+
+// For every direction from the light, the distance to the nearest sphere.
+const char* const kOccluderGlsl = R"GLSL(#version 450
+layout(local_size_x = 8, local_size_y = 8) in;
+layout(r16f, set = 0, binding = 0) writeonly uniform image2D result;
+layout(set = 0, binding = 1) uniform Ubo {
+    vec4 light;
+    ivec4 count;
+    vec4 spheres[256];
+} u;
+
+void main() {
+    ivec2 pixel = ivec2(gl_GlobalInvocationID.xy);
+    ivec2 size = imageSize(result);
+    if (any(greaterThanEqual(pixel, size))) return;
+
+    vec2 uv = (vec2(pixel) + 0.5) / vec2(size);
+    float azimuth = (uv.x - 0.5) * 2.0 * 3.14159265;
+    float polar = uv.y * 3.14159265;
+    vec3 dir = vec3(sin(polar) * cos(azimuth), cos(polar), sin(polar) * sin(azimuth));
+
+    float nearest = 1000.0;
+    for (int i = 0; i < u.count.x; ++i) {
+        vec3 toCenter = u.spheres[i].xyz - u.light.xyz;
+        float along = dot(toCenter, dir);
+        if (along <= 0.0) continue;
+        float offAxis = dot(toCenter, toCenter) - along * along;
+        float radius2 = u.spheres[i].w * u.spheres[i].w;
+        if (offAxis < radius2) nearest = min(nearest, along - sqrt(radius2 - offAxis));
+    }
+    imageStore(result, pixel, vec4(nearest));
 }
 )GLSL";
 
@@ -232,7 +298,14 @@ struct RaymarchUbo {
     float shadowLight[4];
     float pointLight[4];
     float params[4];
+    float shape[4];
     std::int32_t counts[4];
+};
+
+struct OccluderUbo {
+    float        light[4];
+    std::int32_t count[4];
+    float        spheres[VolumeRenderer::kMaxOccluders][4];
 };
 
 void setVec4(float out[4], Vec3 v, float w) {
@@ -249,7 +322,7 @@ Vec3 inverseExtent(const VolumeBounds& b) {
 }  // namespace
 
 VolumeRendererSources volumeRendererSources() {
-    return {kRaymarchGlsl, kUpsampleVertGlsl, kUpsampleFragGlsl};
+    return {kRaymarchGlsl, kOccluderGlsl, kUpsampleVertGlsl, kUpsampleFragGlsl};
 }
 
 VkVolumeRenderer::~VkVolumeRenderer() {
@@ -261,6 +334,8 @@ VkVolumeRenderer::~VkVolumeRenderer() {
     if (upsampleLayout_) vkDestroyPipelineLayout(ctx.device(), upsampleLayout_, nullptr);
     if (upsampleSetLayout_) vkDestroyDescriptorSetLayout(ctx.device(), upsampleSetLayout_, nullptr);
     raymarchStage_.destroy(ctx);
+    occluderStage_.destroy(ctx);
+    shadowMap_.destroy(ctx);
     target_.destroy(ctx);
 }
 
@@ -270,7 +345,16 @@ bool VkVolumeRenderer::init(VulkanRenderer& renderer) {
     constexpr VkDescriptorType kSampled = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
     if (!raymarchStage_.init(renderer.context(), kRaymarchGlsl,
                              {kSampled, kSampled, kSampled, kSampled,
-                              VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER})) {
+                              VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
+                              kSampled})) {
+        return false;
+    }
+    if (!occluderStage_.init(renderer.context(), kOccluderGlsl,
+                             {VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER})) {
+        return false;
+    }
+    if (!shadowMap_.create2D(renderer.context(), kShadowWidth, kShadowHeight, VK_FORMAT_R16_SFLOAT,
+                             VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT)) {
         return false;
     }
     return createUpsamplePipeline();
@@ -416,6 +500,47 @@ bool VkVolumeRenderer::ensureTarget() {
     return true;
 }
 
+void VkVolumeRenderer::setOccluders(Vec3 light, std::span<const Vec4> spheres, float strength) {
+    VkCommandBuffer cb = renderer_->currentCommandBuffer();
+    if (cb == VK_NULL_HANDLE) return;
+
+    if (spheres.empty()) {
+        shadowsOn_ = false;
+        renderer_->setPointShadow(VK_NULL_HANDLE, light, 0.0f);
+        return;
+    }
+
+    auto ubo = std::make_unique<OccluderUbo>();
+    setVec4(ubo->light, light, 0.0f);
+    const std::size_t count = std::min<std::size_t>(spheres.size(), kMaxOccluders);
+    ubo->count[0] = static_cast<std::int32_t>(count);
+    for (std::size_t i = 0; i < count; ++i) {
+        ubo->spheres[i][0] = spheres[i].x;
+        ubo->spheres[i][1] = spheres[i].y;
+        ubo->spheres[i][2] = spheres[i].z;
+        ubo->spheres[i][3] = spheres[i].w;
+    }
+
+    VkFrameRing& ring = renderer_->frameRing();
+    const VkDeviceSize offset = ring.allocateUbo(ubo.get(), sizeof(OccluderUbo));
+
+    shadowMap_.discard();
+    shadowMap_.transition(cb, VK_IMAGE_LAYOUT_GENERAL, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                          VK_ACCESS_SHADER_WRITE_BIT);
+    occluderStage_.dispatch(*renderer_, cb,
+                            {VkComputeResource::image(shadowMap_.view()),
+                             VkComputeResource::bufferRange(ring.current().uboBuffer, offset,
+                                                            sizeof(OccluderUbo))},
+                            nullptr, (kShadowWidth + kLocalSize - 1) / kLocalSize,
+                            (kShadowHeight + kLocalSize - 1) / kLocalSize);
+    shadowMap_.transition(cb, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                          VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                          VK_ACCESS_SHADER_READ_BIT);
+
+    shadowsOn_ = true;
+    renderer_->setPointShadow(shadowMap_.view(), light, strength);
+}
+
 void VkVolumeRenderer::render(const Mat4& view, const Mat4& projection, const LightVolume& light,
                               const FluidVolume* fluid, const VolumeRenderSettings& settings) {
     if (renderer_->currentCommandBuffer() == VK_NULL_HANDLE) return;
@@ -445,6 +570,10 @@ void VkVolumeRenderer::render(const Mat4& view, const Mat4& projection, const Li
     ubo.params[1] = settings.lightIntensity;
     ubo.params[2] = settings.detail;
     ubo.params[3] = settings.detailScale;
+    ubo.shape[0] = settings.phase;
+    ubo.shape[1] = settings.powder;
+    ubo.shape[2] = settings.airLight;
+    ubo.shape[3] = shadowsOn_ ? 1.0f : 0.0f;
     ubo.counts[0] = settings.steps;
     ubo.counts[1] = static_cast<std::int32_t>(frameIndex_++);
 
@@ -461,6 +590,16 @@ void VkVolumeRenderer::render(const Mat4& view, const Mat4& projection, const Li
     const VkImageLayout fluidLayout = vkFluid ? VK_IMAGE_LAYOUT_GENERAL
                                               : VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 
+    // Before the first setOccluders the map has never been written. The raymarch
+    // ignores it then, but the descriptor must still describe the image correctly.
+    const VkImageLayout shadowLayout = shadowsOn_ ? VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
+                                                  : VK_IMAGE_LAYOUT_GENERAL;
+    if (!shadowsOn_) {
+        shadowMap_.discard();
+        shadowMap_.transition(renderer_->currentCommandBuffer(), VK_IMAGE_LAYOUT_GENERAL,
+                              VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_SHADER_READ_BIT);
+    }
+
     renderer_->enqueueSceneCompute([=, this](VkCommandBuffer cb) {
         // Rewritten in full each frame, so its old contents can go.
         target_.discard();
@@ -474,7 +613,8 @@ void VkVolumeRenderer::render(const Mat4& view, const Mat4& projection, const Li
              R::sampled(lightView, volumeSampler),
              R::sampled(scalarsView, volumeSampler, fluidLayout),
              R::sampled(solidView, volumeSampler, fluidLayout), R::image(target_.view()),
-             R::bufferRange(uboBuffer, uboOffset, sizeof(RaymarchUbo))},
+             R::bufferRange(uboBuffer, uboOffset, sizeof(RaymarchUbo)),
+             R::sampled(shadowMap_.view(), volumeSampler, shadowLayout)},
             nullptr, (targetExtent_.width + kLocalSize - 1) / kLocalSize,
             (targetExtent_.height + kLocalSize - 1) / kLocalSize);
 

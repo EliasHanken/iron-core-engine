@@ -1,5 +1,6 @@
 #pragma once
 
+#include "render/Cinematic.h"
 #include "render/Renderer.h"
 #include "render/backends/vulkan/VkContext.h"
 #include "render/backends/vulkan/VkFrameRing.h"
@@ -197,6 +198,13 @@ public:
     // cubemap usable with setSkybox. Blocks until the GPU finishes.
     CubemapHandle bakeSky(const std::string& skyGlsl, int faceSize);
 
+    // Applies a film camera to the composite. See CinematicSettings.
+    void setCinematic(const CinematicSettings& settings) { cinematic_ = settings; }
+
+    // Engine-internal: shadows on the first point light, from a latitude-longitude
+    // map of occluder distances. Pass a null view or zero strength to clear.
+    void setPointShadow(VkImageView map, Vec3 center, float strength);
+
     // Lights lit surfaces from `volume`, or clears it with nullptr. The volume
     // must outlive its use, and must be resolved before endFrame.
     void setLightVolume(const LightVolume* volume, float intensity);
@@ -284,6 +292,13 @@ private:
     VkVolumeImage      blackVolume_;
     VkSampler          volumeSampler_ = VK_NULL_HANDLE;
     VkSampler          depthSampler_ = VK_NULL_HANDLE;
+    VkImageView        pointShadowView_ = VK_NULL_HANDLE;
+    Vec3               pointShadowCenter_{};
+    float              pointShadowStrength_ = 0.0f;
+    CinematicSettings  cinematic_;
+    Mat4               previousViewProjection_ = Mat4::identity();
+    bool               hasPreviousViewProjection_ = false;
+    std::uint32_t      cinematicFrame_ = 0;
 
     FrameCaptureFn pendingCapture_;
     VkBuffer       captureBuffer_ = VK_NULL_HANDLE;

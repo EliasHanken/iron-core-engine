@@ -157,6 +157,7 @@ layout(set = 0, binding = 0) uniform LitUbo {
     vec4 probeCenter;   // M49 — w = probeActive
     vec4 volumeMin;     // M73 — xyz = LightVolume min; w = intensity (0 = no volume)
     vec4 volumeInvSize; // M73 — xyz = 1 / LightVolume extent
+    vec4 pointShadow;   // M73 — xyz = shadow centre; w = strength (0 = off)
 } u;
 
 layout(set = 0, binding = 1) uniform sampler2D uDiffuse;
@@ -172,6 +173,7 @@ layout(set = 0, binding = 11) uniform samplerCube uPrefiltered;   // M46c specul
 layout(set = 0, binding = 12) uniform sampler2D   uBrdfLut;       // M46c split-sum LUT
 layout(set = 0, binding = 13) uniform sampler2D   uHeightMap;     // M50a — POM height (white=peak), samples .r
 layout(set = 0, binding = 14) uniform sampler3D   uLightVolume;   // M73 — light from particles
+layout(set = 0, binding = 15) uniform sampler2D   uPointShadow;   // M73 — occluder distance, latitude-longitude
 
 float shadowFactor(vec4 lightSpacePos, float bias) {
     vec3 proj = lightSpacePos.xyz / lightSpacePos.w;
@@ -300,6 +302,18 @@ void main() {
         float falloff   = 1.0 - smoothstep(0.0, range, dist);
         float intensity = u.pointPositions[i].w;
         vec3 radiance = u.pointColors[i].xyz * intensity * falloff;
+        // M73 — the first point light can cast shadows. The bias is generous because
+        // occluders are spheres, so a lumpy rock must not shade its own lit face.
+        if (i == 0 && u.pointShadow.w > 0.0) {
+            vec3 d = vWorldPos - u.pointShadow.xyz;
+            float r = length(d);
+            d /= max(r, 1e-3);
+            vec2 suv = vec2(atan(d.z, d.x) / (2.0 * 3.14159265) + 0.5,
+                            acos(clamp(d.y, -1.0, 1.0)) / 3.14159265);
+            float occluder = textureLod(uPointShadow, suv, 0.0).r;
+            float lit = 1.0 - smoothstep(occluder + 0.9, occluder + 1.8, r);
+            radiance *= mix(1.0, lit, u.pointShadow.w);
+        }
         Lo += pbrContrib(N_, V, Lp, albedo, metallic, roughness, F0, radiance);
     }
 

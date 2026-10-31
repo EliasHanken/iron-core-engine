@@ -15,6 +15,7 @@ class VulkanRenderer;
 // The GLSL for the raymarch and upsample, exposed for compile-checking.
 struct VolumeRendererSources {
     std::string raymarch;
+    std::string occluders;
     std::string upsampleVertex;
     std::string upsampleFragment;
 };
@@ -29,6 +30,7 @@ public:
 
     void render(const Mat4& view, const Mat4& projection, const LightVolume& light,
                 const FluidVolume* fluid, const VolumeRenderSettings& settings) override;
+    void setOccluders(Vec3 light, std::span<const Vec4> spheres, float strength) override;
 
 private:
     bool createUpsamplePipeline();
@@ -40,12 +42,14 @@ private:
     VkExtent2D    targetExtent_{};
 
     VkComputeStage raymarchStage_;
+    VkComputeStage occluderStage_;
+    VkVolumeImage  shadowMap_;
+    bool           shadowsOn_ = false;
 
     VkDescriptorSetLayout upsampleSetLayout_ = VK_NULL_HANDLE;
     VkPipelineLayout      upsampleLayout_ = VK_NULL_HANDLE;
     ::VkPipeline          upsamplePipeline_ = VK_NULL_HANDLE;
 
-    VkSampler     linearSampler_ = VK_NULL_HANDLE;
     std::uint32_t frameIndex_ = 0;
 };
 
