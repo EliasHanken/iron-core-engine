@@ -14,11 +14,13 @@
 #include <GLFW/glfw3.h>
 
 #include <algorithm>
+#include <chrono>
 #include <cstdio>
 #include <cstdlib>
 #include <functional>
 #include <memory>
 #include <string>
+#include <thread>
 #include <vector>
 
 #ifdef _WIN32
@@ -33,6 +35,8 @@ namespace capture {
 
 inline constexpr float kOfflineStep = 1.0f / 60.0f;
 inline constexpr int kFramesPerTimingReport = 240;
+inline constexpr int kLiveFpsCap = 60;
+inline constexpr int kOfflineFpsCap = 30;
 
 struct StillRequest {
     float seconds = 0.0f;
@@ -46,6 +50,9 @@ struct Options {
     std::vector<StillRequest> stills;
     std::string recordPath;
     bool benchmark = false;  // Fixed clock with no capture: every frame does full work.
+    // Frame cap. An uncapped loop holds the GPU at full power to no benefit, so even
+    // offline work is paced: output doesn't depend on this, only how long it takes.
+    int maxFps = 0;  // 0 picks the default for the mode.
 
     bool offline() const { return !stills.empty() || !recordPath.empty() || benchmark; }
 };
@@ -94,13 +101,15 @@ inline bool parseOptions(int argc, char** argv, Options& options) {
             i += 2;
         } else if (arg == "--record" && i + 1 < argc) {
             options.recordPath = argv[++i];
+        } else if (arg == "--max-fps" && i + 1 < argc) {
+            options.maxFps = std::atoi(argv[++i]);
         } else if (arg == "--benchmark") {
             options.benchmark = true;
         } else if (arg == "--scene" && i + 1 < argc) {
             options.scene = argv[++i];
         } else {
             iron::Log::error("usage: [--scene <name>] [--shot <seconds> <file.png>]... "
-                             "[--record <file.mp4>] [--benchmark]");
+                             "[--record <file.mp4>] [--benchmark] [--max-fps <n>]");
             return false;
         }
     }
@@ -119,11 +128,16 @@ inline void runLoop(iron::Application& app, iron::Renderer& renderer, iron::Vulk
 
     float seconds = 0.0f;
     double lastClock = glfwGetTime();
-    double reportClock = lastClock;
     int framesSinceReport = 0;
     std::size_t nextStill = 0;
     bool stillsDone = options.stills.empty();
     float worstMs = 0.0f;
+    float worstAt = 0.0f;
+    double workMs = 0.0;
+
+    const int fpsCap = options.maxFps > 0 ? options.maxFps
+                                          : (options.offline() ? kOfflineFpsCap : kLiveFpsCap);
+    const double frameBudget = 1.0 / static_cast<double>(fpsCap);
 
     app.setUpdate([&](const iron::FrameTime&) {
         if (app.input().keyPressed(GLFW_KEY_ESCAPE)) {
@@ -135,7 +149,6 @@ inline void runLoop(iron::Application& app, iron::Renderer& renderer, iron::Vulk
         const double clock = glfwGetTime();
         const float realDt = static_cast<float>(clock - lastClock);
         lastClock = clock;
-        worstMs = std::max(worstMs, realDt * 1000.0f);
 
         // Stepping by real time mid-stall would tear the simulation, so a long
         // frame just runs the effect a little slower.
@@ -151,8 +164,9 @@ inline void runLoop(iron::Application& app, iron::Renderer& renderer, iron::Vulk
                     // H.264 with 4:2:0 chroma needs even dimensions.
                     video = std::make_unique<FfmpegPipe>(
                         w, h,
-                        "-vf crop=trunc(iw/2)*2:trunc(ih/2)*2 -c:v libx264 -preset slow "
-                        "-crf 14 -pix_fmt yuv420p \"" + options.recordPath + "\"");
+                        "-vf crop=trunc(iw/2)*2:trunc(ih/2)*2 -c:v libx264 -preset medium "
+                        "-threads 6 -crf 15 -pix_fmt yuv420p -movflags +faststart \"" +
+                            options.recordPath + "\"");
                 }
                 if (video->ok()) video->write(rgba, w, h);
             });
@@ -167,6 +181,15 @@ inline void runLoop(iron::Application& app, iron::Renderer& renderer, iron::Vulk
 
         renderer.endFrame();
 
+        // Measured before the pause below. This is CPU time: the GPU's work runs
+        // alongside it, and only shows up here when the frame queue is full.
+        const double spent = glfwGetTime() - clock;
+        workMs += spent * 1000.0;
+        if (static_cast<float>(spent) * 1000.0f > worstMs) {
+            worstMs = static_cast<float>(spent) * 1000.0f;
+            worstAt = seconds;
+        }
+
         const bool recordingDone = seconds >= recordSeconds;
         const bool benchmarkDone = options.benchmark && seconds >= recordSeconds;
         if (options.offline() && (recording ? recordingDone : options.benchmark ? benchmarkDone : stillsDone)) {
@@ -174,13 +197,17 @@ inline void runLoop(iron::Application& app, iron::Renderer& renderer, iron::Vulk
         }
 
         if (++framesSinceReport == kFramesPerTimingReport) {
-            const double elapsed = clock - reportClock;
-            iron::Log::info("%.2f ms/frame (%.0f fps), worst %.2f ms",
-                            elapsed * 1000.0 / framesSinceReport, framesSinceReport / elapsed,
-                            worstMs);
+            iron::Log::info("%.2f ms CPU per frame, worst %.2f ms at %.1f s",
+                            workMs / framesSinceReport, worstMs, worstAt);
             worstMs = 0.0f;
-            reportClock = clock;
+            workMs = 0.0;
             framesSinceReport = 0;
+        }
+
+        // Idle out the rest of the frame rather than start the next one early.
+        const double remaining = frameBudget - (glfwGetTime() - clock);
+        if (remaining > 0.0) {
+            std::this_thread::sleep_for(std::chrono::duration<double>(remaining));
         }
     });
 
