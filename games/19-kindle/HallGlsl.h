@@ -28,7 +28,7 @@ float shaftAt(vec3 p) {
     float cut = smoothstep(-0.25, 0.35, sin(q.y * 0.44 + floor(q.x / 13.0 + 0.31) * 2.4));
     // Gaps along the crack split a flat sheet of light into separate beams.
     float beams = 0.5 + 0.5 * sin(q.y * 1.7 + sin(q.y * 0.63) * 2.0) * sin(q.y * 3.9 + 1.1);
-    return line * cut * beams;
+    return line * cut * beams * step(-20.0, p.z);  // The chamber has no roof cracks.
 }
 )GLSL";
 
@@ -36,6 +36,7 @@ inline const std::string kAirGlsl = std::string(kShaftsGlsl) + R"GLSL(
 void airAt(vec3 p, float time, inout float density, inout vec3 light) {
     // A thin cold haze, so that the far end of the hall fades instead of stopping.
     float falling = mix(0.3, 1.0, smoothstep(-6.0, 6.0, p.y));
+    if (p.z < -28.0) density += 0.012;  // The chamber is hazier, so the core's light shows.
     light = kShaftColor * (0.04 + shaftAt(p) * 7.0 * falling);
 }
 )GLSL";
@@ -48,7 +49,10 @@ inline std::string hallSurfaceHook(std::string forgeHook) {
     forgeHook.replace(forgeHook.find(name), name.size(), "void forgeSurface(");
     return forgeHook + kShaftsGlsl + R"GLSL(
 float hallDistance(vec3 p) {
-    return min(forgeRoom(p, vec3(0.0), vec3(20.0, 6.0, 20.0)), forgePillars(p, 10.0, 0.8));
+    float rooms = max(max(forgeRoom(p, vec3(0.0), vec3(20.0, 6.0, 20.0)),
+                          forgeRoom(p, vec3(0.0, 0.0, -24.0), vec3(1.0, 3.0, 5.0))),
+                      34.0 - length(p - vec3(0.0, 0.0, -60.0)));
+    return min(rooms, forgePillars(p, 10.0, 0.8, -20.5));
 }
 
 float hallOcclusion(vec3 p, vec3 n) {

@@ -45,7 +45,8 @@ namespace {
 namespace forge = iron::forge;
 using iron::Vec3;
 
-constexpr float kRecordSeconds = 30.0f;
+constexpr float kRecordSeconds = 100.0f;
+constexpr float kGateOpensInRecording = 32.0f;
 constexpr float kMouseTurn = 0.0022f;
 constexpr float kBaseFov = 62.0f;
 constexpr float kFovAtSpeed = 18.0f;  // Widens at top speed, for a sense of rush.
@@ -89,7 +90,9 @@ forge::Compiled loadEffect(const std::string& path) {
 // Steers the swarm round the hall, for recordings.
 class Autopilot {
 public:
-    kindle::Controls fly(const kindle::Swarm& swarm, float seconds) {
+    kindle::Controls fly(const kindle::Swarm& swarm, const kindle::Story& story, float seconds) {
+        if (!story.sealed()) return toTheCore(swarm);
+
         constexpr std::array<Vec3, 8> route{{{-10, -2, -12}, {-10, 2, 0}, {-10, -3, 12}, {0, 3, 14},
                                              {10, -2, 12},   {10, 3, 0},  {10, -1, -12}, {0, 2, -14}}};
         const Vec3 toNext = route[next_] - swarm.position();
@@ -104,7 +107,20 @@ public:
     }
 
 private:
+    // Through the slit, across the chamber, and ignite at the core.
+    kindle::Controls toTheCore(const kindle::Swarm& swarm) {
+        constexpr std::array<Vec3, 5> route{{{0, 0, -10}, {0, 0, -17}, {0, 0, -31}, {-9, 5, -44}, {0, 3, -49}}};
+        if (leg_ + 1 < route.size() && iron::length(route[leg_] - swarm.position()) < 2.5f) ++leg_;
+
+        kindle::Controls controls;
+        controls.wish = iron::normalize(route[leg_] - swarm.position());
+        controls.squeeze = leg_ <= 2;
+        controls.ignite = leg_ == route.size() - 1 && swarm.heat() >= kindle::Swarm::kIgniteCost;
+        return controls;
+    }
+
     std::size_t next_ = 0;
+    std::size_t leg_ = 0;
 };
 
 // A title that comes and goes, one hint, and a thin line of heat that only shows
@@ -121,7 +137,7 @@ public:
     }
 
     void draw(iron::Renderer& renderer, float seconds, float dt, const kindle::Swarm& swarm,
-              int width, int height) {
+              const kindle::Story& story, int width, int height) {
         const float w = static_cast<float>(width);
         const float h = static_cast<float>(height);
         const float unit = h / 1080.0f;
@@ -137,6 +153,23 @@ public:
                                  {1.0f, 0.86f, 0.70f, title});
             text::appendCentered(words, font_, "THE MACHINE IS COLD", center, h * 0.36f + 62.0f * unit,
                                  unit * 0.19f, 0.5f, {0.72f, 0.80f, 0.92f, line * 0.8f});
+        }
+
+        // One line when the way opens, and the last words when it's over.
+        gateSeconds_ += story.gate() > 0.0f ? dt : 0.0f;
+        const float opened = ramp(0.5f, 1.5f, gateSeconds_) * (1.0f - ramp(6.0f, 7.5f, gateSeconds_));
+        if (opened > 0.0f && !story.finale()) {
+            text::appendCentered(words, font_, "A WAY OPENS TO THE NORTH", center, h * 0.2f, unit * 0.24f, 0.5f,
+                                 {1.0f, 0.86f, 0.70f, opened});
+        }
+        const float blown = story.sinceIgnition();
+        const float end = ramp(5.0f, 7.0f, blown) * (1.0f - ramp(13.0f, 15.0f, blown));
+        const float credit = ramp(7.5f, 9.0f, blown) * (1.0f - ramp(13.0f, 15.0f, blown));
+        if (end > 0.0f) {
+            text::appendCentered(words, font_, "THE MACHINE IS AWAKE", center, h * 0.4f, unit * 0.46f, 0.5f,
+                                 {1.0f, 0.90f, 0.78f, end});
+            text::appendCentered(words, font_, "IRON CORE ENGINE  /  FORGE", center, h * 0.4f + 50.0f * unit,
+                                 unit * 0.17f, 0.5f, {1.0f, 0.82f, 0.62f, credit * 0.8f});
         }
 
         const float hint = ramp(6.4f, 7.6f, seconds) * (1.0f - ramp(13.0f, 15.0f, seconds));
@@ -184,6 +217,7 @@ private:
     iron::FontAtlas font_;
     iron::TextureHandle solid_ = iron::kInvalidHandle;
     float heatShown_ = 0.0f;
+    float gateSeconds_ = 0.0f;
 };
 
 // Pulls the camera towards the swarm until nothing is in the way.
@@ -239,16 +273,16 @@ int main(int argc, char** argv) {
     lens.contrast = 1.08f;
     vulkan->setCinematic(lens);
 
-    const kindle::Room room;
+    kindle::Room room;
     const std::string assets = iron::executableDir() + "/assets/";
 
     // Coarse on purpose: the grid gives a soft glow in the air, which point lights
     // can't, and the blur only reaches a few cells.
     forge::Player player(renderer);
     iron::LightVolumeDesc lightGrid;
-    lightGrid.bounds = iron::VolumeBounds{Vec3{-21.0f, -7.0f, -21.0f}, Vec3{21.0f, 7.0f, 21.0f}};
-    lightGrid.size = {42, 14, 42};
-    lightGrid.blurPasses = 3;
+    lightGrid.bounds = iron::VolumeBounds{Vec3{-36.0f, -36.0f, -96.0f}, Vec3{36.0f, 36.0f, 22.0f}};
+    lightGrid.size = {48, 48, 78};
+    lightGrid.blurPasses = 2;
     player.setLightVolume(lightGrid);
     player.setAirDensity(0.0f);  // The hall has its own air.
 
@@ -268,6 +302,16 @@ int main(int argc, char** argv) {
     const iron::ShaderHandle wallShader =
         renderer.createLitShaderWithSurface(kindle::hallSurfaceHook(wallEffect.surface->hookGlsl));
     const iron::MeshHandle hallMesh = renderer.createMesh(kindle::buildHallMesh(room));
+    const iron::MeshHandle gateLeaf = renderer.createMesh(kindle::buildGateLeaf(room));
+    const iron::MeshHandle coreMesh = renderer.createMesh(iron::makeUVSphere(room.coreRadius, 128));
+
+    const forge::Compiled coreEffect = loadEffect(assets + "core.forge.json");
+    if (!coreEffect.ok() || !coreEffect.surface) {
+        logIssues(coreEffect.issues);
+        return 1;
+    }
+    const iron::ShaderHandle coreShader =
+        renderer.createLitShaderWithSurface(kindle::hallSurfaceHook(coreEffect.surface->hookGlsl));
 
     // The fog is a real fluid: it settles along the floor, and the swarm stirs it.
     iron::FluidVolumeDesc fogDesc;
@@ -317,6 +361,7 @@ int main(int argc, char** argv) {
 
     kindle::Swarm swarm({0.0f, 0.0f, -10.0f});
     kindle::Wakes wakes;
+    kindle::Story story;
     Autopilot autopilot;
 
     float yaw = 0.0f;
@@ -347,7 +392,7 @@ int main(int argc, char** argv) {
 
         kindle::Controls controls;
         if (scripted) {
-            controls = autopilot.fly(swarm, seconds);
+            controls = autopilot.fly(swarm, story, seconds);
             const Vec3 heading = iron::normalize(swarm.velocity() + forwardOf(yaw, pitch) * 0.01f);
             const float wantYaw = std::atan2(heading.x, -heading.z);
             const float wantPitch = std::asin(std::clamp(heading.y, -1.0f, 1.0f));
@@ -375,17 +420,32 @@ int main(int argc, char** argv) {
         mouseY = 0.0f;
         ignite = false;
 
+        // In the finale the core takes over, and pulls the swarm to its surface.
+        if (story.pulling()) {
+            controls.wish = iron::normalize(room.coreCenter - swarm.position());
+            controls.squeeze = true;
+            controls.ignite = false;
+        }
+
+        room.sealed = story.sealed();
         swarm.update(room, controls, dt);
-        if (swarm.ignited()) wakes.ignite(swarm.position());
+        const bool inHall = swarm.position().z > -20.0f;
+        if (swarm.ignited() && inHall) wakes.ignite(swarm.position());
         wakes.update(dt);
+
+        const float relit = scripted && seconds > kGateOpensInRecording ? 1.0f : wakes.relit(room);
+        story.update(room, swarm.position(), relit, swarm.ignited(), dt);
+        const float blown = story.sinceIgnition();
 
         player.setInput("leader", swarm.position());
         player.setInput("spread", {swarm.spread(), 0, 0});
         player.setInput("blast", {swarm.blast(), 0, 0});
         // It opens as one ember in a cold hall, and the swarm ignites as the title goes.
         const float presence = std::max(ramp(kIntroIgnite, kIntroIgnite + 1.6f, seconds), swarm.flare());
+        const float shock = blown > 0.0f ? std::exp(-blown * 0.7f) : 0.0f;  // The core's light.
         player.setInput("presence", {presence, 0, 0});
         player.setInput("light", {(0.00012f + swarm.flare() * 0.0012f) * presence, 0, 0});
+        if (blown > 0.0f && blown < dt * 1.5f) swarm.burst();
         player.setInput("pulse", {0.02f + swarm.pulse() * 0.02f + swarm.flare() * 0.06f, 0, 0});
 
         // The camera hangs back further the faster you go.
@@ -418,6 +478,12 @@ int main(int argc, char** argv) {
         for (std::size_t i = 0; i < wakes.count(); ++i) {
             lights.push_back({wakes[i].position, kEmber, 0.5f, wakes[i].reach});
         }
+        // The core wakes through its own surface. When it blows, its reach races out
+        // through everything, and the whole machine lights.
+        const float coreReach = blown > 0.0f ? room.coreRadius + blown * blown * 9.0f
+                                             : room.coreRadius - 2.0f + story.fed() * 5.0f;
+        lights.push_back({room.coreCenter, kEmber, 3.0f * story.fed() + shock * 90.0f,
+                          std::max(coreReach, room.coreRadius + 26.0f * story.fed() + 1.0f)});
 
         iron::DirectionalLight dark;
         dark.color = {0.0f, 0.0f, 0.0f};
@@ -432,6 +498,21 @@ int main(int argc, char** argv) {
         draw.shader = wallShader;
         draw.material.emissive = {seconds, 0.0f, 0.0f};  // Surfaces read their clock here.
         renderer.submit(draw);
+
+        // The gate's leaves slide apart into the wall.
+        const float slide = ramp(0.0f, 1.0f, story.gate()) * (room.slitHalf + 0.6f);
+        for (const float side : {-1.0f, 1.0f}) {
+            iron::DrawCall leaf = draw;
+            leaf.mesh = gateLeaf;
+            leaf.model = iron::translation({side * ((room.slitHalf + 0.3f) * 0.5f + slide), 0.0f, -19.3f});
+            renderer.submit(leaf);
+        }
+
+        iron::DrawCall core = draw;
+        core.mesh = coreMesh;
+        core.shader = coreShader;
+        core.model = iron::translation(room.coreCenter);
+        renderer.submit(core);
 
         player.simulate(dt);
 
@@ -472,7 +553,7 @@ int main(int argc, char** argv) {
         if (player.light()) volumes->render(view, projection, *player.light(), fog.get(), air);
 
         player.render(view, projection);
-        screen.draw(renderer, seconds, dt, swarm, width, height);
+        screen.draw(renderer, seconds, dt, swarm, story, width, height);
     };
 
     capture::runLoop(app, renderer, *vulkan, options, frame, kRecordSeconds);

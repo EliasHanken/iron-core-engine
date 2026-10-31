@@ -82,7 +82,8 @@ float forgeRoom(vec3 p, vec3 center, vec3 size) {
     return -max(d.x, max(d.y, d.z));
 }
 
-float forgePillars(vec3 p, float spacing, float width) {
+float forgePillars(vec3 p, float spacing, float width, float from) {
+    if (p.z < from) return 1000.0;
     vec2 cell = mod(p.xz, spacing) - spacing * 0.5;
     vec2 d = abs(cell) - width;
     return length(max(d, vec2(0.0))) + min(max(d.x, d.y), 0.0);

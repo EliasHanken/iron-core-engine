@@ -3,17 +3,43 @@
   "target": "particles",
   "shapes": {
     "hall": {
-      "type": "Room",
-      "size": [
+      "type": "JoinedRooms",
+      "sizeA": [
         20,
         6,
         20
-      ]
+      ],
+      "sizeB": [
+        1.0,
+        3.0,
+        5.0
+      ],
+      "centerB": [
+        0,
+        0,
+        -24
+      ],
+      "domeCenter": [
+        0,
+        0,
+        -60
+      ],
+      "domeRadius": 34
     },
     "posts": {
       "type": "Pillars",
       "spacing": 10,
-      "width": 0.8
+      "width": 0.8,
+      "from": -20.5
+    },
+    "core": {
+      "type": "Sphere",
+      "radius": 8,
+      "center": [
+        0,
+        0,
+        -60
+      ]
     }
   },
   "nodes": {
@@ -171,6 +197,10 @@
           "shape": "posts",
           "bounce": 0.3,
           "friction": 0.2
+        },
+        {
+          "block": "Bounce",
+          "shape": "core"
         }
       ],
       "look": [
@@ -261,6 +291,10 @@
         {
           "block": "Bounce",
           "shape": "posts"
+        },
+        {
+          "block": "Bounce",
+          "shape": "core"
         }
       ],
       "look": [
@@ -338,6 +372,10 @@
         {
           "block": "Bounce",
           "shape": "posts"
+        },
+        {
+          "block": "Bounce",
+          "shape": "core"
         }
       ],
       "look": [

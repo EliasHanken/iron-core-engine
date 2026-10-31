@@ -20,6 +20,16 @@ struct Room {
     Vec3  half{20.0f, 6.0f, 20.0f};
     float spacing = 10.0f;     // Pillars sit at 5, 15, -5, -15 on each axis.
     float pillarHalf = 0.8f;
+
+    // Beyond the hall: a narrow slit in the north wall, then the core's chamber.
+    bool  sealed = true;
+    float slitHalf = 1.0f;
+    float slitHeight = 3.0f;
+    float slitNear = -19.0f;
+    float slitFar = -29.0f;
+    Vec3  coreCenter{0.0f, 0.0f, -60.0f};
+    float chamberRadius = 34.0f;
+    float coreRadius = 8.0f;
 };
 
 // Distance to the nearest surface: positive in open air, negative inside a wall.
@@ -33,8 +43,19 @@ inline float roomDistance(const Room& room, Vec3 p) {
     const float dz = std::abs(cell(p.z)) - room.pillarHalf;
     const float ox = std::max(dx, 0.0f);
     const float oz = std::max(dz, 0.0f);
-    const float pillars = std::sqrt(ox * ox + oz * oz) + std::min(std::max(dx, dz), 0.0f);
-    return std::min(walls, pillars);
+    const float pillars = p.z < -20.5f ? 1000.0f
+                                       : std::sqrt(ox * ox + oz * oz) + std::min(std::max(dx, dz), 0.0f);
+
+    float air = walls;
+    if (!room.sealed) {
+        const float middle = (room.slitNear + room.slitFar) * 0.5f;
+        const float slit = -std::max({std::abs(p.x) - room.slitHalf, std::abs(p.y) - room.slitHeight,
+                                      std::abs(p.z - middle) - (room.slitNear - room.slitFar) * 0.5f});
+        const float chamber = room.chamberRadius - iron::length(p - room.coreCenter);
+        air = std::max({air, slit, chamber});
+    }
+    const float core = iron::length(p - room.coreCenter) - room.coreRadius;
+    return std::min({air, pillars, core});
 }
 
 inline Vec3 roomNormal(const Room& room, Vec3 p) {
@@ -58,7 +79,8 @@ public:
     static constexpr float kCruiseSpread = 1.5f;
     static constexpr float kSqueezeSpread = 0.2f;
     static constexpr float kIgniteRest = 0.45f;  // Seconds between bursts.
-    static constexpr float kMargin = 0.7f;       // Keeps the cloud off the walls.
+    static constexpr float kMargin = 1.15f;      // Keeps the cloud off the walls.
+    static constexpr float kSqueezeMargin = 0.2f;  // A ribbon fits where a cloud can't.
     static constexpr float kIgniteCost = 0.34f;  // Two bursts and a bit from full heat.
     static constexpr float kHeatPerSecond = 0.16f;
 
@@ -82,7 +104,8 @@ public:
 
         position_ = position_ + velocity_ * dt;
 
-        const float distance = roomDistance(room, position_) - kMargin;
+        const float margin = kMargin + (kSqueezeMargin - kMargin) * squeeze_;
+        const float distance = roomDistance(room, position_) - margin;
         if (distance < 0.0f) {
             const Vec3 n = roomNormal(room, position_);
             position_ = position_ - n * distance;
@@ -102,6 +125,12 @@ public:
         ignited_ = blast_ == 1.0f;
         blast_ *= std::exp(-dt * 7.0f);
         flare_ *= std::exp(-dt * 2.2f);
+    }
+
+    // A burst nothing can stop, for the finale.
+    void burst() {
+        blast_ = 1.0f;
+        flare_ = 1.0f;
     }
 
     Vec3  position() const { return position_; }
@@ -145,7 +174,7 @@ private:
 // starting another, so the player wakes the hall by going somewhere new.
 class Wakes {
 public:
-    static constexpr std::size_t kMax = 13;      // Lights left after the swarm's three.
+    static constexpr std::size_t kMax = 12;      // Lights left after the swarm's and core's.
     static constexpr float kStartReach = 2.0f;
     static constexpr float kFullReach = 13.0f;
     static constexpr float kFeedReach = 4.0f;    // Growth from igniting on an old wake.
@@ -166,7 +195,7 @@ public:
             }
         }
         if (count_ == kMax) return;
-        wakes_[count_++] = {position, kFullReach * 0.6f, kStartReach};
+        wakes_[count_++] = {position, kFullReach * 0.7f, kStartReach};
     }
 
     void update(float dt) {
@@ -203,6 +232,39 @@ public:
 private:
     std::array<Wake, kMax> wakes_{};
     std::size_t count_ = 0;
+};
+
+// The whole game: relight the hall, go through the gate, feed the core.
+class Story {
+public:
+    static constexpr float kRelitToOpen = 0.55f;
+    static constexpr float kGateSeconds = 4.0f;
+    static constexpr float kFeedPerBurst = 0.26f;
+    static constexpr float kFeedDistance = 24.0f;  // From the core's middle.
+    static constexpr float kPullSeconds = 2.6f;    // The core drags you in, then blows.
+
+    void update(const Room& room, Vec3 swarm, float relit, bool ignited, float dt) {
+        if (relit >= kRelitToOpen) opening_ = true;
+        if (opening_) gate_ = std::min(gate_ + dt / kGateSeconds, 1.0f);
+
+        const bool nearCore = iron::length(swarm - room.coreCenter) < kFeedDistance;
+        if (ignited && nearCore && !finale()) fed_ = std::min(fed_ + kFeedPerBurst, 1.0f);
+        if (finale()) finaleSeconds_ += dt;
+    }
+
+    float gate() const { return gate_; }        // 0 shut, 1 open.
+    bool  sealed() const { return gate_ < 0.5f; }
+    float fed() const { return fed_; }          // How awake the core is.
+    bool  finale() const { return fed_ >= 1.0f; }
+    float finaleSeconds() const { return finaleSeconds_; }
+    bool  pulling() const { return finale() && finaleSeconds_ < kPullSeconds; }
+    float sinceIgnition() const { return finaleSeconds_ - kPullSeconds; }  // Below 0 before it.
+
+private:
+    bool  opening_ = false;
+    float gate_ = 0.0f;
+    float fed_ = 0.0f;
+    float finaleSeconds_ = 0.0f;
 };
 
 }  // namespace kindle

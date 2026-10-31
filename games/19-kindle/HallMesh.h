@@ -59,8 +59,94 @@ inline void addShell(MeshData& out, const Room& room) {
     iron::appendBox(out, {0, h.y + t, 0}, {h.x * 2 + 4, t * 2, h.z * 2 + 4});
     iron::appendBox(out, {-h.x - t, 0, 0}, {t * 2, h.y * 2, h.z * 2 + 4});
     iron::appendBox(out, {h.x + t, 0, 0}, {t * 2, h.y * 2, h.z * 2 + 4});
-    iron::appendBox(out, {0, 0, -h.z - t}, {h.x * 2, h.y * 2, t * 2});
     iron::appendBox(out, {0, 0, h.z + t}, {h.x * 2, h.y * 2, t * 2});
+
+    // The north wall, with the slit left open. Each piece is laid around it.
+    const float slit = room.slitHalf;
+    const float tall = room.slitHeight;
+    const float side = (h.x - slit) * 0.5f;
+    iron::appendBox(out, {-slit - side, 0, -h.z - t}, {side * 2, h.y * 2, t * 2});
+    iron::appendBox(out, {slit + side, 0, -h.z - t}, {side * 2, h.y * 2, t * 2});
+    iron::appendBox(out, {0, (tall + h.y) * 0.5f, -h.z - t}, {slit * 2, h.y - tall, t * 2});
+    iron::appendBox(out, {0, -(tall + h.y) * 0.5f, -h.z - t}, {slit * 2, h.y - tall, t * 2});
+}
+
+// The passage between the hall and the chamber.
+inline void addSlit(MeshData& out, const Room& room) {
+    const float near = room.slitNear - 1.0f;
+    const float far = room.slitFar;
+    const float length = near - far;
+    const float middle = (near + far) * 0.5f;
+    const float w = room.slitHalf;
+    const float t = room.slitHeight;
+    iron::appendBox(out, {-w - 0.5f, 0, middle}, {1.0f, t * 2 + 2, length});
+    iron::appendBox(out, {w + 0.5f, 0, middle}, {1.0f, t * 2 + 2, length});
+    iron::appendBox(out, {0, t + 0.5f, middle}, {w * 2, 1.0f, length});
+    iron::appendBox(out, {0, -t - 0.5f, middle}, {w * 2, 1.0f, length});
+
+    // Heavy ribs down its length, and a frame around each end.
+    for (float z = near - 1.0f; z > far; z -= 2.0f) {
+        iron::appendBox(out, {-w + 0.04f, 0, z}, {0.08f, t * 2, 0.3f});
+        iron::appendBox(out, {w - 0.04f, 0, z}, {0.08f, t * 2, 0.3f});
+    }
+    for (const float z : {-19.75f, -28.7f}) {
+        iron::appendBox(out, {-w - 0.7f, 0, z}, {1.4f, t * 2 + 3, 0.5f});
+        iron::appendBox(out, {w + 0.7f, 0, z}, {1.4f, t * 2 + 3, 0.5f});
+        iron::appendBox(out, {0, t + 0.7f, z}, {w * 2 + 2.8f, 1.4f, 0.5f});
+        iron::appendBox(out, {0, -t - 0.7f, z}, {w * 2 + 2.8f, 1.4f, 0.5f});
+    }
+    // A plate closing the gap between the passage and the chamber wall.
+    constexpr float kFlange = 9.0f;
+    const float z = far + 0.2f;
+    iron::appendBox(out, {-w - 1.0f - kFlange * 0.5f, 0, z}, {kFlange, kFlange * 2, 0.4f});
+    iron::appendBox(out, {w + 1.0f + kFlange * 0.5f, 0, z}, {kFlange, kFlange * 2, 0.4f});
+    iron::appendBox(out, {0, t + 1.0f + kFlange * 0.5f, z}, {w * 2 + 2, kFlange, 0.4f});
+    iron::appendBox(out, {0, -t - 1.0f - kFlange * 0.5f, z}, {w * 2 + 2, kFlange, 0.4f});
+}
+
+// The round chamber: a sphere seen from inside, with a cage of girders.
+inline void addChamber(MeshData& out, const Room& room) {
+    const float radius = room.chamberRadius;
+    const Vec3 center = room.coreCenter;
+    const iron::MeshData ball = iron::makeUVSphere(radius, 128);
+
+    const auto base = static_cast<std::uint32_t>(out.vertices.size());
+    for (iron::Vertex vertex : ball.vertices) {
+        vertex.position = vertex.position + center;
+        vertex.normal = -vertex.normal;
+        out.vertices.push_back(vertex);
+    }
+    // Flipped to face inward, and left open where the passage comes through.
+    for (std::size_t i = 0; i + 2 < ball.indices.size(); i += 3) {
+        const Vec3 p = ball.vertices[ball.indices[i]].position + center;
+        const bool inMouth = p.z > center.z && std::sqrt(p.x * p.x + p.y * p.y) < 9.0f;
+        if (inMouth) continue;
+        out.indices.insert(out.indices.end(), {base + ball.indices[i], base + ball.indices[i + 2],
+                                               base + ball.indices[i + 1]});
+    }
+
+    constexpr float kPi = std::numbers::pi_v<float>;
+    const float inner = radius - 0.5f;
+    const auto onBall = [&](float around, float up) {
+        return center + Vec3{std::cos(around) * std::cos(up), std::sin(up), std::sin(around) * std::cos(up)} * inner;
+    };
+    constexpr int kSteps = 32;
+    for (int m = 0; m < 12; ++m) {
+        const float around = static_cast<float>(m) * kPi / 6.0f + 0.13f;
+        for (int s = 0; s < kSteps; ++s) {
+            const float a = -kPi * 0.5f + kPi * static_cast<float>(s) / kSteps;
+            const float b = -kPi * 0.5f + kPi * static_cast<float>(s + 1) / kSteps;
+            appendCylinder(out, onBall(around, a), onBall(around, b), 0.42f, 8);
+        }
+    }
+    for (int ring = -3; ring <= 3; ++ring) {
+        const float up = static_cast<float>(ring) * kPi / 8.0f;
+        for (int s = 0; s < kSteps * 2; ++s) {
+            const float a = 2.0f * kPi * static_cast<float>(s) / (kSteps * 2);
+            const float b = 2.0f * kPi * static_cast<float>(s + 1) / (kSteps * 2);
+            appendCylinder(out, onBall(a, up), onBall(b, up), 0.3f, 6);
+        }
+    }
 }
 
 // Floor plates with real gaps between them, which catch the light as you pass.
@@ -195,7 +281,20 @@ inline iron::MeshData buildHallMesh(const Room& room) {
     hall::addCeiling(mesh, room);
     hall::addCables(mesh, room, random);
     hall::addClutter(mesh, room, random);
+    hall::addSlit(mesh, room);
+    hall::addChamber(mesh, room);
     return mesh;
+}
+
+// One leaf of the gate, centred on the origin, to slide sideways out of the slit.
+inline iron::MeshData buildGateLeaf(const Room& room) {
+    iron::MeshData leaf;
+    const float half = room.slitHalf + 0.3f;
+    iron::appendBox(leaf, {0, 0, 0}, {half, room.slitHeight * 2 + 0.6f, 0.5f});
+    for (const float y : {-2.0f, 0.0f, 2.0f}) {
+        iron::appendBox(leaf, {0, y, 0.3f}, {half * 0.9f, 0.3f, 0.14f});
+    }
+    return leaf;
 }
 
 }  // namespace kindle

@@ -54,7 +54,7 @@ void testSqueezeIsFasterAndNarrower() {
     Swarm cruise({0, 0, 0});
     Swarm squeeze({0, 0, 0});
     Controls controls;
-    controls.wish = {0, 0, -1};
+    controls.wish = {0, 0, 1};
     for (int i = 0; i < 240; ++i) cruise.update(room, controls, kStep);
     controls.squeeze = true;
     for (int i = 0; i < 240; ++i) squeeze.update(room, controls, kStep);
@@ -167,6 +167,69 @@ void testRelitShareGrows() {
     assert(wakes.relit(room) > one * 2.0f);
 }
 
+void testSlitNeedsASqueeze() {
+    Room room;
+    room.sealed = false;
+    Controls controls;
+    controls.wish = {0, 0, -1};
+
+    Swarm cloud({0, 0, -12});
+    for (int i = 0; i < 300; ++i) cloud.update(room, controls, kStep);
+    assert(cloud.position().z > -20.0f);
+
+    controls.squeeze = true;
+    Swarm ribbon({0, 0, -12});
+    for (int i = 0; i < 300; ++i) ribbon.update(room, controls, kStep);
+    assert(ribbon.position().z < room.slitFar);
+}
+
+void testSealedHallHasNoWayOut() {
+    const Room room;
+    Controls controls;
+    controls.wish = {0, 0, -1};
+    controls.squeeze = true;
+    Swarm swarm({0, 0, -12});
+    for (int i = 0; i < 300; ++i) swarm.update(room, controls, kStep);
+    assert(swarm.position().z > -20.0f);
+}
+
+void testCoreIsSolid() {
+    Room room;
+    room.sealed = false;
+    Controls controls;
+    controls.wish = {0, 0, -1};
+    Swarm swarm({0, 0, -40});
+    for (int i = 0; i < 300; ++i) swarm.update(room, controls, kStep);
+    assert(swarm.position().z > -60.0f + room.coreRadius);
+}
+
+void testStoryRunsToTheFinale() {
+    const Room room;
+    kindle::Story story;
+    const Vec3 hall{0, 0, 0};
+    const Vec3 beside{0, 0, -60.0f + 12.0f};
+
+    story.update(room, hall, 0.2f, false, kStep);
+    assert(story.gate() == 0.0f && story.sealed());
+
+    for (int i = 0; i < 300; ++i) story.update(room, hall, 0.6f, false, kStep);
+    assert(story.gate() == 1.0f && !story.sealed());
+
+    // Igniting in the hall doesn't feed the core.
+    story.update(room, hall, 0.6f, true, kStep);
+    assert(story.fed() == 0.0f);
+
+    int bursts = 0;
+    while (!story.finale()) {
+        story.update(room, beside, 0.6f, true, kStep);
+        assert(++bursts < 10);
+    }
+    assert(story.pulling());
+    for (int i = 0; i < 300; ++i) story.update(room, beside, 0.6f, false, kStep);
+    assert(!story.pulling());
+    assert(story.sinceIgnition() > 0.0f);
+}
+
 void testIgniteSpendsHeat() {
     const Room room;
     Swarm swarm({0, 0, 0});
@@ -199,6 +262,10 @@ int main() {
     testCoastsToAStop();
     testIgniteBurstsThenRests();
     testIgniteSpendsHeat();
+    testSlitNeedsASqueeze();
+    testSealedHallHasNoWayOut();
+    testCoreIsSolid();
+    testStoryRunsToTheFinale();
     testIgnitedIsTrueForOneUpdate();
     testWakesSpreadAndStay();
     testIgnitingNearAWakeFeedsIt();
