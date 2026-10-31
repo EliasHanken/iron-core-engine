@@ -17,7 +17,9 @@
 #include "render/Fog.h"
 #include "render/Light.h"
 #include "render/RendererFactory.h"
+#include "scene/Mesh.h"
 
+#include <algorithm>
 #include <cmath>
 #include <cstdio>
 #include <iostream>
@@ -64,6 +66,7 @@ int compile(const std::string& path) {
         std::cout << "// ===== " << layer.name << ": simulate =====\n" << s.compute
                   << "\n// ===== " << layer.name << ": vertex =====\n" << s.vertex
                   << "\n// ===== " << layer.name << ": fragment =====\n" << s.fragment << "\n";
+        if (!s.inject.empty()) std::cout << "\n// ===== " << layer.name << ": light =====\n" << s.inject << "\n";
     }
     if (compiled.surface) std::cout << compiled.surface->hookGlsl << "\n";
     return 0;
@@ -97,6 +100,11 @@ int render(const std::string& path, int argc, char** argv) {
         options.stills.push_back({seconds, outDir + "/forge-" + part + ".png"});
     }
 
+    std::sort(options.stills.begin(), options.stills.end(),
+              [](const capture::StillRequest& a, const capture::StillRequest& b) {
+                  return a.seconds < b.seconds;
+              });
+
     iron::Application::Config cfg;
     cfg.title = "Forge";
     cfg.width = 1280;
@@ -113,11 +121,20 @@ int render(const std::string& path, int argc, char** argv) {
     vulkan->setBloomIntensity(0.10f);
     vulkan->setSsaoStrength(0.0f);
 
+    renderer.setSkybox(vulkan->bakeSky(forge::studioSkyGlsl(), 256));
+
     forge::Player player(renderer);
     const std::vector<forge::Issue> problems = player.apply(compiled);
     if (!problems.empty()) {
         printIssues(problems);
         return 1;
+    }
+
+    const bool isSurface = compiled.surface.has_value();
+    iron::DrawCall sphere;
+    if (isSurface) {
+        sphere.mesh = renderer.createMesh(iron::makeUVSphere(3.0f, 128));
+        sphere.shader = renderer.createLitShaderWithSurface(compiled.surface->hookGlsl);
     }
 
     const capture::FrameFn frame = [&](float seconds, float dt, int width, int height) {
@@ -128,12 +145,21 @@ int render(const std::string& path, int argc, char** argv) {
             34.0f * std::numbers::pi_v<float> / 180.0f,
             static_cast<float>(width) / static_cast<float>(height), 0.1f, 300.0f);
 
-        const iron::DirectionalLight noSun{};
+        iron::DirectionalLight sun;
+        sun.direction = iron::normalize(Vec3{-0.5f, -0.8f, -0.4f});
+        sun.color = isSurface ? Vec3{0.9f, 0.85f, 0.8f} : Vec3{0, 0, 0};
+        sun.ambient = 0.05f;
         const iron::Fog noFog{};
-        renderer.beginFrame(Vec3{0.012f, 0.012f, 0.02f}, noSun,
+        vulkan->setLightVolume(player.light(), 1.5f);
+        renderer.beginFrame(Vec3{0.012f, 0.012f, 0.02f}, sun,
                             std::span<const iron::PointLight>{}, noFog, view, projection);
-        player.simulate(dt);
-        player.render(view, projection);
+        if (isSurface) {
+            sphere.material.emissive = {seconds, 0.0f, 0.0f};
+            renderer.submit(sphere);
+        } else {
+            player.simulate(dt);
+            player.render(view, projection);
+        }
     };
 
     capture::runLoop(app, renderer, *vulkan, options, frame, 0.0f);

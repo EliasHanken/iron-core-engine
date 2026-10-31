@@ -94,12 +94,12 @@ struct ShapeInstance {
 
 struct Wire {
     std::string from;  // "pulse" or "pulse.out"
-    std::string to;    // "move.0.strength", or "pulse.speed"
+    std::string to;    // "layers.0.move.0.strength", or "pulse.speed"
 };
 
 struct Layer {
     std::string name = "layer";
-    std::uint32_t count = 100000;
+    std::uint64_t count = 100000;
     bool blockLight = false;  // Smoke-like: draws over things instead of adding light.
     int  trail = 0;           // Segments per ribbon; 0 draws sprites.
     std::vector<BlockInstance> spawn;
@@ -136,20 +136,26 @@ nlohmann::json issuesToJson(const std::vector<Issue>& issues);
 
 inline constexpr int kMaxSlots = 64;
 
-// Shader text plus the current value of each uniform slot. Every value lives in a
-// slot, so changing a number needs no recompile: if the text of a new compile
-// matches the old, only the slots change, and the effect keeps running.
+// Limits a document can't exceed, so that a bad file fails with a message rather
+// than running the GPU out of memory.
+inline constexpr std::uint64_t kMaxCount = 3'000'000;
+inline constexpr std::uint64_t kMaxTrailBytes = 512ull * 1024 * 1024;
+
+// Shader text plus the current value of each uniform slot. Every particle value
+// lives in a slot, so changing a number needs no recompile: if the text of a new
+// compile matches the old, only the slots change, and the effect keeps running.
+// Surface values are written into the shader, so changing one rebuilds it.
 struct CompiledLayer {
     std::string   name;
     std::uint32_t count = 0;
     bool          blockLight = false;
+    bool          emitsLight = false;
     int           trail = 0;
     std::string   commonGlsl;
     std::string   simulateGlsl;
     std::string   vertexGlsl;
     std::string   fragmentGlsl;
     std::string   emissionGlsl;
-    std::string   trailGlsl;
     std::vector<float> slots;  // 4 floats per slot.
 };
 

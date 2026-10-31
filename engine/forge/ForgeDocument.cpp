@@ -6,6 +6,7 @@
 #include <cctype>
 #include <cstdio>
 #include <fstream>
+#include <functional>
 #include <set>
 #include <sstream>
 
@@ -155,7 +156,14 @@ std::vector<BlockInstance> readStack(const json& j, Stack stack, const std::stri
 Layer readLayer(const json& j, const std::string& where, std::vector<Issue>& issues) {
     Layer layer;
     layer.name = j.value("name", std::string("layer"));
-    layer.count = j.value("count", 100000u);
+    if (j.contains("count")) {
+        if (!j["count"].is_number_integer() || j["count"].get<std::int64_t>() < 1) {
+            add(issues, where + ".count", "bad-count", "\"count\" must be a whole number above 0.",
+                "Try 100000.");
+        } else {
+            layer.count = j["count"].get<std::uint64_t>();
+        }
+    }
     layer.blockLight = j.value("blockLight", false);
     layer.trail = j.value("trail", 0);
     if (j.contains("spawn")) layer.spawn = readStack(j["spawn"], Stack::Spawn, where + ".spawn", issues);
@@ -222,7 +230,18 @@ std::string nearestName(std::string_view name, const std::vector<std::string>& o
     return bestDistance <= allowed ? best : std::string{};
 }
 
-Document parseDocument(const json& j, std::vector<Issue>& issues) {
+// Older paths and hand-written files can say "move.0.strength", meaning the first
+// layer. Everything after parsing uses the full path.
+std::string normalizeWireTarget(const std::string& to) {
+    for (const char* stack : {"spawn.", "move.", "look."}) {
+        if (to.rfind(stack, 0) == 0) return "layers.0." + to;
+    }
+    return to;
+}
+
+namespace {
+
+Document parseUnchecked(const json& j, std::vector<Issue>& issues) {
     Document doc;
     if (!j.is_object()) {
         add(issues, "", "bad-document", "A Forge file must be a JSON object.");
@@ -285,13 +304,27 @@ Document parseDocument(const json& j, std::vector<Issue>& issues) {
 
     if (j.contains("wires") && j["wires"].is_array()) {
         for (const json& wire : j["wires"]) {
-            doc.wires.push_back({wire.value("from", std::string()), wire.value("to", std::string())});
+            doc.wires.push_back({wire.value("from", std::string()),
+                                 normalizeWireTarget(wire.value("to", std::string()))});
         }
     }
 
     const std::vector<Issue> more = validate(doc);
     issues.insert(issues.end(), more.begin(), more.end());
     return doc;
+}
+
+}  // namespace
+
+Document parseDocument(const json& j, std::vector<Issue>& issues) {
+    // A value of the wrong type anywhere must come back as an issue, not a crash.
+    try {
+        return parseUnchecked(j, issues);
+    } catch (const json::exception& error) {
+        add(issues, "", "bad-value", std::string("A value has the wrong type: ") + error.what(),
+            "Compare the file with `forge catalog`.");
+        return {};
+    }
 }
 
 Document loadDocument(const std::string& path, std::vector<Issue>& issues) {
@@ -365,15 +398,103 @@ std::vector<Issue> validate(const Document& doc) {
         validateStack(doc, layer.spawn, at + ".spawn", issues);
         validateStack(doc, layer.move, at + ".move", issues);
         validateStack(doc, layer.look, at + ".look", issues);
-        if (layer.count == 0) add(issues, at + ".count", "bad-count", "\"count\" can't be 0.", "Try 100000.");
-        if (layer.trail > 64) {
-            add(issues, at + ".trail", "bad-trail", "\"trail\" can't be above 64 segments.", "Try 24.");
+        if (layer.count > kMaxCount) {
+            add(issues, at + ".count", "bad-count",
+                "\"count\" can't be above " + std::to_string(kMaxCount) + ".", "Try 500000.");
+        }
+        if (layer.trail != 0 && (layer.trail < 2 || layer.trail > 64)) {
+            add(issues, at + ".trail", "bad-trail", "\"trail\" must be 0, or from 2 to 64 segments.",
+                "Try 24.");
+        }
+        if (layer.count * static_cast<std::uint64_t>(std::max(layer.trail, 0)) * 16 > kMaxTrailBytes) {
+            add(issues, at + ".trail", "trail-too-large", "This many ribbons would need too much memory.",
+                "Use fewer particles or shorter trails. Ribbons usually need under 20000.");
+        }
+        if (layer.blockLight && layer.trail > 0) {
+            add(issues, at, "smoke-ribbon", "A layer can't be both \"blockLight\" and \"trail\".",
+                "Remove one of them.");
+        }
+        int lights = 0;
+        for (const BlockInstance& block : layer.look) lights += block.block == "LightTheScene" ? 1 : 0;
+        if (lights > 1) {
+            add(issues, at + ".look", "two-lights", "A layer can only have one LightTheScene.",
+                "Remove one.");
         }
     }
     validateStack(doc, doc.surface, "surface", issues);
 
     std::vector<std::string> nodeNames;
     for (const auto& [name, node] : doc.nodes) nodeNames.push_back(name);
+
+    // Names become GLSL identifiers.
+    const auto identifier = [](const std::string& name) {
+        return !name.empty() && std::all_of(name.begin(), name.end(), [](unsigned char c) {
+            return std::isalnum(c) != 0 || c == '_';
+        });
+    };
+    for (const auto& [name, node] : doc.nodes) {
+        if (!identifier(name)) {
+            add(issues, "nodes." + name, "bad-name", "Node names can only use letters, digits and _.");
+        }
+    }
+    for (const auto& [name, shape] : doc.shapes) {
+        if (!identifier(name)) {
+            add(issues, "shapes." + name, "bad-name", "Shape names can only use letters, digits and _.");
+        }
+    }
+
+    const auto targetExists = [&](const std::string& to, std::string& fix) {
+        std::vector<std::string> parts;
+        std::stringstream stream(to);
+        for (std::string part; std::getline(stream, part, '.');) parts.push_back(part);
+
+        const auto paramOf = [&](const std::vector<BlockInstance>& stack, const std::string& index,
+                                 const std::string& param) {
+            const std::size_t i = index.find_first_not_of("0123456789") == std::string::npos && !index.empty()
+                                      ? static_cast<std::size_t>(std::stoul(index)) : stack.size();
+            if (i >= stack.size()) {
+                fix = "That stack has " + std::to_string(stack.size()) + " blocks, counted from 0.";
+                return false;
+            }
+            const BlockDesc* desc = findBlock(stack[i].block);
+            if (!desc) return false;
+            for (const ParamDesc& p : desc->params) {
+                if (p.name == param) return true;
+            }
+            fix = suggestion(param, paramNames(desc->params));
+            return false;
+        };
+
+        if (parts.size() == 3 && parts[0] == "surface") return paramOf(doc.surface, parts[1], parts[2]);
+        if (parts.size() == 5 && parts[0] == "layers") {
+            const std::size_t layer = parts[1].find_first_not_of("0123456789") == std::string::npos &&
+                                              !parts[1].empty()
+                                          ? static_cast<std::size_t>(std::stoul(parts[1])) : doc.layers.size();
+            if (layer >= doc.layers.size()) {
+                fix = "There are " + std::to_string(doc.layers.size()) + " layers, counted from 0.";
+                return false;
+            }
+            const Layer& target = doc.layers[layer];
+            if (parts[2] == "spawn") return paramOf(target.spawn, parts[3], parts[4]);
+            if (parts[2] == "move") return paramOf(target.move, parts[3], parts[4]);
+            if (parts[2] == "look") return paramOf(target.look, parts[3], parts[4]);
+        }
+        if (parts.size() == 2 && doc.nodes.count(parts[0]) != 0) {
+            const NodeDesc* desc = findNode(doc.nodes.at(parts[0]).type);
+            if (!desc) return false;
+            for (const ParamDesc& p : desc->inputs) {
+                if (p.name == parts[1]) return true;
+            }
+            fix = suggestion(parts[1], paramNames(desc->inputs));
+            return false;
+        }
+        if (!parts.empty() && parts[0] == "shapes") {
+            fix = "Shape values can't be driven. Drive a block's value instead.";
+        } else {
+            fix = "Use \"layers.0.move.0.strength\", \"surface.0.intensity\" or \"node.input\".";
+        }
+        return false;
+    };
 
     for (std::size_t i = 0; i < doc.wires.size(); ++i) {
         const Wire& wire = doc.wires[i];
@@ -383,7 +504,41 @@ std::vector<Issue> validate(const Document& doc) {
             add(issues, at, "unknown-wire-source", "No node called \"" + from + "\".",
                 suggestion(from, nodeNames));
         }
-        if (wire.to.empty()) add(issues, at, "bad-wire", "This wire has no \"to\".");
+        if (wire.to.empty()) {
+            add(issues, at, "bad-wire", "This wire has no \"to\".");
+            continue;
+        }
+        std::string fix;
+        if (!targetExists(wire.to, fix)) {
+            add(issues, at, "unknown-wire-target", "Nothing to drive at \"" + wire.to + "\".", fix);
+        }
+    }
+
+    // Wires between nodes can't form a loop.
+    std::map<std::string, std::vector<std::string>> feeds;
+    for (const Wire& wire : doc.wires) {
+        const std::string target = wire.to.substr(0, wire.to.find('.'));
+        if (doc.nodes.count(target) != 0) {
+            feeds[target].push_back(wire.from.substr(0, wire.from.find('.')));
+        }
+    }
+    std::map<std::string, int> state;
+    std::function<bool(const std::string&)> hasLoop = [&](const std::string& name) {
+        if (state[name] == 1) return true;
+        if (state[name] == 2) return false;
+        state[name] = 1;
+        for (const std::string& source : feeds[name]) {
+            if (hasLoop(source)) return true;
+        }
+        state[name] = 2;
+        return false;
+    };
+    for (const auto& [name, node] : doc.nodes) {
+        if (hasLoop(name)) {
+            add(issues, "nodes." + name, "wire-loop", "\"" + name + "\" feeds into itself.",
+                "Remove one of the wires in the loop.");
+            break;
+        }
     }
     return issues;
 }

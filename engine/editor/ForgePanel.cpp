@@ -43,6 +43,10 @@ bool containsIgnoringCase(const std::string& text, const std::string& query) {
 
 }  // namespace
 
+void ForgePanel::remember(const forge::Document& document) {
+    history_.commit(forge::documentToJson(document).dump());
+}
+
 void ForgePanel::trackUndo(const forge::Document& document) {
     if (ImGui::IsItemActivated()) editStart_ = forge::documentToJson(document).dump();
     if (ImGui::IsItemDeactivatedAfterEdit() && !editStart_.empty()) {
@@ -121,7 +125,9 @@ void ForgePanel::drawParam(forge::Document& document, const std::string& path,
         }
     }
 
-    if (!driver.empty() && document.nodes.count(driver) != 0) {
+    // The depth limit keeps a looped file on screen, where its error can be read.
+    constexpr int kMaxDriverDepth = 6;
+    if (!driver.empty() && document.nodes.count(driver) != 0 && depth < kMaxDriverDepth) {
         forge::NodeInstance& node = document.nodes.at(driver);
         if (const forge::NodeDesc* desc = forge::findNode(node.type)) {
             ImGui::Indent(14.0f);
@@ -351,11 +357,11 @@ ForgePanel::Action ForgePanel::draw(forge::Document& document, const std::vector
         forge::Layer& layer = document.layers[static_cast<std::size_t>(selectedLayer_)];
         int count = static_cast<int>(layer.count);
         ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x * 0.62f);
-        if (ImGui::SliderInt("particles", &count, 1000, 1500000, "%d", ImGuiSliderFlags_Logarithmic)) {
-            layer.count = static_cast<std::uint32_t>(count);
-        }
+        const bool resized = ImGui::SliderInt("particles", &count, 1000, 1500000, "%d",
+                                              ImGuiSliderFlags_Logarithmic);
         // Resizing rebuilds the layer, so it waits for the slider's release.
         trackUndo(document);
+        if (resized) layer.count = static_cast<std::uint64_t>(count);
         if (ImGui::IsItemDeactivatedAfterEdit()) changed = true;
 
         const auto index = static_cast<std::size_t>(selectedLayer_);

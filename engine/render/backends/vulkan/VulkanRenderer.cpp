@@ -1393,7 +1393,9 @@ void VulkanRenderer::endFrame() {
         postProcess_.endViewportPass(cb);
     }
 
-    bool capturing = pendingCapture_ && !pendingCaptureUi_ &&
+    // A surface that can't copy from the window falls back to the scene alone.
+    const bool captureWindow = pendingCaptureUi_ && swapchain_.canCapture();
+    bool capturing = pendingCapture_ && !captureWindow &&
                      recordCaptureCopy(cb, postProcess_.viewportColorImage(),
                                        postProcess_.viewportExtent(),
                                        VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
@@ -1447,7 +1449,7 @@ void VulkanRenderer::endFrame() {
         vkCmdEndRenderPass(cb);
     }
 
-    if (pendingCapture_ && pendingCaptureUi_) {
+    if (pendingCapture_ && captureWindow) {
         capturing = recordCaptureCopy(cb, swapchain_.image(currentImageIndex_), swapchain_.extent(),
                                       VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
                                       VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT);
@@ -1526,6 +1528,7 @@ bool VulkanRenderer::recordCaptureCopy(VkCommandBuffer cb, VkImage image, VkExte
 
     VkImageMemoryBarrier toSrc{};
     toSrc.sType               = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+    const bool toPresent = layout == VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
     toSrc.srcAccessMask       = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
     toSrc.dstAccessMask       = VK_ACCESS_TRANSFER_READ_BIT;
     toSrc.oldLayout           = layout;
@@ -1536,7 +1539,10 @@ bool VulkanRenderer::recordCaptureCopy(VkCommandBuffer cb, VkImage image, VkExte
     toSrc.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
     toSrc.subresourceRange.levelCount = 1;
     toSrc.subresourceRange.layerCount = 1;
-    vkCmdPipelineBarrier(cb, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+    // The swapchain pass ends with an implicit transition, which only chains to a
+    // barrier that waits on every stage.
+    vkCmdPipelineBarrier(cb, toPresent ? VK_PIPELINE_STAGE_ALL_COMMANDS_BIT
+                                       : VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
                          VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, nullptr, 0, nullptr,
                          1, &toSrc);
 
@@ -1549,7 +1555,7 @@ bool VulkanRenderer::recordCaptureCopy(VkCommandBuffer cb, VkImage image, VkExte
 
     VkImageMemoryBarrier toRead = toSrc;
     toRead.srcAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
-    toRead.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+    toRead.dstAccessMask = toPresent ? VkAccessFlags{0} : VkAccessFlags{VK_ACCESS_SHADER_READ_BIT};
     toRead.oldLayout     = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
     toRead.newLayout     = layout;
     vkCmdPipelineBarrier(cb, VK_PIPELINE_STAGE_TRANSFER_BIT, nextStage, 0, 0, nullptr, 0, nullptr,

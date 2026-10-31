@@ -25,7 +25,7 @@ Open `forge-studio` to edit one live, or use the `forge` tool with no editor at 
 - **move** runs every step, top to bottom.
 - **look** decides how it's drawn.
 
-Any value you leave out uses its default, so a block with only a name still works.
+Any value you leave out uses its default, so a block with only a name works. The exceptions are `OnShape`, `StickToShape` and `Bounce`, which also need a `shape`.
 
 ## More power
 
@@ -38,11 +38,13 @@ Any value you leave out uses its default, so a block with only a name still work
 "move": [{"block": "StickToShape", "shape": "orb"}]
 ```
 
-**Ribbons.** Add `"trail": 48` to a layer, and each particle draws as a continuous strip through its last 48 positions.
+**Ribbons.** Add `"trail": 48` to a layer, and each particle draws as a continuous strip through its last 48 positions. It can be from 2 to 64, and ribbons usually need fewer than 20,000 particles.
 
-**Smoke.** Add `"blockLight": true` to a layer, so that it covers what's behind it rather than adding light.
+**Smoke.** Add `"blockLight": true` to a layer, so that it covers what's behind it rather than adding light. A layer can't be both smoke and ribbons.
 
-**Nodes.** Any number can be driven by a node instead of a fixed value:
+**Light.** Add a `LightTheScene` block, and the layer's glow lights the air around it.
+
+**Nodes.** Any number in a block or node can be driven by a node instead of a fixed value. Shape values, `count` and `trail` can't.
 
 ```json
 "nodes": {"pulse": {"type": "Sine", "speed": 2, "low": 1, "high": 6}},
@@ -71,7 +73,7 @@ The `forge` tool gives you the whole loop with no editor:
    {"where": "layers.0.move.0", "code": "unknown-block",
     "message": "There is no block called \"CurlFlw\".", "fix": "Did you mean \"CurlFlow\"?"}
    ```
-4. `forge render <file> --at 1,3,5 --out <dir> [--distance 14]` saves stills, so you can look at the result. It opens a window and is capped at 30 fps.
+4. `forge render <file> --at 1,3,5 --out <dir> [--distance 14]` saves stills, so you can look at the result. `<dir>` must already exist, and ffmpeg must be on PATH. It opens a window and is capped at 30 fps.
 5. `forge compile <file>` prints the generated GLSL, if you need to see it.
 
 If `forge-studio` has the file open, saving it updates the running effect on screen.

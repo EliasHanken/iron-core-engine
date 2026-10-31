@@ -194,7 +194,9 @@ void undriveValue(Document& doc, const std::string& path) {
                                    [&](const Wire& w) { return w.to == path; }),
                     doc.wires.end());
     const bool stillUsed = std::any_of(doc.wires.begin(), doc.wires.end(),
-                                       [&](const Wire& w) { return w.from == driver; });
+                                       [&](const Wire& w) {
+                                           return w.from.substr(0, w.from.find('.')) == driver;
+                                       });
     if (!stillUsed) doc.nodes.erase(driver);
 }
 

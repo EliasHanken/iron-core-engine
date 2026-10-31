@@ -337,12 +337,20 @@ bool VkGpuParticles::createBuffer() {
     VmaAllocationCreateInfo alloc{};
     alloc.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE;
 
-    VK_CHECK(vmaCreateBuffer(ctx.allocator(), &info, &alloc, &ssbo_, &ssboAlloc_, nullptr));
+    if (vmaCreateBuffer(ctx.allocator(), &info, &alloc, &ssbo_, &ssboAlloc_, nullptr) != VK_SUCCESS) {
+        Log::error("GpuParticles: not enough GPU memory for %u particles", desc_.count);
+        ssbo_ = VK_NULL_HANDLE;
+        return false;
+    }
 
     if (desc_.trailSegments > 1) {
         info.size = static_cast<VkDeviceSize>(desc_.count) * desc_.trailSegments * 16;
         info.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
-        VK_CHECK(vmaCreateBuffer(ctx.allocator(), &info, &alloc, &trail_, &trailAlloc_, nullptr));
+        if (vmaCreateBuffer(ctx.allocator(), &info, &alloc, &trail_, &trailAlloc_, nullptr) != VK_SUCCESS) {
+            Log::error("GpuParticles: not enough GPU memory for ribbons");
+            trail_ = VK_NULL_HANDLE;
+            return false;
+        }
     }
     return ssbo_ != VK_NULL_HANDLE;
 }
@@ -636,6 +644,7 @@ void VkGpuParticles::simulate(float dtSec) {
                              VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 1, &toCompute,
                              0, nullptr, 0, nullptr);
         needsClear_ = false;
+        frameIndex_ = 0;  // Ribbons refill their trails on the first frame.
     }
 
     time_ += dtSec;

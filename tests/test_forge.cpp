@@ -139,15 +139,13 @@ void testWireFromNowhereIsAnError() {
 
 void testWireLoopIsAnError() {
     std::vector<Issue> issues;
-    const Document doc = parse(R"({
+    parse(R"({
       "nodes": {"a": {"type": "Add"}, "b": {"type": "Add"}},
       "wires": [{"from": "a", "to": "b.a"}, {"from": "b", "to": "a.a"},
                 {"from": "a", "to": "move.0.strength"}],
       "spawn": [{"block": "Sphere"}], "move": [{"block": "CurlFlow"}], "look": [{"block": "Glow"}]
     })", issues);
-    assert(issues.empty());
-    const Compiled compiled = compile(doc);
-    assert(findCode(compiled.issues, "wire-loop"));
+    assert(findCode(issues, "wire-loop"));
 }
 
 void testEveryBlockCompilesFromItsDefaults() {
@@ -195,7 +193,7 @@ void testEveryShapeAndNodeCompiles() {
         curl.block = "CurlFlow";
         layer.move.push_back(curl);
         doc.layers.push_back(layer);
-        doc.wires.push_back({"n", "move.0.strength"});
+        doc.wires.push_back({"n", "layers.0.move.0.strength"});
         const Compiled compiled = compile(doc);
         if (node.output != ValueType::Float) continue;
         assert(compiled.ok());
@@ -316,6 +314,111 @@ void testTrailLengthIsChecked() {
     assert(findCode(issues, "bad-trail"));
 }
 
+// Every one of these is valid JSON with a wrong type, and none may crash.
+void testWrongTypesBecomeIssues() {
+    for (const char* text : {R"({"count": "200000"})", R"({"layers": [3]})",
+                             R"({"nodes": {"a": 3}})", R"({"wires": [1]})",
+                             R"({"shapes": {"a": 3}})", R"([1, 2])"}) {
+        std::vector<Issue> issues;
+        parse(text, issues);
+        assert(!issues.empty());
+    }
+}
+
+void testHugeAndNegativeCountsAreRefused() {
+    std::vector<Issue> issues;
+    parse(R"({"count": -1})", issues);
+    assert(findCode(issues, "bad-count"));
+
+    issues.clear();
+    parse(R"({"count": 4000000000})", issues);
+    assert(findCode(issues, "bad-count"));
+
+    issues.clear();
+    parse(R"({"count": 1500000, "trail": 64})", issues);
+    assert(findCode(issues, "trail-too-large"));
+}
+
+void testTrailMustBeARealRibbon() {
+    std::vector<Issue> issues;
+    parse(R"({"trail": 1})", issues);
+    assert(findCode(issues, "bad-trail"));
+
+    issues.clear();
+    parse(R"({"trail": 8, "blockLight": true})", issues);
+    assert(findCode(issues, "smoke-ribbon"));
+}
+
+void testWireTargetsAreChecked() {
+    const char* const layer = R"("spawn": [{"block": "Sphere"}], "move": [{"block": "CurlFlow"}])";
+    const auto check = [&](const std::string& to) {
+        const std::string text = std::string(R"({"nodes": {"pulse": {"type": "Sine"}},
+          "wires": [{"from": "pulse", "to": ")") + to + R"("}], )" + layer + "}";
+        std::vector<Issue> issues;
+        parse(text.c_str(), issues);
+        return issues;
+    };
+    const std::vector<Issue> typo = check("layers.0.move.0.strenght");
+    assert(findCode(typo, "unknown-wire-target"));
+    assert(findCode(typo, "unknown-wire-target")->fix.find("strength") != std::string::npos);
+    assert(findCode(check("layers.7.move.0.strength"), "unknown-wire-target"));
+    assert(findCode(check("shapes.orb.radius"), "unknown-wire-target"));
+    assert(check("layers.0.move.0.strength").empty());
+    assert(check("move.0.strength").empty());
+    assert(check("pulse.speed").empty() == false);  // A node can't drive itself.
+}
+
+void testBareWireMeansTheFirstLayerOnly() {
+    std::vector<Issue> issues;
+    const Document doc = parse(R"({
+      "nodes": {"pulse": {"type": "Sine"}},
+      "wires": [{"from": "pulse.out", "to": "move.0.strength"}],
+      "layers": [{"move": [{"block": "CurlFlow"}]}, {"move": [{"block": "CurlFlow"}]}]
+    })", issues);
+    assert(issues.empty());
+    assert(doc.wires[0].to == "layers.0.move.0.strength");
+    assert(driverOf(doc, valuePath(0, Stack::Move, 0, "strength")) == "pulse");
+
+    const Compiled compiled = compile(doc);
+    assert(compiled.layers[0].simulateGlsl.find("node_pulse") != std::string::npos);
+    assert(compiled.layers[1].simulateGlsl.find("node_pulse") == std::string::npos);
+}
+
+void testStoppingOneDriverKeepsASharedNode() {
+    std::vector<Issue> issues;
+    Document doc = parse(R"({
+      "nodes": {"pulse": {"type": "Sine"}},
+      "wires": [{"from": "pulse.out", "to": "move.0.strength"},
+                {"from": "pulse.out", "to": "move.0.scale"}],
+      "move": [{"block": "CurlFlow"}]
+    })", issues);
+    assert(issues.empty());
+    undriveValue(doc, "layers.0.move.0.strength");
+    assert(doc.nodes.count("pulse") == 1);
+    assert(compile(doc).ok());
+}
+
+void testNamesMustBeIdentifiers() {
+    std::vector<Issue> issues;
+    parse(R"({"nodes": {"my-pulse": {"type": "Sine"}}})", issues);
+    assert(findCode(issues, "bad-name"));
+}
+
+void testOneLightPerLayer() {
+    std::vector<Issue> issues;
+    parse(R"({"look": [{"block": "LightTheScene"}, {"block": "LightTheScene"}]})", issues);
+    assert(findCode(issues, "two-lights"));
+}
+
+void testLightBlockMakesALayerEmit() {
+    std::vector<Issue> issues;
+    const Document doc = parse(R"({"look": [{"block": "LightTheScene"}]})", issues);
+    assert(issues.empty());
+    const Compiled compiled = compile(doc);
+    assert(compiled.layers[0].emitsLight);
+    assert(checkShaders(compiled).empty());
+}
+
 void testNearestName() {
     assert(nearestName("Sphre", {"Sphere", "Box"}) == "Sphere");
     assert(nearestName("zzzzzzzz", {"Sphere", "Box"}).empty());
@@ -349,6 +452,15 @@ int main() {
     testDrivingAValueAndStopping();
     testRibbonsCompile();
     testTrailLengthIsChecked();
+    testWrongTypesBecomeIssues();
+    testHugeAndNegativeCountsAreRefused();
+    testTrailMustBeARealRibbon();
+    testWireTargetsAreChecked();
+    testBareWireMeansTheFirstLayerOnly();
+    testStoppingOneDriverKeepsASharedNode();
+    testNamesMustBeIdentifiers();
+    testOneLightPerLayer();
+    testLightBlockMakesALayerEmit();
     testNearestName();
     std::puts("test_forge: all passed");
     return 0;

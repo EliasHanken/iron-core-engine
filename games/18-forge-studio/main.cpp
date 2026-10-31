@@ -14,6 +14,7 @@
 #include "forge/ForgePlayer.h"
 #include "math/Transform.h"
 #include "render/Fog.h"
+#include "render/StandardLitShader.h"
 #include "render/Light.h"
 #include "render/RendererFactory.h"
 #include "scene/Mesh.h"
@@ -81,7 +82,17 @@ float buildDemo(std::vector<DemoStep>& steps, std::vector<Tween>& tweens) {
         t.to = to;
         t.value = [=](forge::Document& doc) -> forge::Value* {
             auto& blocks = forge::stackOf(doc.layers[layer], stack);
-            return index < blocks.size() ? &blocks[index].values[param] : nullptr;
+            if (index >= blocks.size()) return nullptr;
+            forge::BlockInstance& block = blocks[index];
+            // A value left at its default isn't stored yet, so a tween starts from it.
+            if (block.values.count(param) == 0) {
+                if (const forge::BlockDesc* desc = forge::findBlock(block.block)) {
+                    for (const forge::ParamDesc& p : desc->params) {
+                        if (p.name == param) block.values[param] = p.defaultValue;
+                    }
+                }
+            }
+            return &block.values[param];
         };
         tweens.push_back(std::move(t));
     };
@@ -212,6 +223,7 @@ int main(int argc, char** argv) {
     const bool demo = !demoPath.empty();
     if (demo) options.recordPath = demoPath;
     options.captureUi = true;
+    options.escapeQuits = false;
     if (options.maxFps == 0 && demo) options.maxFps = 30;
 
     iron::Application::Config cfg;
@@ -238,11 +250,14 @@ int main(int argc, char** argv) {
 
     forge::Document document;
     std::vector<forge::Issue> issues;
+    // Problems reading the file at startup. Until they're fixed the document is only
+    // part of the file, so saving over it would lose whatever couldn't be read.
+    std::vector<forge::Issue> loadIssues;
     if (demo) {
         document = forge::makeTemplate("Sparks");
         document.layers[0].name = "shell";
     } else if (!path.empty() && std::filesystem::exists(path)) {
-        document = forge::loadDocument(path, issues);
+        document = forge::loadDocument(path, loadIssues);
     } else {
         document = forge::makeTemplate("Orb");
     }
@@ -250,36 +265,36 @@ int main(int argc, char** argv) {
 
     // Surface preview.
     const iron::MeshHandle sphere = renderer.createMesh(iron::makeUVSphere(3.0f, 128));
-    // A dim studio: dark, with soft lights for metal to reflect.
-    const iron::CubemapHandle sky = vulkan->bakeSky(R"GLSL(
-vec3 skyColor(vec3 d) {
-    vec3 color = mix(vec3(0.010, 0.010, 0.016), vec3(0.03, 0.03, 0.045), d.y * 0.5 + 0.5);
-    color += vec3(0.55, 0.60, 0.70) * pow(max(dot(d, normalize(vec3(-0.6, 0.6, 0.4))), 0.0), 40.0);
-    color += vec3(0.60, 0.28, 0.16) * pow(max(dot(d, normalize(vec3(0.8, -0.1, -0.3))), 0.0), 18.0);
-    return color;
-}
-)GLSL", 256);
+    renderer.setSkybox(vulkan->bakeSky(forge::studioSkyGlsl(), 256));
     iron::ShaderHandle surfaceShader = iron::kInvalidHandle;
     std::string surfaceSource;
 
     bool wantRecompile = true;
+    float surfaceCooldown = 0.0f;
     const auto recompile = [&]() {
         const forge::Compiled compiled = forge::compile(document);
         issues = compiled.issues;
-        if (!issues.empty()) return;
-        if (compiled.surface) {
+        if (issues.empty() && compiled.surface) {
             if (compiled.surface->hookGlsl != surfaceSource) {
-                const std::vector<forge::Issue> problems = forge::checkShaders(compiled);
-                if (!problems.empty()) {
-                    issues = problems;
+                // Surface values live in the shader text, so a dragged slider would
+                // rebuild it every frame. Rebuilds are paced instead.
+                if (surfaceCooldown > 0.0f) {
+                    wantRecompile = true;
                     return;
                 }
+                surfaceCooldown = 0.15f;
                 surfaceSource = compiled.surface->hookGlsl;
-                surfaceShader = renderer.createLitShaderWithSurface(surfaceSource);
+                const std::string fragment = iron::standardLitFragSourceWithSurface(surfaceSource);
+                if (surfaceShader == iron::kInvalidHandle) {
+                    surfaceShader = renderer.createShader(iron::standardLitVertSource(), fragment);
+                } else if (!renderer.reloadShader(surfaceShader, iron::standardLitVertSource(), fragment)) {
+                    issues.push_back({"surface", "shader-failed", "This surface doesn't compile.", ""});
+                }
             }
-            return;
+        } else if (issues.empty()) {
+            issues = player.apply(compiled);
         }
-        issues = player.apply(compiled);
+        issues.insert(issues.end(), loadIssues.begin(), loadIssues.end());
     };
 
     // Saving from outside, such as an AI editing the file, shows up immediately.
@@ -290,11 +305,14 @@ vec3 skyColor(vec3 d) {
             std::ifstream file(changed);
             const std::string text((std::istreambuf_iterator<char>(file)), std::istreambuf_iterator<char>());
             if (text == lastSaved) return;
+            lastSaved = text;
             std::vector<forge::Issue> found;
             forge::Document next = forge::loadDocument(changed, found);
             issues = found;
             if (found.empty()) {
+                panel.remember(document);
                 document = std::move(next);
+                loadIssues.clear();
                 wantRecompile = true;
             }
         });
@@ -310,7 +328,6 @@ vec3 skyColor(vec3 d) {
     float distance = 19.0f;
     float frameMs = 0.0f;
     float pollTimer = 0.0f;
-    bool wasSurface = false;
 
     const capture::FrameFn frame = [&](float seconds, float dt, int width, int height) {
         frameMs += (dt * 1000.0f - frameMs) * 0.05f;
@@ -329,7 +346,6 @@ vec3 skyColor(vec3 d) {
                 forge::Value* value = document.target == "particles" ? tween.value(document) : nullptr;
                 if (!value) continue;
                 if (!tween.begun) {
-                    // A value left at its default isn't stored yet.
                     tween.from = *value;
                     tween.begun = true;
                 }
@@ -346,15 +362,13 @@ vec3 skyColor(vec3 d) {
         }
 
         if (wantRecompile) {
-            recompile();
             wantRecompile = false;
+            recompile();
         }
 
         const bool isSurface = document.target == "surface";
-        if (isSurface != wasSurface) {
-            renderer.setSkybox(isSurface ? sky : iron::kInvalidHandle);
-            wasSurface = isSurface;
-        }
+        vulkan->setLightVolume(player.light(), 1.5f);
+        surfaceCooldown = std::max(surfaceCooldown - dt, 0.0f);
 
         imgui.beginFrame();
 
@@ -407,8 +421,14 @@ vec3 skyColor(vec3 d) {
         const iron::ForgePanel::Action action = panel.draw(document, issues, status, changed);
         if (changed) wantRecompile = true;
         if (action == iron::ForgePanel::Action::Save) {
-            lastSaved = forge::documentToJson(document).dump(2);
-            writeText(path, lastSaved);
+            if (loadIssues.empty()) {
+                lastSaved = forge::documentToJson(document).dump(2);
+                writeText(path, lastSaved);
+            } else {
+                issues.push_back({path, "save-refused",
+                                  "Not saved: this file didn't load fully, and saving would lose the rest.",
+                                  "Fix the file on disk, and it will reload here."});
+            }
         }
         if (action == iron::ForgePanel::Action::Restart) player.restart();
 

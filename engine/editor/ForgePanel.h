@@ -33,8 +33,8 @@ public:
     // A line of text over the picture, for scripted demos.
     void setCaption(std::string caption) { caption_ = std::move(caption); }
 
-    // Forgets undo history, for when a whole new document arrives.
-    void resetHistory() { history_.clear(); }
+    // Records the document in undo history, before something replaces it.
+    void remember(const forge::Document& document);
 
     void setVisibleLayer(int layer) { selectedLayer_ = layer; }
 

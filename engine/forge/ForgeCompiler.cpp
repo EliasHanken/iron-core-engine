@@ -137,12 +137,9 @@ std::string typeOf(ValueType type) { return type == ValueType::Float ? "float" :
 // Everything one compile shares: the slots, and the wires by target.
 class Context {
 public:
-    // `layerPrefix` lets a wire name a layer: "layers.1.move.0.strength". `inlineValues`
-    // writes numbers into the shader, for targets that have no slots to read.
-    Context(const Document& doc, std::vector<Issue>& issues, std::string layerPrefix,
-            bool inlineValues)
-        : doc_(doc), issues_(issues), layerPrefix_(std::move(layerPrefix)),
-          inlineValues_(inlineValues) {
+    // `inlineValues` writes numbers into the shader, for targets without slots.
+    Context(const Document& doc, std::vector<Issue>& issues, bool inlineValues)
+        : doc_(doc), issues_(issues), inlineValues_(inlineValues) {
         for (const Wire& wire : doc.wires) {
             wires_[wire.to] = wire.from.substr(0, wire.from.find('.'));
         }
@@ -179,8 +176,7 @@ public:
     std::string paramExpression(const ParamDesc& param, const std::map<std::string, Value>& values,
                                 const std::string& path, std::vector<std::string>& lines,
                                 std::set<std::string>& built, std::vector<std::string>& visiting) {
-        auto wire = wires_.find(path);
-        if (wire == wires_.end()) wire = wires_.find(layerPrefix_ + "." + path);
+        const auto wire = wires_.find(path);
         if (wire != wires_.end() && doc_.nodes.count(wire->second) != 0) {
             const std::string variable = buildNode(wire->second, lines, built, visiting, path);
             const NodeDesc* desc = findNode(doc_.nodes.at(wire->second).type);
@@ -292,7 +288,6 @@ private:
     const Document& doc_;
     std::vector<Issue>& issues_;
     std::map<std::string, std::string> wires_;
-    std::string layerPrefix_;
     bool inlineValues_ = false;
     std::vector<float> slots_;
     bool overflowed_ = false;
@@ -300,7 +295,8 @@ private:
 
 CompiledLayer compileLayer(const Document& doc, const Layer& layer, std::size_t index,
                            std::vector<Issue>& issues) {
-    Context context(doc, issues, "layers." + std::to_string(index), false);
+    Context context(doc, issues, false);
+    const std::string prefix = "layers." + std::to_string(index) + ".";
 
     std::set<std::string> usedShapes;
     for (const auto* stack : {&layer.spawn, &layer.move, &layer.look}) {
@@ -310,7 +306,7 @@ CompiledLayer compileLayer(const Document& doc, const Layer& layer, std::size_t 
     }
 
     const auto stackCode = [&](const std::vector<BlockInstance>& stack, const char* name) {
-        return context.stackCode(stack, std::string(name));
+        return context.stackCode(stack, prefix + name);
     };
 
     const std::string spawnCode = stackCode(layer.spawn, "spawn");
@@ -325,7 +321,7 @@ CompiledLayer compileLayer(const Document& doc, const Layer& layer, std::size_t 
         for (std::size_t i = 0; i < layer.look.size(); ++i) {
             const BlockDesc* desc = findBlock(layer.look[i].block);
             if (!desc || desc->emission.empty()) continue;
-            const std::string body = context.blockCode(layer.look[i], *desc, "look." + std::to_string(i),
+            const std::string body = context.blockCode(layer.look[i], *desc, prefix + "look." + std::to_string(i),
                                                        lines, built, desc->emission);
             std::ostringstream out;
             out << "vec3 particleEmission(Particle p, uint id) {\n"
@@ -341,7 +337,8 @@ CompiledLayer compileLayer(const Document& doc, const Layer& layer, std::size_t 
 
     CompiledLayer out;
     out.name = layer.name;
-    out.count = layer.count;
+    out.count = static_cast<std::uint32_t>(layer.count);
+    out.emitsLight = !emission.empty();
     out.blockLight = layer.blockLight;
     out.trail = layer.trail;
     out.slots = context.takeSlots();
@@ -363,7 +360,8 @@ void particleSimulate(inout Particle p, uint id) {
         vec3 vel = vec3(0.0);
         float life = 2.0;
         bool keep = true;
-        vec3 forgePosition = pos;
+        // A spawn has no position yet, so nodes vary by particle instead.
+        vec3 forgePosition = randomDirection(seed + 23u) * 3.0;
 )GLSL" + spawnCode + R"GLSL(
         p.position = vec4(pos, 0.0);
         p.velocity = vec4(vel, life);
@@ -412,13 +410,13 @@ void particleVertex(Particle p, uint id, vec2 corner,
 }
 )GLSL";
 
-    out.fragmentGlsl = layer.trail > 0 ? kRibbonFragment : (layer.blockLight ? kPuffFragment : kDotFragment);
+    out.fragmentGlsl = layer.trail > 1 ? kRibbonFragment : (layer.blockLight ? kPuffFragment : kDotFragment);
     out.emissionGlsl = emission;
     return out;
 }
 
 CompiledSurface compileSurface(const Document& doc, std::vector<Issue>& issues) {
-    Context context(doc, issues, "surface", true);
+    Context context(doc, issues, true);
     const std::string body = context.stackCode(doc.surface, "surface");
 
     CompiledSurface out;

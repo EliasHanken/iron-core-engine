@@ -1,7 +1,11 @@
 #include "forge/ForgePlayer.h"
 
+#include "render/LightVolume.h"
 #include "render/StandardLitShader.h"
+#include "render/VolumeRenderer.h"
 #include "render/backends/vulkan/VkShader.h"
+
+#include <algorithm>
 
 namespace iron::forge {
 
@@ -24,6 +28,20 @@ void uploadSlots(GpuParticles& effect, const std::vector<float>& slots) {
 
 }  // namespace
 
+const char* studioSkyGlsl() {
+    return R"GLSL(
+vec3 skyColor(vec3 d) {
+    vec3 color = mix(vec3(0.010, 0.010, 0.016), vec3(0.03, 0.03, 0.045), d.y * 0.5 + 0.5);
+    color += vec3(0.55, 0.60, 0.70) * pow(max(dot(d, normalize(vec3(-0.6, 0.6, 0.4))), 0.0), 40.0);
+    color += vec3(0.60, 0.28, 0.16) * pow(max(dot(d, normalize(vec3(0.8, -0.1, -0.3))), 0.0), 18.0);
+    return color;
+}
+)GLSL";
+}
+
+Player::Player(Renderer& renderer) : renderer_(renderer) {}
+Player::~Player() = default;
+
 GpuParticlesDesc layerToDesc(const CompiledLayer& layer) {
     GpuParticlesDesc desc;
     desc.count        = layer.count;
@@ -44,7 +62,7 @@ std::vector<Issue> checkShaders(const Compiled& compiled) {
                            const std::string& where) {
         if (compileGlsl(stage, source).empty()) {
             issues.push_back({where, "shader-failed", "This produced a shader that doesn't compile.",
-                              "A Custom GLSL value or a new block is the likely cause."});
+                              "This is a Forge bug: please report the file that caused it."});
         }
     };
     for (const CompiledLayer& layer : compiled.layers) {
@@ -74,6 +92,7 @@ std::vector<Issue> Player::apply(const Compiled& compiled) {
             layers_[i].layer.slots = compiled.layers[i].slots;
             uploadSlots(*layers_[i].effect, layers_[i].layer.slots);
         }
+        updateLight();
         return {};
     }
 
@@ -105,7 +124,21 @@ std::vector<Issue> Player::apply(const Compiled& compiled) {
         next.push_back({layer, std::move(effect)});
     }
     layers_ = std::move(next);
+    updateLight();
     return {};
+}
+
+void Player::updateLight() {
+    const bool wanted = std::any_of(layers_.begin(), layers_.end(), [](const Running& running) {
+        return running.layer.emitsLight;
+    });
+    if (wanted && !light_) {
+        LightVolumeDesc desc;
+        desc.bounds = VolumeBounds{{-14.0f, -14.0f, -14.0f}, {14.0f, 14.0f, 14.0f}};
+        desc.size = {96, 96, 96};
+        light_ = createLightVolume(renderer_, desc);
+        volumes_ = createVolumeRenderer(renderer_);
+    }
 }
 
 void Player::simulate(float dt) {
@@ -113,13 +146,21 @@ void Player::simulate(float dt) {
         uploadSlots(*running.effect, running.layer.slots);
         running.effect->simulate(dt);
     }
-}
-
-void Player::injectLight(LightVolume& light) {
-    for (Running& running : layers_) running.effect->injectLight(light);
+    if (light_) {
+        light_->beginInject();
+        for (Running& running : layers_) running.effect->injectLight(*light_);
+        light_->resolve();
+    }
 }
 
 void Player::render(const Mat4& view, const Mat4& projection) {
+    if (light_ && volumes_) {
+        VolumeRenderSettings settings;
+        settings.airDensity = 0.03f;
+        settings.steps = 32;
+        volumes_->render(view, projection, *light_, nullptr, settings);
+    }
+
     // Light-blocking layers go down first, so that light can sit on top of them.
     for (const bool blockLight : {true, false}) {
         for (Running& running : layers_) {

@@ -274,11 +274,11 @@ nlohmann::json paramToJson(const ParamDesc& p) {
     j["type"] = valueTypeName(p.type);
     if (p.type == ValueType::Float) {
         j["default"] = p.defaultValue.x;
-        j["min"] = p.min;
-        j["max"] = p.max;
     } else {
         j["default"] = {p.defaultValue.x, p.defaultValue.y, p.defaultValue.z};
     }
+    j["min"] = p.min;
+    j["max"] = p.max;
     j["description"] = p.description;
     return j;
 }

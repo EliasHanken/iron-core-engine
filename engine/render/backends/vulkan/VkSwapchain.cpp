@@ -90,7 +90,10 @@ bool VkSwapchain::createSwapchain(VkContext& ctx, int width, int height) {
     info.imageColorSpace = fmt.colorSpace;
     info.imageExtent = extent_;
     info.imageArrayLayers = 1;
-    info.imageUsage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
+    // Only colour attachment use is guaranteed, so window capture is opt-in by surface.
+    canCapture_ = (caps.supportedUsageFlags & VK_IMAGE_USAGE_TRANSFER_SRC_BIT) != 0;
+    info.imageUsage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT |
+                      (canCapture_ ? VK_IMAGE_USAGE_TRANSFER_SRC_BIT : VkImageUsageFlags{0});
     info.imageSharingMode = VK_SHARING_MODE_EXCLUSIVE;
     info.preTransform = caps.currentTransform;
     info.compositeAlpha = VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR;
