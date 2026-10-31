@@ -2,7 +2,10 @@
   "forge": 1,
   "target": "surface",
   "surface": [
-    {"block": "BaseColor", "color": [0.09, 0.095, 0.11]},
-    {"block": "Finish", "roughness": 0.55, "metallic": 0.0}
+    {"block": "BaseColor", "color": [0.34, 0.35, 0.37]},
+    {"block": "Finish", "roughness": 0.46, "metallic": 0.72},
+    {"block": "Plating", "size": 2.5, "seam": 0.018, "vary": 0.6},
+    {"block": "Rust", "amount": 0.5, "scale": 0.45},
+    {"block": "Grime", "amount": 0.7, "height": -2.5}
   ]
 }

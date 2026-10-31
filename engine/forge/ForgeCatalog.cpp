@@ -188,6 +188,47 @@ std::vector<BlockDesc> makeBlocks() {
         {num("roughness", 0.5f, 0.0f, 1.0f, "0 is a mirror, 1 is chalk."),
          num("metallic", 0.0f, 0.0f, 1.0f, "1 is bare metal.")},
         R"(roughness = $roughness; metallic = $metallic;)"});
+    list.push_back({"Plating", Stack::Surface, "Bolted steel plates, with dark seams and rivets.",
+        {num("size", 2.5f, 0.1f, 20.0f, "Width of a plate in metres."),
+         num("seam", 0.02f, 0.0f, 0.3f, "Width of the gap between plates, in metres."),
+         num("vary", 0.5f, 0.0f, 1.0f, "How much plates differ from each other.")},
+        R"({
+    vec2 flat2 = abs(N.x) > 0.5 ? worldPos.zy : (abs(N.y) > 0.5 ? worldPos.xz : worldPos.xy);
+    vec2 plate = flat2 / $size;
+    vec2 id = floor(plate);
+    vec2 inner = (fract(plate) - 0.5) * $size;
+    vec2 toEdge = 0.5 * $size - abs(inner);
+    float edge = min(toEdge.x, toEdge.y);
+    float shade = hash31(vec3(id, 7.0));
+    albedo *= 1.0 + (shade - 0.5) * $vary;
+    roughness = clamp(roughness + (shade - 0.5) * 0.3 * $vary, 0.04, 1.0);
+    vec2 rivetCell = fract(flat2 / 0.4) - 0.5;
+    float rivet = (1.0 - smoothstep(0.1, 0.17, length(rivetCell))) * step(edge, 0.1);
+    albedo *= 1.0 + rivet * 0.5;
+    albedo *= smoothstep(0.0, $seam + 1e-3, edge - $seam);
+})"});
+    list.push_back({"Rust", Stack::Surface, "Patches of rust that run downward.",
+        {color("color", Vec3{0.20f, 0.075f, 0.03f}, "Colour of the rust."),
+         num("amount", 0.5f, 0.0f, 1.0f, "How much of the surface it covers."),
+         num("scale", 0.4f, 0.02f, 8.0f, "Size of the patches: higher is finer.")},
+        R"({
+    float patches = fbm(worldPos * vec3(1.0, 0.3, 1.0) * $scale + vec3(3.1), 5);
+    float fine = fbm(worldPos * $scale * 7.0, 3);
+    float rust = smoothstep(0.62 - $amount * 0.3, 0.7 - $amount * 0.3, patches + (fine - 0.5) * 0.25);
+    albedo = mix(albedo, $color * (0.6 + fine * 0.8), rust);
+    metallic = mix(metallic, 0.0, rust);
+    roughness = mix(roughness, 0.92, rust);
+})"});
+    list.push_back({"Grime", Stack::Surface, "Dirt that gathers low down and streaks down walls.",
+        {num("amount", 0.6f, 0.0f, 1.0f, "How dark it gets."),
+         num("height", -3.0f, -100.0f, 100.0f, "Where it starts, in metres. Lower down is dirtier.")},
+        R"({
+    float low = 1.0 - smoothstep($height - 3.0, $height + 3.0, worldPos.y);
+    float streaks = fbm(worldPos * vec3(1.6, 0.1, 1.6), 4);
+    float dirt = clamp(low * 0.7 + smoothstep(0.5, 0.75, streaks) * 0.7, 0.0, 1.0);
+    albedo *= 1.0 - dirt * $amount;
+    roughness = mix(roughness, 0.85, dirt * 0.6);
+})"});
     list.push_back({"Marble", Stack::Surface, "Veined stone between two colours.",
         {color("colorA", Vec3{0.05f, 0.05f, 0.06f}, "First colour."),
          color("colorB", Vec3{0.8f, 0.75f, 0.65f}, "Second colour."),

@@ -14,6 +14,7 @@
 
 #include "common/CaptureLoop.h"
 #include "HallGlsl.h"
+#include "HallMesh.h"
 #include "Swarm.h"
 
 #include "core/Application.h"
@@ -177,26 +178,7 @@ int main(int argc, char** argv) {
     }
     const iron::ShaderHandle wallShader =
         renderer.createLitShaderWithSurface(kindle::hallSurfaceHook(wallEffect.surface->hookGlsl));
-    const iron::MeshHandle cube = renderer.createMesh(iron::makeCube());
-
-    // The hall: four walls, a floor and a ceiling, with pillars on the room's grid.
-    std::vector<iron::Mat4> blocks;
-    const auto addBlock = [&](Vec3 center, Vec3 half) {
-        blocks.push_back(iron::translation(center) * iron::scaling(half * 2.0f));
-    };
-    constexpr float kThickness = 1.0f;
-    const Vec3 h = room.half;
-    addBlock({0, -h.y - kThickness, 0}, {h.x + 2, kThickness, h.z + 2});
-    addBlock({0, h.y + kThickness, 0}, {h.x + 2, kThickness, h.z + 2});
-    addBlock({-h.x - kThickness, 0, 0}, {kThickness, h.y, h.z + 2});
-    addBlock({h.x + kThickness, 0, 0}, {kThickness, h.y, h.z + 2});
-    addBlock({0, 0, -h.z - kThickness}, {h.x, h.y, kThickness});
-    addBlock({0, 0, h.z + kThickness}, {h.x, h.y, kThickness});
-    for (const float x : {-15.0f, -5.0f, 5.0f, 15.0f}) {
-        for (const float z : {-15.0f, -5.0f, 5.0f, 15.0f}) {
-            addBlock({x, 0, z}, {room.pillarHalf, h.y, room.pillarHalf});
-        }
-    }
+    const iron::MeshHandle hallMesh = renderer.createMesh(kindle::buildHallMesh(room));
 
     // The fog is a real fluid: it settles along the floor, and the swarm stirs it.
     iron::FluidVolumeDesc fogDesc;
@@ -340,13 +322,10 @@ int main(int argc, char** argv) {
                             noFog, view, projection);
 
         iron::DrawCall draw;
-        draw.mesh = cube;
+        draw.mesh = hallMesh;
         draw.shader = wallShader;
         draw.material.emissive = {seconds, 0.0f, 0.0f};  // Surfaces read their clock here.
-        for (const iron::Mat4& block : blocks) {
-            draw.model = block;
-            renderer.submit(draw);
-        }
+        renderer.submit(draw);
 
         player.simulate(dt);
 
