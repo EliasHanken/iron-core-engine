@@ -136,7 +136,7 @@ float buildDemo(std::vector<DemoStep>& steps, std::vector<Tween>& tweens) {
         forge::addBlock(doc, doc.layers[0], Stack::Look, "Fade");
         forge::addBlock(doc, doc.layers[0], Stack::Look, "StretchWithSpeed");
         forge::addBlock(doc, doc.layers[0], Stack::Look, "Glow");
-        lastBlock(doc, Stack::Look).values["intensity"] = {0.42f, 0, 0};
+        lastBlock(doc, Stack::Look).values["intensity"] = {0.30f, 0, 0};
     }});
 
     steps.push_back({14.5f, "A second layer, streaming away", [=](forge::Document& doc) {
@@ -164,8 +164,10 @@ float buildDemo(std::vector<DemoStep>& steps, std::vector<Tween>& tweens) {
         layer.look.back().values["amount"] = {0.16f, 0, 0};
         layer.look.back().values["max"] = {0.55f, 0, 0};
         forge::addBlock(doc, layer, Stack::Look, "Glow");
-        layer.look.back().values["intensity"] = {0.2f, 0, 0};
+        layer.look.back().values["intensity"] = {0.12f, 0, 0};
         doc.layers.push_back(std::move(layer));
+        // The layers add up, so the shell steps back to keep its detail.
+        doc.layers[0].look.back().values["intensity"] = {0.14f, 0, 0};
     }});
 
     steps.push_back({19.0f, "Every slider is live: nothing restarts", nullptr});

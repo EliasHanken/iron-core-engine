@@ -32,8 +32,8 @@ const char* studioSkyGlsl() {
     return R"GLSL(
 vec3 skyColor(vec3 d) {
     vec3 color = mix(vec3(0.010, 0.010, 0.016), vec3(0.03, 0.03, 0.045), d.y * 0.5 + 0.5);
-    color += vec3(0.55, 0.60, 0.70) * pow(max(dot(d, normalize(vec3(-0.6, 0.6, 0.4))), 0.0), 40.0);
-    color += vec3(0.60, 0.28, 0.16) * pow(max(dot(d, normalize(vec3(0.8, -0.1, -0.3))), 0.0), 18.0);
+    color += vec3(0.06, 0.065, 0.08) * pow(max(dot(d, normalize(vec3(-0.6, 0.6, 0.4))), 0.0), 40.0);
+    color += vec3(0.02, 0.012, 0.01) * pow(max(dot(d, normalize(vec3(0.8, -0.1, -0.3))), 0.0), 18.0);
     return color;
 }
 )GLSL";
