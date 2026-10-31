@@ -413,7 +413,10 @@ void particleVertex(Particle p, uint id, vec2 corner,
     float r = p.a.y;
     float fade = (1.0 - smoothstep(14.0, 29.0, SHOCK_RADIUS)) * step(0.01, IGNITION);
     vec3 tint = mix(vec3(1.0, 0.9, 0.7), vec3(1.0, 0.32, 0.06), smoothstep(4.0, 15.0, r));
-    color = vec4(tint * fade * (1.0 - REBIRTH) * 0.5 * smokeTransmittance(p.position.xyz), 1.0);
+    // Stretched over the shell, the same particles stack up far less on screen as
+    // it grows, so a small shell must draw dimmer per particle to stay even.
+    float coverage = min(pow(SHOCK_RADIUS / 9.0, 2.0), 1.0);
+    color = vec4(tint * fade * coverage * (1.0 - REBIRTH) * 0.09 * smokeTransmittance(p.position.xyz), 1.0);
     data = vec4(0.0);
     clipPos = stretchedSprite(p.position.xyz, p.velocity.xyz * 0.6, corner, 0.005 + 0.006 * p.a.x, 0.6);
 }
@@ -422,7 +425,10 @@ void particleVertex(Particle p, uint id, vec2 corner,
 inline constexpr const char* kShockEmission = R"GLSL(
 vec3 particleEmission(Particle p, uint id) {
     float fade = (1.0 - smoothstep(14.0, 29.0, SHOCK_RADIUS)) * step(0.01, IGNITION);
-    return vec3(1.0, 0.5, 0.18) * fade * 0.012;
+    // A young front packs every particle into a tiny shell, so its light is spread
+    // by area, or it would flood the volume.
+    float spread = min(pow(SHOCK_RADIUS / 14.0, 2.0), 1.0);
+    return vec3(1.0, 0.5, 0.18) * fade * spread * 0.012;
 }
 )GLSL";
 
@@ -433,7 +439,7 @@ inline constexpr const char* kEmberSimulate = R"GLSL(
 void particleSimulate(inout Particle p, uint id) {
     if (p.velocity.w == 0.0) {
         vec3 dir = randomDirection(id * 5u + 3u);
-        float ringRadius = mix(4.6, 15.0, pow(rnd(id * 7u + 1u), 0.7));
+        float ringRadius = mix(4.4, 15.0, pow(rnd(id * 7u + 1u), 1.7));
         p.position = vec4(dir * CORE_RADIUS, 0.0);
         p.velocity = vec4(0.0, 0.0, 0.0, 1.0);
         p.a = vec4(dir, ringRadius);
@@ -475,16 +481,19 @@ inline constexpr const char* kEmberVertex = R"GLSL(
 void particleVertex(Particle p, uint id, vec2 corner,
                     out vec4 clipPos, out vec4 color, out vec4 data) {
     vec3 x = p.position.xyz;
+    float r = length(x);
     float speed = length(p.velocity.xyz);
     vec3 tint = mix(vec3(1.0, 0.13, 0.02), vec3(1.0, 0.62, 0.22), clamp(speed * 0.06, 0.0, 1.0));
-    float r = length(x);
     vec3 discTint = mix(vec3(1.0, 0.72, 0.36), vec3(0.85, 0.10, 0.03), smoothstep(4.0, 13.0, r));
     tint = mix(tint, discTint, REBIRTH);
-    float discFalloff = mix(1.0, 1.6 * exp(-max(length(x) - 4.0, 0.0) * 0.28), REBIRTH);
-    float brightness = mix(0.075, 0.26, REBIRTH) * (0.15 + 0.85 * p.b.z * p.b.z) * discFalloff;
+    float discFalloff = mix(1.0, 1.6 * exp(-max(r - 4.0, 0.0) * 0.28), REBIRTH);
+    // Spiral arms, so that the settling disc never reads as a flat surface.
+    float swirl = atan(x.z, x.x) * 2.0 + log(max(r, 1.0)) * 5.0 - SECONDS * 0.5;
+    float arms = mix(1.0, 0.12 + 1.6 * pow(0.5 + 0.5 * sin(swirl), 3.0), REBIRTH);
+    float brightness = mix(0.05, 0.26, REBIRTH * REBIRTH) * (0.15 + 0.85 * p.b.z * p.b.z) * discFalloff * arms;
     color = vec4(tint * brightness * step(0.01, IGNITION) * smokeTransmittance(x), 1.0);
     data = vec4(0.0);
-    clipPos = stretchedSprite(x, p.velocity.xyz * 0.03, corner, 0.007 + 0.008 * p.b.x, 0.30);
+    clipPos = stretchedSprite(x, p.velocity.xyz * mix(0.012, 0.03, REBIRTH * REBIRTH), corner, 0.007 + 0.008 * p.b.x, 0.30);
 }
 )GLSL";
 
@@ -737,12 +746,12 @@ void fluidSource(vec3 world, inout vec3 velocity, inout float density, inout flo
         float front = exp(-pow((r - SHOCK_RADIUS) / width, 2.0));
         float strength = 1.0 - smoothstep(10.0, 30.0, SHOCK_RADIUS);
         velocity += dir * front * strength * 420.0 * fluid.dt;
-        heat += front * strength * 12.0 * fluid.dt;
+        heat += front * strength * 8.0 * fluid.dt;
         density += front * strength * edge * 1.1 * fluid.dt;
 
         // Hot gas left in the wake of the first second of the blast.
         float inside = smoothstep(SHOCK_RADIUS, SHOCK_RADIUS - 1.5, r) * FLASH;
-        heat += inside * 3.0 * fluid.dt;
+        heat += inside * 1.2 * fluid.dt;
         density += inside * 0.8 * fluid.dt;
     }
 

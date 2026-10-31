@@ -149,6 +149,15 @@ int main() {
 
             FontAtlas atlas;
             CHECK(atlas.bake(bytes.data(), static_cast<int>(bytes.size()), 48.0f));
+
+            // A large size must keep the whole alphabet, not just what fits in
+            // the first atlas: 'Z' comes late in the bake order.
+            FontAtlas large;
+            CHECK(large.bake(bytes.data(), static_cast<int>(bytes.size()), 120.0f));
+            float penX = 0.0f, penY = 0.0f;
+            const GlyphQuad lastCapital = large.quadFor('Z', penX, penY);
+            CHECK(lastCapital.max.x > lastCapital.min.x);
+            CHECK(large.width() > 512);
             CHECK(atlas.width() > 0);
             CHECK(atlas.height() > 0);
             CHECK(atlas.pixels().size() ==

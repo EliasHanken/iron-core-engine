@@ -15,6 +15,7 @@
 
 #include "core/Application.h"
 #include "core/Log.h"
+#include "core/Platform.h"
 #include "math/Quaternion.h"
 #include "math/Transform.h"
 #include "render/Fog.h"
@@ -25,14 +26,17 @@
 #include "render/Renderer.h"
 #include "render/RendererFactory.h"
 #include "render/VolumeRenderer.h"
+#include "ui/FontAtlas.h"
 #include "render/backends/vulkan/VulkanRenderer.h"
 
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <cstdio>
 #include <memory>
 #include <numbers>
 #include <span>
+#include <string>
 #include <vector>
 
 namespace {
@@ -43,6 +47,7 @@ using namespace ironcore;
 constexpr float kFieldOfViewDegrees = 34.0f;
 constexpr int kSkyFaceSize = 2048;
 constexpr int kRockNormalSize = 1024;
+constexpr float kTitleFontPixels = 120.0f;
 
 // Rotation of `angle` radians about a unit `axis`.
 iron::Mat4 axisRotation(Vec3 axis, float angle) {
@@ -81,6 +86,54 @@ struct World {
 
     float fluidAccumulator = 0.0f;
 };
+
+bool loadFont(iron::Renderer& renderer, iron::FontAtlas& atlas) {
+    const std::string path = iron::executableDir() + "/assets/fonts/Roboto-Medium.ttf";
+    std::FILE* file = std::fopen(path.c_str(), "rb");
+    if (!file) return false;
+
+    std::fseek(file, 0, SEEK_END);
+    const long size = std::ftell(file);
+    std::fseek(file, 0, SEEK_SET);
+    std::vector<unsigned char> bytes(static_cast<std::size_t>(size));
+    const std::size_t read = std::fread(bytes.data(), 1, bytes.size(), file);
+    std::fclose(file);
+
+    if (read != bytes.size() ||
+        !atlas.bake(bytes.data(), static_cast<int>(bytes.size()), kTitleFontPixels)) {
+        return false;
+    }
+    atlas.texture = renderer.createTexture(atlas.width(), atlas.height(), atlas.pixels().data(),
+                                           /*srgb=*/false);
+    return true;
+}
+
+// Centred text with extra letter spacing, `tracking` in em.
+void appendCenteredText(iron::HudDrawGroup& group, const iron::FontAtlas& atlas,
+                        const std::string& text, float centerX, float baseline, float scale,
+                        float tracking, iron::Vec4 color) {
+    const float gap = atlas.pixelHeight() * tracking;
+    const float width = atlas.textWidth(text) + gap * static_cast<float>(text.size() - 1);
+
+    float penX = 0.0f;
+    float penY = 0.0f;
+    const float left = centerX - width * scale * 0.5f;
+    for (char c : text) {
+        const iron::GlyphQuad q = atlas.quadFor(c, penX, penY);
+        penX += gap;
+        if (q.min.x == q.max.x) continue;
+
+        const iron::Vec2 a{left + q.min.x * scale, baseline + q.min.y * scale};
+        const iron::Vec2 b{left + q.max.x * scale, baseline + q.max.y * scale};
+        const iron::HudVertex corners[4] = {
+            {{a.x, a.y}, {q.uvMin.x, q.uvMin.y}, color},
+            {{b.x, a.y}, {q.uvMax.x, q.uvMin.y}, color},
+            {{b.x, b.y}, {q.uvMax.x, q.uvMax.y}, color},
+            {{a.x, b.y}, {q.uvMin.x, q.uvMax.y}, color},
+        };
+        for (int i : {0, 1, 2, 0, 2, 3}) group.vertices.push_back(corners[i]);
+    }
+}
 
 void submitRock(iron::Renderer& renderer, const World& world, const RockInstance& rock,
                 iron::MeshHandle mesh, float t, iron::ShaderHandle shader, Vec3 emission) {
@@ -149,6 +202,12 @@ int main(int argc, char** argv) {
     world.rockNormals = renderer.createTexture(kRockNormalSize, kRockNormalSize, normals.data(),
                                                /*srgb=*/false);
 
+    iron::FontAtlas font;
+    if (!loadFont(renderer, font)) {
+        iron::Log::error("iron-core: title font failed to load");
+        return 1;
+    }
+
     world.rocks = makeRockField(4242u, kRockCount);
     for (int i = 0; i < kRockVariants; ++i) {
         world.rockMeshes.push_back(renderer.createMesh(makeRock(1000u + static_cast<std::uint32_t>(i) * 77u)));
@@ -206,7 +265,7 @@ int main(int argc, char** argv) {
             static_cast<float>(width) / static_cast<float>(height), 0.1f, 600.0f);
 
         const float coreLight = 1.2f * beat.veins * beat.veins * (1.0f - beat.ignition) +
-                                3.2f * beat.ignition * (1.0f - 0.2f * beat.rebirth) +
+                                (4.5f + 4.0f * beat.rebirth) * beat.ignition +
                                 26.0f * beat.flash;
         const std::array<iron::PointLight, 1> lights = {{
             {{0.0f, 0.0f, 0.0f}, {1.0f, 0.46f, 0.20f}, coreLight, 90.0f},
@@ -218,6 +277,12 @@ int main(int argc, char** argv) {
         rim.color     = {0.34f, 0.24f, 0.40f};
         rim.ambient   = 0.10f;
         const iron::Fog noFog{};
+
+        // The lens stops down just after the flash, as a real camera's would: the
+        // blast whites out for an instant, then detail comes up through it.
+        const float iris = smoothRamp(kIgnitionTime + 0.15f, kIgnitionTime + 0.55f, t) *
+                           (1.0f - smoothRamp(kIgnitionTime + 1.3f, kIgnitionTime + 3.6f, t));
+        vulkan->setExposure(1.0f - 0.82f * iris);
 
         renderer.beginFrame(Vec3{0.0f, 0.0f, 0.0f}, rim, lights, noFog, view, projection);
 
@@ -264,7 +329,7 @@ int main(int argc, char** argv) {
         settings.heatIntensity = 1.8f;
         settings.shadowDensity = 0.9f;
         settings.lightPosition = {0.0f, 0.0f, 0.0f};
-        settings.lightColor = Vec3{1.0f, 0.42f, 0.16f} * (coreLight * 1.6f);
+        settings.lightColor = Vec3{1.0f, 0.42f, 0.16f} * (coreLight * 0.9f);
         settings.detail = 0.42f;
         settings.detailScale = 1.5f;
         world.volumes->render(view, projection, *world.light, world.fluid.get(), settings);
@@ -272,6 +337,22 @@ int main(int argc, char** argv) {
         for (const auto& effect : world.effects) {
             effect->setDensityVolume(world.fluid.get(), settings.smokeDensity);
             effect->render(view, projection);
+        }
+
+        if (beat.title > 0.0f) {
+            const float scale = static_cast<float>(height) / 1080.0f;
+            const float center = static_cast<float>(width) * 0.5f;
+            const float baseline = static_cast<float>(height) * 0.86f;
+
+            iron::HudDrawGroup group;
+            group.texture = font.texture;
+            appendCenteredText(group, font, "IRON CORE", center, baseline, scale * 0.82f, 0.30f,
+                               {1.0f, 0.95f, 0.88f, beat.title});
+            const float subtitle = smoothRamp(26.5f, 28.0f, t);
+            appendCenteredText(group, font, "REALTIME. CUSTOM VULKAN ENGINE.", center,
+                               baseline + 58.0f * scale, scale * 0.17f, 0.34f,
+                               {1.0f, 0.86f, 0.74f, subtitle * 0.8f});
+            renderer.drawHud(iron::HudBatch{std::move(group)}, width, height);
         }
     };
 
