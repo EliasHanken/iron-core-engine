@@ -24,6 +24,7 @@ VulkanRenderer::~VulkanRenderer() {
         destroyCaptureBuffer();
         blackVolume_.destroy(context_);
         if (volumeSampler_) vkDestroySampler(context_.device(), volumeSampler_, nullptr);
+        if (depthSampler_) vkDestroySampler(context_.device(), depthSampler_, nullptr);
         meshes_.destroyAll(context_);
         skinnedMeshes_.destroyAll(context_);  // M23
         textures_.destroyAll(context_);
@@ -1605,6 +1606,10 @@ bool VulkanRenderer::initVolumeDefaults() {
     info.addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
     info.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
     VK_CHECK(vkCreateSampler(context_.device(), &info, nullptr, &volumeSampler_));
+
+    info.magFilter = VK_FILTER_NEAREST;
+    info.minFilter = VK_FILTER_NEAREST;
+    VK_CHECK(vkCreateSampler(context_.device(), &info, nullptr, &depthSampler_));
 
     if (!blackVolume_.create(context_, VolumeSize{1, 1, 1}, VK_FORMAT_R16G16B16A16_SFLOAT,
                              VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT)) {

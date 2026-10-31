@@ -14,6 +14,9 @@ class VkContext;
 class VkVolumeImage {
 public:
     bool create(VkContext& ctx, VolumeSize size, VkFormat format, VkImageUsageFlags usage);
+    // The same helper for a plain 2D target.
+    bool create2D(VkContext& ctx, std::uint32_t width, std::uint32_t height, VkFormat format,
+                  VkImageUsageFlags usage);
     void destroy(VkContext& ctx);
 
     VkImage     image() const { return image_; }
@@ -32,6 +35,9 @@ private:
     VkImageView   view_  = VK_NULL_HANDLE;
     VmaAllocation alloc_ = VK_NULL_HANDLE;
     VkImageLayout layout_ = VK_IMAGE_LAYOUT_UNDEFINED;
+
+    bool createImage(VkContext& ctx, VkImageType type, VkImageViewType viewType, VkExtent3D extent,
+                     VkFormat format, VkImageUsageFlags usage);
 };
 
 }  // namespace iron

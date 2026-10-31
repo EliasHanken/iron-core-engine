@@ -3,6 +3,7 @@
 #include "render/backends/vulkan/VkGpuParticles.h"
 #include "render/backends/vulkan/VulkanRenderer.h"
 #include "render/backends/vulkan/VkContext.h"
+#include "render/backends/vulkan/VkFluidVolume.h"
 #include "render/backends/vulkan/VkLightVolume.h"
 #include "render/backends/vulkan/VkShader.h"
 #include "render/backends/vulkan/VkUtils.h"
@@ -37,11 +38,45 @@ layout(set = 0, binding = 1) uniform Frame {
     mat4  view;
     mat4  projection;
     vec4  cameraPos;
+    vec4  fluidMin;      // w = extinction per unit of density, 0 for no fluid
+    vec4  fluidInvSize;
     float dt;
     float time;
     uint  count;
     uint  frameIndex;
 } frame;
+)";
+
+const char* const kVertexHelpers = R"(
+layout(set = 0, binding = 3) uniform sampler3D densityVolume;
+
+float smokeTransmittance(vec3 world) {
+    if (frame.fluidMin.w <= 0.0) return 1.0;
+    vec3 toCamera = frame.cameraPos.xyz - world;
+    float dist = length(toCamera);
+    toCamera /= max(dist, 1e-3);
+    float stepLength = min(dist, 10.0) / 4.0;
+    float amount = 0.0;
+    for (int i = 0; i < 4; ++i) {
+        vec3 p = world + toCamera * stepLength * (float(i) + 0.5);
+        amount += texture(densityVolume, (p - frame.fluidMin.xyz) * frame.fluidInvSize.xyz).r;
+    }
+    return exp(-amount * stepLength * frame.fluidMin.w);
+}
+)";
+
+const char* const kFragmentHelpers = R"(
+layout(set = 0, binding = 4) uniform sampler2D sceneDepthTexture;
+
+float linearSceneDepth(float d) {
+    return frame.projection[3][2] / (d + frame.projection[2][2]);
+}
+
+float softDepthFade(float softness) {
+    float scene = linearSceneDepth(texelFetch(sceneDepthTexture, ivec2(gl_FragCoord.xy), 0).r);
+    float self = linearSceneDepth(gl_FragCoord.z);
+    return clamp((scene - self) / softness, 0.0, 1.0);
+}
 )";
 
 const char* const kVertexMain = R"(
@@ -108,6 +143,8 @@ struct VkGpuParticles::FrameUbo {
     Mat4          view;
     Mat4          projection;
     float         cameraPos[4];
+    float         fluidMin[4];
+    float         fluidInvSize[4];
     float         dt;
     float         time;
     std::uint32_t count;
@@ -143,9 +180,9 @@ void main() {
 
     out.vertex = std::string(kVersion) + kParticleStruct +
         "layout(std430, set = 0, binding = 0) readonly buffer ParticleBuffer { Particle particles[]; };\n" +
-        kFrameBlock + desc.commonGlsl + desc.vertexGlsl + kVertexMain;
+        kFrameBlock + kVertexHelpers + desc.commonGlsl + desc.vertexGlsl + kVertexMain;
 
-    out.fragment = std::string(kVersion) + kParticleStruct + kFrameBlock +
+    out.fragment = std::string(kVersion) + kParticleStruct + kFrameBlock + kFragmentHelpers +
         desc.commonGlsl + desc.fragmentGlsl + kFragmentMain;
 
     if (!desc.emissionGlsl.empty()) {
@@ -235,7 +272,7 @@ bool VkGpuParticles::createBuffer() {
 bool VkGpuParticles::createSetLayout() {
     VkContext& ctx = renderer_->context();
 
-    VkDescriptorSetLayoutBinding b[3]{};
+    VkDescriptorSetLayoutBinding b[5]{};
     b[0].binding         = 0;
     b[0].descriptorType  = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
     b[0].descriptorCount = 1;
@@ -248,9 +285,18 @@ bool VkGpuParticles::createSetLayout() {
                                VK_SHADER_STAGE_FRAGMENT_BIT;
     }
 
+    b[3].binding         = 3;
+    b[3].descriptorType  = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    b[3].descriptorCount = 1;
+    b[3].stageFlags      = VK_SHADER_STAGE_VERTEX_BIT;
+    b[4].binding         = 4;
+    b[4].descriptorType  = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    b[4].descriptorCount = 1;
+    b[4].stageFlags      = VK_SHADER_STAGE_FRAGMENT_BIT;
+
     VkDescriptorSetLayoutCreateInfo info{};
     info.sType        = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-    info.bindingCount = 3;
+    info.bindingCount = 5;
     info.pBindings    = b;
     VK_CHECK(vkCreateDescriptorSetLayout(ctx.device(), &info, nullptr, &setLayout_));
     return setLayout_ != VK_NULL_HANDLE;
@@ -478,6 +524,11 @@ void VkGpuParticles::simulate(float dtSec) {
                          0, 1, &toRead, 0, nullptr, 0, nullptr);
 }
 
+void VkGpuParticles::setDensityVolume(const FluidVolume* fluid, float density) {
+    densityVolume_ = fluid;
+    densityScale_ = density;
+}
+
 void VkGpuParticles::injectLight(LightVolume& volume) {
     if (!hasInject_) return;
     VkCommandBuffer cb = renderer_->currentCommandBuffer();
@@ -529,11 +580,42 @@ void VkGpuParticles::render(const Mat4& view, const Mat4& projection) {
     ubo.cameraPos[1] = invView.at(1, 3);
     ubo.cameraPos[2] = invView.at(2, 3);
     ubo.cameraPos[3] = 1.0f;
+
+    VkImageView densityView = renderer_->blackVolumeView();
+    VkImageLayout densityLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    if (densityVolume_) {
+        const auto* fluid = static_cast<const VkFluidVolume*>(densityVolume_);
+        const VolumeBounds& b = fluid->bounds();
+        ubo.fluidMin[0] = b.min.x;
+        ubo.fluidMin[1] = b.min.y;
+        ubo.fluidMin[2] = b.min.z;
+        ubo.fluidMin[3] = densityScale_;
+        ubo.fluidInvSize[0] = 1.0f / (b.max.x - b.min.x);
+        ubo.fluidInvSize[1] = 1.0f / (b.max.y - b.min.y);
+        ubo.fluidInvSize[2] = 1.0f / (b.max.z - b.min.z);
+        densityView = fluid->scalarsView();
+        densityLayout = VK_IMAGE_LAYOUT_GENERAL;
+    }
     ubo.dt         = lastDt_;
     ubo.time       = time_;
     ubo.count      = desc_.count;
     ubo.frameIndex = frameIndex_;
     VkDescriptorSet set = allocateSet(ubo);
+
+    VkDescriptorImageInfo images[2]{};
+    images[0] = {renderer_->volumeSampler(), densityView, densityLayout};
+    images[1] = {renderer_->depthSampler(), renderer_->sceneDepthView(),
+                 VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL};
+    VkWriteDescriptorSet writes[2]{};
+    for (std::uint32_t i = 0; i < 2; ++i) {
+        writes[i].sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        writes[i].dstSet          = set;
+        writes[i].dstBinding      = 3 + i;
+        writes[i].descriptorCount = 1;
+        writes[i].descriptorType  = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        writes[i].pImageInfo      = &images[i];
+    }
+    vkUpdateDescriptorSets(renderer_->context().device(), 2, writes, 0, nullptr);
 
     renderer_->enqueueDeferredScenePass([this, set](VkCommandBuffer cb) {
         vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, renderPipeline_);

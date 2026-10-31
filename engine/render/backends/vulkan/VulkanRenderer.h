@@ -200,6 +200,12 @@ public:
     // Engine-internal: clamped trilinear sampler for 3D volumes.
     VkSampler volumeSampler() const { return volumeSampler_; }
 
+    // Engine-internal: nearest sampler for reading scene depth.
+    VkSampler depthSampler() const { return depthSampler_; }
+
+    // Engine-internal: a 1x1x1 black volume, in SHADER_READ_ONLY_OPTIMAL.
+    VkImageView blackVolumeView() const { return blackVolume_.view(); }
+
     // Copies this frame's final composited image (tonemapped, before any UI)
     // and hands it to `fn` as tightly packed RGBA8 with alpha forced to 255,
     // sRGB encoded when the swapchain is. Fires inside endFrame after a blocking
@@ -273,6 +279,7 @@ private:
     float              lightVolumeIntensity_ = 0.0f;
     VkVolumeImage      blackVolume_;
     VkSampler          volumeSampler_ = VK_NULL_HANDLE;
+    VkSampler          depthSampler_ = VK_NULL_HANDLE;
 
     FrameCaptureFn pendingCapture_;
     VkBuffer       captureBuffer_ = VK_NULL_HANDLE;

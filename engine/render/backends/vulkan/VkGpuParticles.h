@@ -28,6 +28,7 @@ public:
     void simulate(float dtSec) override;
     void render(const Mat4& view, const Mat4& projection) override;
     void injectLight(LightVolume& volume) override;
+    void setDensityVolume(const FluidVolume* fluid, float density) override;
     void reset() override { needsClear_ = true; }
     std::uint32_t count() const override { return desc_.count; }
 
@@ -52,6 +53,9 @@ private:
     ::VkPipeline          renderPipeline_ = VK_NULL_HANDLE;
     VkComputeStage        injectStage_;
     bool                  hasInject_ = false;
+
+    const FluidVolume* densityVolume_ = nullptr;
+    float              densityScale_ = 0.0f;
 
     std::vector<unsigned char> params_;
     float         time_       = 0.0f;

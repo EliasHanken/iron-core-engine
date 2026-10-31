@@ -13,6 +13,7 @@
 
 namespace iron {
 
+class FluidVolume;
 class LightVolume;
 class Renderer;
 
@@ -46,6 +47,13 @@ enum class ParticleBlend {
 //
 // `corner` runs -1..1 across the sprite. particleFragment returns the blended
 // colour directly, so PremultipliedAlpha effects must premultiply it.
+//
+// Two helpers are also available:
+//   vertex:   float smokeTransmittance(vec3 world);
+//     How much of this point survives the gas between it and the camera.
+//     1 unless setDensityVolume was called.
+//   fragment: float softDepthFade(float softness);
+//     0 where this fragment touches scene geometry, 1 at `softness` metres clear.
 struct GpuParticlesDesc {
     std::uint32_t count      = 0;
     ParticleBlend blend      = ParticleBlend::Additive;
@@ -80,6 +88,11 @@ public:
     // LightVolume::beginInject and resolve. Does nothing when the effect has no
     // emissionGlsl.
     virtual void injectLight(LightVolume& volume) = 0;
+
+    // Lets smokeTransmittance read `fluid`. `density` is extinction per unit of
+    // fluid density, per metre: match VolumeRenderSettings::smokeDensity. Pass
+    // nullptr to clear. Call before render, after the frame's fluid steps.
+    virtual void setDensityVolume(const FluidVolume* fluid, float density) = 0;
 
     // Zeroes every particle on the next simulate().
     virtual void reset() = 0;

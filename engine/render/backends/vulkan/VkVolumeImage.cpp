@@ -6,11 +6,23 @@ namespace iron {
 
 bool VkVolumeImage::create(VkContext& ctx, VolumeSize size, VkFormat format,
                            VkImageUsageFlags usage) {
+    return createImage(ctx, VK_IMAGE_TYPE_3D, VK_IMAGE_VIEW_TYPE_3D, {size.x, size.y, size.z},
+                       format, usage);
+}
+
+bool VkVolumeImage::create2D(VkContext& ctx, std::uint32_t width, std::uint32_t height,
+                             VkFormat format, VkImageUsageFlags usage) {
+    return createImage(ctx, VK_IMAGE_TYPE_2D, VK_IMAGE_VIEW_TYPE_2D, {width, height, 1}, format,
+                       usage);
+}
+
+bool VkVolumeImage::createImage(VkContext& ctx, VkImageType type, VkImageViewType viewType,
+                                VkExtent3D extent, VkFormat format, VkImageUsageFlags usage) {
     VkImageCreateInfo info{};
     info.sType         = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
-    info.imageType     = VK_IMAGE_TYPE_3D;
+    info.imageType     = type;
     info.format        = format;
-    info.extent        = {size.x, size.y, size.z};
+    info.extent        = extent;
     info.mipLevels     = 1;
     info.arrayLayers   = 1;
     info.samples       = VK_SAMPLE_COUNT_1_BIT;
@@ -26,7 +38,7 @@ bool VkVolumeImage::create(VkContext& ctx, VolumeSize size, VkFormat format,
     VkImageViewCreateInfo view{};
     view.sType            = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
     view.image            = image_;
-    view.viewType         = VK_IMAGE_VIEW_TYPE_3D;
+    view.viewType         = viewType;
     view.format           = format;
     view.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
     VK_CHECK(vkCreateImageView(ctx.device(), &view, nullptr, &view_));

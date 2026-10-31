@@ -121,6 +121,8 @@ if (IRON_RENDER_BACKEND STREQUAL "vulkan")
       render/backends/vulkan/VkVolumeImage.cpp
       render/backends/vulkan/VkComputeStage.cpp
       render/backends/vulkan/VkLightVolume.cpp
+      render/backends/vulkan/VkFluidVolume.cpp
+      render/backends/vulkan/VkVolumeRenderer.cpp
       render/backends/vulkan/VkDebugLines.cpp
       render/backends/vulkan/VkHud.cpp
       render/backends/vulkan/VkShadowMap.cpp
