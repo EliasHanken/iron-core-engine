@@ -54,6 +54,7 @@ public:
     // Where light gathers, and how visible it is in the air. Bounds apply when
     // the light is first needed, so set them before the first apply.
     void setLightVolume(const LightVolumeDesc& desc) { lightDesc_ = desc; }
+    // At 0 the player doesn't draw air, for a game that runs its own VolumeRenderer.
     void setAirDensity(float density) { airDensity_ = density; }
 
     // Restarts the effect from nothing.

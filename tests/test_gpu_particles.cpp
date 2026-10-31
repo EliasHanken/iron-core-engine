@@ -63,6 +63,11 @@ void testParticleHelpersCompile() {
 }
 
 void testVolumeRendererCompiles() {
+    iron::VolumeRendererDesc airy;
+    airy.airGlsl = "void airAt(vec3 p, float time, inout float density, inout vec3 light) {\n"
+                   "    density += sin(p.y + time); light = vec3(0.1);\n}\n";
+    assert(compiles(VK_SHADER_STAGE_COMPUTE_BIT, iron::volumeRendererSources(airy).raymarch));
+
     const iron::VolumeRendererSources s = iron::volumeRendererSources();
     assert(compiles(VK_SHADER_STAGE_COMPUTE_BIT, s.raymarch));
     assert(compiles(VK_SHADER_STAGE_COMPUTE_BIT, s.occluders));

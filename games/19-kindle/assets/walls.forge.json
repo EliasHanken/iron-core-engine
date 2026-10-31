@@ -2,7 +2,7 @@
   "forge": 1,
   "target": "surface",
   "surface": [
-    {"block": "BaseColor", "color": [0.16, 0.16, 0.18]},
+    {"block": "BaseColor", "color": [0.09, 0.095, 0.11]},
     {"block": "Finish", "roughness": 0.55, "metallic": 0.0}
   ]
 }

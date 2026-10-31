@@ -12,6 +12,7 @@
 // assets/swarm.forge.json next to the exe updates the running game.
 
 #include "common/CaptureLoop.h"
+#include "HallGlsl.h"
 #include "Swarm.h"
 
 #include "core/Application.h"
@@ -20,9 +21,11 @@
 #include "forge/ForgePlayer.h"
 #include "math/Transform.h"
 #include "render/Cinematic.h"
+#include "render/FluidVolume.h"
 #include "render/Fog.h"
 #include "render/Light.h"
 #include "render/RendererFactory.h"
+#include "render/VolumeRenderer.h"
 #include "scene/Mesh.h"
 #include "util/FileWatcher.h"
 
@@ -42,6 +45,14 @@ constexpr float kRecordSeconds = 30.0f;
 constexpr float kMouseTurn = 0.0022f;
 constexpr float kBaseFov = 62.0f;
 constexpr float kFovAtSpeed = 18.0f;  // Widens at top speed, for a sense of rush.
+constexpr float kFogDensity = 0.7f;   // Smoke extinction, per metre.
+
+// Must match FogParams in HallGlsl.h.
+struct FogParams {
+    float swarm[4];     // w = stirring radius
+    float velocity[4];
+    float kick[4];      // x = blast
+};
 
 Vec3 forwardOf(float yaw, float pitch) {
     return {std::sin(yaw) * std::cos(pitch), std::sin(pitch), -std::cos(yaw) * std::cos(pitch)};
@@ -148,7 +159,7 @@ int main(int argc, char** argv) {
     lightGrid.size = {42, 14, 42};
     lightGrid.blurPasses = 3;
     player.setLightVolume(lightGrid);
-    player.setAirDensity(0.05f);
+    player.setAirDensity(0.0f);  // The hall has its own air.
 
     const std::string swarmPath = assets + "swarm.forge.json";
     const forge::Compiled swarmEffect = loadEffect(swarmPath);
@@ -163,7 +174,8 @@ int main(int argc, char** argv) {
         logIssues(wallEffect.issues);
         return 1;
     }
-    const iron::ShaderHandle wallShader = renderer.createLitShaderWithSurface(wallEffect.surface->hookGlsl);
+    const iron::ShaderHandle wallShader =
+        renderer.createLitShaderWithSurface(kindle::hallSurfaceHook(wallEffect.surface->hookGlsl));
     const iron::MeshHandle cube = renderer.createMesh(iron::makeCube());
 
     // The hall: four walls, a floor and a ceiling, with pillars on the room's grid.
@@ -185,11 +197,40 @@ int main(int argc, char** argv) {
         }
     }
 
+    // The fog is a real fluid: it settles along the floor, and the swarm stirs it.
+    iron::FluidVolumeDesc fogDesc;
+    fogDesc.bounds = iron::VolumeBounds{Vec3{-20.5f, -6.2f, -20.5f}, Vec3{20.5f, 6.2f, 20.5f}};
+    fogDesc.size = {96, 32, 96};
+    fogDesc.pressureIterations = 16;
+    fogDesc.vorticity = 5.0f;
+    fogDesc.velocityDissipation = 0.5f;
+    fogDesc.paramsSize = sizeof(FogParams);
+    fogDesc.commonGlsl = kindle::kFogCommonGlsl;
+    fogDesc.sourceGlsl = kindle::kFogSourceGlsl;
+    fogDesc.obstacleGlsl = kindle::kFogObstacleGlsl;
+    const auto fog = iron::createFluidVolume(renderer, fogDesc);
+
+    iron::VolumeRendererDesc volumeDesc;
+    volumeDesc.airGlsl = kindle::kAirGlsl;
+    const auto volumes = iron::createVolumeRenderer(renderer, volumeDesc);
+    if (!fog || !volumes) return 1;
+    fog->setDissipation(0.0f);
+    player.setDensityVolume(fog.get(), kFogDensity);
+
+    // The swarm's light is blocked by every pillar. Each is x, radius, z.
+    std::vector<Vec3> columns;
+    for (const float x : {-15.0f, -5.0f, 5.0f, 15.0f}) {
+        for (const float z : {-15.0f, -5.0f, 5.0f, 15.0f}) {
+            columns.push_back({x, room.pillarHalf * 1.1f, z});
+        }
+    }
+
     iron::FileWatcher watcher;
     watcher.watch(swarmPath, [&](const std::string& path) {
         const forge::Compiled next = loadEffect(path);
         const std::vector<forge::Issue> found = player.apply(next);
         if (found.empty()) {
+            player.setDensityVolume(fog.get(), kFogDensity);
             iron::Log::info("Reloaded %s", path.c_str());
         } else {
             logIssues(found);
@@ -205,6 +246,7 @@ int main(int argc, char** argv) {
     float mouseY = 0.0f;
     bool ignite = false;
     float pollTimer = 0.0f;
+    float fogAccumulator = 0.0f;
 
     Vec3 eye = swarm.position() + Vec3{0.0f, 2.0f, 8.0f};
     Vec3 tailA = swarm.position();
@@ -279,14 +321,14 @@ int main(int argc, char** argv) {
         constexpr Vec3 kEmber{1.0f, 0.52f, 0.2f};
         const float flare = swarm.flare();
         const std::array<iron::PointLight, 3> lights{{
-            {swarm.position(), kEmber, 2.2f + flare * 16.0f, 24.0f + flare * 16.0f},
-            {tailA, kEmber, 1.0f, 18.0f},
-            {tailB, kEmber, 0.6f, 16.0f},
+            {swarm.position(), kEmber, 1.1f + flare * 7.0f, 20.0f + flare * 18.0f},
+            {tailA, kEmber, 0.35f, 18.0f},
+            {tailB, kEmber, 0.2f, 16.0f},
         }};
 
         iron::DirectionalLight dark;
         dark.color = {0.0f, 0.0f, 0.0f};
-        dark.ambient = 0.012f;
+        dark.ambient = 0.02f;
         const iron::Fog noFog{};
         vulkan->setLightVolume(player.light(), 1.5f);
         renderer.beginFrame(Vec3{0.0f, 0.0f, 0.0f}, dark, std::span<const iron::PointLight>(lights),
@@ -302,6 +344,43 @@ int main(int argc, char** argv) {
         }
 
         player.simulate(dt);
+
+        // Stirring radius grows with speed, so a fast pass leaves a wider wake.
+        const Vec3 pos = swarm.position();
+        const Vec3 vel = swarm.velocity();
+        FogParams fogParams{};
+        fogParams.swarm[0] = pos.x;
+        fogParams.swarm[1] = pos.y;
+        fogParams.swarm[2] = pos.z;
+        fogParams.swarm[3] = 1.4f + swarm.spread() * 0.5f;
+        fogParams.velocity[0] = vel.x;
+        fogParams.velocity[1] = vel.y;
+        fogParams.velocity[2] = vel.z;
+        fogParams.kick[0] = swarm.blast();
+        fog->setParams(&fogParams);
+        const int steps = iron::fluidStepsThisFrame(dt, fogAccumulator);
+        for (int i = 0; i < steps; ++i) fog->step();
+
+        volumes->setOccluders(pos, {}, 0.95f, columns);
+
+        iron::VolumeRenderSettings air;
+        air.airDensity = 0.012f;
+        air.steps = 48;
+        air.phase = 0.35f;
+        air.powder = 0.5f;
+        air.airLight = 1.0f;
+        air.lightIntensity = 0.8f;
+        air.smokeDensity = kFogDensity;
+        air.smokeAlbedo = {0.62f, 0.66f, 0.74f};
+        air.heatIntensity = 0.0f;
+        air.shadowDensity = 1.0f;
+        air.lightPosition = pos;
+        air.lightColor = kEmber * (0.7f + flare * 5.0f);
+        air.detail = 0.3f;
+        air.detailScale = 0.8f;
+        air.time = seconds;
+        if (player.light()) volumes->render(view, projection, *player.light(), fog.get(), air);
+
         player.render(view, projection);
     };
 

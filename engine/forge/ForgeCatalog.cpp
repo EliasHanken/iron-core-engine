@@ -144,6 +144,10 @@ std::vector<BlockDesc> makeBlocks() {
         {num("in", 0.1f, 0.0f, 1.0f, "Share of life spent fading in."),
          num("out", 0.3f, 0.0f, 1.0f, "Share of life spent fading out.")},
         R"(alpha *= smoothstep(0.0, max($in, 1e-3), life01) * (1.0 - smoothstep(1.0 - max($out, 1e-3), 1.0, life01));)"});
+    list.push_back({"FadeNearCamera", Stack::Look, "Fade out close to the camera, so that nothing blinds it.",
+        {num("start", 3.0f, 0.0f, 50.0f, "Fully visible beyond this distance."),
+         num("end", 0.5f, 0.0f, 50.0f, "Gone within this distance.")},
+        R"(alpha *= smoothstep($end, $start, length(x - frame.cameraPos.xyz));)"});
     list.push_back({"StretchWithSpeed", Stack::Look, "Draw as a streak along the motion.",
         {num("amount", 0.12f, 0.0f, 2.0f, "Seconds of motion to smear."),
          num("max", 0.3f, 0.0f, 5.0f, "Longest streak in metres.")},

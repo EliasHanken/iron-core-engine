@@ -137,7 +137,7 @@ void Player::updateLight() {
     });
     if (wanted && !light_) {
         light_ = createLightVolume(renderer_, lightDesc_);
-        volumes_ = createVolumeRenderer(renderer_);
+        if (airDensity_ > 0.0f) volumes_ = createVolumeRenderer(renderer_);
     }
 }
 
