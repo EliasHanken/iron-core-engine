@@ -8,6 +8,7 @@
 
 #include "asset/GltfLoader.h"
 #include "asset/Ik.h"
+#include "math/Quaternion.h"
 #include "asset/Pose.h"
 #include "core/Log.h"
 #include "math/Mat4.h"
@@ -34,8 +35,8 @@ public:
     // Where each hand goes, and how it turns, in the rifle's own space.
     struct Grip {
         Vec3  socket;      // Where the palm sits.
-        Vec3  forward;     // From the wrist toward the knuckles.
-        Vec3  across;      // From the little finger's knuckle toward the index's.
+        Vec3  palm;        // Which way the palm faces.
+        Vec3  forward;     // Which way the fingers point, before they curl.
         Vec3  pole;        // Which way the elbow points, in the arms' space.
         float curl = 1.0f; // How far the fingers close: 1 is a firm grip.
     };
@@ -62,6 +63,8 @@ public:
             h.lower = find(("forearm" + s).c_str());
             h.wrist = find(("wrist" + s).c_str());
             h.socket = find(("socket" + s).c_str());
+            h.twist0 = find(("forearm.Twist0" + s).c_str());
+            h.twist1 = find(("forearm.Twist1" + s).c_str());
             h.index = find(("finger_index1" + s).c_str());
             h.middle = find(("finger_middle1" + s).c_str());
             h.pinky = find(("finger_pinky1" + s).c_str());
@@ -77,6 +80,23 @@ public:
         iron::bindPose(data_.skeleton, bind_);
         globals_.resize(bones.size());
         palette_.resize(bones.size());
+
+        // Which side of each hand is the palm, read off the rig rather than assumed:
+        // fingers at rest bend a little towards it.
+        iron::composeGlobals(data_.skeleton, bind_, globals_);
+        for (Side& h : sides_) {
+            Vec3 wrist, forward, across;
+            handFrame(h, wrist, forward, across);
+            const Vec3 normal = iron::normalize(iron::cross(forward, across));
+            float bend = 0.0f;
+            for (std::size_t f = 0; f + 2 < h.fingers.size(); f += 3) {
+                const Vec3 a = originOf(globals_[static_cast<std::size_t>(h.fingers[f])]);
+                const Vec3 b = originOf(globals_[static_cast<std::size_t>(h.fingers[f + 1])]);
+                const Vec3 c = originOf(globals_[static_cast<std::size_t>(h.fingers[f + 2])]);
+                bend += iron::dot((c - b) - (b - a), normal);
+            }
+            h.palmSign = bend >= 0.0f ? 1.0f : -1.0f;
+        }
 
         // The mesh, as plain vertices that get rewritten each frame.
         mesh_.vertices.resize(data_.vertices.size());
@@ -95,11 +115,17 @@ public:
     }
 
     // Poses the arms. `armsToGun` takes the arms' space into the rifle's.
-    void pose(const Mat4& armsToGun, const Grip& right, const Grip& left) {
+    void pose(const Mat4& armsToGun, const Grip& right, const Grip& left, bool reachForGun = true) {
         iron::composeGlobals(data_.skeleton, bind_, globals_);
         const Mat4 gunToArms = iron::inverse(armsToGun);
-        reach(sides_[0], right, gunToArms);
-        reach(sides_[1], left, gunToArms);
+        if (reachForGun) {
+            reachError_[0] = reach(sides_[0], right, gunToArms);
+            facing_[0] = lastFacing_;
+            roll_[0] = lastRoll_;
+            reachError_[1] = reach(sides_[1], left, gunToArms);
+            facing_[1] = lastFacing_;
+            roll_[1] = lastRoll_;
+        }
         iron::globalsToPalette(data_.skeleton, globals_, palette_);
     }
 
@@ -114,9 +140,17 @@ public:
 
     const iron::Material& material() const { return material_; }
 
+    // How far each palm ended up from where it was sent, in the arms' space: right, left.
+    std::array<float, 2> reachError() const { return reachError_; }
+    // How well each palm faces its grip (1 is square on), and the last roll it needed.
+    std::array<float, 2> facing() const { return facing_; }
+    std::array<float, 2> roll() const { return roll_; }
+
 private:
     struct Side {
         int upper = -1, lower = -1, wrist = -1, socket = -1;
+        int twist0 = -1, twist1 = -1;  // Carry the wrist's roll along the forearm.
+        float palmSign = 1.0f;         // Which side of cross(forward, across) the palm is on.
         int index = -1, middle = -1, pinky = -1;
         std::vector<int> fingers;
         std::vector<int> thumb;
@@ -147,18 +181,6 @@ private:
         }
     }
 
-    // An orthonormal frame from a forward and a rough sideways direction, as a rotation.
-    static Mat4 frame(Vec3 forward, Vec3 across) {
-        const Vec3 f = iron::normalize(forward);
-        const Vec3 n = iron::normalize(iron::cross(f, across));
-        const Vec3 s = iron::cross(n, f);
-        Mat4 m = Mat4::identity();
-        m.at(0, 0) = f.x; m.at(1, 0) = f.y; m.at(2, 0) = f.z;
-        m.at(0, 1) = s.x; m.at(1, 1) = s.y; m.at(2, 1) = s.z;
-        m.at(0, 2) = n.x; m.at(1, 2) = n.y; m.at(2, 2) = n.z;
-        return m;
-    }
-
     static Quat toQuat(const Mat4& m) { return iron::decomposeTRS(m).rotation; }
 
     void handFrame(const Side& h, Vec3& wrist, Vec3& forward, Vec3& across) const {
@@ -168,50 +190,108 @@ private:
                  originOf(globals_[static_cast<std::size_t>(h.pinky)]);
     }
 
-    void reach(const Side& h, const Grip& grip, const Mat4& gunToArms) {
-        // The hand's frame as the gun wants it, in the arms' space.
-        const Vec3 wantForward = apply(gunToArms, grip.forward, 0.0f);
-        const Vec3 wantAcross = apply(gunToArms, grip.across, 0.0f);
-        const Vec3 socketTarget = apply(gunToArms, grip.socket, 1.0f);
-
-        // Where the wrist must be so that, turned that way, the palm lands on the socket.
+    // Which way the palm faces.
+    Vec3 palmOf(const Side& h) const {
         Vec3 wrist, forward, across;
         handFrame(h, wrist, forward, across);
-        const Mat4 now = frame(forward, across);
-        const Mat4 want = frame(wantForward, wantAcross);
-        const Mat4 handTurn = want * iron::transpose(now);
-        const Vec3 socketOffset = originOf(globals_[static_cast<std::size_t>(h.socket)]) - wrist;
-        const Vec3 wristTarget = socketTarget - apply(handTurn, socketOffset, 0.0f);
+        return iron::normalize(iron::cross(forward, across)) * h.palmSign;
+    }
 
-        // Shoulder, elbow, wrist.
-        const Vec3 root = originOf(globals_[static_cast<std::size_t>(h.upper)]);
-        const Vec3 mid = originOf(globals_[static_cast<std::size_t>(h.lower)]);
-        const iron::TwoBoneIKResult r = iron::solveTwoBoneIK(root, mid, wrist, wristTarget, root + grip.pole);
-        turn(h.upper, root, r.rootDelta);
-        turn(h.lower, originOf(globals_[static_cast<std::size_t>(h.lower)]), r.midDelta);
+    // Turns the hand and forearm about the forearm's length, as a real forearm turns:
+    // the wrist takes it all, and the two twist bones a third and two thirds.
+    void rollForearm(const Side& h, float angle) {
+        const Vec3 elbow = originOf(globals_[static_cast<std::size_t>(h.lower)]);
+        const Vec3 wrist = originOf(globals_[static_cast<std::size_t>(h.wrist)]);
+        const Vec3 axis = iron::normalize(wrist - elbow);
+        turn(h.wrist, wrist, Quat::fromAxisAngle(axis, angle));
+        for (int bone : {h.twist0, h.twist1}) {
+            if (bone < 0) continue;
+            turn(bone, originOf(globals_[static_cast<std::size_t>(bone)]), Quat::fromAxisAngle(axis, angle / 3.0f));
+        }
+    }
 
-        // Then the hand, about the wrist, to grip.
-        handFrame(h, wrist, forward, across);
-        const Mat4 settle = frame(wantForward, wantAcross) * iron::transpose(frame(forward, across));
-        turn(h.wrist, wrist, toQuat(settle));
+    // The rotation that takes the hand, as it is now, to fingers along `forward` and
+    // the palm facing `palm`.
+    Quat handTurn(const Side& h, Vec3 forward, Vec3 palm) const {
+        Vec3 wrist, f0, across;
+        handFrame(h, wrist, f0, across);
+        const auto basis = [](Vec3 f, Vec3 p) {
+            f = iron::normalize(f);
+            p = iron::normalize(p - f * iron::dot(p, f));
+            const Vec3 s = iron::cross(f, p);
+            Mat4 m = Mat4::identity();
+            m.at(0, 0) = f.x; m.at(1, 0) = f.y; m.at(2, 0) = f.z;
+            m.at(0, 1) = p.x; m.at(1, 1) = p.y; m.at(2, 1) = p.z;
+            m.at(0, 2) = s.x; m.at(1, 2) = s.y; m.at(2, 2) = s.z;
+            return m;
+        };
+        return toQuat(basis(forward, palm) * iron::transpose(basis(f0, palmOf(h))));
+    }
 
-        // Fingers close around what they hold, joint by joint, about the knuckles' line.
-        // Each joint adds to the ones before it: knuckle, middle, tip.
-        constexpr float kJoint[3] = {0.75f, 0.95f, 0.55f};
+    // Poses one arm onto the gun the way a real arm gets there: reach so the hand's
+    // socket lands on the grip, roll the forearm and bend the wrist so the palm faces
+    // the gun and the fingers lie along it, then close them. The roll is spread along
+    // the forearm's twist bones, so the wrist never wrings.
+    float reach(const Side& h, const Grip& grip, const Mat4& gunToArms) {
+        const Vec3 socketTarget = apply(gunToArms, grip.socket, 1.0f);
+        const Vec3 wantPalm = iron::normalize(apply(gunToArms, grip.palm, 0.0f));
+        const Vec3 wantForward = iron::normalize(apply(gunToArms, grip.forward, 0.0f));
+        constexpr float kMaxRoll = 1.9f;   // About 110 degrees either way.
+        constexpr float kMaxBend = 1.3f;   // About 75 degrees: a wrist flexes about that far.
+
+        for (int pass = 0; pass < 3; ++pass) {
+            // Reach: the palm's offset from the wrist, as the hand is turned now.
+            const Vec3 wrist = originOf(globals_[static_cast<std::size_t>(h.wrist)]);
+            const Vec3 socket = originOf(globals_[static_cast<std::size_t>(h.socket)]);
+            const Vec3 root = originOf(globals_[static_cast<std::size_t>(h.upper)]);
+            const Vec3 mid = originOf(globals_[static_cast<std::size_t>(h.lower)]);
+            const iron::TwoBoneIKResult r =
+                iron::solveTwoBoneIK(root, mid, wrist, socketTarget - (socket - wrist), root + grip.pole);
+            turn(h.upper, root, r.rootDelta);
+            turn(h.lower, originOf(globals_[static_cast<std::size_t>(h.lower)]), r.midDelta);
+
+            // The turn that would put the hand square on the grip, split the standard
+            // way into a twist about the forearm and a swing. The forearm takes the
+            // twist, as a real one does; the wrist takes the swing, as far as a wrist bends.
+            const Vec3 elbow = originOf(globals_[static_cast<std::size_t>(h.lower)]);
+            const Vec3 axis = iron::normalize(originOf(globals_[static_cast<std::size_t>(h.wrist)]) - elbow);
+            const Quat whole = handTurn(h, wantForward, wantPalm);
+            const float along = whole.x * axis.x + whole.y * axis.y + whole.z * axis.z;
+            float roll = 2.0f * std::atan2(along, whole.w);
+            if (roll > 3.14159265f) roll -= 6.2831853f;
+            if (roll < -3.14159265f) roll += 6.2831853f;
+            roll = std::clamp(roll, -kMaxRoll, kMaxRoll);
+            rollForearm(h, roll);
+            lastRoll_ = roll;
+
+            const Quat swing = handTurn(h, wantForward, wantPalm);
+            const float angle = 2.0f * std::acos(std::clamp(std::abs(swing.w), 0.0f, 1.0f));
+            const Quat bend = angle > kMaxBend ? iron::slerp(Quat::identity(), swing, kMaxBend / angle) : swing;
+            turn(h.wrist, originOf(globals_[static_cast<std::size_t>(h.wrist)]), bend);
+        }
+
+        // Fingers close around what they hold, joint by joint, about the knuckles'
+        // line, towards the palm. Each joint adds to those before it.
+        constexpr float kJoint[3] = {0.8f, 1.0f, 0.6f};
         for (std::size_t i = 0; i < h.fingers.size(); ++i) {
             const int bone = h.fingers[i];
             if (bone < 0) continue;
+            Vec3 wrist, forward, across;
             handFrame(h, wrist, forward, across);
-            const Vec3 axis = iron::normalize(across);
             turn(bone, originOf(globals_[static_cast<std::size_t>(bone)]),
-                 Quat::fromAxisAngle(axis, grip.curl * kJoint[i % 3]));
+                 Quat::fromAxisAngle(iron::normalize(across), -h.palmSign * grip.curl * kJoint[i % 3]));
         }
-        for (int bone : h.thumb) {
+        // The thumb comes across the grip from the other side.
+        for (std::size_t i = 0; i < h.thumb.size(); ++i) {
+            const int bone = h.thumb[i];
             if (bone < 0) continue;
+            Vec3 wrist, forward, across;
             handFrame(h, wrist, forward, across);
             turn(bone, originOf(globals_[static_cast<std::size_t>(bone)]),
-                 Quat::fromAxisAngle(iron::normalize(forward), grip.curl * 0.35f));
+                 Quat::fromAxisAngle(iron::normalize(forward), -h.palmSign * grip.curl * (i == 0 ? 0.3f : 0.45f)));
         }
+        lastFacing_ = iron::dot(palmOf(h), wantPalm);
+        return iron::length(originOf(globals_[static_cast<std::size_t>(h.socket)]) - socketTarget);
     }
 
     std::vector<Mat4> identityPalette() const {
@@ -247,6 +327,9 @@ private:
     iron::MeshData mesh_;
     std::array<iron::MeshHandle, 2> meshes_{};
     bool flip_ = false;
+    std::array<float, 2> reachError_{};
+    float lastRoll_ = 0.0f, lastFacing_ = 0.0f;
+    std::array<float, 2> facing_{}, roll_{};
     iron::Material material_;
 };
 

@@ -68,7 +68,7 @@ Foundry's first-person rifle and arms are also CC0:
 
 | Model | Where | Credit | Licence |
 |---|---|---|---|
-| L85A1 rifle | `games/20-foundry/assets/models/l85a1/` | Tabasco, "Various Small Arms" ([OpenGameArt](https://opengameart.org/node/3609)), exported by `tools/foundry/export_rifle.py` | CC0 (placed in the public domain by the author, 2023) |
+| AK-47 rifle | `games/20-foundry/assets/models/ak47/` | Stein Games, "Free Classic Weapons Pack" ([itch.io](https://stein-indie.itch.io/classic-weapons-pack)), exported by `tools/foundry/export_ak.py` | CC0 1.0 |
 | WRAD ARMS | `games/20-foundry/assets/models/arms/` | wriks ([GitHub](https://github.com/wwwriks/wrad-arms)), exported by `tools/foundry/export_arms.py` | CC0 |
 
 The Damaged Helmet is only a viewer and editor sample. Anyone building a commercial product from this repo should remove it.

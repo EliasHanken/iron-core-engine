@@ -151,9 +151,11 @@ public:
     // how it's tilted (pitch, yaw, roll), from all of the above.
     Vec3 viewOffset() const {
         // Where the bottom of the pistol grip sits. Aimed, the line through the rear
-        // aperture and the front post (0.25 m above the grip) passes through the eye.
-        const Vec3 hip{0.13f, -0.29f, -0.34f};
-        const Vec3 aimed{0.0f, -0.248f, -0.285f};
+        // notch and the front post (0.185 m above the grip) passes through the eye. As
+        // in most shooters, the rifle sits further out than a real cheek weld would put
+        // it, so the stock (0.26 m behind the grip) doesn't fill the bottom of the view.
+        const Vec3 hip{0.13f, -0.27f, -0.27f};
+        const Vec3 aimed{0.0f, -0.185f, -0.34f};
         const float a = smooth(aim_);
         Vec3 at{hip.x + (aimed.x - hip.x) * a, hip.y + (aimed.y - hip.y) * a, hip.z + (aimed.z - hip.z) * a};
         const float bob = bobAmount_ * (1.0f - 0.8f * a);

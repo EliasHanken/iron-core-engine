@@ -23,6 +23,7 @@ namespace iron {
 // (create a Window first).
 class OpenGLRenderer : public Renderer {
 public:
+    bool texturesBottomUp() const override { return true; }  // GL's UV origin is bottom-left.
     OpenGLRenderer();
 
     MeshHandle createMesh(const MeshData& data) override;

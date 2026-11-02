@@ -280,6 +280,11 @@ public:
     // Call when the framebuffer is resized.
     virtual void setViewport(int width, int height) = 0;
 
+    // Whether this backend wants image rows bottom-first (OpenGL) or top-first
+    // (Vulkan, and glTF's UVs). Code that decodes images itself and hands the pixels
+    // to createTexture must match it.
+    virtual bool texturesBottomUp() const { return false; }
+
     // How long each part of a recent frame took on the GPU, in the order the parts
     // ran. A frame or two old, so reading it never waits. Empty where unsupported.
     virtual std::span<const GpuTiming> gpuTimings() const { return {}; }
