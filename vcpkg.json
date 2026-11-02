@@ -4,15 +4,27 @@
   "dependencies": [
     "gamenetworkingsockets",
     "joltphysics",
+    "meshoptimizer",
     "openal-soft",
     "tinygltf",
     "vulkan-headers",
     "vulkan-loader",
     "glslang",
     "vulkan-memory-allocator",
-    { "name": "imgui", "features": ["glfw-binding", "vulkan-binding", "docking-experimental"] }
+    {
+      "name": "imgui",
+      "features": [
+        "glfw-binding",
+        "vulkan-binding",
+        "docking-experimental"
+      ]
+    }
   ],
   "overrides": [
-    { "name": "tinygltf", "version": "3.0.0", "port-version": 1 }
+    {
+      "name": "tinygltf",
+      "version": "3.0.0",
+      "port-version": 1
+    }
   ]
 }

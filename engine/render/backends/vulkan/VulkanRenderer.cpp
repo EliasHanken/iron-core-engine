@@ -37,6 +37,7 @@ VulkanRenderer::~VulkanRenderer() {
         shadowMap_.destroy(context_);
         debugLines_.destroy(context_);
         profiler_.destroy(context_);
+        instanceGroups_.destroy(context_);
         if (reflectionPipeline_)       vkDestroyPipeline(context_.device(), reflectionPipeline_, nullptr);
         if (reflectionPipelineLayout_) vkDestroyPipelineLayout(context_.device(), reflectionPipelineLayout_, nullptr);
         if (reflectionSetLayout_)      vkDestroyDescriptorSetLayout(context_.device(), reflectionSetLayout_, nullptr);
@@ -181,6 +182,10 @@ bool VulkanRenderer::init(Window& window) {
 
     // Optional: without it the game still runs, with no GPU timings.
     profiler_.init(context_);
+    if (!instanceGroups_.init(context_, frames_)) {
+        Log::error("VulkanRenderer: instance groups failed to initialise");
+        return false;
+    }
 
     initOk_ = true;
     Log::info("VulkanRenderer: context + swapchain + frames + pipeline + textures up");
@@ -645,7 +650,23 @@ void VulkanRenderer::submit(const DrawCall& call) {
     sceneDraws_.push_back(call);
 }
 
-void VulkanRenderer::recordSceneDraw(VkCommandBuffer cb, const DrawCall& call) {
+ShaderHandle VulkanRenderer::createInstancedShader(const std::string& vertexSrc, const std::string& fragmentSrc) {
+    return shaders_.create(context_, vertexSrc, fragmentSrc, /*instanced=*/true);
+}
+
+InstanceGroupHandle VulkanRenderer::createInstanceGroup(const InstanceGroupDesc& desc) {
+    if (!shaders_.has(desc.shader) || !shaders_.get(desc.shader).instanced) {
+        Log::error("VulkanRenderer: an instance group needs an instanced shader");
+        return kInvalidInstanceGroup;
+    }
+    return instanceGroups_.create(context_, desc, meshes_);
+}
+
+void VulkanRenderer::setInstances(InstanceGroupHandle group, std::span<const Mat4> transforms) {
+    instanceGroups_.setInstances(context_, group, transforms);
+}
+
+void VulkanRenderer::recordSceneDraw(VkCommandBuffer cb, const DrawCall& call, const IndirectSource* indirect) {
     if (!meshes_.has(call.mesh) || !shaders_.has(call.shader)) return;
 
     VkFrameRing::Frame& f = frames_.current();
@@ -887,6 +908,22 @@ void VulkanRenderer::recordSceneDraw(VkCommandBuffer cb, const DrawCall& call) {
     writes[12].pImageInfo      = &imgInfos[11];
     vkUpdateDescriptorSets(context_.device(), 13, writes, 0, nullptr);
 
+    // Instance groups also read their instances and the visible list (16, 17).
+    if (indirect && sh.instanced) {
+        const VkDescriptorBufferInfo storage[2] = {{indirect->instances, 0, VK_WHOLE_SIZE},
+                                                   {indirect->visible, 0, VK_WHOLE_SIZE}};
+        VkWriteDescriptorSet instanceWrites[2]{};
+        for (std::uint32_t i = 0; i < 2; ++i) {
+            instanceWrites[i].sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+            instanceWrites[i].dstSet          = set;
+            instanceWrites[i].dstBinding      = 16 + i;
+            instanceWrites[i].descriptorType  = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+            instanceWrites[i].descriptorCount = 1;
+            instanceWrites[i].pBufferInfo     = &storage[i];
+        }
+        vkUpdateDescriptorSets(context_.device(), 2, instanceWrites, 0, nullptr);
+    }
+
     bindLightVolume(set);
     vkCmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_GRAPHICS,
                             sh.pipelineLayout, 0, 1, &set, 0, nullptr);
@@ -895,7 +932,11 @@ void VulkanRenderer::recordSceneDraw(VkCommandBuffer cb, const DrawCall& call) {
     VkDeviceSize offsets[1] = {0};
     vkCmdBindVertexBuffers(cb, 0, 1, &mesh.vertexBuffer, offsets);
     vkCmdBindIndexBuffer(cb, mesh.indexBuffer, 0, VK_INDEX_TYPE_UINT32);
-    vkCmdDrawIndexed(cb, mesh.indexCount, 1, 0, 0, 0);
+    if (indirect && sh.instanced) {
+        vkCmdDrawIndexedIndirect(cb, indirect->commands, indirect->offset, 1, sizeof(VkDrawIndexedIndirectCommand));
+    } else {
+        vkCmdDrawIndexed(cb, mesh.indexCount, 1, 0, 0, 0);
+    }
 }
 
 // M23 — record one skinned draw. Mirrors recordSceneDraw: same LitUbo,
@@ -1186,10 +1227,20 @@ void VulkanRenderer::endFrame() {
     VkCommandBuffer cb = f.commandBuffer;
     profiler_.end(cb);  // Simulation
 
+    // --- Pass 0: culling, before anything draws instance groups ---
+    if (!instanceGroups_.empty()) {
+        profiler_.begin(cb, "Culling");
+        const float pixelsPerUnit = pendingProjection_.at(1, 1) * 0.5f * static_cast<float>(postProcess_.extent().height);
+        instanceGroups_.cull(cb, frames_.currentIndex(), pendingProjection_ * pendingView_, pendingLightViewProj_,
+                             pendingCameraPos_, pixelsPerUnit, postProcess_.extent());
+        profiler_.end(cb);
+    }
+
     // --- Pass 1: shadow ---
     profiler_.begin(cb, "Shadows");
+    const auto instancedShadows = instanceGroups_.shadowDraws(frames_.currentIndex(), meshes_);
     shadowMap_.record(cb, context_.device(), frames_, meshes_,
-                     pendingLightViewProj_, sceneDraws_);
+                     pendingLightViewProj_, sceneDraws_, instancedShadows);
     profiler_.end(cb);
 
     // --- Pass 2: planar reflection (if a plane is set) ---
@@ -1294,6 +1345,23 @@ void VulkanRenderer::endFrame() {
             recordSceneDraw(cb, call);
         }
 
+        // Instance groups: one indirect draw per level of detail.
+        instanceGroups_.forEachDraw(frames_.currentIndex(), meshes_, [&](const VkInstanceGroups::Draw& d) {
+            DrawCall call;
+            call.mesh = d.desc->lods[d.lod];
+            call.shader = d.desc->shader;
+            call.material = d.desc->material;
+            if (debugView_ == RenderDebugView::LevelsOfDetail) {
+                static const Vec3 kTint[4] = {{1.0f, 1.0f, 1.0f}, {0.3f, 1.0f, 0.3f}, {1.0f, 0.9f, 0.2f},
+                                              {1.0f, 0.25f, 0.2f}};
+                call.material.baseColorFactor = kTint[d.lod];
+                call.material.texture = textures_.whiteTexture();
+                call.material.emissive = kTint[d.lod] * 0.6f;
+            }
+            const IndirectSource source{d.instances, d.visible, d.indirect, d.indirectOffset};
+            recordSceneDraw(cb, call, &source);
+        });
+
         // M23 — skinned draws replay after static ones, before deferred passes.
         for (std::size_t i = 0; i < skinnedDraws_.size(); ++i) {
             recordSkinnedDraw(cb, skinnedDraws_[i], skinnedBoneMatricesStash_[i]);
@@ -1323,6 +1391,13 @@ void VulkanRenderer::endFrame() {
                                         velocityObjects_);
         }
         profiler_.end(cb);
+
+        // Next frame's occlusion test reads this frame's depth.
+        if (!instanceGroups_.empty()) {
+            profiler_.begin(cb, "Depth pyramid");
+            instanceGroups_.buildDepthPyramid(context_, cb, postProcess_.sceneDepthView());
+            profiler_.end(cb);
+        }
 
         // Depth is complete and readable here, outside any render pass.
         profiler_.begin(cb, "Scene compute");

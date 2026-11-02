@@ -13,12 +13,16 @@
 //   frame    open the frame breakdown
 //   motion   show motion vectors
 //   rig      watch the player's arms and rifle from the side, to tune the grip
+//   overview look down on the stockyard from above, to see culling at work
+//   lod      tint instance groups by level of detail
+//   freeze   freeze culling at the start
 
 #include "common/CaptureLoop.h"
 #include "common/TrackedText.h"
 #include "Gun.h"
 #include "Arms.h"
 #include "Level.h"
+#include "Stockyard.h"
 #include "Models.h"
 #include "Sound.h"
 
@@ -41,6 +45,7 @@
 #include <cmath>
 #include <cstdio>
 #include <string>
+#include <map>
 #include <unordered_map>
 #include <vector>
 
@@ -303,8 +308,11 @@ public:
         bool  paused = false;
         bool  showFrame = false;
         bool  showMotion = false;
+        bool  showLods = false;
+        bool  frozen = false;
         float cpuMs = 0.0f;
         int   draws = 0;
+        iron::CullStats cull;
     };
 
     void draw(iron::Renderer& renderer, const State& s, std::span<const iron::GpuTiming> timings, int width,
@@ -380,15 +388,19 @@ public:
             const float y = h - 112.0f * unit;
             rect(bars, 0.0f, y, w, 46.0f * unit, {0.0f, 0.0f, 0.0f, 0.45f * hint});
             text::appendCentered(smallText, small_,
-                                 "WASD  MOVE     SHIFT  RUN     CLICK  FIRE     RIGHT CLICK  AIM     R  RELOAD     "
-                                 "F1  FRAME     F2  MOTION",
+                                 "WASD  MOVE     CLICK  FIRE     RIGHT CLICK  AIM     R  RELOAD     "
+                                 "F1  FRAME     F2  MOTION     F3  FREEZE CULLING     F4  LODS",
                                  cx, y + 29.0f * unit, 1.0f, 0.24f, {1.0f, 0.93f, 0.84f, hint});
         }
 
-        if (s.showMotion) {
+        // What the debug views show, one line at the top.
+        const char* banner = s.showMotion ? "MOTION VECTORS   /   HUE IS DIRECTION, BRIGHTNESS IS SPEED"
+                           : s.frozen     ? "CULLING FROZEN   /   WALK AWAY TO SEE WHAT IT SKIPPED"
+                           : s.showLods   ? "LEVELS OF DETAIL   /   WHITE, GREEN, YELLOW, RED AS THEY SIMPLIFY"
+                                          : nullptr;
+        if (banner) {
             rect(bars, 0.0f, 18.0f * unit, w, 52.0f * unit, {0.0f, 0.0f, 0.0f, 0.55f});
-            text::appendCentered(smallText, small_, "MOTION VECTORS   /   HUE IS DIRECTION, BRIGHTNESS IS SPEED", cx,
-                                 50.0f * unit, 1.0f, 0.24f, warm);
+            text::appendCentered(smallText, small_, banner, cx, 50.0f * unit, 1.0f, 0.24f, warm);
         }
 
         if (s.showFrame) drawFrame(bars, bodyText, smallText, s, timings, unit);
@@ -427,7 +439,7 @@ private:
         const float panelW = 430.0f * unit;
         int rows = 0;
         for (const iron::GpuTiming& t : timings) rows += t.depth > 0 ? 1 : 0;
-        const float panelH = rowH * (static_cast<float>(std::max(rows, 1)) + 1.6f) + 4.0f * unit;
+        const float panelH = rowH * (static_cast<float>(std::max(rows, 1)) + 1.6f + 3.4f) + 4.0f * unit;
         rect(bars, left - 16.0f * unit, top - 14.0f * unit, panelW, panelH, {0.02f, 0.02f, 0.03f, 0.72f});
         rect(bars, left - 16.0f * unit, top - 14.0f * unit, 3.0f * unit, panelH, {1.0f, 0.62f, 0.26f, 0.95f});
 
@@ -455,6 +467,20 @@ private:
             y += rowH;
         }
         if (timings.empty()) leftText(smallText, small_, "NO GPU TIMERS ON THIS DEVICE", left, y, {1, 1, 1, 0.8f});
+
+        // What culling did with every instance this frame.
+        const iron::CullStats& c = s.cull;
+        y += rowH * 0.5f;
+        rect(bars, left, y - rowH * 0.75f, panelW - 32.0f * unit, 1.0f * unit, {1.0f, 1.0f, 1.0f, 0.15f});
+        std::snprintf(line, sizeof(line), "INSTANCES %u     DRAWN %u", c.instances, c.drawn);
+        leftText(smallText, small_, line, left, y, {1.0f, 0.93f, 0.84f, 0.95f});
+        y += rowH;
+        std::snprintf(line, sizeof(line), "OUT OF VIEW %u     HIDDEN %u     TINY %u", c.outsideView, c.hidden, c.tiny);
+        leftText(smallText, small_, line, left, y, {0.86f, 0.88f, 0.92f, 0.9f});
+        y += rowH;
+        std::snprintf(line, sizeof(line), "BY LEVEL OF DETAIL   %u  /  %u  /  %u  /  %u", c.perLod[0], c.perLod[1],
+                      c.perLod[2], c.perLod[3]);
+        leftText(smallText, small_, line, left, y, {0.86f, 0.88f, 0.92f, 0.9f});
     }
 
     static void leftText(iron::HudDrawGroup& g, const iron::FontAtlas& font, const std::string& s, float x, float y,
@@ -649,6 +675,28 @@ int main(int argc, char** argv) {
     }
 
     const iron::ShaderHandle lit = renderer.createStandardLitShader();
+
+    // The stockyard: thousands of props drawn as instance groups, culled on the GPU.
+    const iron::ShaderHandle instancedLit = renderer.createInstancedLitShader();
+    {
+        // Every lot of a kind goes into that kind's groups, set once.
+        std::map<std::string, std::vector<Mat4>> byModel;
+        for (const foundry::StockLot& lot : foundry::buildStockyard()) {
+            const foundry::InstancedModel* model = models.instanced(lot.model, instancedLit);
+            if (!model) continue;
+            const std::vector<Mat4> placed = foundry::placeLot(lot, model->bounds);
+            auto& all = byModel[lot.model];
+            all.insert(all.end(), placed.begin(), placed.end());
+        }
+        std::size_t instances = 0;
+        for (const auto& [name, transforms] : byModel) {
+            for (iron::InstanceGroupHandle group : models.instanced(name, instancedLit)->groups) {
+                renderer.setInstances(group, transforms);
+            }
+            instances += transforms.size();
+        }
+        iron::Log::info("foundry: stockyard of %zu instances", instances);
+    }
     const foundry::Model* rifle = models.get("l85a1");
     if (!rifle) return 1;
     foundry::Arms arms;
@@ -722,6 +770,8 @@ int main(int argc, char** argv) {
     bool clicked = false;
     bool showFrame = sceneHas("frame");
     bool showMotion = sceneHas("motion");
+    bool showLods = sceneHas("lod");
+    bool frozen = sceneHas("freeze");
     bool paused = false;
     options.onInput = [&]() {
         iron::Input& input = app.input();
@@ -734,6 +784,8 @@ int main(int argc, char** argv) {
         clicked = clicked || input.mouseButtonPressed(GLFW_MOUSE_BUTTON_LEFT);
         if (input.keyPressed(GLFW_KEY_F1)) showFrame = !showFrame;
         if (input.keyPressed(GLFW_KEY_F2)) showMotion = !showMotion;
+        if (input.keyPressed(GLFW_KEY_F3)) frozen = !frozen;
+        if (input.keyPressed(GLFW_KEY_F4)) showLods = !showLods;
     };
     if (!scripted) app.window().setCursorCaptured(true);
 
@@ -1026,7 +1078,10 @@ int main(int argc, char** argv) {
         fog.color = {0.42f, 0.27f, 0.2f};
         fog.density = 0.0022f;
 
-        vulkan->setDebugView(showMotion ? iron::RenderDebugView::MotionVectors : iron::RenderDebugView::None);
+        vulkan->setDebugView(showMotion ? iron::RenderDebugView::MotionVectors
+                             : showLods ? iron::RenderDebugView::LevelsOfDetail
+                                        : iron::RenderDebugView::None);
+        renderer.setCullingFrozen(frozen);
         vulkan->setCinematic(lens);
         // The rig view looks at the player from the side; the player still aims as before.
         Mat4 renderView = view;
@@ -1034,6 +1089,11 @@ int main(int argc, char** argv) {
             const Vec3 side = transformPoint(cameraToWorld, {0.55f, 0.0f, -0.2f});
             const Vec3 at = transformPoint(cameraToWorld, {0.05f, -0.2f, -0.3f});
             renderView = iron::lookAt(side, at, {0.0f, 1.0f, 0.0f});
+        } else if (sceneHas("overview")) {
+            // High over the yard's back wall, turning slowly to take in the stockyard.
+            const float a = 0.6f + seconds * 0.05f;
+            const Vec3 from{std::sin(a) * 70.0f, 38.0f, 40.0f + std::cos(a) * 70.0f};
+            renderView = iron::lookAt(from, {0.0f, 0.0f, 20.0f}, {0.0f, 1.0f, 0.0f});
         }
         renderer.beginFrame({0.05f, 0.04f, 0.04f}, sun, lights, fog, renderView, projection);
 
@@ -1137,6 +1197,9 @@ int main(int argc, char** argv) {
         state.paused = paused;
         state.showFrame = showFrame;
         state.showMotion = showMotion;
+        state.showLods = showLods;
+        state.frozen = frozen;
+        state.cull = renderer.cullStats();
         state.cpuMs = static_cast<float>((glfwGetTime() - cpuStart) * 1000.0);
         state.draws = draws;
         screen.draw(renderer, state, renderer.gpuTimings(), width, height);

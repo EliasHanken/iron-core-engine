@@ -70,7 +70,8 @@ std::vector<std::uint32_t> compileGlsl(VkShaderStageFlagBits stage,
 
 ShaderHandle VkShaderStore::create(VkContext& ctx,
                                    const std::string& vertSrc,
-                                   const std::string& fragSrc) {
+                                   const std::string& fragSrc,
+                                   bool instanced) {
     auto vspv = compileGlsl(VK_SHADER_STAGE_VERTEX_BIT, vertSrc);
     auto fspv = compileGlsl(VK_SHADER_STAGE_FRAGMENT_BIT, fragSrc);
     if (vspv.empty() || fspv.empty()) {
@@ -99,7 +100,7 @@ ShaderHandle VkShaderStore::create(VkContext& ctx,
     // binding 10 = irradiance cubemap (M46b) + binding 11 = prefiltered specular cubemap +
     // binding 12 = BRDF integration LUT (M46c split-sum) +
     // binding 13 = height map (M50a POM; white fallback = depth 0 = POM no-op).
-    VkDescriptorSetLayoutBinding bindings[16]{};
+    VkDescriptorSetLayoutBinding bindings[17]{};
     bindings[0].binding = 0;
     bindings[0].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
     bindings[0].descriptorCount = 1;
@@ -161,12 +162,16 @@ ShaderHandle VkShaderStore::create(VkContext& ctx,
     bindings[14].descriptorType  = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
     bindings[14].descriptorCount = 1;
     bindings[14].stageFlags      = VK_SHADER_STAGE_FRAGMENT_BIT;
+    // Instance groups: their transforms, and the list of those culling kept.
+    bindings[15] = {16, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_VERTEX_BIT, nullptr};
+    bindings[16] = {17, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_VERTEX_BIT, nullptr};
 
     VkDescriptorSetLayoutCreateInfo dslInfo{};
     dslInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-    dslInfo.bindingCount = 15;
+    dslInfo.bindingCount = instanced ? 17 : 15;
     dslInfo.pBindings = bindings;
     VK_CHECK(vkCreateDescriptorSetLayout(ctx.device(), &dslInfo, nullptr, &s.setLayout));
+    s.instanced = instanced;
 
     VkPipelineLayoutCreateInfo plInfo{};
     plInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;

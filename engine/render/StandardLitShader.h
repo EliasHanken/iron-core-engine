@@ -62,6 +62,64 @@ void main() {
 )GLSL";
 }
 
+// The standard lit vertex stage for instance groups: each instance's transform comes
+// from a storage buffer, indexed through the visible list that culling wrote, and the
+// UBO's mvp holds just the view-projection. Same outputs, so the same fragment stage.
+inline const char* standardLitInstancedVertSource() {
+    return R"GLSL(#version 450
+layout(location = 0) in vec3 aPos;
+layout(location = 1) in vec3 aNormal;
+layout(location = 2) in vec2 aUV;
+layout(location = 3) in vec3 aTangent;
+
+layout(set = 0, binding = 0) uniform LitUbo {
+    mat4 mvp;
+    mat4 model;
+    mat4 lightViewProj;
+    vec4 sunDir;
+    vec4 sunColor;
+    vec4 ambient;
+    vec4 emissive;
+    vec4 cameraPos;
+    vec4 materialParams;
+    vec4 materialParams2;
+    vec4 baseColorFactor;
+    vec4 fogColor;
+    vec4 lightCounts;
+    vec4 pointPositions[16];
+    vec4 pointColors[16];
+    mat4 reflectionViewProj;
+    vec4 reflectionParams;
+    vec4 clipPlane;
+    vec4 probeBoxMin;
+    vec4 probeBoxMax;
+    vec4 probeCenter;
+} u;
+
+struct Instance { mat4 model; vec4 sphere; };
+layout(std430, set = 0, binding = 16) readonly buffer Instances { Instance inst[]; };
+layout(std430, set = 0, binding = 17) readonly buffer Visible { uint visible[]; };
+
+layout(location = 0) out vec3 vWorldPos;
+layout(location = 1) out vec3 vNormal;
+layout(location = 2) out vec3 vTangent;
+layout(location = 3) out vec2 vUV;
+layout(location = 4) out vec4 vLightSpacePos;
+
+void main() {
+    // gl_InstanceIndex starts at this level's slice of the visible list.
+    mat4 model = inst[visible[gl_InstanceIndex]].model;
+    vec4 world = model * vec4(aPos, 1.0);
+    vWorldPos = world.xyz;
+    vNormal = mat3(model) * aNormal;
+    vTangent = mat3(model) * aTangent;
+    vUV = aUV;
+    vLightSpacePos = u.lightViewProj * world;
+    gl_Position = u.mvp * world;
+}
+)GLSL";
+}
+
 inline const char* standardSkinnedLitVertSource() {
     return R"GLSL(#version 450
 layout(location = 0) in vec3 aPos;
