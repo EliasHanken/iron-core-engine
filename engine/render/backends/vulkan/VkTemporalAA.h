@@ -23,8 +23,9 @@ class VkContext;
 // a copy taken before they were drawn: wherever they changed it, the new frame counts
 // for more (a reactive mask, made without touching their pipelines).
 //
-// The result is copied back into the scene image, so everything after it reads the
-// anti-aliased frame without knowing this pass exists.
+// The result is written back into the scene image through a contrast-adaptive
+// sharpen, which restores the crispness blending takes off, so everything after it
+// reads the anti-aliased frame without knowing this pass exists.
 class VkTemporalAA {
 public:
     bool init(VkContext& ctx, VkFormat colorFormat);
@@ -41,6 +42,8 @@ public:
 
     // Drops the history, for a cut or a jump; the next frame starts fresh.
     void reset() { reset_ = true; }
+    // How hard the result is sharpened on its way back, 0 (gently) to 1.
+    void setSharpness(float s) { sharpness_ = s; }
 
 private:
     struct Image {
@@ -69,6 +72,16 @@ private:
     VkDescriptorPool      pool_ = VK_NULL_HANDLE;
     VkPipelineLayout      layout_ = VK_NULL_HANDLE;
     ::VkPipeline          pipeline_ = VK_NULL_HANDLE;
+
+    // Sharpening the result back into the scene image.
+    float                          sharpness_ = 0.25f;
+    VkRenderPass                   sharpenPass_ = VK_NULL_HANDLE;
+    VkFramebuffer                  sceneFramebuffer_ = VK_NULL_HANDLE;
+    VkDescriptorSetLayout          sharpenSetLayout_ = VK_NULL_HANDLE;
+    VkDescriptorPool               sharpenPool_ = VK_NULL_HANDLE;
+    std::array<VkDescriptorSet, 2> sharpenSets_{};  // sharpenSets_[i] samples history_[i].
+    VkPipelineLayout               sharpenLayout_ = VK_NULL_HANDLE;
+    ::VkPipeline                   sharpenPipeline_ = VK_NULL_HANDLE;
 };
 
 }  // namespace iron

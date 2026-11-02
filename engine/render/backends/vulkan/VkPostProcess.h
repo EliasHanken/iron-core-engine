@@ -84,6 +84,7 @@ public:
     void captureOpaqueForTaa(VkCommandBuffer cb) const { taa_.captureOpaque(cb); }
     void resolveTaa(VkCommandBuffer cb) { taa_.resolve(cb); }
     void resetTaa() { taa_.reset(); }
+    void setTaaSharpness(float amount) { taa_.setSharpness(amount); }
 
     // Pass that composite + debug + HUD overlays record into (M43a). Pipelines
     // recorded here must be built against it, not the swapchain pass — their
