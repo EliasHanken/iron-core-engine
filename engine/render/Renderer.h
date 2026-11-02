@@ -3,6 +3,7 @@
 #include "math/Mat4.h"
 #include "math/Vec.h"
 #include "render/Fog.h"
+#include "render/GpuTimings.h"
 #include "render/Handles.h"
 #include "render/HudBatch.h"
 #include "render/Light.h"
@@ -38,6 +39,10 @@ struct DrawCall {
     Mat4 model = Mat4::identity();
     Material material{};
     uint8_t effectId = 0;   // 0 = no post-process effect; else an EffectTable id (M36)
+    // Nonzero for something that moves on its own: a stable id the game picks, so
+    // the renderer can remember where it was last frame and give its pixels true
+    // motion vectors. Leave 0 for anything that stands still.
+    std::uint32_t motionId = 0;
 };
 
 // M23 — maximum bone matrices uploaded per skinned draw call. The
@@ -272,6 +277,10 @@ public:
 
     // Call when the framebuffer is resized.
     virtual void setViewport(int width, int height) = 0;
+
+    // How long each part of a recent frame took on the GPU, in the order the parts
+    // ran. A frame or two old, so reading it never waits. Empty where unsupported.
+    virtual std::span<const GpuTiming> gpuTimings() const { return {}; }
 };
 
 } // namespace iron

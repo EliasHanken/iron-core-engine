@@ -116,6 +116,7 @@ flowchart TD
 
 | Demo | What it shows |
 |---|---|
+| [`20-foundry`](games/20-foundry) | A first-person steelworks for testing the renderer, with a GPU frame breakdown and motion vectors on screen (in progress) |
 | [`19-kindle`](games/19-kindle) | The game above |
 | [`18-forge-studio`](games/18-forge-studio) | Live editing of effects and shaders |
 | [`17-iron-core`](games/17-iron-core) | The 30-second film |

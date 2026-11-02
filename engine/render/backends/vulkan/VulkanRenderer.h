@@ -20,6 +20,7 @@
 #include "render/backends/vulkan/VkSkybox.h"
 #include "render/backends/vulkan/VkReflectionTarget.h"
 #include "render/backends/vulkan/VkPostProcess.h"
+#include "render/backends/vulkan/VkGpuProfiler.h"
 #include "render/ReflectionPlane.h"
 #include "render/ReflectionProbe.h"
 
@@ -124,6 +125,8 @@ public:
 
     void setViewport(int width, int height) override;
 
+    std::span<const GpuTiming> gpuTimings() const override { return profiler_.latest(); }
+
     // M36 — stores an effect style; looked up each frame via runChain.
     void setEffectStyle(uint8_t effectId, const EffectStyle& style) override;
 
@@ -200,6 +203,14 @@ public:
 
     // Applies a film camera to the composite. See CinematicSettings.
     void setCinematic(const CinematicSettings& settings) { cinematic_ = settings; }
+
+    // Shows the renderer's own data in place of the picture (needs the cinematic
+    // composite enabled). See RenderDebugView.
+    void setDebugView(RenderDebugView view) { postProcess_.setDebugView(view); }
+
+    // Engine-internal: subsystems that record their own GPU work can time it
+    // with this. Scopes must be balanced within a frame.
+    VkGpuProfiler& gpuProfiler() { return profiler_; }
 
     // Engine-internal: shadows on the first point light, from a latitude-longitude
     // map of occluder distances. Pass a null view or zero strength to clear.
@@ -301,6 +312,9 @@ private:
     Vec3               pointShadowCenter_{};
     float              pointShadowStrength_ = 0.0f;
     CinematicSettings  cinematic_;
+    VkGpuProfiler      profiler_;
+    MotionHistory      motionHistory_;
+    std::vector<VelocityObject> velocityObjects_;
     Mat4               previousViewProjection_ = Mat4::identity();
     bool               hasPreviousViewProjection_ = false;
     std::uint32_t      cinematicFrame_ = 0;
@@ -345,7 +359,7 @@ private:
     // M14 — directional-light shadow state.
     Vec3  pendingShadowCenter_  = {0.0f, 0.0f, 0.0f};
     float pendingShadowRadius_  = 20.0f;
-    float pendingShadowBias_    = 0.002f;
+    float pendingShadowBias_    = 0.001f;  // In 0..1 depth: about 0.09 m at a radius of 30.
     Mat4  pendingLightViewProj_ = Mat4::identity();
     VkShadowMap shadowMap_;
 

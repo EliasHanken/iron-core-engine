@@ -55,6 +55,7 @@ The Damaged Helmet is only a viewer and editor sample. Anyone building a commerc
 | Brick, ground, metal and wood | `assets/cc0/` | [Poly Haven](https://polyhaven.com), see each `CREDITS.txt` | CC0 |
 | Garden HDRI | `games/11-sandbox/assets/hdri/` | [Poly Haven](https://polyhaven.com), see `CREDITS.txt` | CC0 |
 | Rope | `games/02-strandbound/assets/` | ambientCG Rope002 | CC0 |
+| Concrete, rusted and corrugated metal, painted shutter | `games/20-foundry/assets/textures/` | [Poly Haven](https://polyhaven.com), see each `CREDITS.txt` | CC0 |
 
 ## Sound
 

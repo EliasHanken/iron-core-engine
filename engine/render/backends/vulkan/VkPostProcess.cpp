@@ -55,10 +55,12 @@ layout(set = 0, binding = 1) uniform sampler2D uBloom;
 layout(set = 0, binding = 2) uniform sampler2D uDepth;
 layout(set = 0, binding = 3) uniform sampler2D uStreakBloom;  // A low, soft bloom mip.
 layout(set = 0, binding = 4) uniform Lens {
-    vec4 focus;    // distance, range, blur radius, unused
+    vec4 focus;    // distance, range, blur radius, debug view
     vec4 depth;    // projection a and b, for linear depth; subject radius; heat haze
-    vec4 subject;  // uv, aspect, unused
+    vec4 subject;  // uv, aspect, ambient occlusion strength
 } lens;
+layout(set = 0, binding = 5) uniform sampler2D uVelocity;  // UV moved since last frame.
+layout(set = 0, binding = 6) uniform sampler2D uSsao;
 layout(push_constant) uniform Push {
     mat4 reprojection;
     vec4 a;  // exposure, bloom, motion blur, chromatic aberration
@@ -75,18 +77,24 @@ float noise(vec2 p) {
     return fract(52.9829189 * fract(dot(p, vec2(0.06711056, 0.00583715))));
 }
 
-// Camera motion blur: where this pixel was last frame, from its depth.
-vec2 cameraVelocity(vec2 uv) {
-    float depth = texelFetch(uDepth, ivec2(uv * vec2(textureSize(uDepth, 0))), 0).r;
-    vec4 clip = vec4(uv.x * 2.0 - 1.0, 1.0 - uv.y * 2.0, depth, 1.0);
-    vec4 previous = pc.reprojection * clip;
-    previous /= previous.w;
-    vec2 previousUv = vec2(previous.x * 0.5 + 0.5, 0.5 - previous.y * 0.5);
-    return (uv - previousUv) * pc.a.z;
+// Motion blur follows each pixel's own motion: the camera's, or a moving object's.
+vec2 shutterVelocity(vec2 uv) {
+    return texelFetch(uVelocity, ivec2(uv * vec2(textureSize(uVelocity, 0))), 0).rg * pc.a.z;
+}
+
+// Motion as colour: direction is hue, speed is brightness, and still is black.
+vec3 showMotion(vec2 velocity) {
+    vec2 pixels = velocity * vec2(textureSize(uVelocity, 0));
+    float speed = length(pixels);
+    float angle = atan(pixels.y, pixels.x);
+    vec3 hue = 0.5 + 0.5 * cos(angle + vec3(0.0, 2.094, 4.189));
+    return hue * clamp(speed / 24.0, 0.0, 1.0);
 }
 
 vec3 sampleHdr(vec2 uv) {
-    return texture(uScene, uv).rgb + texture(uBloom, uv).rgb * pc.a.y;
+    vec3 scene = texture(uScene, uv).rgb;
+    if (lens.subject.w > 0.0) scene *= mix(1.0, texture(uSsao, uv).r, lens.subject.w);
+    return scene + texture(uBloom, uv).rgb * pc.a.y;
 }
 
 vec3 shutter(vec2 uv, vec2 velocity, float jitter) {
@@ -152,7 +160,13 @@ void main() {
         uv += ripple * near * lens.depth.w * 0.0012;
     }
 
-    vec2 velocity = clamp(cameraVelocity(uv), vec2(-0.04), vec2(0.04));
+    if (lens.focus.w == 1.0) {
+        ivec2 texel = ivec2(vUV * vec2(textureSize(uVelocity, 0)));
+        outColor = vec4(showMotion(texelFetch(uVelocity, texel, 0).rg), 1.0);
+        return;
+    }
+
+    vec2 velocity = clamp(shutterVelocity(uv), vec2(-0.04), vec2(0.04));
 
     // Colour splits apart toward the edges of the lens.
     vec2 split = centered * radial * pc.a.w * 4.0;
@@ -641,6 +655,7 @@ bool VkPostProcess::init(VkContext& ctx, VkFormat colorFormat, VkFormat depthFor
         VK_CHECK(vkCreateDescriptorPool(ctx.device(), &dp, nullptr, &ssaoDescPool_));
     }
 
+    if (!velocity_.init(ctx, depthFormat))         { destroy(ctx); return false; }
     if (!createTargets(ctx))                       { destroy(ctx); return false; }
     if (!createViewportTarget(ctx))                { destroy(ctx); return false; }
     if (!createCopyPipeline(ctx))                  { destroy(ctx); return false; }
@@ -756,6 +771,7 @@ void VkPostProcess::destroy(VkContext& ctx) {
     // destroy them here, at full teardown.
     destroyViewportTarget(ctx);
     destroyTargets(ctx);
+    velocity_.destroy(ctx);
     if (viewportPass_) { vkDestroyRenderPass(ctx.device(), viewportPass_, nullptr); viewportPass_ = VK_NULL_HANDLE; }
     if (bloomPass_)    { vkDestroyRenderPass(ctx.device(), bloomPass_, nullptr);    bloomPass_ = VK_NULL_HANDLE; }
     if (ssaoPass_)     { vkDestroyRenderPass(ctx.device(), ssaoPass_, nullptr);     ssaoPass_ = VK_NULL_HANDLE; }
@@ -1008,7 +1024,8 @@ void VkPostProcess::setCinematic(const CinematicSettings& settings, const Mat4& 
     cinematicFrame_ = frame;
 }
 
-void VkPostProcess::recordCinematic(VkCommandBuffer cb, float exposure, float bloomIntensity) const {
+void VkPostProcess::recordCinematic(VkCommandBuffer cb, float exposure, float bloomIntensity,
+                                    float aoStrength) const {
     struct Push {
         Mat4  reprojection;
         float a[4];  // exposure, bloom, motion blur, chromatic aberration
@@ -1042,9 +1059,9 @@ void VkPostProcess::recordCinematic(VkCommandBuffer cb, float exposure, float bl
     // is never written over.
     const float aspect = static_cast<float>(viewportExtent().width) /
                          static_cast<float>(std::max(viewportExtent().height, 1u));
-    const float lens[12] = {s.focusDistance, s.focusRange, s.blurRadius, 0.0f,
+    const float lens[12] = {s.focusDistance, s.focusRange, s.blurRadius, static_cast<float>(debugView_),
                             cinematicDepthA_, cinematicDepthB_, s.subjectRadius, s.heatHaze,
-                            s.subject.x, s.subject.y, aspect, 0.0f};
+                            s.subject.x, s.subject.y, aspect, aoStrength};
     const std::uint32_t slot = (cinematicFrame_ % VkFrameRing::kFramesInFlight) * kCinematicLensStride;
     std::memcpy(static_cast<std::uint8_t*>(cinematicLensMapped_) + slot, lens, sizeof(lens));
 
@@ -1058,7 +1075,7 @@ void VkPostProcess::recordCinematic(VkCommandBuffer cb, float exposure, float bl
 void VkPostProcess::recordComposite(VkCommandBuffer cb, float exposure,
                                     float bloomIntensity, float aoStrength) const {
     if (cinematic_.enabled && cinematicPipeline_ != VK_NULL_HANDLE) {
-        recordCinematic(cb, exposure, bloomIntensity);
+        recordCinematic(cb, exposure, bloomIntensity, aoStrength);
         return;
     }
     vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, copyPipeline_);
@@ -1594,10 +1611,15 @@ bool VkPostProcess::createTargets(VkContext& ctx) {
     // M48 SSAO/blur targets (R8) + pass (persistent) + per-resize descriptor sets.
     createSsaoTargets(ctx, extent_);
 
+    // Motion vectors share the scene's size and depth.
+    if (!velocity_.createTargets(ctx, extent_, sceneDepthView_)) return false;
+
     return true;
 }
 
 void VkPostProcess::destroyTargets(VkContext& ctx) {
+    velocity_.destroyTargets(ctx);
+
     // M48 SSAO/blur image/views/fbs + per-resize sets (pass persists; freed in destroy()).
     destroySsaoTargets(ctx);
 
@@ -2267,20 +2289,26 @@ void VkPostProcess::writeCinematicSet(VkContext& ctx) {
     const int streakMip = bloomMipViews_[2] != VK_NULL_HANDLE ? 2 : 0;
     images[3] = {bloomSampler_, bloomMipViews_[streakMip], VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
 
+    const VkDescriptorImageInfo velocity{cinematicDepthSampler_, velocity_.view(),
+                                         VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+    const VkDescriptorImageInfo ssao{bloomSampler_, ssaoBlurView_, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+
     VkDescriptorBufferInfo lens{cinematicLensBuffer_, 0, kCinematicLensBytes};
 
-    VkWriteDescriptorSet writes[5]{};
-    for (std::uint32_t i = 0; i < 5; ++i) {
+    VkWriteDescriptorSet writes[7]{};
+    for (std::uint32_t i = 0; i < 7; ++i) {
         writes[i].sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
         writes[i].dstSet          = cinematicSet_;
         writes[i].dstBinding      = i;
-        writes[i].descriptorType  = i < 4 ? VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER
-                                          : VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC;
+        writes[i].descriptorType  = i == 4 ? VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC
+                                           : VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
         writes[i].descriptorCount = 1;
-        if (i < 4) writes[i].pImageInfo = &images[i];
-        else       writes[i].pBufferInfo = &lens;
+        if (i < 4)       writes[i].pImageInfo = &images[i];
+        else if (i == 4) writes[i].pBufferInfo = &lens;
+        else if (i == 5) writes[i].pImageInfo = &velocity;
+        else             writes[i].pImageInfo = &ssao;
     }
-    vkUpdateDescriptorSets(ctx.device(), 5, writes, 0, nullptr);
+    vkUpdateDescriptorSets(ctx.device(), 7, writes, 0, nullptr);
 }
 
 bool VkPostProcess::createCinematicPipeline(VkContext& ctx) {
@@ -2307,17 +2335,17 @@ bool VkPostProcess::createCinematicPipeline(VkContext& ctx) {
                              &cinematicLensAlloc_, &lensMapped));
     cinematicLensMapped_ = lensMapped.pMappedData;
 
-    VkDescriptorSetLayoutBinding b[5]{};
-    for (std::uint32_t i = 0; i < 5; ++i) {
+    VkDescriptorSetLayoutBinding b[7]{};
+    for (std::uint32_t i = 0; i < 7; ++i) {
         b[i].binding         = i;
-        b[i].descriptorType  = i < 4 ? VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER
-                                     : VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC;
+        b[i].descriptorType  = i == 4 ? VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC
+                                      : VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
         b[i].descriptorCount = 1;
         b[i].stageFlags      = VK_SHADER_STAGE_FRAGMENT_BIT;
     }
     VkDescriptorSetLayoutCreateInfo setInfo{};
     setInfo.sType        = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-    setInfo.bindingCount = 5;
+    setInfo.bindingCount = 7;
     setInfo.pBindings    = b;
     VK_CHECK(vkCreateDescriptorSetLayout(ctx.device(), &setInfo, nullptr, &cinematicSetLayout_));
 
@@ -2332,7 +2360,7 @@ bool VkPostProcess::createCinematicPipeline(VkContext& ctx) {
     layoutInfo.pPushConstantRanges    = &push;
     VK_CHECK(vkCreatePipelineLayout(ctx.device(), &layoutInfo, nullptr, &cinematicLayout_));
 
-    VkDescriptorPoolSize poolSizes[2] = {{VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 4},
+    VkDescriptorPoolSize poolSizes[2] = {{VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 6},
                                          {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC, 1}};
     VkDescriptorPoolCreateInfo poolInfo{};
     poolInfo.sType         = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;

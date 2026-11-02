@@ -75,6 +75,9 @@ public:
     // --- Forces / impulses ---
     void applyImpulse     (BodyId, Vec3 impulse);
     void applyForceAtPoint(BodyId, Vec3 force, Vec3 worldPoint);
+    // An instant push at a point off the centre, so the body spins as well as
+    // moves (a bullet striking a corner).
+    void applyImpulseAtPoint(BodyId, Vec3 impulse, Vec3 worldPoint);
     void setVelocity      (BodyId, Vec3 vel);
     Vec3 velocityOf(BodyId) const;
 

@@ -60,6 +60,7 @@ add_library(ironcore STATIC
   game/Collision.cpp
   render/RendererFactory.cpp
   render/PostChainPlan.cpp
+  render/GpuTimings.cpp
   render/ReflectionPlane.cpp
   render/ProceduralSky.cpp
   render/TextureLoader.cpp
@@ -137,6 +138,8 @@ if (IRON_RENDER_BACKEND STREQUAL "vulkan")
       render/backends/vulkan/VkReflectionTarget.cpp
       render/backends/vulkan/VkSceneCapture.cpp
       render/backends/vulkan/VkPostProcess.cpp
+      render/backends/vulkan/VkVelocityPass.cpp
+      render/backends/vulkan/VkGpuProfiler.cpp
     )
     target_compile_definitions(ironcore PUBLIC IRON_RENDER_BACKEND_VULKAN)
     target_link_libraries(ironcore PUBLIC

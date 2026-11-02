@@ -9,6 +9,7 @@
 #include "render/PostChainPlan.h"
 #include "render/PostEffect.h"
 #include "render/backends/vulkan/VkFrameRing.h"  // kFramesInFlight (per-frame SSAO UBO)
+#include "render/backends/vulkan/VkVelocityPass.h"
 
 #include <vulkan/vulkan.h>
 #include <vk_mem_alloc.h>
@@ -61,6 +62,17 @@ public:
     // clip space to last frame's.
     void setCinematic(const CinematicSettings& settings, const Mat4& reprojection,
                       std::uint32_t frame, float depthA, float depthB);
+    // What the composite shows instead of the picture, for inspecting the renderer.
+    // Needs the cinematic composite to be enabled.
+    void setDebugView(RenderDebugView view) { debugView_ = view; }
+
+    // Motion vectors for this frame. Record after the opaque pass and before
+    // anything that samples them.
+    void recordVelocity(VkCommandBuffer cb, const Mat4& reprojection,
+                        std::span<const VelocityObject> objects) const {
+        velocity_.record(cb, reprojection, objects);
+    }
+    VkImageView velocityView() const { return velocity_.view(); }
 
     // Pass that composite + debug + HUD overlays record into (M43a). Pipelines
     // recorded here must be built against it, not the swapchain pass — their
@@ -248,8 +260,10 @@ private:
     VkRenderPass  transparentPass_ = VK_NULL_HANDLE;
     bool createCinematicPipeline(VkContext& ctx);
     void writeCinematicSet(VkContext& ctx);
-    void recordCinematic(VkCommandBuffer cb, float exposure, float bloomIntensity) const;
+    void recordCinematic(VkCommandBuffer cb, float exposure, float bloomIntensity, float aoStrength) const;
     CinematicSettings     cinematic_;
+    RenderDebugView       debugView_ = RenderDebugView::None;
+    VkVelocityPass        velocity_;
     Mat4                  cinematicReprojection_ = Mat4::identity();
     std::uint32_t         cinematicFrame_ = 0;
     ::VkPipeline          cinematicPipeline_ = VK_NULL_HANDLE;
