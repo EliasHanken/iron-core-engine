@@ -37,6 +37,7 @@ struct GpuDecal {
     float tint[4];   // rgb, opacity
     float glow[4];   // rgb glow; w = roughness, or < 0 to keep the surface's
     float sphere[4]; // bounding sphere, for clustering
+    float extra[4];  // x = how flat it lays the surface's normal
 };
 
 constexpr std::uint32_t kStride = VkClusters::kLightsPerCluster + VkClusters::kDecalsPerCluster;
@@ -45,7 +46,7 @@ const char* const kBuild = R"GLSL(#version 450
 layout(local_size_x = 64) in;
 layout(std140, set = 0, binding = 0) uniform Params { mat4 view; vec4 proj; vec4 grid; vec4 counts; vec4 screen; } p;
 struct Light { vec4 positionRange; vec4 colorIntensity; vec4 spot; vec4 spot2; };
-struct Decal { mat4 worldToDecal; vec4 axis; vec4 tint; vec4 glow; vec4 sphere; };
+struct Decal { mat4 worldToDecal; vec4 axis; vec4 tint; vec4 glow; vec4 sphere; vec4 extra; };
 layout(std430, set = 0, binding = 1) readonly buffer Lights { Light lights[]; };
 layout(std430, set = 0, binding = 2) readonly buffer Decals { Decal decals[]; };
 layout(std430, set = 0, binding = 3) writeonly buffer Cells { uvec4 cells[]; };
@@ -481,6 +482,7 @@ void VkClusters::upload(int frame, std::span<const PointLight> lights, std::span
         g.sphere[1] = d.transform.at(1, 3);
         g.sphere[2] = d.transform.at(2, 3);
         g.sphere[3] = 0.5f * std::sqrt(dot(x, x) + dot(y, y) + dot(z, z));
+        g.extra[0] = std::clamp(d.flatten, 0.0f, 1.0f);
         gd[i] = g;
     }
 

@@ -881,6 +881,7 @@ int main(int argc, char** argv) {
         iron::Decal d;
         d.layer = 4;
         d.roughness = 0.04f;
+        d.flatten = 1.0f;  // Water lies flat over the concrete's bumps: a mirror for the sky.
         const float c = std::cos(pd.spin), s = std::sin(pd.spin);
         Mat4 m = Mat4::identity();
         // x and y across the ground, z (the decal's depth) up through it.
