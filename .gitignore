@@ -47,3 +47,6 @@ games/19-kindle/assets/audio-hq/
 .wrangler/
 .dev.vars
 games/20-foundry/assets/audio-hq/
+
+# Python bytecode from the content tools
+__pycache__/

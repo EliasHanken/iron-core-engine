@@ -311,6 +311,191 @@ bool readPackedFloatAccessor(const tinygltf::Model& m, int accessorIndex,
     return true;
 }
 
+// One Bone per skin joint, with each joint node's local transform as its bind
+// transform and parents resolved through the node tree. Records which node
+// became which bone, so animation channels can find their targets.
+Skeleton buildSkeleton(const tinygltf::Model& model, const tinygltf::Skin& skin,
+                       std::unordered_map<int, int>& nodeToBone) {
+    Skeleton skeleton;
+    const auto invBinds = readMat4Accessor(model, skin.inverseBindMatrices);
+    // Build the Skeleton: one Bone per skin.joints entry.
+    // Also populate nodeToBone so animation channels can resolve
+    // their target node to a bone index.
+    skeleton.bones.reserve(skin.joints.size());
+    for (std::size_t i = 0; i < skin.joints.size(); ++i) {
+        const int jointNodeIdx = skin.joints[i];
+        if (jointNodeIdx >= 0) {
+            nodeToBone.emplace(jointNodeIdx, static_cast<int>(i));
+        }
+        Bone b;
+        b.inverseBindMatrix  = invBinds[i];
+        b.localBindTransform = Mat4::identity();
+        b.parentIndex        = -1;
+        if (jointNodeIdx >= 0 &&
+            jointNodeIdx < static_cast<int>(model.nodes.size())) {
+            const auto& jnode = model.nodes[jointNodeIdx];
+            b.name = jnode.name;
+            // Build localBindTransform from the node's TRS or matrix.
+            if (jnode.matrix.size() == 16) {
+                // glTF spec: matrices stored column-major. Same as iron::Mat4.
+                for (int r = 0; r < 4; ++r) {
+                    for (int c = 0; c < 4; ++c) {
+                        b.localBindTransform.at(r, c) =
+                            static_cast<float>(jnode.matrix[c * 4 + r]);
+                    }
+                }
+            } else {
+                // TRS path. Compose translation × rotation × scale in column-major
+                // form. glTF stores rotation as a unit quaternion (xyzw) and scale
+                // as a vec3. Missing components default to identity.
+                Vec3 t{0, 0, 0};
+                if (jnode.translation.size() == 3) {
+                    t = Vec3{
+                        static_cast<float>(jnode.translation[0]),
+                        static_cast<float>(jnode.translation[1]),
+                        static_cast<float>(jnode.translation[2])};
+                }
+                Quat q = Quat::identity();
+                if (jnode.rotation.size() == 4) {
+                    q = Quat{
+                        static_cast<float>(jnode.rotation[0]),
+                        static_cast<float>(jnode.rotation[1]),
+                        static_cast<float>(jnode.rotation[2]),
+                        static_cast<float>(jnode.rotation[3])};
+                }
+                Vec3 s{1, 1, 1};
+                if (jnode.scale.size() == 3) {
+                    s = Vec3{
+                        static_cast<float>(jnode.scale[0]),
+                        static_cast<float>(jnode.scale[1]),
+                        static_cast<float>(jnode.scale[2])};
+                }
+                // M = T * R * S  (matches the column-major convention used by
+                // AnimationPlayer's composeTRS).
+                Mat4 R = q.toMat4();
+                R.at(0, 0) *= s.x; R.at(1, 0) *= s.x; R.at(2, 0) *= s.x;
+                R.at(0, 1) *= s.y; R.at(1, 1) *= s.y; R.at(2, 1) *= s.y;
+                R.at(0, 2) *= s.z; R.at(1, 2) *= s.z; R.at(2, 2) *= s.z;
+                R.at(0, 3) = t.x; R.at(1, 3) = t.y; R.at(2, 3) = t.z;
+                R.at(3, 3) = 1.0f;
+                b.localBindTransform = R;
+            }
+        }
+        skeleton.bones.push_back(b);
+    }
+    // Resolve parent indices by walking each joint node's children.
+    for (std::size_t i = 0; i < skin.joints.size(); ++i) {
+        const int jointNodeIdx = skin.joints[i];
+        if (jointNodeIdx < 0 ||
+            jointNodeIdx >= static_cast<int>(model.nodes.size())) continue;
+        for (const int childNodeIdx : model.nodes[jointNodeIdx].children) {
+            for (std::size_t j = 0; j < skin.joints.size(); ++j) {
+                if (skin.joints[j] == childNodeIdx) {
+                    skeleton.bones[j].parentIndex = static_cast<int>(i);
+                    break;
+                }
+            }
+        }
+    }
+    return skeleton;
+}
+
+// Every animation clip. Channels whose target node isn't a bone get targetBone
+// -1 (players skip them). CUBICSPLINE samplers are downgraded to LINEAR and
+// 'weights' (morph) channels skipped, each with a one-time warning.
+std::vector<AnimationClip> readAnimations(const tinygltf::Model& model,
+                                          const std::unordered_map<int, int>& nodeToBone) {
+    std::vector<AnimationClip> animations;
+    bool warnedCubicSpline = false;
+    bool warnedWeightsPath = false;
+    animations.reserve(model.animations.size());
+    for (const auto& gltfAnim : model.animations) {
+        AnimationClip clip;
+        clip.name = gltfAnim.name;
+
+        clip.samplers.reserve(gltfAnim.samplers.size());
+        for (const auto& gs : gltfAnim.samplers) {
+            AnimationSampler samp;
+            if (gs.interpolation == "STEP") {
+                samp.interpolation = AnimationInterpolation::Step;
+            } else if (gs.interpolation == "CUBICSPLINE") {
+                samp.interpolation = AnimationInterpolation::Linear;
+                if (!warnedCubicSpline) {
+                    Log::warn("GltfLoader: CUBICSPLINE interpolation "
+                              "not supported; downgrading to LINEAR");
+                    warnedCubicSpline = true;
+                }
+            } else {
+                samp.interpolation = AnimationInterpolation::Linear;
+            }
+            // On failure we still push an empty sampler so that channel
+            // samplerIndex values (which are absolute indices from the
+            // glTF file) stay aligned with clip.samplers. The player's
+            // sample functions early-return identity/zero for empty
+            // samplers, so this is safe.
+            if (!readPackedFloatAccessor(model, gs.input, samp.inputs)) {
+                Log::warn("GltfLoader: animation sampler has unreadable "
+                          "input accessor; keeping empty sampler to "
+                          "preserve channel indices");
+                samp.inputs.clear();
+                samp.outputs.clear();
+                clip.samplers.push_back(std::move(samp));
+                continue;
+            }
+            if (!readPackedFloatAccessor(model, gs.output, samp.outputs)) {
+                Log::warn("GltfLoader: animation sampler has unreadable "
+                          "output accessor; keeping empty sampler to "
+                          "preserve channel indices");
+                samp.inputs.clear();
+                samp.outputs.clear();
+                clip.samplers.push_back(std::move(samp));
+                continue;
+            }
+            clip.samplers.push_back(std::move(samp));
+        }
+
+        clip.channels.reserve(gltfAnim.channels.size());
+        for (const auto& gc : gltfAnim.channels) {
+            AnimationChannel ch;
+            ch.samplerIndex = gc.sampler;
+
+            const std::string& p = gc.target_path;
+            if (p == "translation") {
+                ch.path = AnimationPath::Translation;
+            } else if (p == "rotation") {
+                ch.path = AnimationPath::Rotation;
+            } else if (p == "scale") {
+                ch.path = AnimationPath::Scale;
+            } else if (p == "weights") {
+                if (!warnedWeightsPath) {
+                    Log::warn("GltfLoader: animation 'weights' path "
+                              "not supported; skipping channel");
+                    warnedWeightsPath = true;
+                }
+                continue;
+            } else {
+                Log::warn("GltfLoader: animation has unknown target "
+                          "path '%s'; skipping channel", p.c_str());
+                continue;
+            }
+
+            auto it = nodeToBone.find(gc.target_node);
+            ch.targetBone = (it != nodeToBone.end()) ? it->second : -1;
+            clip.channels.push_back(ch);
+        }
+
+        clip.duration = 0.0f;
+        for (const auto& samp : clip.samplers) {
+            if (!samp.inputs.empty()) {
+                clip.duration = std::max(clip.duration, samp.inputs.back());
+            }
+        }
+
+        animations.push_back(std::move(clip));
+    }
+    return animations;
+}
+
 }  // namespace
 
 std::optional<GltfModel> loadGltfModel(const std::string& path) {
@@ -574,85 +759,7 @@ std::optional<GltfModel> loadGltfModel(const std::string& path) {
                     sm.vertices.push_back(sv);
                 }
 
-                // Build the Skeleton: one Bone per skin.joints entry.
-                // Also populate nodeToBone so animation channels can resolve
-                // their target node to a bone index.
-                sm.skeleton.bones.reserve(skin.joints.size());
-                for (std::size_t i = 0; i < skin.joints.size(); ++i) {
-                    const int jointNodeIdx = skin.joints[i];
-                    if (jointNodeIdx >= 0) {
-                        nodeToBone.emplace(jointNodeIdx, static_cast<int>(i));
-                    }
-                    Bone b;
-                    b.inverseBindMatrix  = invBinds[i];
-                    b.localBindTransform = Mat4::identity();
-                    b.parentIndex        = -1;
-                    if (jointNodeIdx >= 0 &&
-                        jointNodeIdx < static_cast<int>(model.nodes.size())) {
-                        const auto& jnode = model.nodes[jointNodeIdx];
-                        b.name = jnode.name;
-                        // Build localBindTransform from the node's TRS or matrix.
-                        if (jnode.matrix.size() == 16) {
-                            // glTF spec: matrices stored column-major. Same as iron::Mat4.
-                            for (int r = 0; r < 4; ++r) {
-                                for (int c = 0; c < 4; ++c) {
-                                    b.localBindTransform.at(r, c) =
-                                        static_cast<float>(jnode.matrix[c * 4 + r]);
-                                }
-                            }
-                        } else {
-                            // TRS path. Compose translation × rotation × scale in column-major
-                            // form. glTF stores rotation as a unit quaternion (xyzw) and scale
-                            // as a vec3. Missing components default to identity.
-                            Vec3 t{0, 0, 0};
-                            if (jnode.translation.size() == 3) {
-                                t = Vec3{
-                                    static_cast<float>(jnode.translation[0]),
-                                    static_cast<float>(jnode.translation[1]),
-                                    static_cast<float>(jnode.translation[2])};
-                            }
-                            Quat q = Quat::identity();
-                            if (jnode.rotation.size() == 4) {
-                                q = Quat{
-                                    static_cast<float>(jnode.rotation[0]),
-                                    static_cast<float>(jnode.rotation[1]),
-                                    static_cast<float>(jnode.rotation[2]),
-                                    static_cast<float>(jnode.rotation[3])};
-                            }
-                            Vec3 s{1, 1, 1};
-                            if (jnode.scale.size() == 3) {
-                                s = Vec3{
-                                    static_cast<float>(jnode.scale[0]),
-                                    static_cast<float>(jnode.scale[1]),
-                                    static_cast<float>(jnode.scale[2])};
-                            }
-                            // M = T * R * S  (matches the column-major convention used by
-                            // AnimationPlayer's composeTRS).
-                            Mat4 R = q.toMat4();
-                            R.at(0, 0) *= s.x; R.at(1, 0) *= s.x; R.at(2, 0) *= s.x;
-                            R.at(0, 1) *= s.y; R.at(1, 1) *= s.y; R.at(2, 1) *= s.y;
-                            R.at(0, 2) *= s.z; R.at(1, 2) *= s.z; R.at(2, 2) *= s.z;
-                            R.at(0, 3) = t.x; R.at(1, 3) = t.y; R.at(2, 3) = t.z;
-                            R.at(3, 3) = 1.0f;
-                            b.localBindTransform = R;
-                        }
-                    }
-                    sm.skeleton.bones.push_back(b);
-                }
-                // Resolve parent indices by walking each joint node's children.
-                for (std::size_t i = 0; i < skin.joints.size(); ++i) {
-                    const int jointNodeIdx = skin.joints[i];
-                    if (jointNodeIdx < 0 ||
-                        jointNodeIdx >= static_cast<int>(model.nodes.size())) continue;
-                    for (const int childNodeIdx : model.nodes[jointNodeIdx].children) {
-                        for (std::size_t j = 0; j < skin.joints.size(); ++j) {
-                            if (skin.joints[j] == childNodeIdx) {
-                                sm.skeleton.bones[j].parentIndex = static_cast<int>(i);
-                                break;
-                            }
-                        }
-                    }
-                }
+                sm.skeleton = buildSkeleton(model, skin, nodeToBone);
 
                 skinnedMesh = std::move(sm);
             }
@@ -664,96 +771,7 @@ std::optional<GltfModel> loadGltfModel(const std::string& path) {
     // nodeToBone get targetBone = -1 (player skips them). CUBICSPLINE
     // samplers are downgraded to LINEAR with a one-time warning;
     // 'weights' (morph) channels are skipped with a one-time warning.
-    std::vector<AnimationClip> animations;
-    {
-        bool warnedCubicSpline = false;
-        bool warnedWeightsPath = false;
-        animations.reserve(model.animations.size());
-        for (const auto& gltfAnim : model.animations) {
-            AnimationClip clip;
-            clip.name = gltfAnim.name;
-
-            clip.samplers.reserve(gltfAnim.samplers.size());
-            for (const auto& gs : gltfAnim.samplers) {
-                AnimationSampler samp;
-                if (gs.interpolation == "STEP") {
-                    samp.interpolation = AnimationInterpolation::Step;
-                } else if (gs.interpolation == "CUBICSPLINE") {
-                    samp.interpolation = AnimationInterpolation::Linear;
-                    if (!warnedCubicSpline) {
-                        Log::warn("GltfLoader: CUBICSPLINE interpolation "
-                                  "not supported; downgrading to LINEAR");
-                        warnedCubicSpline = true;
-                    }
-                } else {
-                    samp.interpolation = AnimationInterpolation::Linear;
-                }
-                // On failure we still push an empty sampler so that channel
-                // samplerIndex values (which are absolute indices from the
-                // glTF file) stay aligned with clip.samplers. The player's
-                // sample functions early-return identity/zero for empty
-                // samplers, so this is safe.
-                if (!readPackedFloatAccessor(model, gs.input, samp.inputs)) {
-                    Log::warn("GltfLoader: animation sampler has unreadable "
-                              "input accessor; keeping empty sampler to "
-                              "preserve channel indices");
-                    samp.inputs.clear();
-                    samp.outputs.clear();
-                    clip.samplers.push_back(std::move(samp));
-                    continue;
-                }
-                if (!readPackedFloatAccessor(model, gs.output, samp.outputs)) {
-                    Log::warn("GltfLoader: animation sampler has unreadable "
-                              "output accessor; keeping empty sampler to "
-                              "preserve channel indices");
-                    samp.inputs.clear();
-                    samp.outputs.clear();
-                    clip.samplers.push_back(std::move(samp));
-                    continue;
-                }
-                clip.samplers.push_back(std::move(samp));
-            }
-
-            clip.channels.reserve(gltfAnim.channels.size());
-            for (const auto& gc : gltfAnim.channels) {
-                AnimationChannel ch;
-                ch.samplerIndex = gc.sampler;
-
-                const std::string& p = gc.target_path;
-                if (p == "translation") {
-                    ch.path = AnimationPath::Translation;
-                } else if (p == "rotation") {
-                    ch.path = AnimationPath::Rotation;
-                } else if (p == "scale") {
-                    ch.path = AnimationPath::Scale;
-                } else if (p == "weights") {
-                    if (!warnedWeightsPath) {
-                        Log::warn("GltfLoader: animation 'weights' path "
-                                  "not supported; skipping channel");
-                        warnedWeightsPath = true;
-                    }
-                    continue;
-                } else {
-                    Log::warn("GltfLoader: animation has unknown target "
-                              "path '%s'; skipping channel", p.c_str());
-                    continue;
-                }
-
-                auto it = nodeToBone.find(gc.target_node);
-                ch.targetBone = (it != nodeToBone.end()) ? it->second : -1;
-                clip.channels.push_back(ch);
-            }
-
-            clip.duration = 0.0f;
-            for (const auto& samp : clip.samplers) {
-                if (!samp.inputs.empty()) {
-                    clip.duration = std::max(clip.duration, samp.inputs.back());
-                }
-            }
-
-            animations.push_back(std::move(clip));
-        }
-    }
+    std::vector<AnimationClip> animations = readAnimations(model, nodeToBone);
 
     GltfModel result;
     result.mesh = std::move(out);
@@ -839,10 +857,8 @@ std::vector<Vec3> computeTangents(const std::vector<Vec3>& p, const std::vector<
     return t;
 }
 
-}  // namespace
-
-std::optional<GltfStaticModel> loadGltfStaticModel(const std::string& path, const GltfStaticOptions& options) {
-    tinygltf::Model model;
+// Reads a glTF file's structure; images are left for the caller to load by path.
+bool parseFile(const std::string& path, tinygltf::Model& model) {
     tinygltf::TinyGLTF loader;
     std::string err, warn;
     loader.SetImageLoader(
@@ -855,12 +871,16 @@ std::optional<GltfStaticModel> loadGltfStaticModel(const std::string& path, cons
     if (!warn.empty()) Log::warn("GltfLoader: %s", warn.c_str());
     if (!ok || model.scenes.empty()) {
         Log::error("GltfLoader: could not read %s: %s", path.c_str(), err.c_str());
-        return std::nullopt;
+        return false;
     }
-    const int sceneIdx = model.defaultScene >= 0 && model.defaultScene < static_cast<int>(model.scenes.size())
-                             ? model.defaultScene : 0;
-    const std::filesystem::path dir = std::filesystem::absolute(path).parent_path();
+    return true;
+}
 
+// A material's texture paths (resolved next to the file) and PBR factors. Embedded
+// (data:) images come back as empty paths.
+void readSurface(const tinygltf::Model& model, int materialIndex, const std::filesystem::path& dir,
+                 GltfSurface& out) {
+    if (materialIndex < 0 || materialIndex >= static_cast<int>(model.materials.size())) return;
     const auto resolve = [&](int textureIndex) -> std::string {
         if (textureIndex < 0 || textureIndex >= static_cast<int>(model.textures.size())) return {};
         const auto& tex = model.textures[textureIndex];
@@ -869,6 +889,33 @@ std::optional<GltfStaticModel> loadGltfStaticModel(const std::string& path, cons
         if (img.uri.empty() || img.uri.substr(0, 5) == "data:") return {};
         return (dir / img.uri).string();
     };
+    const auto& mat = model.materials[materialIndex];
+    out.materialPaths.albedo = resolve(mat.pbrMetallicRoughness.baseColorTexture.index);
+    out.materialPaths.normal = resolve(mat.normalTexture.index);
+    out.materialPaths.metalRoughness = resolve(mat.pbrMetallicRoughness.metallicRoughnessTexture.index);
+    out.materialPaths.occlusion = resolve(mat.occlusionTexture.index);
+    out.materialPaths.emissive = resolve(mat.emissiveTexture.index);
+    out.metallicFactor = static_cast<float>(mat.pbrMetallicRoughness.metallicFactor);
+    out.roughnessFactor = static_cast<float>(mat.pbrMetallicRoughness.roughnessFactor);
+    const auto& bcf = mat.pbrMetallicRoughness.baseColorFactor;
+    if (bcf.size() >= 3) {
+        out.baseColorFactor = {static_cast<float>(bcf[0]), static_cast<float>(bcf[1]), static_cast<float>(bcf[2])};
+    }
+    const auto& ef = mat.emissiveFactor;
+    if (ef.size() >= 3) {
+        out.emissiveFactor = {static_cast<float>(ef[0]), static_cast<float>(ef[1]), static_cast<float>(ef[2])};
+    }
+    out.normalScale = static_cast<float>(mat.normalTexture.scale);
+}
+
+}  // namespace
+
+std::optional<GltfStaticModel> loadGltfStaticModel(const std::string& path, const GltfStaticOptions& options) {
+    tinygltf::Model model;
+    if (!parseFile(path, model)) return std::nullopt;
+    const int sceneIdx = model.defaultScene >= 0 && model.defaultScene < static_cast<int>(model.scenes.size())
+                             ? model.defaultScene : 0;
+    const std::filesystem::path dir = std::filesystem::absolute(path).parent_path();
 
     GltfStaticModel out;
     std::map<std::pair<std::string, int>, std::size_t> slots;  // (node, material) -> section
@@ -921,28 +968,7 @@ std::optional<GltfStaticModel> loadGltfStaticModel(const std::string& path, cons
             if (slot == slots.end()) {
                 GltfSection section;
                 section.node = key.first;
-                if (prim.material >= 0 && prim.material < static_cast<int>(model.materials.size())) {
-                    const auto& mat = model.materials[prim.material];
-                    section.materialPaths.albedo = resolve(mat.pbrMetallicRoughness.baseColorTexture.index);
-                    section.materialPaths.normal = resolve(mat.normalTexture.index);
-                    section.materialPaths.metalRoughness =
-                        resolve(mat.pbrMetallicRoughness.metallicRoughnessTexture.index);
-                    section.materialPaths.occlusion = resolve(mat.occlusionTexture.index);
-                    section.materialPaths.emissive = resolve(mat.emissiveTexture.index);
-                    section.metallicFactor = static_cast<float>(mat.pbrMetallicRoughness.metallicFactor);
-                    section.roughnessFactor = static_cast<float>(mat.pbrMetallicRoughness.roughnessFactor);
-                    const auto& bcf = mat.pbrMetallicRoughness.baseColorFactor;
-                    if (bcf.size() >= 3) {
-                        section.baseColorFactor = {static_cast<float>(bcf[0]), static_cast<float>(bcf[1]),
-                                                   static_cast<float>(bcf[2])};
-                    }
-                    const auto& ef = mat.emissiveFactor;
-                    if (ef.size() >= 3) {
-                        section.emissiveFactor = {static_cast<float>(ef[0]), static_cast<float>(ef[1]),
-                                                  static_cast<float>(ef[2])};
-                    }
-                    section.normalScale = static_cast<float>(mat.normalTexture.scale);
-                }
+                readSurface(model, prim.material, dir, section);
                 out.sections.push_back(std::move(section));
                 slot = slots.emplace(key, out.sections.size() - 1).first;
             }
@@ -984,6 +1010,132 @@ std::optional<GltfStaticModel> loadGltfStaticModel(const std::string& path, cons
         return std::nullopt;
     }
     return out;
+}
+
+std::optional<GltfSkinnedModel> loadGltfSkinnedModel(const std::string& path) {
+    tinygltf::Model model;
+    if (!parseFile(path, model)) return std::nullopt;
+    const std::filesystem::path dir = std::filesystem::absolute(path).parent_path();
+
+    // The skinned mesh nodes, in scene order; the first one's skin is the model's.
+    const int sceneIdx = model.defaultScene >= 0 && model.defaultScene < static_cast<int>(model.scenes.size())
+                             ? model.defaultScene : 0;
+    std::vector<int> skinnedNodes;
+    std::vector<int> stack(model.scenes[sceneIdx].nodes.rbegin(), model.scenes[sceneIdx].nodes.rend());
+    while (!stack.empty()) {
+        const int idx = stack.back();
+        stack.pop_back();
+        if (idx < 0 || idx >= static_cast<int>(model.nodes.size())) continue;
+        const auto& node = model.nodes[idx];
+        if (node.mesh >= 0 && node.mesh < static_cast<int>(model.meshes.size()) && node.skin >= 0 &&
+            node.skin < static_cast<int>(model.skins.size())) {
+            skinnedNodes.push_back(idx);
+        }
+        for (auto it = node.children.rbegin(); it != node.children.rend(); ++it) stack.push_back(*it);
+    }
+    if (skinnedNodes.empty()) {
+        Log::error("GltfLoader: nothing in %s is skinned", path.c_str());
+        return std::nullopt;
+    }
+    const int skinIdx = model.nodes[skinnedNodes.front()].skin;
+    const auto& skin = model.skins[skinIdx];
+    if (readMat4Accessor(model, skin.inverseBindMatrices).size() != skin.joints.size()) {
+        Log::error("GltfLoader: %s's skin has no inverse bind matrix per joint", path.c_str());
+        return std::nullopt;
+    }
+
+    GltfSkinnedModel out;
+    std::unordered_map<int, int> nodeToBone;
+    out.skeleton = buildSkeleton(model, skin, nodeToBone);
+    std::map<int, std::size_t> slots;  // material -> section
+
+    for (const int idx : skinnedNodes) {
+        const auto& node = model.nodes[idx];
+        if (node.skin != skinIdx) {
+            Log::warn("GltfLoader: %s: mesh '%s' has another skin; skipped", path.c_str(), node.name.c_str());
+            continue;
+        }
+        for (const auto& prim : model.meshes[node.mesh].primitives) {
+            if (prim.mode != TINYGLTF_MODE_TRIANGLES && prim.mode != -1) continue;
+            const auto posIt = prim.attributes.find("POSITION");
+            const auto jointsIt = prim.attributes.find("JOINTS_0");
+            const auto weightsIt = prim.attributes.find("WEIGHTS_0");
+            if (posIt == prim.attributes.end() || jointsIt == prim.attributes.end() ||
+                weightsIt == prim.attributes.end()) {
+                continue;
+            }
+            const auto positions = readVec3Accessor(model, posIt->second);
+            const std::size_t n = positions.size();
+            const auto joints = readJointsAccessor(model, jointsIt->second);
+            const auto weights = readVec4FloatAccessor(model, weightsIt->second);
+            if (n == 0 || joints.size() != n || weights.size() != n) continue;
+            std::vector<std::uint32_t> indices = prim.indices >= 0 ? readIndicesAccessor(model, prim.indices)
+                                                                   : synthesizeSequentialIndices(n);
+            if (indices.empty()) continue;
+            std::vector<Vec3> normals;
+            if (const auto it = prim.attributes.find("NORMAL"); it != prim.attributes.end()) {
+                normals = readVec3Accessor(model, it->second);
+            }
+            if (normals.size() != n) normals = computeNormalsFromIndices(positions, indices);
+            std::vector<Vec2> uvs;
+            if (const auto it = prim.attributes.find("TEXCOORD_0"); it != prim.attributes.end()) {
+                uvs = readVec2Accessor(model, it->second);
+            }
+            if (uvs.size() != n) uvs.assign(n, Vec2{0.0f, 0.0f});
+            std::vector<Vec3> tangents;
+            if (const auto it = prim.attributes.find("TANGENT"); it != prim.attributes.end()) {
+                tangents = readVec4AsVec3Accessor(model, it->second);
+            }
+            if (tangents.size() != n) tangents = computeTangents(positions, normals, uvs, indices);
+
+            auto slot = slots.find(prim.material);
+            if (slot == slots.end()) {
+                GltfSkinnedSection section;
+                readSurface(model, prim.material, dir, section);
+                out.sections.push_back(std::move(section));
+                slot = slots.emplace(prim.material, out.sections.size() - 1).first;
+            }
+            SkinnedMeshData& mesh = out.sections[slot->second].mesh;
+            const auto base = static_cast<std::uint32_t>(mesh.vertices.size());
+            for (std::size_t i = 0; i < n; ++i) {
+                SkinnedVertex v;
+                v.position = positions[i];
+                v.normal = normals[i];
+                v.uv = uvs[i];
+                v.tangent = tangents[i];
+                float sum = weights[i][0] + weights[i][1] + weights[i][2] + weights[i][3];
+                if (sum < 1e-6f) sum = 1.0f;
+                for (int k = 0; k < 4; ++k) {
+                    v.joints[k] = joints[i][k];
+                    v.weights[k] = weights[i][k] / sum;
+                }
+                mesh.vertices.push_back(v);
+            }
+            for (const std::uint32_t index : indices) mesh.indices.push_back(base + index);
+        }
+    }
+    if (out.sections.empty()) {
+        Log::error("GltfLoader: %s has no skinned triangles", path.c_str());
+        return std::nullopt;
+    }
+    out.animations = readAnimations(model, nodeToBone);
+    Log::info("GltfLoader: loaded %s - %zu bones, %zu sections, %zu clips", path.c_str(),
+              out.skeleton.bones.size(), out.sections.size(), out.animations.size());
+    return out;
+}
+
+const AnimationClip* GltfSkinnedModel::findClip(std::string_view name) const {
+    for (const auto& clip : animations) {
+        if (clip.name == name) return &clip;
+    }
+    return nullptr;
+}
+
+int GltfSkinnedModel::findBone(std::string_view name) const {
+    for (std::size_t i = 0; i < skeleton.bones.size(); ++i) {
+        if (skeleton.bones[i].name == name) return static_cast<int>(i);
+    }
+    return -1;
 }
 
 const AnimationClip* GltfModel::findClip(std::string_view name) const {

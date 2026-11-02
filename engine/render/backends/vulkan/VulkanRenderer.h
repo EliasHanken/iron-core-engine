@@ -134,6 +134,7 @@ public:
     CullStats cullStats() const override { return instanceGroups_.stats(); }
     void setCullingFrozen(bool frozen) override { instanceGroups_.setFrozen(frozen); }
     void setAntiAliasing(AntiAliasing mode) override;
+    void setViewModelFov(float verticalRadians) override { viewModelFov_ = verticalRadians; }
     void resetTemporalHistory() override;
 
     // M36 — stores an effect style; looked up each frame via runChain.
@@ -335,6 +336,7 @@ private:
     VkInstanceGroups   instanceGroups_;
     RenderDebugView    debugView_ = RenderDebugView::None;
     MotionHistory      motionHistory_;
+    PaletteHistory     paletteHistory_;
     std::vector<VelocityObject> velocityObjects_;
     // Last frame's view-projection, without its jitter.
     Mat4               previousViewProjection_ = Mat4::identity();
@@ -343,6 +345,15 @@ private:
     std::uint32_t      jitterFrame_ = 0;
     Mat4               pendingJitter_ = Mat4::identity();          // This frame's, or identity.
     Mat4               pendingUnjitteredProjection_ = Mat4::identity();
+    // The view model's projection this frame (jittered like the world's), and last
+    // frame's view-projection for it, unjittered.
+    float              viewModelFov_ = 0.0f;
+    Mat4               pendingViewModelProjection_ = Mat4::identity();
+    Mat4               previousViewModelViewProjection_ = Mat4::identity();
+    Mat4               viewModelUnjittered_ = Mat4::identity();
+    const Mat4& projectionFor(bool viewModel) const {
+        return viewModel ? pendingViewModelProjection_ : pendingProjection_;
+    }
     std::uint32_t      cinematicFrame_ = 0;
 
     FrameCaptureFn pendingCapture_;

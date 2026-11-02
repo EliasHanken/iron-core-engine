@@ -1,4 +1,0 @@
-WRAD ARMS by wriks
-Source: https://github.com/wwwriks/wrad-arms (also https://wriks.itch.io/wrad-arms)
-License: CC0 1.0 Universal
-Exported for Foundry by tools/foundry/export_arms.py: helper meshes removed, scaled to metres.

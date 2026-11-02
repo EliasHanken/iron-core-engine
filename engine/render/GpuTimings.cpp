@@ -59,4 +59,16 @@ void MotionHistory::endFrame() {
     current_.clear();
 }
 
+std::span<const Mat4> PaletteHistory::previous(std::uint32_t id, std::span<const Mat4> palette) {
+    std::vector<Mat4>& now = current_[id];
+    now.assign(palette.begin(), palette.end());
+    const auto found = last_.find(id);
+    return found != last_.end() ? std::span<const Mat4>(found->second) : std::span<const Mat4>(now);
+}
+
+void PaletteHistory::endFrame() {
+    last_.swap(current_);
+    current_.clear();
+}
+
 }  // namespace iron

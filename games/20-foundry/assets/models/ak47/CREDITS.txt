@@ -1,5 +1,0 @@
-AK-47 from "Free Classic Weapons Pack" v1.1 by Stein Games
-Source: https://stein-indie.itch.io/classic-weapons-pack
-License: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/), per the pack's license.txt
-Exported for Foundry by tools/foundry/export_ak.py: posed at rest as a plain mesh, oriented,
-scaled to 0.88 m, origin at the pistol grip, textures repacked for glTF (ORM, OpenGL normals).

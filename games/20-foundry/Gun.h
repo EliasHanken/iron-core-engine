@@ -147,17 +147,12 @@ public:
     }
     const GunTuning& tuning() const { return tuning_; }
 
-    // Where the weapon sits in view space (x right, y up, z towards the eye), and
-    // how it's tilted (pitch, yaw, roll), from all of the above.
+    // How far the weapon is moved from where its animation holds it, in view space
+    // (x right, y up, z towards the eye), and how it's tilted (pitch, yaw, roll):
+    // the kick, sway and bob, which play on top of the hip and aimed poses.
     Vec3 viewOffset() const {
-        // Where the bottom of the pistol grip sits. Aimed, the line through the rear
-        // notch and the front post (0.185 m above the grip) passes through the eye. As
-        // in most shooters, the rifle sits further out than a real cheek weld would put
-        // it, so the stock (0.26 m behind the grip) doesn't fill the bottom of the view.
-        const Vec3 hip{0.13f, -0.27f, -0.27f};
-        const Vec3 aimed{0.0f, -0.185f, -0.34f};
         const float a = smooth(aim_);
-        Vec3 at{hip.x + (aimed.x - hip.x) * a, hip.y + (aimed.y - hip.y) * a, hip.z + (aimed.z - hip.z) * a};
+        Vec3 at{0.0f, 0.0f, 0.0f};
         const float bob = bobAmount_ * (1.0f - 0.8f * a);
         at.x += std::sin(bobPhase_) * 0.010f * bob + swayX_.value * 0.05f * (1.0f - 0.7f * a);
         at.y += -std::abs(std::cos(bobPhase_)) * 0.012f * bob + swayY_.value * 0.05f * (1.0f - 0.7f * a);

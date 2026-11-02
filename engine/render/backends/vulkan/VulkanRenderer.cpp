@@ -584,6 +584,20 @@ void VulkanRenderer::beginFrame(Vec3 clearColor, const DirectionalLight& light,
                                       static_cast<float>(e.height));
     }
     pendingProjection_ = pendingJitter_ * projection;
+    // The view model: its own field of view at the world's aspect, with its depth
+    // squeezed into the front tenth of the range ([-1, 1] in GL terms to [0, 0.1]).
+    {
+        Mat4 vm = projection;
+        if (viewModelFov_ > 0.0f) {
+            const float aspect = projection.at(1, 1) / projection.at(0, 0);
+            vm = perspective(viewModelFov_, aspect, 0.01f, 20.0f);
+        }
+        Mat4 squeeze = Mat4::identity();
+        squeeze.at(2, 2) = 0.05f;
+        squeeze.at(2, 3) = 0.05f;
+        pendingViewModelProjection_ = pendingJitter_ * squeeze * vm;
+        viewModelUnjittered_ = squeeze * vm;
+    }
     pendingSunDir_     = light.direction;
     pendingSunColor_   = light.color;
     pendingAmbient_    = Vec3{light.ambient * light.color.x,
@@ -692,7 +706,7 @@ void VulkanRenderer::recordSceneDraw(VkCommandBuffer cb, const DrawCall& call, c
     VkFrameRing::Frame& f = frames_.current();
 
     LitUbo ubo{};
-    ubo.mvp      = pendingProjection_ * pendingView_ * call.model;
+    ubo.mvp      = projectionFor(call.viewModel) * pendingView_ * call.model;
     ubo.model    = call.model;
     ubo.sunDir   = Vec4{pendingSunDir_.x,   pendingSunDir_.y,   pendingSunDir_.z,   0.0f};
     ubo.sunColor = Vec4{pendingSunColor_.x, pendingSunColor_.y, pendingSunColor_.z, 0.0f};
@@ -972,7 +986,7 @@ void VulkanRenderer::recordSkinnedDraw(VkCommandBuffer cb,
 
     // --- 1. Build LitUbo (copied verbatim from recordSceneDraw) ---
     LitUbo ubo{};
-    ubo.mvp      = pendingProjection_ * pendingView_ * call.model;
+    ubo.mvp      = projectionFor(call.viewModel) * pendingView_ * call.model;
     ubo.model    = call.model;
     ubo.sunDir   = Vec4{pendingSunDir_.x,   pendingSunDir_.y,   pendingSunDir_.z,   0.0f};
     ubo.sunColor = Vec4{pendingSunColor_.x, pendingSunColor_.y, pendingSunColor_.z, 0.0f};
@@ -1223,7 +1237,7 @@ void VulkanRenderer::recordSkinnedDraw(VkCommandBuffer cb,
 
 void VulkanRenderer::recordMaskDraw(VkCommandBuffer cb, const DrawCall& call) {
     if (!meshes_.has(call.mesh)) return;
-    const Mat4 mvp = pendingProjection_ * pendingView_ * call.model;
+    const Mat4 mvp = projectionFor(call.viewModel) * pendingView_ * call.model;
     VkPostProcess::MaskPushConstants pc{};
     pc.mvp = mvp;
     pc.id  = call.effectId;
@@ -1400,6 +1414,9 @@ void VulkanRenderer::endFrame() {
             const Mat4 lastViewProjection = hasPreviousViewProjection_
                 ? pendingJitter_ * previousViewProjection_
                 : viewProjection;
+            const Mat4 lastViewModelViewProjection = hasPreviousViewProjection_
+                ? pendingJitter_ * previousViewModelViewProjection_
+                : pendingViewModelProjection_ * pendingView_;
             velocityObjects_.clear();
             for (const DrawCall& call : sceneDraws_) {
                 if (call.motionId == 0 || !meshes_.has(call.mesh)) continue;
@@ -1407,11 +1424,30 @@ void VulkanRenderer::endFrame() {
                 const Mat4 lastModel = motionHistory_.previous(call.motionId, call.model);
                 // The same product, in the same order, as the lit shader's mvp.
                 velocityObjects_.push_back({mesh.vertexBuffer, mesh.indexBuffer, mesh.indexCount,
-                                            pendingProjection_ * pendingView_ * call.model,
-                                            lastViewProjection * lastModel});
+                                            projectionFor(call.viewModel) * pendingView_ * call.model,
+                                            (call.viewModel ? lastViewModelViewProjection : lastViewProjection) *
+                                                lastModel});
+            }
+            // Skinned draws move by their bones as well: both palettes go along.
+            const int frame = frames_.currentIndex();
+            for (std::size_t i = 0; i < skinnedDraws_.size(); ++i) {
+                const SkinnedDrawCall& call = skinnedDraws_[i];
+                if (call.motionId == 0 || !skinnedMeshes_.has(call.skinnedMesh)) continue;
+                const auto& mesh = skinnedMeshes_.get(call.skinnedMesh);
+                const std::vector<Mat4>& bones = skinnedBoneMatricesStash_[i];
+                const Mat4 lastModel = motionHistory_.previous(call.motionId, call.model);
+                const int slot = postProcess_.stageVelocityBones(
+                    frame, bones, paletteHistory_.previous(call.motionId, bones));
+                VelocityObject object{mesh.vertexBuffer, mesh.indexBuffer, mesh.indexCount,
+                                      projectionFor(call.viewModel) * pendingView_ * call.model,
+                                      (call.viewModel ? lastViewModelViewProjection : lastViewProjection) *
+                                          lastModel};
+                object.boneSlot = slot;
+                if (slot >= 0) velocityObjects_.push_back(object);
             }
             motionHistory_.endFrame();
-            postProcess_.recordVelocity(cb, lastViewProjection * iron::inverse(viewProjection),
+            paletteHistory_.endFrame();
+            postProcess_.recordVelocity(cb, frame, lastViewProjection * iron::inverse(viewProjection),
                                         velocityObjects_);
         }
         profiler_.end(cb);
@@ -1528,6 +1564,7 @@ void VulkanRenderer::endFrame() {
             postProcess_.setCinematic(cinematic_, reprojection, cinematicFrame_++,
                                       pendingProjection_.at(2, 2), pendingProjection_.at(2, 3));
             previousViewProjection_ = pendingUnjitteredProjection_ * pendingView_;
+            previousViewModelViewProjection_ = viewModelUnjittered_ * pendingView_;
             hasPreviousViewProjection_ = true;
 
             const std::vector<PostPass> passes = planPostChain(activeKindsThisFrame);

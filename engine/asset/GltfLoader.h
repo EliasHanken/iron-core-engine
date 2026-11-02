@@ -60,17 +60,21 @@ std::optional<GltfModel> loadGltfModel(const std::string& path);
 // Implemented as a thin wrapper over loadGltfModel.
 std::optional<MeshData> loadGltfMesh(const std::string& path);
 
-// One part of a static model that shares a material: a material slot, in Unreal's
-// terms. Vertices are in the model's space, with every node's transform applied.
-struct GltfSection {
-    std::string       node;           // The node it came from, when split by node.
-    MeshData          mesh;
+// A glTF material: its textures' paths and its PBR factors.
+struct GltfSurface {
     GltfMaterialPaths materialPaths;
     float metallicFactor  = 1.0f;
     float roughnessFactor = 1.0f;
     Vec3  baseColorFactor{1.0f, 1.0f, 1.0f};
     Vec3  emissiveFactor{0.0f, 0.0f, 0.0f};
     float normalScale     = 1.0f;
+};
+
+// One part of a static model that shares a material: a material slot, in Unreal's
+// terms. Vertices are in the model's space, with every node's transform applied.
+struct GltfSection : GltfSurface {
+    std::string node;  // The node it came from, when split by node.
+    MeshData    mesh;
 };
 
 // Every mesh in a glTF scene, not just the first: the whole node tree is walked,
@@ -90,5 +94,28 @@ struct GltfStaticOptions {
 
 std::optional<GltfStaticModel> loadGltfStaticModel(const std::string& path,
                                                    const GltfStaticOptions& options = {});
+
+// One material slot of a skinned model. Its mesh's own skeleton is left empty: every
+// section shares the model's.
+struct GltfSkinnedSection : GltfSurface {
+    SkinnedMeshData mesh;
+};
+
+// A skeletal mesh, in Unreal's terms: every skinned mesh in the file bound to its
+// skin, split by material, with the skeleton and every animation clip. A first-
+// person rig of arms and rifle, say, with separate materials for each.
+struct GltfSkinnedModel {
+    Skeleton                        skeleton;
+    std::vector<GltfSkinnedSection> sections;
+    std::vector<AnimationClip>      animations;
+
+    const AnimationClip* findClip(std::string_view name) const;
+    // The bone's index, or -1.
+    int findBone(std::string_view name) const;
+};
+
+// Reads the first skin's meshes. Meshes bound to another skin are skipped with a
+// warning. Fails when nothing in the file is skinned.
+std::optional<GltfSkinnedModel> loadGltfSkinnedModel(const std::string& path);
 
 }  // namespace iron

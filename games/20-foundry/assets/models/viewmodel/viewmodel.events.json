@@ -1,0 +1,17 @@
+{
+  "fps": 30,
+  "clips": {
+    "idle": {
+      "loop": true,
+      "events": []
+    },
+    "aim": {
+      "loop": true,
+      "events": []
+    },
+    "fire": {
+      "loop": false,
+      "events": []
+    }
+  }
+}
