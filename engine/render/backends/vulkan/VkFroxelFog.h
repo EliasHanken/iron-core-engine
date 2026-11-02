@@ -30,6 +30,9 @@ class VulkanRenderer;
 //      light still gets through;
 //   3. applied over the opaque scene by a blend pass: colour * transmittance +
 //      in-scattered light.
+// Fluids' smoke is too fine for the grid: a pass marches it per pixel through
+// the fluids' own density, lit from a second grid the light pass fills (the
+// light there, as smoke scatters it), and the apply pass lays it over the fog.
 class VkFroxelFog {
 public:
     static constexpr std::uint32_t kX = 160;
@@ -84,6 +87,10 @@ public:
     void apply(VkCommandBuffer cb, const Frame& frame);
 
 private:
+    // Marches fluids' smoke per pixel into smoke_, after the grid is integrated.
+    void marchSmoke(VulkanRenderer& renderer, VkCommandBuffer cb, const Frame& f, std::size_t slot, VkImageView spare);
+    bool smokeThisFrame_ = false;
+
     struct Buffer {
         VkBuffer      buffer = VK_NULL_HANDLE;
         VmaAllocation alloc = VK_NULL_HANDLE;
@@ -94,6 +101,10 @@ private:
     VkComputeStage integrateStage_;
     std::array<VkVolumeImage, 2> scattering_;  // Ping-pong: this frame's, and last frame's to reproject.
     VkVolumeImage integrated_;
+    VkVolumeImage smokeLight_;   // The light at each cell, as smoke scatters it.
+    VkComputeStage smokeStage_;
+    VkVolumeImage smoke_;        // Per pixel: smoke's light (rgb) and what it lets through (a).
+    bool smokeReady_ = false;    // In VK_IMAGE_LAYOUT_GENERAL, so the apply set can always read it.
     int current_ = 0;
     bool historyValid_ = false;
     std::array<Buffer, 2> params_;   // Per frame in flight: the uniform block.

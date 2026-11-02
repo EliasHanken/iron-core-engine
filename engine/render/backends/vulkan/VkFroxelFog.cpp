@@ -80,8 +80,7 @@ struct Disturbance { vec4 a; vec4 b; vec4 k; };
 layout(std430, binding = 6) readonly buffer Shapes { Box boxes[32]; Disturbance disturbances[]; };
 layout(binding = 7) uniform sampler3D uHistory;
 layout(rgba16f, binding = 8) writeonly uniform image3D uOut;
-layout(binding = 9) uniform sampler3D uFluid0;
-layout(binding = 10) uniform sampler3D uFluid1;
+layout(rgba16f, binding = 9) writeonly uniform image3D uSmokeLight;
 
 const float PI = 3.14159265;
 
@@ -144,18 +143,6 @@ vec3 density(vec3 w) {
         scatter *= wisps;
         smoke *= wisps;
     }
-    // Fluids' smoke, after the wisps (it has its own shape), before what's pushed
-    // aside (so rounds and blasts cut it too).
-    for (int i = 0; i < 2; ++i) {
-        vec4 lo = p.fluid[i * 2];
-        if (lo.w <= 0.0) continue;
-        vec3 uvw = (w - lo.xyz) * p.fluid[i * 2 + 1].xyz;
-        if (any(lessThan(uvw, vec3(0.0))) || any(greaterThan(uvw, vec3(1.0)))) continue;
-        float s = max(i == 0 ? textureLod(uFluid0, uvw, 0.0).r : textureLod(uFluid1, uvw, 0.0).r, 0.0) * lo.w;
-        d += s;
-        scatter += s * p.fluid[i * 2 + 1].w;
-        smoke += s;
-    }
     return vec3(d, scatter, smoke) * keep;
 }
 
@@ -195,7 +182,13 @@ void main() {
     float dist = length(toEye);
     toEye /= max(dist, 1e-4);
 
-    vec3 radiance = p.sunColor.rgb * sunShadow(w, dist) * phase(dot(p.sun.xyz, toEye), smokeG);
+    // The same light twice: as this cell's air scatters it, and as smoke would
+    // (nearly even, lit more by the sky) for the smoke march.
+    const float kSmokeG = 0.15;
+    vec3 sunLight = p.sunColor.rgb * sunShadow(w, dist);
+    float sunCos = dot(p.sun.xyz, toEye);
+    vec3 radiance = sunLight * phase(sunCos, smokeG);
+    vec3 smokeLight = sunLight * phase(sunCos, kSmokeG);
     // Lights through the clusters: this cell's tile and slice in their grid.
     vec2 tile = (vec2(id.xy) + 0.5) / p.grid.xy * cl.grid.xy;
     float d = sliceDepth(float(id.z) + 0.5);
@@ -212,9 +205,13 @@ void main() {
         fromLight /= ld;
         float falloff = 1.0 - smoothstep(0.0, range, ld);
         if (l.spot.w > -1.5) falloff *= smoothstep(l.spot.w, max(l.spot2.x, l.spot.w + 1e-4), dot(fromLight, l.spot.xyz));
-        radiance += l.colorIntensity.rgb * l.colorIntensity.w * falloff * phase(dot(fromLight, toEye), smokeG);
+        vec3 lit = l.colorIntensity.rgb * l.colorIntensity.w * falloff;
+        float c = dot(fromLight, toEye);
+        radiance += lit * phase(c, smokeG);
+        smokeLight += lit * phase(c, kSmokeG);
     }
     radiance += p.ambient.rgb * mix(1.0, 5.0, smokeShare);
+    imageStore(uSmokeLight, ivec3(id), vec4(smokeLight + p.ambient.rgb * 5.0, 0.0));
     vec4 current = vec4(sigma.y * p.albedo.rgb * radiance, sigmaT);
 
     // Last frame's grid at this cell's centre, where it was then.
@@ -259,6 +256,119 @@ void main() {
 }
 )GLSL";
 
+const char* const kSmoke = "#version 450\nlayout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;\n" FOG_COMMON R"GLSL(
+layout(binding = 1) uniform sampler2D uDepth;
+layout(binding = 2) uniform sampler3D uAir;     // Integrated: gathered light, and what gets through.
+layout(binding = 3) uniform sampler3D uLight;   // The light smoke scatters at each cell.
+layout(binding = 4) uniform sampler3D uFluid0;
+layout(binding = 5) uniform sampler3D uFluid1;
+layout(rgba16f, binding = 6) writeonly uniform image2D uOut;
+layout(push_constant) uniform Push { vec4 a; vec4 b; } pc;  // a: depthA, depthB, width, height; b: frame
+
+float hash3(vec3 q) {
+    q = fract(q * 0.3183099 + vec3(0.1, 0.2, 0.3));
+    q *= 17.0;
+    return fract(q.x * q.y * q.z * (q.x + q.y + q.z));
+}
+float noise3(vec3 x) {
+    vec3 i = floor(x);
+    vec3 f = fract(x);
+    f = f * f * (3.0 - 2.0 * f);
+    return mix(mix(mix(hash3(i), hash3(i + vec3(1, 0, 0)), f.x), mix(hash3(i + vec3(0, 1, 0)), hash3(i + vec3(1, 1, 0)), f.x), f.y),
+               mix(mix(hash3(i + vec3(0, 0, 1)), hash3(i + vec3(1, 0, 1)), f.x), mix(hash3(i + vec3(0, 1, 1)), hash3(i + vec3(1, 1, 1)), f.x), f.y),
+               f.z);
+}
+
+// Where a world point sits in the froxel grid (0..1 each way).
+vec3 gridAt(vec3 w) {
+    vec3 rel = w - p.cameraToWorld[3].xyz;
+    float d = max(-dot(rel, p.cameraToWorld[2].xyz), p.range.x);
+    vec2 ndc = vec2(dot(rel, p.cameraToWorld[0].xyz) / (d * p.range.z), dot(rel, p.cameraToWorld[1].xyz) / (d * p.range.w));
+    return vec3(ndc.x * 0.5 + 0.5, 0.5 - ndc.y * 0.5, log(d / p.range.x) / p.grid.w);
+}
+
+vec2 fluidSlab(int i, vec3 o, vec3 dir) {
+    vec3 lo = p.fluid[i * 2].xyz;
+    vec3 hi = lo + 1.0 / p.fluid[i * 2 + 1].xyz;
+    vec3 inv = 1.0 / dir;
+    vec3 t0 = (lo - o) * inv;
+    vec3 t1 = (hi - o) * inv;
+    vec3 near = min(t0, t1);
+    vec3 far = max(t0, t1);
+    return vec2(max(max(near.x, near.y), near.z), min(min(far.x, far.y), far.z));
+}
+
+void main() {
+    ivec2 px = ivec2(gl_GlobalInvocationID.xy);
+    if (px.x >= int(pc.a.z) || px.y >= int(pc.a.w)) return;
+    // The view ray through this pixel (row 0 at the top), and how far the scene is.
+    vec2 ndc = vec2((float(px.x) + 0.5) / pc.a.z * 2.0 - 1.0, 1.0 - (float(px.y) + 0.5) / pc.a.w * 2.0);
+    vec3 viewDir = normalize(vec3(ndc.x * p.range.z, ndc.y * p.range.w, -1.0));
+    vec3 dir = mat3(p.cameraToWorld) * viewDir;
+    vec3 o = p.cameraToWorld[3].xyz;
+    float z = texelFetch(uDepth, px, 0).r;
+    float sceneDepth = z >= 1.0 ? 1e4 : pc.a.y / (z + pc.a.x);
+    float tScene = sceneDepth / max(-viewDir.z, 1e-4);
+
+    // The span of the ray inside any fluid.
+    float t0 = 1e9, t1 = -1e9;
+    for (int i = 0; i < 2; ++i) {
+        if (p.fluid[i * 2].w <= 0.0) continue;
+        vec2 s = fluidSlab(i, o, dir);
+        if (s.y > max(s.x, 0.0)) {
+            t0 = min(t0, max(s.x, 0.0));
+            t1 = max(t1, s.y);
+        }
+    }
+    t1 = min(t1, tScene);
+    if (t1 <= t0) {
+        imageStore(uOut, px, vec4(0.0, 0.0, 0.0, 1.0));
+        return;
+    }
+
+    // March it, a different offset each pixel and frame (TAA gathers them).
+    const int kSteps = 64;
+    float dt = (t1 - t0) / float(kSteps);
+    float jitter = fract(52.9829189 * fract(dot(vec2(px) + pc.b.x * 5.588238, vec2(0.06711056, 0.00583715))));
+    vec3 gathered = vec3(0.0);
+    float through = 1.0;
+    for (int k = 0; k < kSteps; ++k) {
+        float t = t0 + (float(k) + jitter) * dt;
+        vec3 w = o + dir * t;
+        float sigma = 0.0;
+        float scatter = 0.0;
+        for (int i = 0; i < 2; ++i) {
+            vec4 lo = p.fluid[i * 2];
+            if (lo.w <= 0.0) continue;
+            vec3 uvw = (w - lo.xyz) * p.fluid[i * 2 + 1].xyz;
+            if (any(lessThan(uvw, vec3(0.0))) || any(greaterThan(uvw, vec3(1.0)))) continue;
+            float s = max(i == 0 ? textureLod(uFluid0, uvw, 0.0).r : textureLod(uFluid1, uvw, 0.0).r, 0.0) * lo.w;
+            sigma += s;
+            scatter += s * p.fluid[i * 2 + 1].w;
+        }
+        if (sigma < 1e-3) continue;
+        // Billows: the thin outer smoke is eaten away by drifting noise finer
+        // than the fluid's cells; the thick core is left whole.
+        vec3 drift = w - p.wind.xyz * p.wind.w * 0.5;
+        float n = 0.62 * noise3(drift * 1.7) + 0.38 * noise3(drift * 4.3 + 7.1);
+        float edge = 1.0 - smoothstep(0.4, 3.0, sigma);
+        float eaten = max(1.0 - (1.0 - n) * 1.6 * edge, 0.0);
+        sigma *= eaten;
+        scatter *= eaten;
+        if (sigma < 1e-3) continue;
+        vec3 g = gridAt(w);
+        vec3 light = textureLod(uLight, g, 0.0).rgb;
+        float airThrough = textureLod(uAir, g, 0.0).a;   // Fog between the eye and here.
+        vec3 s = scatter * p.albedo.rgb * light * airThrough;
+        float stepThrough = exp(-sigma * dt);
+        gathered += through * (s - s * stepThrough) / sigma;
+        through *= stepThrough;
+        if (through < 0.01) break;
+    }
+    imageStore(uOut, px, vec4(gathered, through));
+}
+)GLSL";
+
 const char* const kApplyVert = R"GLSL(#version 450
 void main() {
     vec2 uv = vec2((gl_VertexIndex << 1) & 2, gl_VertexIndex & 2);
@@ -270,7 +380,8 @@ const char* const kApplyFrag = R"GLSL(#version 450
 layout(location = 0) out vec4 outColor;
 layout(binding = 0) uniform sampler3D uFog;
 layout(binding = 1) uniform sampler2D uDepth;
-layout(push_constant) uniform Push { vec4 a; vec4 b; } pc;  // a: depthA, depthB, near, log(far/near); b: slices, far
+layout(binding = 2) uniform sampler2D uSmoke;
+layout(push_constant) uniform Push { vec4 a; vec4 b; } pc;  // a: depthA, depthB, near, log(far/near); b: slices, far, smoke
 // Blended over the scene as color * through + gathered.
 void main() {
     vec2 size = vec2(textureSize(uDepth, 0));
@@ -283,7 +394,13 @@ void main() {
     vec4 fog = textureLod(uFog, vec3(uv, clamp(w, 0.5 / slices, 1.0)), 0.0);
     // Nearer than the first slice, the fog fades in from nothing.
     float nearFade = clamp(d / max(pc.a.z * 2.0, 1e-3), 0.0, 1.0);
-    outColor = vec4(fog.rgb * nearFade, mix(1.0, fog.a, nearFade));
+    vec4 air = vec4(fog.rgb * nearFade, mix(1.0, fog.a, nearFade));
+    // Smoke in front of it all: its light, then the air and scene through it.
+    if (pc.b.z > 0.5) {
+        vec4 smoke = texelFetch(uSmoke, ivec2(gl_FragCoord.xy), 0);
+        air = vec4(smoke.rgb + smoke.a * air.rgb, smoke.a * air.a);
+    }
+    outColor = air;
 }
 )GLSL";
 
@@ -310,8 +427,13 @@ bool VkFroxelFog::init(VkContext& ctx, VkFormat sceneFormat) {
                            T::VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, T::VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
                            T::VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, T::VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
                            T::VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, T::VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-                           T::VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, T::VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-                           T::VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER}) ||
+                           T::VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, T::VK_DESCRIPTOR_TYPE_STORAGE_IMAGE}) ||
+        !smokeStage_.init(ctx, kSmoke,
+                          {T::VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, T::VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+                           T::VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, T::VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+                           T::VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, T::VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+                           T::VK_DESCRIPTOR_TYPE_STORAGE_IMAGE},
+                          sizeof(float) * 8) ||
         !integrateStage_.init(ctx, kIntegrate,
                               {T::VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, T::VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
                                T::VK_DESCRIPTOR_TYPE_STORAGE_IMAGE})) {
@@ -324,6 +446,7 @@ bool VkFroxelFog::init(VkContext& ctx, VkFormat sceneFormat) {
         if (!s.create(ctx, size, VK_FORMAT_R16G16B16A16_SFLOAT, usage)) return false;
     }
     if (!integrated_.create(ctx, size, VK_FORMAT_R16G16B16A16_SFLOAT, usage)) return false;
+    if (!smokeLight_.create(ctx, size, VK_FORMAT_R16G16B16A16_SFLOAT, usage)) return false;
 
     for (std::size_t i = 0; i < params_.size(); ++i) {
         for (auto [buffer, bytes, use] : {std::tuple{&params_[i], VkDeviceSize{sizeof(GpuParams)},
@@ -400,15 +523,16 @@ bool VkFroxelFog::init(VkContext& ctx, VkFormat sceneFormat) {
     rp.pDependencies   = deps;
     VK_CHECK(vkCreateRenderPass(device, &rp, nullptr, &applyPass_));
 
-    VkDescriptorSetLayoutBinding b[2]{};
+    VkDescriptorSetLayoutBinding b[3]{};
     b[0] = {0, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr};
     b[1] = {1, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr};
+    b[2] = {2, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr};
     VkDescriptorSetLayoutCreateInfo li{};
     li.sType        = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-    li.bindingCount = 2;
+    li.bindingCount = 3;
     li.pBindings    = b;
     VK_CHECK(vkCreateDescriptorSetLayout(device, &li, nullptr, &applySetLayout_));
-    VkDescriptorPoolSize poolSize{VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 2};
+    VkDescriptorPoolSize poolSize{VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 3};
     VkDescriptorPoolCreateInfo pi{};
     pi.sType         = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
     pi.maxSets       = 1;
@@ -513,10 +637,16 @@ bool VkFroxelFog::createTargets(VkContext& ctx, VkExtent2D extent, VkImageView s
     fb.height          = extent.height;
     fb.layers          = 1;
     VK_CHECK(vkCreateFramebuffer(ctx.device(), &fb, nullptr, &applyFramebuffer_));
-    const VkDescriptorImageInfo images[2] = {{linear_, integrated_.view(), VK_IMAGE_LAYOUT_GENERAL},
-                                             {nearest_, sceneDepth, VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL}};
-    VkWriteDescriptorSet w[2]{};
-    for (std::uint32_t i = 0; i < 2; ++i) {
+    if (!smoke_.create2D(ctx, extent.width, extent.height, VK_FORMAT_R16G16B16A16_SFLOAT,
+                         VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT)) {
+        return false;
+    }
+    smokeReady_ = false;
+    const VkDescriptorImageInfo images[3] = {{linear_, integrated_.view(), VK_IMAGE_LAYOUT_GENERAL},
+                                             {nearest_, sceneDepth, VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL},
+                                             {nearest_, smoke_.view(), VK_IMAGE_LAYOUT_GENERAL}};
+    VkWriteDescriptorSet w[3]{};
+    for (std::uint32_t i = 0; i < 3; ++i) {
         w[i].sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
         w[i].dstSet          = applySet_;
         w[i].dstBinding      = i;
@@ -524,7 +654,7 @@ bool VkFroxelFog::createTargets(VkContext& ctx, VkExtent2D extent, VkImageView s
         w[i].descriptorType  = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
         w[i].pImageInfo      = &images[i];
     }
-    vkUpdateDescriptorSets(ctx.device(), 2, w, 0, nullptr);
+    vkUpdateDescriptorSets(ctx.device(), 3, w, 0, nullptr);
     historyValid_ = false;
     return true;
 }
@@ -532,6 +662,8 @@ bool VkFroxelFog::createTargets(VkContext& ctx, VkExtent2D extent, VkImageView s
 void VkFroxelFog::destroyTargets(VkContext& ctx) {
     if (applyFramebuffer_) vkDestroyFramebuffer(ctx.device(), applyFramebuffer_, nullptr);
     applyFramebuffer_ = VK_NULL_HANDLE;
+    smoke_.destroy(ctx);
+    smokeReady_ = false;
 }
 
 void VkFroxelFog::record(VulkanRenderer& renderer, VkCommandBuffer cb, const Frame& f) {
@@ -640,10 +772,8 @@ void VkFroxelFog::record(VulkanRenderer& renderer, VkCommandBuffer cb, const Fra
         vkCmdPipelineBarrier(cb, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 1,
                              &barrier, 0, nullptr, 0, nullptr);
     }
-    // Unused fluid slots still need something bound: last frame's grid stands in.
-    const auto fluidAt = [&](std::size_t i) {
-        return i < f.fluidCount && f.fluids[i].density != VK_NULL_HANDLE ? f.fluids[i].density : history.view();
-    };
+    smokeLight_.transition(cb, VK_IMAGE_LAYOUT_GENERAL, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                           VK_ACCESS_SHADER_WRITE_BIT);
     lightStage_.dispatch(renderer, cb,
                          {VkComputeResource::bufferRange(params_[slot].buffer, 0, sizeof(GpuParams)),
                           VkComputeResource::sampled(f.shadowAtlas, f.shadowSampler),
@@ -654,8 +784,7 @@ void VkFroxelFog::record(VulkanRenderer& renderer, VkCommandBuffer cb, const Fra
                           VkComputeResource::bufferRange(volumes_[slot].buffer),
                           VkComputeResource::sampled(history.view(), linear_, VK_IMAGE_LAYOUT_GENERAL),
                           VkComputeResource::image(out.view()),
-                          VkComputeResource::sampled(fluidAt(0), linear_, VK_IMAGE_LAYOUT_GENERAL),
-                          VkComputeResource::sampled(fluidAt(1), linear_, VK_IMAGE_LAYOUT_GENERAL)},
+                          VkComputeResource::image(smokeLight_.view())},
                          nullptr, (kX + 7) / 8, (kY + 7) / 8, kZ);
     out.transition(cb, VK_IMAGE_LAYOUT_GENERAL, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_SHADER_READ_BIT);
     integrated_.transition(cb, VK_IMAGE_LAYOUT_GENERAL, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
@@ -664,10 +793,44 @@ void VkFroxelFog::record(VulkanRenderer& renderer, VkCommandBuffer cb, const Fra
                              {VkComputeResource::bufferRange(params_[slot].buffer, 0, sizeof(GpuParams)),
                               VkComputeResource::image(out.view()), VkComputeResource::image(integrated_.view())},
                              nullptr, (kX + 7) / 8, (kY + 7) / 8, 1);
-    integrated_.transition(cb, VK_IMAGE_LAYOUT_GENERAL, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
-                           VK_ACCESS_SHADER_READ_BIT);
+    integrated_.transition(cb, VK_IMAGE_LAYOUT_GENERAL, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT |
+                           VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_SHADER_READ_BIT);
+    marchSmoke(renderer, cb, f, slot, history.view());
     current_ = 1 - current_;
     historyValid_ = true;
+}
+
+void VkFroxelFog::marchSmoke(VulkanRenderer& renderer, VkCommandBuffer cb, const Frame& f, std::size_t slot,
+                             VkImageView spare) {
+    if (!smoke_.view()) return;
+    if (!smokeReady_) {
+        smoke_.discard();
+        smoke_.transition(cb, VK_IMAGE_LAYOUT_GENERAL, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+                          VK_ACCESS_SHADER_READ_BIT);
+        smokeReady_ = true;
+    }
+    smokeThisFrame_ = f.fluidCount > 0;
+    if (!smokeThisFrame_) return;
+    smoke_.transition(cb, VK_IMAGE_LAYOUT_GENERAL, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_SHADER_WRITE_BIT);
+    smokeLight_.transition(cb, VK_IMAGE_LAYOUT_GENERAL, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                           VK_ACCESS_SHADER_READ_BIT);
+    // An unused fluid slot still needs something bound.
+    const auto fluidAt = [&](std::size_t i) {
+        return i < f.fluidCount && f.fluids[i].density != VK_NULL_HANDLE ? f.fluids[i].density : spare;
+    };
+    const float push[8] = {f.depthA, f.depthB, static_cast<float>(extent_.width), static_cast<float>(extent_.height),
+                           static_cast<float>(f.frameIndex % 64u), 0.0f, 0.0f, 0.0f};
+    smokeStage_.dispatch(renderer, cb,
+                         {VkComputeResource::bufferRange(params_[slot].buffer, 0, sizeof(GpuParams)),
+                          VkComputeResource::sampled(sceneDepth_, nearest_,
+                                                     VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL),
+                          VkComputeResource::sampled(integrated_.view(), linear_, VK_IMAGE_LAYOUT_GENERAL),
+                          VkComputeResource::sampled(smokeLight_.view(), linear_, VK_IMAGE_LAYOUT_GENERAL),
+                          VkComputeResource::sampled(fluidAt(0), linear_, VK_IMAGE_LAYOUT_GENERAL),
+                          VkComputeResource::sampled(fluidAt(1), linear_, VK_IMAGE_LAYOUT_GENERAL),
+                          VkComputeResource::image(smoke_.view())},
+                         push, (extent_.width + 7) / 8, (extent_.height + 7) / 8, 1);
+    smoke_.transition(cb, VK_IMAGE_LAYOUT_GENERAL, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, VK_ACCESS_SHADER_READ_BIT);
 }
 
 void VkFroxelFog::apply(VkCommandBuffer cb, const Frame& f) {
@@ -686,7 +849,8 @@ void VkFroxelFog::apply(VkCommandBuffer cb, const Frame& f) {
     vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, applyPipeline_);
     vkCmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, applyLayout_, 0, 1, &applySet_, 0, nullptr);
     const float far = std::max(f.fog.distance, kNear * 4.0f);
-    const float push[8] = {f.depthA, f.depthB, kNear, std::log(far / kNear), static_cast<float>(kZ), far, 0.0f, 0.0f};
+    const float push[8] = {f.depthA, f.depthB, kNear, std::log(far / kNear), static_cast<float>(kZ), far,
+                           smokeThisFrame_ ? 1.0f : 0.0f, 0.0f};
     vkCmdPushConstants(cb, applyLayout_, VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(push), push);
     vkCmdDraw(cb, 3, 1, 0, 0);
     vkCmdEndRenderPass(cb);
@@ -697,6 +861,8 @@ void VkFroxelFog::destroy(VkContext& ctx) {
     destroyTargets(ctx);
     lightStage_.destroy(ctx);
     integrateStage_.destroy(ctx);
+    smokeStage_.destroy(ctx);
+    smokeLight_.destroy(ctx);
     for (auto& s : scattering_) s.destroy(ctx);
     integrated_.destroy(ctx);
     for (std::size_t i = 0; i < params_.size(); ++i) {
