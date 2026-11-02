@@ -47,8 +47,11 @@ public:
     // Culls every group for this frame. Record outside any render pass, before the
     // passes that draw groups. `pixelsPerUnit` is half the screen height times the
     // projection's y scale.
-    void cull(VkCommandBuffer cb, int frame, const Mat4& viewProjection, const Mat4& lightViewProjection,
-              Vec3 eye, float pixelsPerUnit, VkExtent2D sceneExtent);
+    // `lightViews` are the sun's shadow views, one per cascade (up to kShadowViews);
+    // each culls its own list, so a cascade draws only what falls in it.
+    // Shadow views whose bit is clear in `shadowMask` keep last frame's lists.
+    void cull(VkCommandBuffer cb, int frame, const Mat4& viewProjection, std::span<const Mat4> lightViews,
+              Vec3 eye, float pixelsPerUnit, VkExtent2D sceneExtent, std::uint32_t shadowMask = ~0u);
 
     // Builds the depth pyramid from this frame's scene depth, for next frame's
     // occlusion test. Record after the opaque pass, outside any render pass.
@@ -67,15 +70,18 @@ public:
     // Every group's draws for this frame, one per level of detail.
     void forEachDraw(int frame, const VkMeshStore& meshes, const std::function<void(const Draw&)>& fn) const;
 
-    // The sun's draws for this frame: what its culling kept of each shadow-casting group.
-    std::vector<Draw> shadowDraws(int frame, const VkMeshStore& meshes) const;
+    // A shadow view's draws for this frame: what its culling kept of each
+    // shadow-casting group.
+    std::vector<Draw> shadowDraws(int frame, const VkMeshStore& meshes, std::size_t shadowView = 0) const;
+
+    static constexpr std::size_t kShadowViews = 4;
 
     // What culling did, a couple of frames ago.
     const CullStats& stats() const { return stats_; }
 
 private:
     static constexpr std::uint32_t kStatWords = 9;  // drawn, outside, hidden, tiny, lod 0..3, total
-    static constexpr std::size_t kViews = 2;          // The camera, then the sun.
+    static constexpr std::size_t kViews = 1 + kShadowViews;  // The camera, then the sun's views.
 
     struct Buffer {
         VkBuffer      buffer = VK_NULL_HANDLE;

@@ -2,6 +2,7 @@
 
 #include "render/Cinematic.h"
 #include "render/Renderer.h"
+#include "render/ShadowCascades.h"
 #include "render/backends/vulkan/VkContext.h"
 #include "render/backends/vulkan/VkFrameRing.h"
 #include "render/backends/vulkan/VkMesh.h"
@@ -103,6 +104,7 @@ public:
     void endFrame() override;
 
     void setShadowBounds(Vec3 center, float radius) override;
+    void setShadowCascades(float distance) override { shadowCascadeDistance_ = distance; }
     void setReflectionPlane(Vec3 normal, float d) override;
     void disableReflectionPlane() override;
 
@@ -399,6 +401,24 @@ private:
     float pendingShadowRadius_  = 20.0f;
     float pendingShadowBias_    = 0.001f;  // In 0..1 depth: about 0.09 m at a radius of 30.
     Mat4  pendingLightViewProj_ = Mat4::identity();
+    // Cascaded sun shadows: on when a distance is set.
+    static constexpr float kCascadeCasterReach = 60.0f;
+    float          shadowCascadeDistance_ = 0.0f;
+    bool           cascadesActive_ = false;
+    ShadowCascades pendingCascades_{};
+    // What each atlas tile holds: the near cascades are redrawn every frame, the far
+    // two on alternate frames, so a tile's matrix is the one it was last drawn with.
+    ShadowCascades renderedCascades_{};
+    bool           renderedValid_ = false;
+    Vec3           renderedSun_{0.0f, -1.0f, 0.0f};
+    std::uint64_t  shadowFrame_ = 0;
+    std::uint32_t  shadowRedraw_ = ~0u;
+    Mat4           legacyLightViewProj_ = Mat4::identity();  // For shaders that know one light matrix.
+    // The sun's shadow views this frame: the cascades, or the single bounded map.
+    std::span<const Mat4> shadowViewsThisFrame() const {
+        return cascadesActive_ ? std::span<const Mat4>(renderedCascades_.viewProj)
+                               : std::span<const Mat4>(&pendingLightViewProj_, 1);
+    }
     VkShadowMap shadowMap_;
 
     // M16 — cubemap storage + skybox subsystem + currently-set skybox.

@@ -20,7 +20,7 @@ layout(location = 1) in vec3 aNormal;
 layout(location = 2) in vec2 aUV;
 layout(location = 3) in vec3 aTangent;
 
-layout(set = 0, binding = 0) uniform LightUbo {
+layout(push_constant) uniform Push {
     mat4 lightModelViewProj;
 } u;
 
@@ -84,11 +84,12 @@ bool VkShadowMap::init(VkContext& ctx) {
     VkAttachmentDescription depthAttachment{};
     depthAttachment.format = VK_FORMAT_D32_SFLOAT;
     depthAttachment.samples = VK_SAMPLE_COUNT_1_BIT;
-    depthAttachment.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+    // Kept between frames: tiles not redrawn this frame hold their last shadows.
+    depthAttachment.loadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
     depthAttachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
     depthAttachment.stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
     depthAttachment.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
-    depthAttachment.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    depthAttachment.initialLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
     depthAttachment.finalLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 
     VkAttachmentReference depthRef{};
@@ -111,7 +112,7 @@ bool VkShadowMap::init(VkContext& ctx) {
     deps[0].srcStageMask = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
     deps[0].dstStageMask = VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT;
     deps[0].srcAccessMask = VK_ACCESS_SHADER_READ_BIT;
-    deps[0].dstAccessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+    deps[0].dstAccessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
     // Exit.
     deps[1].srcSubpass = 0;
     deps[1].dstSubpass = VK_SUBPASS_EXTERNAL;
@@ -154,10 +155,13 @@ bool VkShadowMap::init(VkContext& ctx) {
     dslInfo.pBindings = &b0;
     VK_CHECK(vkCreateDescriptorSetLayout(ctx.device(), &dslInfo, nullptr, &setLayout_));
 
+    // Plain draws push their matrix: four cascades of every draw would spend the
+    // frame's descriptor sets.
+    const VkPushConstantRange push{VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(Mat4)};
     VkPipelineLayoutCreateInfo plInfo{};
     plInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
-    plInfo.setLayoutCount = 1;
-    plInfo.pSetLayouts = &setLayout_;
+    plInfo.pushConstantRangeCount = 1;
+    plInfo.pPushConstantRanges = &push;
     VK_CHECK(vkCreatePipelineLayout(ctx.device(), &plInfo, nullptr, &pipelineLayout_));
 
     // --- Depth-only pipeline ---
@@ -297,6 +301,47 @@ bool VkShadowMap::init(VkContext& ctx) {
     sInfo.maxLod = 0.0f;
     VK_CHECK(vkCreateSampler(ctx.device(), &sInfo, nullptr, &sampler_));
 
+    // The pass loads what the map held, so the map starts in the layout it ends in.
+    {
+        VkCommandPoolCreateInfo cp{};
+        cp.sType            = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
+        cp.queueFamilyIndex = ctx.graphicsFamily();
+        cp.flags            = VK_COMMAND_POOL_CREATE_TRANSIENT_BIT;
+        VkCommandPool pool = VK_NULL_HANDLE;
+        VK_CHECK(vkCreateCommandPool(ctx.device(), &cp, nullptr, &pool));
+        VkCommandBufferAllocateInfo cba{};
+        cba.sType              = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
+        cba.commandPool        = pool;
+        cba.level              = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+        cba.commandBufferCount = 1;
+        VkCommandBuffer cb = VK_NULL_HANDLE;
+        VK_CHECK(vkAllocateCommandBuffers(ctx.device(), &cba, &cb));
+        VkCommandBufferBeginInfo begin{};
+        begin.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+        begin.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+        VK_CHECK(vkBeginCommandBuffer(cb, &begin));
+        VkImageMemoryBarrier b{};
+        b.sType                       = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+        b.dstAccessMask               = VK_ACCESS_SHADER_READ_BIT;
+        b.oldLayout                   = VK_IMAGE_LAYOUT_UNDEFINED;
+        b.newLayout                   = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        b.srcQueueFamilyIndex         = VK_QUEUE_FAMILY_IGNORED;
+        b.dstQueueFamilyIndex         = VK_QUEUE_FAMILY_IGNORED;
+        b.image                       = depthImage_;
+        b.subresourceRange.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
+        b.subresourceRange.levelCount = 1;
+        b.subresourceRange.layerCount = 1;
+        vkCmdPipelineBarrier(cb, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0, 0,
+                             nullptr, 0, nullptr, 1, &b);
+        VK_CHECK(vkEndCommandBuffer(cb));
+        VkSubmitInfo submit{};
+        submit.sType              = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+        submit.commandBufferCount = 1;
+        submit.pCommandBuffers    = &cb;
+        VK_CHECK(vkQueueSubmit(ctx.graphicsQueue(), 1, &submit, VK_NULL_HANDLE));
+        VK_CHECK(vkQueueWaitIdle(ctx.graphicsQueue()));
+        vkDestroyCommandPool(ctx.device(), pool, nullptr);
+    }
     ok_ = true;
     return true;
 }
@@ -318,80 +363,58 @@ void VkShadowMap::destroy(VkContext& ctx) {
 
 void VkShadowMap::record(VkCommandBuffer cb, VkDevice device, VkFrameRing& frames,
                          VkMeshStore& meshes,
-                         const Mat4& lightViewProj,
+                         std::span<const Mat4> views,
                          const std::vector<DrawCall>& draws,
-                         std::span<const VkInstanceGroups::Draw> instanced) {
-    if (!ok_ || cb == VK_NULL_HANDLE) return;
+                         std::span<const std::vector<VkInstanceGroups::Draw>> instancedPerView,
+                         std::uint32_t redraw) {
+    if (!ok_ || cb == VK_NULL_HANDLE || views.empty()) return;
 
-    // Begin depth-only render pass.
-    VkClearValue clear{};
-    clear.depthStencil = {1.0f, 0};
     VkRenderPassBeginInfo rpBegin{};
     rpBegin.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
     rpBegin.renderPass = renderPass_;
     rpBegin.framebuffer = framebuffer_;
     rpBegin.renderArea.offset = {0, 0};
     rpBegin.renderArea.extent = {kResolution, kResolution};
-    rpBegin.clearValueCount = 1;
-    rpBegin.pClearValues = &clear;
     vkCmdBeginRenderPass(cb, &rpBegin, VK_SUBPASS_CONTENTS_INLINE);
 
-    VkViewport vp{};
-    vp.x = 0.0f;
-    vp.y = 0.0f;
-    vp.width = static_cast<float>(kResolution);
-    vp.height = static_cast<float>(kResolution);
-    vp.minDepth = 0.0f;
-    vp.maxDepth = 1.0f;
-    vkCmdSetViewport(cb, 0, 1, &vp);
-    VkRect2D scissor{{0, 0}, {kResolution, kResolution}};
-    vkCmdSetScissor(cb, 0, 1, &scissor);
+    const bool atlas = views.size() > 1;
+    const std::uint32_t size = atlas ? kTile : kResolution;
+    for (std::size_t v = 0; v < views.size() && v < 4; ++v) {
+        if ((redraw & (1u << v)) == 0) continue;
+        const Mat4& lightViewProj = views[v];
+        const std::int32_t x = atlas ? static_cast<std::int32_t>((v % 2) * kTile) : 0;
+        const std::int32_t y = atlas ? static_cast<std::int32_t>((v / 2) * kTile) : 0;
+        VkClearAttachment clearTile{};
+        clearTile.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
+        clearTile.clearValue.depthStencil = {1.0f, 0};
+        const VkClearRect tileRect{{{x, y}, {size, size}}, 0, 1};
+        vkCmdClearAttachments(cb, 1, &clearTile, 1, &tileRect);
+        VkViewport vp{};
+        vp.x = static_cast<float>(x);
+        vp.y = static_cast<float>(y);
+        vp.width = static_cast<float>(size);
+        vp.height = static_cast<float>(size);
+        vp.minDepth = 0.0f;
+        vp.maxDepth = 1.0f;
+        vkCmdSetViewport(cb, 0, 1, &vp);
+        const VkRect2D scissor{{x, y}, {size, size}};
+        vkCmdSetScissor(cb, 0, 1, &scissor);
 
-    vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_);
+        vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_);
+        for (const DrawCall& call : draws) {
+            if (call.viewModel) continue;  // The player's own arms and weapon cast nothing.
+            if (!meshes.has(call.mesh)) continue;
+            const Mat4 lmvp = lightViewProj * call.model;
+            vkCmdPushConstants(cb, pipelineLayout_, VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(Mat4), &lmvp);
+            const auto& mesh = meshes.get(call.mesh);
+            VkDeviceSize offsets[1] = {0};
+            vkCmdBindVertexBuffers(cb, 0, 1, &mesh.vertexBuffer, offsets);
+            vkCmdBindIndexBuffer(cb, mesh.indexBuffer, 0, VK_INDEX_TYPE_UINT32);
+            vkCmdDrawIndexed(cb, mesh.indexCount, 1, 0, 0, 0);
+        }
 
-    for (const DrawCall& call : draws) {
-        if (call.viewModel) continue;  // The player's own arms and weapon cast nothing.
-        if (!meshes.has(call.mesh)) continue;
-
-        // lightModelViewProj = lightViewProj * model.
-        const Mat4 lmvp = lightViewProj * call.model;
-        LightUbo ubo;
-        std::memcpy(ubo.lightModelViewProj, lmvp.m, sizeof(ubo.lightModelViewProj));
-        const VkDeviceSize uboOffset = frames.allocateUbo(&ubo, sizeof(ubo));
-
-        VkDescriptorSetAllocateInfo dsInfo{};
-        dsInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
-        dsInfo.descriptorPool = frames.current().descriptorPool;
-        dsInfo.descriptorSetCount = 1;
-        dsInfo.pSetLayouts = &setLayout_;
-        VkDescriptorSet set = VK_NULL_HANDLE;
-        VK_CHECK(vkAllocateDescriptorSets(device, &dsInfo, &set));
-
-        VkDescriptorBufferInfo bufInfo{};
-        bufInfo.buffer = frames.current().uboBuffer;
-        bufInfo.offset = uboOffset;
-        bufInfo.range  = sizeof(ubo);
-
-        VkWriteDescriptorSet write{};
-        write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-        write.dstSet = set;
-        write.dstBinding = 0;
-        write.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-        write.descriptorCount = 1;
-        write.pBufferInfo = &bufInfo;
-        vkUpdateDescriptorSets(device, 1, &write, 0, nullptr);
-
-        vkCmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_GRAPHICS,
-                                pipelineLayout_, 0, 1, &set, 0, nullptr);
-
-        const auto& mesh = meshes.get(call.mesh);
-        VkDeviceSize offsets[1] = {0};
-        vkCmdBindVertexBuffers(cb, 0, 1, &mesh.vertexBuffer, offsets);
-        vkCmdBindIndexBuffer(cb, mesh.indexBuffer, 0, VK_INDEX_TYPE_UINT32);
-        vkCmdDrawIndexed(cb, mesh.indexCount, 1, 0, 0, 0);
-    }
-
-    if (!instanced.empty() && instancedPipeline_) {
+        if (v >= instancedPerView.size() || instancedPerView[v].empty() || !instancedPipeline_) continue;
+        const std::vector<VkInstanceGroups::Draw>& instanced = instancedPerView[v];
         vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, instancedPipeline_);
         LightUbo ubo;
         std::memcpy(ubo.lightModelViewProj, lightViewProj.m, sizeof(ubo.lightModelViewProj));
@@ -418,8 +441,8 @@ void VkShadowMap::record(VkCommandBuffer cb, VkDevice device, VkFrameRing& frame
             }
             vkUpdateDescriptorSets(device, 3, writes, 0, nullptr);
             vkCmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, instancedLayout_, 0, 1, &set, 0, nullptr);
-            VkDeviceSize offsets[1] = {0};
-            vkCmdBindVertexBuffers(cb, 0, 1, &d.vertexBuffer, offsets);
+            VkDeviceSize offset = 0;
+            vkCmdBindVertexBuffers(cb, 0, 1, &d.vertexBuffer, &offset);
             vkCmdBindIndexBuffer(cb, d.indexBuffer, 0, VK_INDEX_TYPE_UINT32);
             vkCmdDrawIndexedIndirect(cb, d.indirect, d.indirectOffset, 1, sizeof(VkDrawIndexedIndirectCommand));
         }

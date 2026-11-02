@@ -27,7 +27,9 @@ class VkMeshStore;
 // frame.
 class VkShadowMap {
 public:
-    static constexpr int kResolution = 2048;
+    // The map is an atlas: one view fills it whole; cascades take a quarter each.
+    static constexpr int kResolution = 4096;
+    static constexpr int kTile = kResolution / 2;
 
     bool init(VkContext& ctx);
     void destroy(VkContext& ctx);
@@ -37,11 +39,17 @@ public:
     // pipeline, end render pass. The render pass's final layout is
     // SHADER_READ_ONLY_OPTIMAL so subsequent passes can sample.
     // `instanced` are instance groups as the sun's culling left them: indirect draws.
+    // `views` is one light view-projection (the whole map) or one per cascade
+    // (a 2x2 atlas: cascade i in column i % 2, row i / 2). `instanced[i]` are the
+    // instance groups as view i's culling left them: indirect draws.
+    // Only the views whose bit is set in `redraw` are cleared and drawn; the others
+    // keep what they held, so far cascades can be refreshed every other frame.
     void record(VkCommandBuffer cb, VkDevice device, VkFrameRing& frames,
                 VkMeshStore& meshes,
-                const Mat4& lightViewProj,
+                std::span<const Mat4> views,
                 const std::vector<DrawCall>& draws,
-                std::span<const VkInstanceGroups::Draw> instanced = {});
+                std::span<const std::vector<VkInstanceGroups::Draw>> instanced = {},
+                std::uint32_t redraw = ~0u);
 
     VkImageView depthView() const { return depthView_; }
     VkSampler   sampler()   const { return sampler_; }

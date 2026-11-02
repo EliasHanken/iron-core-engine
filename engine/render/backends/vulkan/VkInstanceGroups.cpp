@@ -42,7 +42,7 @@ struct CullPush {
     std::uint32_t count;
     std::uint32_t levels;
     float         minPixels;
-    std::uint32_t view;  // 0 the camera, 1 the sun
+    std::uint32_t view;  // 0 the camera, then the sun's views
     float         lodPixels[4];
 };
 
@@ -106,7 +106,7 @@ bool occluded(vec3 center, float radius) {
 void main() {
     uint id = gl_GlobalInvocationID.x;
     if (id >= pc.count) return;
-    bool sun = pc.view == 1u;
+    bool sun = pc.view != 0u;
     if (id == 0 && !sun) atomicAdd(stats[8], pc.count);
     vec4 s = inst[id].sphere;
     for (int i = 0; i < 6; ++i) {
@@ -378,8 +378,8 @@ void VkInstanceGroups::setInstances(VkContext& ctx, InstanceGroupHandle handle, 
 }
 
 void VkInstanceGroups::cull(VkCommandBuffer cb, int frame, const Mat4& viewProjection,
-                            const Mat4& lightViewProjection, Vec3 eye, float pixelsPerUnit,
-                            VkExtent2D sceneExtent) {
+                            std::span<const Mat4> lightViews, Vec3 eye, float pixelsPerUnit,
+                            VkExtent2D sceneExtent, std::uint32_t shadowMask) {
     ++frameCount_;
     // Free what no frame in flight can still be reading.
     std::erase_if(retired_, [&](Retired& r) {
@@ -456,17 +456,11 @@ void VkInstanceGroups::cull(VkCommandBuffer cb, int frame, const Mat4& viewProje
 
     CullUbo ubo{};
     const Frustum frustum = frustumFromViewProjection(cullViewProjection);
-    // The light's matrix gives depth in 0..1 already, so its near plane is clip z = 0 too.
-    const Frustum sunFrustum = frustumFromViewProjection(lightViewProjection);
     for (std::size_t i = 0; i < 6; ++i) {
         ubo.planes[i][0] = frustum[i].x;
         ubo.planes[i][1] = frustum[i].y;
         ubo.planes[i][2] = frustum[i].z;
         ubo.planes[i][3] = frustum[i].w;
-        ubo.shadowPlanes[i][0] = sunFrustum[i].x;
-        ubo.shadowPlanes[i][1] = sunFrustum[i].y;
-        ubo.shadowPlanes[i][2] = sunFrustum[i].z;
-        ubo.shadowPlanes[i][3] = sunFrustum[i].w;
     }
     ubo.pyramidViewProjection = pyramidViewProjection_;
     ubo.eye[0] = cullEye.x;
@@ -477,12 +471,29 @@ void VkInstanceGroups::cull(VkCommandBuffer cb, int frame, const Mat4& viewProje
     ubo.pyramid[1] = static_cast<float>(pyramidExtent_.height);
     ubo.pyramid[2] = static_cast<float>(pyramidLevels_.size());
     ubo.pyramid[3] = pyramidValid_ ? 1.0f : 0.0f;
-    const VkDeviceSize uboOffset = frames_->allocateUbo(&ubo, sizeof(ubo));
+    // One copy per view, each with that shadow view's planes. A light's matrix gives
+    // depth in 0..1 already, so its near plane is clip z = 0 too.
+    const std::size_t views = 1 + std::min(lightViews.size(), kShadowViews);
+    std::array<VkDeviceSize, kViews> uboOffsets{};
+    for (std::size_t view = 0; view < views; ++view) {
+        if (view > 0) {
+            const Frustum sun = frustumFromViewProjection(lightViews[view - 1]);
+            for (std::size_t i = 0; i < 6; ++i) {
+                ubo.shadowPlanes[i][0] = sun[i].x;
+                ubo.shadowPlanes[i][1] = sun[i].y;
+                ubo.shadowPlanes[i][2] = sun[i].z;
+                ubo.shadowPlanes[i][3] = sun[i].w;
+            }
+        }
+        uboOffsets[view] = frames_->allocateUbo(&ubo, sizeof(ubo));
+    }
 
     vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_COMPUTE, cullPipeline_);
-    for (std::size_t view = 0; view < kViews; ++view)
+    for (std::size_t view = 0; view < views; ++view)
     for (Group& g : groups_) {
-        if (g.count == 0 || (view == 1 && !g.desc.castShadows)) continue;
+        if (g.count == 0 || (view > 0 && !g.desc.castShadows)) continue;
+        if (view > 0 && (shadowMask & (1u << (view - 1))) == 0) continue;
+        const VkDeviceSize uboOffset = uboOffsets[view];
         VkDescriptorSetAllocateInfo ai{};
         ai.sType              = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
         ai.descriptorPool     = frames_->current().descriptorPool;
@@ -683,15 +694,17 @@ void VkInstanceGroups::forEachDraw(int frame, const VkMeshStore& meshes,
     }
 }
 
-std::vector<VkInstanceGroups::Draw> VkInstanceGroups::shadowDraws(int frame, const VkMeshStore& meshes) const {
+std::vector<VkInstanceGroups::Draw> VkInstanceGroups::shadowDraws(int frame, const VkMeshStore& meshes,
+                                                                   std::size_t shadowView) const {
     const auto slot = static_cast<std::size_t>(frame);
+    const std::size_t view = 1 + std::min(shadowView, kShadowViews - 1);
     std::vector<Draw> out;
     for (const Group& g : groups_) {
         if (g.count == 0 || !g.desc.castShadows) continue;
         for (std::size_t l = 0; l < g.desc.lods.size(); ++l) {
             const auto& mesh = meshes.get(g.desc.lods[l]);
             out.push_back(Draw{&g.desc, static_cast<std::uint32_t>(l), mesh.vertexBuffer, mesh.indexBuffer,
-                               g.instances.buffer, g.visible[1][slot].buffer, g.indirect[1][slot].buffer,
+                               g.instances.buffer, g.visible[view][slot].buffer, g.indirect[view][slot].buffer,
                                sizeof(GpuCommand) * l});
         }
     }

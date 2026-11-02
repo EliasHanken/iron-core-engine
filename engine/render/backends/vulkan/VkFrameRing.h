@@ -13,7 +13,7 @@ class VkFrameRing {
 public:
     static constexpr int kFramesInFlight = 2;
     static constexpr int kMaxDescriptorSetsPerFrame = 1024;
-    static constexpr VkDeviceSize kUboBytesPerFrame    = 1024 * 1024;  // 1 MB
+    static constexpr VkDeviceSize kUboBytesPerFrame    = 4 * 1024 * 1024;  // 4 MB
     static constexpr VkDeviceSize kVertexBytesPerFrame = 1024 * 1024;  // 1 MB
 
     struct Frame {
