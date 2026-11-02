@@ -36,6 +36,7 @@ arms = bpy.data.objects["arms"]
 rig.to_metres_at_eye(arms, bpy.data.objects["Camera"])
 skeleton, rifle = rig.import_rifle(os.path.join(ak_dir, "SKM_AK47.fbx"))
 rig.merge_rifle(arms, skeleton, rifle)
+rig.setup_forearm_twist(arms)
 rest = {s: rig.hand_rest(arms, s) for s in ("r", "l")}
 for o in list(bpy.data.objects):
     if o.type == "CAMERA":
@@ -276,6 +277,26 @@ def report(pose):
         print(f"HAND {side} elbow          {tuple(round(c, 3) for c in inv @ bones[f'forearm.{side}'].head)}")
     print(f"MAG head {tuple(round(c, 3) for c in inv @ bones['MAGAZINE'].head)}")
 
+
+if "--joints" in args:
+    # --joints: each clip's worst wrist, against what a wrist can do (twist about
+    # +-80 from neutral, bend about +-70, sideways -30..+20).
+    for name, length, fn, _, _ in CLIPS:
+        worst = {}
+        for i in range(int(length / 0.05) + 1):
+            t = min(i * 0.05, length)
+            r.mag_offset = None
+            if i == 0:
+                r.elbows = {}
+            r.apply(fn(t))
+            for side in ("r", "l"):
+                tw, fl, dv, carried = rig.wrist_angles(arms, side)
+                for key, v in (("twist", tw), ("flex", fl), ("dev", dv)):
+                    k = f"{side} {key}"
+                    if k not in worst or abs(v) > abs(worst[k][0]):
+                        worst[k] = (v, t, carried if key == "twist" else None)
+        print("JOINTS", name, "  ".join(f"{k} {v:6.1f}@{t:.2f}" + (f"(arm {c:5.1f})" if c is not None else "")
+                                        for k, (v, t, c) in sorted(worst.items())))
 
 if "--report" in args:
     # --report [clip@time]: the hold at the hip, or a clip's pose at a moment.

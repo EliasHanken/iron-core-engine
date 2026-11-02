@@ -2,9 +2,16 @@
 
 The arms' own .blend carries a control rig: an IK target per wrist (wrist_ik.*,
 which also sets the wrist's rotation), a pole per elbow (arm_target.*) and forearm
-twist bones that follow the wrist. This module merges the rifle's skeleton into it
-under a new `weapon` bone and parents both wrist targets to that bone, so posing the
-rifle carries the hands with it, the way a first-person rig is animated.
+twist bones. This module merges the rifle's skeleton into it under a new `weapon`
+bone and parents both wrist targets to that bone, so posing the rifle carries the
+hands with it, the way a first-person rig is animated.
+
+Two things make the arms read as real ones. The forearm turns along its length
+(setup_forearm_twist): the twist bones take thirds of the wrist's roll by
+swing-twist decomposition. And every frame, each arm is settled (solve_arm): the
+hand keeps its place on the rifle but may roll round what it holds and turn
+about its palm, and the elbow swings round the shoulder-wrist line, to where the
+wrist bends and twists least, within what a wrist can do (--joints reports it).
 
 Space: metres, the eye at the origin looking down +Y with +Z up. The glTF exporter
 turns that into the engine's view space (looking down -Z, +Y up), so the exported
@@ -125,6 +132,192 @@ def merge_rifle(arms, skeleton, rifle):
     for side in ("r", "l"):
         eb[f"wrist_ik.{side}"].parent = eb["weapon"]
     bpy.ops.object.mode_set(mode="OBJECT")
+
+
+def setup_forearm_twist(arms, shares=(0.34, 0.33)):
+    """The forearm turns along its length when the hand rolls: the radius crosses
+    the ulna from the elbow out. The rig's two twist bones split the forearm in
+    half; each takes its share of the wrist's twist about the forearm (cumulative,
+    since the second hangs off the first), and the wrist's own skin takes the rest.
+
+    The twist is found by swing-twist decomposition, so it stays true when the
+    wrist also bends, and doesn't flip until the hand has turned half round."""
+    for side in ("r", "l"):
+        for i, share in enumerate(shares):
+            pb = arms.pose.bones[f"forearm.Twist{i}.{side}"]
+            for c in list(pb.constraints):
+                pb.constraints.remove(c)
+            c = pb.constraints.new("TRANSFORM")
+            c.name = "Twist from wrist"
+            c.target = arms
+            c.subtarget = f"wrist.{side}"
+            c.target_space = "LOCAL"
+            c.owner_space = "LOCAL"
+            c.map_from = "ROTATION"
+            c.from_rotation_mode = "SWING_TWIST_Y"
+            c.from_min_y_rot, c.from_max_y_rot = -math.pi, math.pi
+            c.map_to = "ROTATION"
+            c.map_to_x_from, c.map_to_y_from, c.map_to_z_from = "X", "Y", "Z"
+            c.to_min_y_rot, c.to_max_y_rot = -math.pi * share, math.pi * share
+            c.mix_mode_rot = "REPLACE"
+
+
+def wrist_angles(arms, side):
+    """The wrist against the forearm, from rest, in degrees: twist about the
+    forearm (pronation, supination), bend towards the palm or back (flexion),
+    swing sideways (deviation); and the twist the forearm's far twist bone has."""
+    bones = arms.pose.bones
+    forearm = bones[f"forearm.{side}"]
+
+    def relative(name):
+        bone = bones[name]
+        rest_rel = forearm.bone.matrix_local.inverted() @ bone.bone.matrix_local
+        return (rest_rel.inverted() @ forearm.matrix.inverted() @ bone.matrix).to_quaternion()
+
+    def twist_of(q):
+        if q.w < 0.0:
+            q = -q
+        return math.degrees(2.0 * math.atan2(q.y, q.w))
+
+    q = relative(f"wrist.{side}")
+    twist = twist_of(q)
+    half = math.radians(twist) / 2.0
+    swing = q @ Quaternion((math.cos(half), 0.0, math.sin(half), 0.0)).inverted()
+    axis, angle = swing.to_axis_angle()
+    return twist, math.degrees(axis.x * angle), math.degrees(axis.z * angle), twist_of(relative(f"forearm.Twist1.{side}"))
+
+
+# What a wrist does comfortably, in degrees from the rig's rest. At rest the palms
+# face down and in, about 45 degrees pronated, so a neutral, thumb-up forearm is
+# 45 degrees of supination away: positive twist on the right, negative on the
+# left (measured on the rig). A forearm turns about 80 degrees either way from
+# neutral.
+NEUTRAL_TWIST = {"r": 45.0, "l": -45.0}
+TWIST_RANGE = 80.0
+FLEX_RANGE = 55.0
+DEVIATION_RANGE = 22.0
+
+
+def wrist_strain(arms, side):
+    twist, flex, deviation, _ = wrist_angles(arms, side)
+    off = max(abs(twist - NEUTRAL_TWIST[side]) - TWIST_RANGE, 0.0) / 15.0
+    return (flex / FLEX_RANGE) ** 2 + (deviation / DEVIATION_RANGE) ** 2 + off * off
+
+
+def solve_elbow(arms, side, authored_pole, previous=None, steps=16):
+    """Swings the elbow round the line from shoulder to wrist (the hand stays where
+    it is on the rifle) to where the wrist is least strained, leaning towards the
+    authored pole and, frame to frame, towards where the elbow was. Poses the
+    pole there and returns the swing angle chosen."""
+    bones = arms.pose.bones
+    shoulder = bones[f"bicep.{side}"].head.copy()
+    wrist = bones[f"wrist_ik.{side}"].matrix.translation.copy()
+    upper, lower = bones[f"bicep.{side}"].length, bones[f"forearm.{side}"].length
+    reach = wrist - shoulder
+    d = min(max(reach.length, 1e-4), upper + lower - 1e-4)
+    axis = reach.normalized()
+    along = (upper * upper - lower * lower + d * d) / (2.0 * d)
+    centre = shoulder + axis * along
+    # A frame round the axis, its zero towards the authored pole.
+    towards = authored_pole - centre
+    e1 = (towards - axis * towards.dot(axis))
+    e1 = e1.normalized() if e1.length > 1e-6 else axis.orthogonal().normalized()
+    e2 = axis.cross(e1)
+    target = bones[f"arm_target.{side}"]
+
+    def pose_at(phi):
+        out = e1 * math.cos(phi) + e2 * math.sin(phi)
+        target.matrix = Matrix.Translation(centre + out * 0.5)
+        bpy.context.view_layer.update()
+
+    def cost(phi):
+        pose_at(phi)
+        c = wrist_strain(arms, side) + 0.6 * (phi / math.radians(70.0)) ** 2
+        if previous is not None:
+            step = (phi - previous + math.pi) % (2.0 * math.pi) - math.pi
+            c += (step / math.radians(12.0)) ** 2
+        return c
+
+    if previous is None:
+        candidates = [(-math.pi + (i + 0.5) * 2.0 * math.pi / steps) for i in range(steps)]
+    else:
+        candidates = [previous + math.radians(10.0 * k) for k in range(-4, 5)]
+    best = min(candidates, key=cost)
+    for width in (math.radians(11.0), math.radians(4.0), math.radians(1.5)):
+        best = min((best - width, best, best + width), key=cost)
+    return best, cost(best)
+
+
+SPIN_RANGE = 30.0  # Degrees a hand may roll round what it holds, either way.
+YAW_RANGE = 35.0   # And turn about its palm: a grip can run square or diagonal.
+
+
+def solve_arm(arms, side, rest, hand, weapon_matrix, authored_pole, previous=None):
+    """Settles one arm. The hand keeps its place on the rifle but may roll round
+    what it holds (the line its fingers wrap, palm x fingers, through the socket:
+    the handguard, the grip, the magazine) and turn about its palm, square or
+    diagonal; the elbow swings round the shoulder-wrist line. All three go where
+    the wrist is least strained. `previous` is last frame's (spin, yaw, swing).
+    Leaves the arm posed and returns the new (spin, yaw, swing)."""
+    palm = hand.palm.normalized()
+    wrap = palm.cross(hand.forward)
+    wrap = wrap.normalized() if wrap.length > 1e-6 else Vector((0.0, 1.0, 0.0))
+    last = previous if previous is not None else (0.0, 0.0, None)
+    tried = {}
+
+    def turned(spin, yaw):
+        return Quaternion(wrap, math.radians(spin)) @ Quaternion(palm, math.radians(yaw))
+
+    def attempt(spin, yaw):
+        spin = max(-SPIN_RANGE, min(SPIN_RANGE, spin))
+        yaw = max(-YAW_RANGE, min(YAW_RANGE, yaw))
+        key = (round(spin, 2), round(yaw, 2))
+        if key not in tried:
+            turn = turned(spin, yaw)
+            place_hand(arms, side, rest, hand.socket, turn @ hand.palm, turn @ hand.forward, weapon_matrix)
+            bpy.context.view_layer.update()
+            swing, c = solve_elbow(arms, side, authored_pole, last[2])
+            c += 0.4 * (spin / SPIN_RANGE) ** 2 + 0.3 * (yaw / YAW_RANGE) ** 2
+            if previous is not None:
+                c += ((spin - last[0]) / 8.0) ** 2 + ((yaw - last[1]) / 8.0) ** 2
+            tried[key] = (c, spin, yaw, swing)
+        return tried[key]
+
+    def best_of(pairs):
+        return min((attempt(s, y) for s, y in pairs), key=lambda x: x[0])
+
+    if previous is None:
+        best = best_of([(s, y) for s in (-SPIN_RANGE, 0.0, SPIN_RANGE) for y in (-YAW_RANGE, 0.0, YAW_RANGE)])
+    else:
+        best = attempt(last[0], last[1])
+    for width in (15.0, 7.5, 3.0):
+        _, s0, y0, _ = best
+        best = best_of([(s0, y0), (s0 - width, y0), (s0 + width, y0), (s0, y0 - width), (s0, y0 + width)])
+    _, spin, yaw, swing = best
+    turn = turned(spin, yaw)
+    place_hand(arms, side, rest, hand.socket, turn @ hand.palm, turn @ hand.forward, weapon_matrix)
+    bpy.context.view_layer.update()
+    solve_elbow_pose(arms, side, authored_pole, swing)
+    return spin, yaw, swing
+
+
+def solve_elbow_pose(arms, side, authored_pole, swing):
+    """Poses the pole for an elbow swing found by solve_elbow."""
+    bones = arms.pose.bones
+    shoulder = bones[f"bicep.{side}"].head.copy()
+    wrist = bones[f"wrist_ik.{side}"].matrix.translation.copy()
+    upper, lower = bones[f"bicep.{side}"].length, bones[f"forearm.{side}"].length
+    reach = wrist - shoulder
+    d = min(max(reach.length, 1e-4), upper + lower - 1e-4)
+    axis = reach.normalized()
+    centre = shoulder + axis * ((upper * upper - lower * lower + d * d) / (2.0 * d))
+    towards = authored_pole - centre
+    e1 = towards - axis * towards.dot(axis)
+    e1 = e1.normalized() if e1.length > 1e-6 else axis.orthogonal().normalized()
+    e2 = axis.cross(e1)
+    out = e1 * math.cos(swing) + e2 * math.sin(swing)
+    bones[f"arm_target.{side}"].matrix = Matrix.Translation(centre + out * 0.5)
+    bpy.context.view_layer.update()
 
 
 def hand_rest(arms, side):

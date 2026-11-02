@@ -117,6 +117,7 @@ class Rig:
         self.rest = rest
         self.poles = poles
         self.mag_offset = None
+        self.elbows = {}  # Each side's (hand spin, elbow swing) last frame, so neither jumps.
         pose = arms.pose.bones
         self.keyed = ["weapon", "shoulder.r", "shoulder.l", "wrist_ik.r", "wrist_ik.l", "arm_target.r",
                       "arm_target.l", "SLIDE", "TRIGGER",
@@ -140,12 +141,18 @@ class Rig:
             bone.matrix = (Matrix.Translation(head) @ Matrix.Rotation(angle, 4, "Z") @ Matrix.Translation(-head) @
                            bone.bone.matrix_local)
         bpy.context.view_layer.update()
-        for side, pole in {**self.poles, **p.poles}.items():
+        poles = {**self.poles, **p.poles}
+        for side, pole in poles.items():
             pose[f"arm_target.{side}"].matrix = Matrix.Translation(pole)
-        bpy.context.view_layer.update()
         for side, hand in (("r", p.right), ("l", p.left)):
             rig.place_hand(arms, side, self.rest[side], hand.socket, hand.palm, hand.forward, weapon)
             rig.curl_fingers(arms, side, self.rest[side], hand.curl, hand.thumb)
+        bpy.context.view_layer.update()
+        # The elbows go where the wrists are comfortable: the authored poles say
+        # roughly where, the solver settles it.
+        for side, hand in (("r", p.right), ("l", p.left)):
+            self.elbows[side] = rig.solve_arm(arms, side, self.rest[side], hand, weapon, poles[side],
+                                              self.elbows.get(side))
         # The rifle's moving parts, each moved in the rifle's own space.
         slide = pose["SLIDE"]
         slide.matrix = weapon @ Matrix.Translation((0.0, -p.bolt, 0.0)) @ slide.bone.matrix_local
@@ -181,7 +188,14 @@ def bake_clip(r, name, length, pose_at, loop=False):
     action = bpy.data.actions.new(name)
     arms.animation_data.action = action
     r.mag_offset = None
+    r.elbows = {}
     frames = max(1, round(length * FPS))
+    if loop:
+        # Solved from the end of its own cycle, so the first frame matches the
+        # last and the loop has no seam.
+        for f in range(max(frames - 12, 0), frames):
+            r.apply(pose_at(f / FPS))
+        r.mag_offset = None
     for f in range(frames + 1):
         t = length if (loop and f == frames) else f / FPS
         r.apply(pose_at(0.0 if (loop and f == frames) else t))
