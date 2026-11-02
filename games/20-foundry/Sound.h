@@ -5,8 +5,9 @@
 // build's audio-hq folder. Without either, the CC0 shooter set stands in where it can,
 // and the rest stays silent.
 //
-// The rifle is two parts: a dry, layered shot per round, and the space's own recorded
-// tail when a burst ends. Two spaces, the open yard and the hall, crossfade by how far
+// The rifle is layered like a AAA weapon: a dry shot per round (base, punch, crack and
+// action, built by the tool), a short tail of the space with every round, and the
+// space's longer tail when a burst ends. Two spaces, the open yard and the hall, crossfade by how far
 // inside the player is: the ambience beds, the gun's tail and the reverb.
 
 #include "Level.h"
@@ -44,6 +45,10 @@ public:
         cc0_ = assets + "sfx/";
 
         for (int i = 0; i < 5; ++i) shots_.push_back(load("shot" + std::to_string(i + 1), "gunshot-rifle"));
+        for (int i = 0; i < 3; ++i) {
+            shotTailsHall_.push_back(load("tailshot-hall" + std::to_string(i + 1)));
+            shotTailsYard_.push_back(load("tailshot-yard" + std::to_string(i + 1)));
+        }
         tailHall_ = load("tail-hall");
         tailYard_ = load("tail-yard");
         magOut_ = load("mag-out");
@@ -83,7 +88,7 @@ public:
         sinceShot_ += dt;
         if (burst_ > 0 && sinceShot_ > 0.12f) {
             const float size = std::min(static_cast<float>(burst_), 6.0f) / 6.0f;
-            const float gain = kHeadroom * (0.55f + 0.45f * size);
+            const float gain = kHeadroom * 0.8f * (0.55f + 0.45f * size);
             if (tailHall_) audio_.playSoundLocal(tailHall_, gain * indoor, 0.98f + random() * 0.04f);
             if (tailYard_) audio_.playSoundLocal(tailYard_, gain * 1.2f * (1.0f - indoor), 0.98f + random() * 0.04f);
             burst_ = 0;
@@ -143,6 +148,14 @@ public:
         if (pick == lastShot_) pick = (pick + 1) % shots_.size();
         lastShot_ = pick;
         if (shots_[pick]) audio_.playSoundLocal(shots_[pick], kHeadroom * 1.0f, 0.97f + random() * 0.06f);
+        // The space answering this round: the hall and the yard by how far in the player is.
+        const std::size_t tail = static_cast<std::size_t>(random() * 2.99f);
+        if (tail < shotTailsHall_.size() && shotTailsHall_[tail] && indoor_ > 0.02f) {
+            audio_.playSoundLocal(shotTailsHall_[tail], kHeadroom * 0.5f * indoor_, 0.97f + random() * 0.06f);
+        }
+        if (tail < shotTailsYard_.size() && shotTailsYard_[tail] && indoor_ < 0.98f) {
+            audio_.playSoundLocal(shotTailsYard_[tail], kHeadroom * 0.55f * (1.0f - indoor_), 0.97f + random() * 0.06f);
+        }
         ++burst_;
         sinceShot_ = 0.0f;
         duck_ = 1.0f;
@@ -272,6 +285,8 @@ private:
         float pitch;
     };
     std::vector<Later> later_;
+    std::vector<iron::SoundHandle> shotTailsHall_;
+    std::vector<iron::SoundHandle> shotTailsYard_;
     std::vector<iron::SoundHandle> casings_;
     std::vector<iron::SoundHandle> plates_;
     std::vector<iron::SoundHandle> works_;
