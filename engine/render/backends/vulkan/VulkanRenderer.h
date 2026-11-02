@@ -148,6 +148,9 @@ public:
     void submitFogDisturbance(const FogDisturbance& disturbance) override {
         if (!skipFrame_) pendingFogDisturbances_.push_back(disturbance);
     }
+    void submitHeat(const HeatSource& heat) override {
+        if (!skipFrame_) pendingHeat_.push_back(heat);
+    }
     void submitFogFluid(const FogFluid& fluid) override {
         if (!skipFrame_ && fluid.fluid) pendingFogFluids_.push_back(fluid);
     }
@@ -364,6 +367,7 @@ private:
     std::vector<FogVolume>  pendingFogVolumes_;
     std::vector<FogDisturbance> pendingFogDisturbances_;
     std::vector<FogFluid> pendingFogFluids_;
+    std::vector<HeatSource> pendingHeat_;
     std::optional<CullingCamera> cullingCamera_;  // Culls instead of the drawing camera, when set.
     float                   fogClock_ = 0.0f;
     RenderDebugView    debugView_ = RenderDebugView::None;

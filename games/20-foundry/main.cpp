@@ -899,6 +899,12 @@ int main(int argc, char** argv) {
     float trauma = 0.0f;  // Camera shake: 1 right by a blast, fading.
     float blastKick = 0.0f;  // The lens jolted by a blast: colour split, a dark rim, washed out; fading.
     float focus = 30.0f;     // Where the eye is looking, in metres, easing after it.
+    float barrelHeat = 0.0f; // 0 cold .. 1 a long burst: the air over the barrel shimmers.
+    struct Hot {             // Hot air left by a blast.
+        Vec3 at;
+        float life, maxLife;
+    };
+    std::vector<Hot> hots;
 
     iron::Material flashLook;
     flashLook.texture = renderer.whiteTexture();
@@ -1300,9 +1306,12 @@ int main(int argc, char** argv) {
             sound.blast(at, distance);
             trauma = std::min(trauma + 1.1f * std::clamp(1.0f - distance / 28.0f, 0.0f, 1.0f), 1.0f);
             blastKick = std::min(blastKick + std::clamp(1.0f - distance / 22.0f, 0.0f, 1.0f), 1.0f);
+            hots.push_back({at + up * 1.2f, 1.6f, 1.6f});
         }
 
+        barrelHeat = std::max(barrelHeat - simDt * 0.12f, 0.0f);
         for (int i = 0; i < shots; ++i) {
+            barrelHeat = std::min(barrelHeat + 0.04f, 1.0f);
             ++shotCount;
             flashRoll = noise.next() * kPi;
             sound.shot();
@@ -1556,6 +1565,18 @@ int main(int argc, char** argv) {
             renderer.submitFogVolume(hall);
             stirs.submit(renderer);
             smoke.update(renderer, world, colliders, volumetric.wind, simDt);
+            // Hot air: over the barrel after firing, and where blasts went off.
+            if (barrelHeat > 0.02f && !engineView) {
+                const Vec3 up{0.0f, 1.0f, 0.0f};
+                renderer.submitHeat({muzzle + up * 0.05f, 0.16f, barrelHeat * 2.0f});
+                renderer.submitHeat({muzzle - aimDir * 0.3f + up * 0.06f, 0.14f, barrelHeat * 1.4f});
+            }
+            for (Hot& h : hots) {
+                h.life -= simDt;
+                const float t = std::clamp(h.life / h.maxLife, 0.0f, 1.0f);
+                renderer.submitHeat({h.at + Vec3{0.0f, (1.0f - t) * 2.0f, 0.0f}, 2.5f + (1.0f - t) * 2.0f, 2.5f * t * t});
+            }
+            std::erase_if(hots, [](const Hot& h) { return h.life <= 0.0f; });
         }
 
         int draws = 0;

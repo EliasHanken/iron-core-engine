@@ -736,6 +736,7 @@ void VulkanRenderer::beginFrame(Vec3 clearColor, const DirectionalLight& light,
     pendingFogVolumes_.clear();
     pendingFogDisturbances_.clear();
     pendingFogFluids_.clear();
+    pendingHeat_.clear();
     skinnedDraws_.clear();
     skinnedBoneMatricesStash_.clear();
     deferredSceneCompute_.clear();
@@ -1510,6 +1511,7 @@ void VulkanRenderer::endFrame() {
             fog.fog = volumetricFog_;
             fog.volumes = pendingFogVolumes_;
             fog.disturbances = pendingFogDisturbances_;
+            fog.heat = pendingHeat_;
             for (const FogFluid& fluid : pendingFogFluids_) {
                 const auto& vk = static_cast<const VkFluidVolume&>(*fluid.fluid);
                 if (!vk.hasStepped() || fog.fluidCount >= fog.fluids.size()) continue;

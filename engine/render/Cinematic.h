@@ -37,6 +37,9 @@ struct CinematicSettings {
     Vec2  subject{0.5f, 0.5f};
     float subjectRadius = 0.0f;
     float heatHaze = 0.0f;             // Rippling air around the subject, 0..1.
+    // How strongly heat in the world bends the picture: fluids' heat in the fog
+    // and Renderer::submitHeat sources. 0 for none.
+    float worldHaze = 1.0f;
 };
 
 }  // namespace iron
