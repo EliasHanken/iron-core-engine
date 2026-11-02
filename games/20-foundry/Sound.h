@@ -55,11 +55,13 @@ public:
         magIn_ = load("mag-in");
         charge_ = load("charge");
         for (const char* n : {"casing1", "casing2", "casing3"}) casings_.push_back(load(n));
-        hits_[static_cast<int>(Surface::Metal)] = {load("hit-metal1", "hit"), load("hit-metal2", "hit")};
+        hits_[static_cast<int>(Surface::Metal)] = {load("hit-metal1", "hit"), load("hit-metal2", "hit"),
+                                                   load("hit-metal3", "hit")};
         hits_[static_cast<int>(Surface::Concrete)] = {load("hit-concrete1", "hit"), load("hit-concrete2", "hit"),
                                                       load("hit-concrete3", "hit")};
         hits_[static_cast<int>(Surface::Brick)] = hits_[static_cast<int>(Surface::Concrete)];
-        hits_[static_cast<int>(Surface::Wood)] = {load("hit-wood1", "hit"), load("hit-wood2", "hit")};
+        hits_[static_cast<int>(Surface::Wood)] = {load("hit-wood1", "hit"), load("hit-wood2", "hit"),
+                                                  load("hit-wood3", "hit")};
         ricochet_ = load("ricochet");
         for (const char* n : {"plate1", "plate2", "plate3"}) plates_.push_back(load(n, "hit"));
         steps_[static_cast<int>(Floor::Ground)] = {load("step-ground1", "footstep-01"), load("step-ground2", "footstep-02")};
