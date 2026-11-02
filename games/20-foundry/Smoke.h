@@ -1,7 +1,8 @@
 #pragma once
 
-// Smoke grenades as real smoke: each one fills a GPU fluid laid down where the
-// canister lands. The smoke pours out hot, rises, spreads and settles; it flows
+// Smoke as real smoke. Each smoke grenade fills a GPU fluid laid down where the
+// canister lands; the hall's air is one more, always running, warmed by the
+// furnace and puffed full of steam by the pipes along its wall. The smoke pours out hot, rises, spreads and settles; it flows
 // round the walls, crates and containers (and the props that move), drifts with
 // the wind, and is lit like the fog around it, by the sun through the shadows
 // and by every lamp. A round through it pushes it out of a tube that the flow
@@ -49,24 +50,32 @@ public:
     static constexpr float kLife = 22.0f;    // Seconds from the first puff until it's gone.
     static constexpr float kPour = 9.0f;     // Seconds the canister keeps pouring.
 
-    bool init(iron::Renderer& renderer) {
+    // The hall the air fills, in the world.
+    struct Hall {
+        Vec3 min, max;
+        Vec3 furnaceMouth;         // Where the furnace's heat comes out (the middle of its door).
+        Vec3 furnaceHalf;          // And how big that door is.
+        std::vector<Vec3> vents;   // Steam pipe outlets, along a wall.
+        Vec3 ventDirection;        // Which way they blow.
+    };
+
+    bool init(iron::Renderer& renderer, const Hall& hall) {
         for (Slot& s : slots_) {
-            iron::FluidVolumeDesc desc;
-            desc.bounds = {{-kHalfWidth, 0.0f, -kHalfWidth}, {kHalfWidth, kHeight, kHalfWidth}};
-            desc.size = {112, 40, 112};
-            desc.pressureIterations = 16;
-            desc.vorticity = 7.0f;
-            desc.velocityDissipation = 0.35f;
-            desc.maxSpeed = 30.0f;
-            desc.obstacleInterval = 4;
-            desc.paramsSize = sizeof(Params);
-            desc.commonGlsl = kCommon;
-            desc.sourceGlsl = kSource;
-            desc.obstacleGlsl = kObstacle;
-            s.fluid = iron::createFluidVolume(renderer, desc);
+            s.lo = {-kHalfWidth, 0.0f, -kHalfWidth};
+            s.hi = {kHalfWidth, kHeight, kHalfWidth};
+            s.fluid = create(renderer, s, {112, 40, 112}, 7.0f, 0.35f);
             if (!s.fluid) return false;
-            s.fluid->setDissipation(0.0f);
         }
+        // The hall: its own space centred in x and z, from the floor up.
+        hallSetup_ = hall;
+        const Vec3 centre = (hall.min + hall.max) * 0.5f;
+        hall_.origin = {centre.x, hall.min.y, centre.z};
+        hall_.lo = hall.min - hall_.origin;
+        hall_.hi = hall.max - hall_.origin;
+        hall_.fluid = create(renderer, hall_, {96, 40, 128}, 5.0f, 0.5f);
+        if (!hall_.fluid) return false;
+        hall_.fluid->setDissipation(0.12f);  // Steam thins away; the furnace keeps its haze topped up.
+        hall_.active = true;
         ready_ = true;
         return true;
     }
@@ -88,6 +97,7 @@ public:
         slot->origin = {at.x, std::max(at.y - 0.2f, 0.0f), at.z};
         slot->emitter = at;
         slot->fluid->reset();
+        slot->fluid->setDissipation(0.0f);
     }
 
     // Rounds and blasts this frame, in the world; they reach whichever smokes they cross.
@@ -115,7 +125,11 @@ public:
                 s.active = false;
                 continue;
             }
-            Params p = params(s, world, colliders, wind);
+            Params p = params(s, world, colliders);
+            // A hard first burst, then a steady pour, then it gives out.
+            const float pour = s.age < 2.0f ? 34.0f : s.age < kPour ? 12.0f : 0.0f;
+            put(p.emitter, s.emitter - s.origin + Vec3{0.0f, 0.15f, 0.0f}, pour);
+            put(p.wind, wind, 0.0f);
             s.fluid->setParams(&p);
             // It hangs, then thins away over the last few seconds.
             const float fading = std::clamp((s.age - (kLife - 6.0f)) / 6.0f, 0.0f, 1.0f);
@@ -128,11 +142,13 @@ public:
             fog.offset = s.origin;
             renderer.submitFogFluid(fog);
         }
+        updateHall(renderer, world, colliders, steps, dt);
     }
 
     // Must go before the Renderer.
     void destroy() {
         for (Slot& s : slots_) s.fluid.reset();
+        hall_.fluid.reset();
     }
 
 private:
@@ -141,6 +157,9 @@ private:
         float emitter[4];   // In the fluid's space; w = density poured per second.
         float counts[4];    // Boxes, wakes, blasts; w = how much the wind carries it.
         float wind[4];
+        float jet[4];       // Which way the emitter blows (w = speed; 0 spreads it every way).
+        float heat[4];      // A box that heats the air (w = how fast), and its half size:
+        float heatHalf[4];
         float boxes[kMaxBoxes * 4][4];   // Centre, then each axis (w = half extent along it).
         float wakes[kMaxWakes * 2][4];   // From (w = strength), to (w = radius).
         float blasts[kMaxBlasts][4];     // Where (w = strength).
@@ -152,6 +171,7 @@ private:
         float age = 0.0f;
         Vec3 origin{};
         Vec3 emitter{};
+        Vec3 lo{}, hi{};  // Its space's bounds.
     };
     struct Wake {
         Vec3 from, to;
@@ -169,17 +189,61 @@ private:
         out[3] = w;
     }
 
-    Params params(const Slot& s, const iron::PhysicsWorld& world, std::span<const SmokeCollider> colliders,
-                  Vec3 wind) const {
+    static std::unique_ptr<iron::FluidVolume> create(iron::Renderer& renderer, const Slot& s, iron::VolumeSize size,
+                                                     float vorticity, float drag) {
+        iron::FluidVolumeDesc desc;
+        desc.bounds = {s.lo, s.hi};
+        desc.size = size;
+        desc.pressureIterations = 16;
+        desc.vorticity = vorticity;
+        desc.velocityDissipation = drag;
+        desc.maxSpeed = 30.0f;
+        desc.obstacleInterval = 4;
+        desc.paramsSize = sizeof(Params);
+        desc.commonGlsl = kCommon;
+        desc.sourceGlsl = kSource;
+        desc.obstacleGlsl = kObstacle;
+        auto fluid = iron::createFluidVolume(renderer, desc);
+        if (fluid) fluid->setDissipation(0.0f);
+        return fluid;
+    }
+
+    // The hall's air: the furnace's heat always, and now and then a pipe venting.
+    void updateHall(iron::Renderer& renderer, const iron::PhysicsWorld& world,
+                    std::span<const SmokeCollider> colliders, int steps, float dt) {
+        if (!hall_.fluid) return;
+        hall_.age += dt;
+        ventIn_ -= dt;
+        if (ventIn_ <= 0.0f && !hallSetup_.vents.empty()) {
+            seed_ = seed_ * 1664525u + 1013904223u;
+            vent_ = (seed_ >> 8) % static_cast<std::uint32_t>(hallSetup_.vents.size());
+            ventFor_ = 2.6f;
+            ventIn_ = 4.0f + static_cast<float>((seed_ >> 4) % 1000u) * 0.005f;
+        }
+        ventFor_ = std::max(ventFor_ - dt, 0.0f);
+        Params p = params(hall_, world, colliders);
+        const Vec3 vent = hallSetup_.vents.empty() ? Vec3{} : hallSetup_.vents[vent_];
+        put(p.emitter, vent - hall_.origin, ventFor_ > 0.0f ? 45.0f * std::min(ventFor_ / 0.5f, 1.0f) : 0.0f);
+        put(p.jet, hallSetup_.ventDirection, 9.0f);
+        put(p.heat, hallSetup_.furnaceMouth - hall_.origin, 2.5f);
+        put(p.heatHalf, hallSetup_.furnaceHalf, 0.0f);
+        hall_.fluid->setParams(&p);
+        for (int i = 0; i < steps; ++i) hall_.fluid->step();
+        iron::FogFluid fog;
+        fog.fluid = hall_.fluid.get();
+        fog.density = 1.2f;
+        fog.albedo = 0.9f;
+        fog.offset = hall_.origin;
+        renderer.submitFogFluid(fog);
+    }
+
+    Params params(const Slot& s, const iron::PhysicsWorld& world, std::span<const SmokeCollider> colliders) const {
         Params p{};
         put(p.origin, s.origin, s.age);
-        // A hard first burst, then a steady pour, then it gives out.
-        const float pour = s.age < 2.0f ? 34.0f : s.age < kPour ? 12.0f : 0.0f;
-        put(p.emitter, s.emitter - s.origin + Vec3{0.0f, 0.15f, 0.0f}, pour);
-        put(p.wind, wind, 0.0f);
 
-        // The boxes nearest the smoke, in its space.
-        const Vec3 middle = s.origin + Vec3{0.0f, kHeight * 0.5f, 0.0f};
+        // The boxes nearest the middle of the volume, in its space.
+        const Vec3 middle = s.origin + (s.lo + s.hi) * 0.5f;
+        const Vec3 reachOut = (s.hi - s.lo) * 0.5f;
         struct Near {
             float distance;
             Vec3 centre;
@@ -199,8 +263,8 @@ private:
             // Skip what can't touch the volume: its bounding sphere against the box.
             const float reach = iron::length(c.half);
             const Vec3 d = centre - middle;
-            if (std::abs(d.x) > kHalfWidth + reach || std::abs(d.z) > kHalfWidth + reach ||
-                std::abs(d.y) > kHeight * 0.5f + reach) {
+            if (std::abs(d.x) > reachOut.x + reach || std::abs(d.z) > reachOut.z + reach ||
+                std::abs(d.y) > reachOut.y + reach) {
                 continue;
             }
             near.push_back({iron::length(d) - reach, centre, {axes[0], axes[1], axes[2]}, c.half});
@@ -239,6 +303,9 @@ layout(set = 0, binding = 2) uniform Params {
     vec4 emitter;
     vec4 counts;
     vec4 wind;
+    vec4 jet;
+    vec4 heat;
+    vec4 heatHalf;
     vec4 boxes[160];
     vec4 wakes[32];
     vec4 blasts[4];
@@ -254,9 +321,17 @@ void fluidSource(vec3 p, inout vec3 velocity, inout float density, inout float h
     if (params.emitter.w > 0.0) {
         density += params.emitter.w * near * fluid.dt * max(1.0 - density * 0.2, 0.0);
         heat += near * fluid.dt * 1.5;
-        // Out low and wide, the way a canister rolls its smoke along the ground.
-        vec3 jet = normalize(vec3(e.x, 0.0, e.z) + vec3(1e-4)) * 5.5 + vec3(0.0, 0.8, 0.0);
+        // A pipe blows one way; a canister rolls its smoke out low and wide.
+        vec3 jet = params.jet.w > 0.0 ? params.jet.xyz * params.jet.w
+                                      : normalize(vec3(e.x, 0.0, e.z) + vec3(1e-4)) * 5.5 + vec3(0.0, 0.8, 0.0);
         velocity += (jet - velocity) * near * min(fluid.dt * 12.0, 1.0);
+    }
+    // A hot box (the furnace's mouth): the air there heats, with a little haze.
+    if (params.heat.w > 0.0) {
+        vec3 q = abs(p - params.heat.xyz) - params.heatHalf.xyz;
+        float inside = 1.0 - smoothstep(0.0, 0.5, max(q.x, max(q.y, q.z)));
+        heat += inside * params.heat.w * fluid.dt;
+        density += inside * params.heat.w * 0.45 * fluid.dt;
     }
     // Warm smoke rises a little; as it cools it spreads, and dense smoke sinks.
     velocity.y += (heat * 2.2 - density * 0.06) * fluid.dt;
@@ -303,6 +378,12 @@ float fluidObstacle(vec3 p) {
 )GLSL";
 
     std::array<Slot, kSlots> slots_;
+    Slot hall_;
+    Hall hallSetup_;
+    std::uint32_t vent_ = 0;
+    float ventIn_ = 2.0f;
+    float ventFor_ = 0.0f;
+    std::uint32_t seed_ = 0x51ed2701u;
     bool ready_ = false;
     std::vector<Wake> wakes_;
     std::vector<Blast> blasts_;

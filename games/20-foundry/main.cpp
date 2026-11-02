@@ -22,6 +22,7 @@
 //   decals   fire a burst into the floor ahead, to see the holes
 //   grenade  throw a grenade ahead, then fire through its smoke
 //   smoke    throw a smoke grenade, fire through it, then blow it apart with a grenade
+//   steam    watch the hall's steam pipes, then the furnace's heat (with hall)
 //   nofog    no volumetric fog
 //   overview look down on the stockyard from above, to see culling at work
 //   lod      tint instance groups by level of detail
@@ -881,7 +882,18 @@ int main(int argc, char** argv) {
     foundry::Grenades grenades;
     foundry::FogStirs stirs;
     foundry::Smoke smoke;
-    if (!smoke.init(renderer)) iron::Log::warn("foundry: no smoke grenades (fluid failed)");
+    {
+        // The hall's air: the furnace's door at the back, steam pipes along the left wall.
+        using namespace foundry::layout;
+        foundry::Smoke::Hall hall;
+        hall.min = {-kHallHalfWidth, 0.0f, kHallBack};
+        hall.max = {kHallHalfWidth, kHallHeight, kHallFront};
+        hall.furnaceMouth = {0.0f, 1.8f, kHallBack + 6.0f};
+        hall.furnaceHalf = {1.8f, 1.2f, 0.5f};
+        for (float z : {-36.0f, -38.8f, -44.0f, -45.4f}) hall.vents.push_back({-kHallHalfWidth + 1.4f, 1.9f, z});
+        hall.ventDirection = iron::normalize(Vec3{1.0f, 0.25f, 0.0f});
+        if (!smoke.init(renderer, hall)) iron::Log::warn("foundry: no smoke (fluid failed)");
+    }
     std::uint32_t thrown = 0;
     float throwCooldown = 0.0f;
     float trauma = 0.0f;  // Camera shake: 1 right by a blast, fading.
@@ -1069,6 +1081,21 @@ int main(int argc, char** argv) {
                 aiming = false;
                 grenadePressed = grenadePressed || (seconds > 0.8f && seconds < 0.85f);
                 trigger = (seconds > 4.6f && seconds < 5.0f) || (seconds > 5.6f && seconds < 6.0f);
+            }
+            // Steam check: stand still and watch the pipes along the hall's left wall,
+            // then the furnace's heat rising.
+            if (sceneHas("steam")) {
+                const Vec3 target = seconds < 12.0f ? Vec3{-13.0f, 2.5f, -40.0f} : Vec3{0.0f, 4.0f, -58.0f};
+                const Vec3 to = target - eye;
+                float dyaw = std::atan2(-to.x, -to.z) - yaw;
+                while (dyaw > kPi) dyaw -= 2.0f * kPi;
+                while (dyaw < -kPi) dyaw += 2.0f * kPi;
+                const float wantPitch = std::atan2(to.y, std::sqrt(to.x * to.x + to.z * to.z));
+                look = {dyaw * std::min(dt * 3.0f, 1.0f), (wantPitch - pitch) * std::min(dt * 3.0f, 1.0f)};
+                forward = 0.0f;
+                strafe = 0.0f;
+                trigger = false;
+                aiming = false;
             }
             // Smoke check: lob a smoke ahead, fire bursts through it, then a grenade into it.
             if (sceneHas("smoke")) {

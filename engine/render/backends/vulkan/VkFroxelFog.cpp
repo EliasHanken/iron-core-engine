@@ -32,7 +32,7 @@ struct GpuParams {
     float sun[4];          // xyz the way it travels; w = history usable
     float sunColor[4];     // rgb; w = fog boxes
     float camera[4];       // xyz; w = this frame's jitter along depth, 0..1
-    float fluid[4][4];     // Per fluid: min (w = density scale, 0 off), then 1 / size (w = albedo)
+    float fluid[6][4];     // Per fluid: min (w = density scale, 0 off), then 1 / size (w = albedo)
 };
 
 struct GpuBox {
@@ -63,7 +63,7 @@ layout(std140, binding = 0) uniform FogParams {
     vec4 sun;
     vec4 sunColor;
     vec4 camera;
-    vec4 fluid[4];
+    vec4 fluid[6];
 } p;
 float sliceDepth(float z) { return p.range.x * exp(z / p.grid.z * p.grid.w); }
 )GLSL"
@@ -262,7 +262,8 @@ layout(binding = 2) uniform sampler3D uAir;     // Integrated: gathered light, a
 layout(binding = 3) uniform sampler3D uLight;   // The light smoke scatters at each cell.
 layout(binding = 4) uniform sampler3D uFluid0;
 layout(binding = 5) uniform sampler3D uFluid1;
-layout(rgba16f, binding = 6) writeonly uniform image2D uOut;
+layout(binding = 6) uniform sampler3D uFluid2;
+layout(rgba16f, binding = 7) writeonly uniform image2D uOut;
 layout(push_constant) uniform Push { vec4 a; vec4 b; } pc;  // a: depthA, depthB, width, height; b: frame
 
 float hash3(vec3 q) {
@@ -312,7 +313,7 @@ void main() {
 
     // The span of the ray inside any fluid.
     float t0 = 1e9, t1 = -1e9;
-    for (int i = 0; i < 2; ++i) {
+    for (int i = 0; i < 3; ++i) {
         if (p.fluid[i * 2].w <= 0.0) continue;
         vec2 s = fluidSlab(i, o, dir);
         if (s.y > max(s.x, 0.0)) {
@@ -337,12 +338,14 @@ void main() {
         vec3 w = o + dir * t;
         float sigma = 0.0;
         float scatter = 0.0;
-        for (int i = 0; i < 2; ++i) {
+        for (int i = 0; i < 3; ++i) {
             vec4 lo = p.fluid[i * 2];
             if (lo.w <= 0.0) continue;
             vec3 uvw = (w - lo.xyz) * p.fluid[i * 2 + 1].xyz;
             if (any(lessThan(uvw, vec3(0.0))) || any(greaterThan(uvw, vec3(1.0)))) continue;
-            float s = max(i == 0 ? textureLod(uFluid0, uvw, 0.0).r : textureLod(uFluid1, uvw, 0.0).r, 0.0) * lo.w;
+            float raw = i == 0 ? textureLod(uFluid0, uvw, 0.0).r
+                      : i == 1 ? textureLod(uFluid1, uvw, 0.0).r : textureLod(uFluid2, uvw, 0.0).r;
+            float s = max(raw, 0.0) * lo.w;
             sigma += s;
             scatter += s * p.fluid[i * 2 + 1].w;
         }
@@ -432,7 +435,7 @@ bool VkFroxelFog::init(VkContext& ctx, VkFormat sceneFormat) {
                           {T::VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, T::VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
                            T::VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, T::VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
                            T::VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, T::VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-                           T::VK_DESCRIPTOR_TYPE_STORAGE_IMAGE},
+                           T::VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, T::VK_DESCRIPTOR_TYPE_STORAGE_IMAGE},
                           sizeof(float) * 8) ||
         !integrateStage_.init(ctx, kIntegrate,
                               {T::VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, T::VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
@@ -828,6 +831,7 @@ void VkFroxelFog::marchSmoke(VulkanRenderer& renderer, VkCommandBuffer cb, const
                           VkComputeResource::sampled(smokeLight_.view(), linear_, VK_IMAGE_LAYOUT_GENERAL),
                           VkComputeResource::sampled(fluidAt(0), linear_, VK_IMAGE_LAYOUT_GENERAL),
                           VkComputeResource::sampled(fluidAt(1), linear_, VK_IMAGE_LAYOUT_GENERAL),
+                          VkComputeResource::sampled(fluidAt(2), linear_, VK_IMAGE_LAYOUT_GENERAL),
                           VkComputeResource::image(smoke_.view())},
                          push, (extent_.width + 7) / 8, (extent_.height + 7) / 8, 1);
     smoke_.transition(cb, VK_IMAGE_LAYOUT_GENERAL, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, VK_ACCESS_SHADER_READ_BIT);

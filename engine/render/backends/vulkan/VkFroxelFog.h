@@ -59,7 +59,7 @@ public:
             float        scale = 1.0f;
             float        albedo = 0.6f;
         };
-        std::array<Fluid, 2> fluids{};
+        std::array<Fluid, 3> fluids{};
         std::size_t fluidCount = 0;
         Mat4 view;
         Mat4 projection;          // Unjittered.
