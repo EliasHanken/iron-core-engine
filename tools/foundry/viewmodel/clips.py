@@ -25,13 +25,29 @@ def ease_out(s):
 
 
 @dataclass
+class Hold:
+    """What a hand closes round, in the rifle's space: a cylinder (the handguard,
+    the pistol grip) of `radius` about `axis` through `centre`."""
+    centre: Vector
+    axis: Vector
+    radius: float
+
+
+@dataclass
 class Hand:
-    """A hand on the rifle, in the rifle's space."""
+    """A hand on the rifle, in the rifle's space. `curl` and `thumb` shape the
+    fingers; with a `hold`, each then closes until it meets it. `spin` and `yaw`
+    are how far (degrees) the arm solver may roll the hand round what it holds
+    and turn it about the palm."""
     socket: Vector
     palm: Vector
     forward: Vector
     curl: dict
     thumb: tuple = (0.3, 0.4, 0.3)
+    hold: Hold = None
+    spin: float = 30.0
+    yaw: float = 35.0
+    contact: float = 1.0  # How much the fingers close onto the hold (eases in and out between hands).
 
 
 @dataclass
@@ -63,7 +79,15 @@ def mix_hand(a, b, s):
     q = qa.slerp(qb, s).to_matrix()
     curl = {k: tuple(x + (y - x) * s for x, y in zip(a.curl[k], b.curl[k])) for k in a.curl}
     thumb = tuple(x + (y - x) * s for x, y in zip(a.thumb, b.thumb))
-    return Hand(a.socket.lerp(b.socket, s), q.col[1].copy(), q.col[0].copy(), curl, thumb)
+    if a.hold and b.hold:
+        hold = Hold(a.hold.centre.lerp(b.hold.centre, s), a.hold.axis.lerp(b.hold.axis, s).normalized(),
+                    a.hold.radius + (b.hold.radius - a.hold.radius) * s)
+    else:
+        hold = a.hold or b.hold
+    ca = a.contact if a.hold else 0.0
+    cb = b.contact if b.hold else 0.0
+    return Hand(a.socket.lerp(b.socket, s), q.col[1].copy(), q.col[0].copy(), curl, thumb, hold,
+                a.spin + (b.spin - a.spin) * s, a.yaw + (b.yaw - a.yaw) * s, ca + (cb - ca) * s)
 
 
 def ease_in(s):
@@ -106,7 +130,7 @@ class Pose:
     poles: dict = field(default_factory=dict)
     # How far each shoulder rolls forward, in degrees: holding a rifle out, the
     # support shoulder comes round to reach the handguard.
-    shoulders: dict = field(default_factory=lambda: {"l": 28.0, "r": 8.0})
+    shoulders: dict = field(default_factory=lambda: {"l": 38.0, "r": 8.0})
 
 
 class Rig:
@@ -117,6 +141,7 @@ class Rig:
         self.rest = rest
         self.poles = poles
         self.mag_offset = None
+        self.elbows = {}  # Each side's (hand spin, elbow swing) last frame, so neither jumps.
         pose = arms.pose.bones
         self.keyed = ["weapon", "shoulder.r", "shoulder.l", "wrist_ik.r", "wrist_ik.l", "arm_target.r",
                       "arm_target.l", "SLIDE", "TRIGGER",
@@ -140,12 +165,20 @@ class Rig:
             bone.matrix = (Matrix.Translation(head) @ Matrix.Rotation(angle, 4, "Z") @ Matrix.Translation(-head) @
                            bone.bone.matrix_local)
         bpy.context.view_layer.update()
-        for side, pole in {**self.poles, **p.poles}.items():
+        poles = {**self.poles, **p.poles}
+        for side, pole in poles.items():
             pose[f"arm_target.{side}"].matrix = Matrix.Translation(pole)
-        bpy.context.view_layer.update()
         for side, hand in (("r", p.right), ("l", p.left)):
             rig.place_hand(arms, side, self.rest[side], hand.socket, hand.palm, hand.forward, weapon)
             rig.curl_fingers(arms, side, self.rest[side], hand.curl, hand.thumb)
+        bpy.context.view_layer.update()
+        # The elbows go where the wrists are comfortable: the authored poles say
+        # roughly where, the solver settles it.
+        for side, hand in (("r", p.right), ("l", p.left)):
+            self.elbows[side] = rig.solve_arm(arms, side, self.rest[side], hand, weapon, poles[side],
+                                              self.elbows.get(side))
+            if hand.hold is not None and hand.contact > 0.0:
+                rig.grip_contact(arms, side, self.rest[side], hand, weapon)
         # The rifle's moving parts, each moved in the rifle's own space.
         slide = pose["SLIDE"]
         slide.matrix = weapon @ Matrix.Translation((0.0, -p.bolt, 0.0)) @ slide.bone.matrix_local
@@ -181,7 +214,14 @@ def bake_clip(r, name, length, pose_at, loop=False):
     action = bpy.data.actions.new(name)
     arms.animation_data.action = action
     r.mag_offset = None
+    r.elbows = {}
     frames = max(1, round(length * FPS))
+    if loop:
+        # Solved from the end of its own cycle, so the first frame matches the
+        # last and the loop has no seam.
+        for f in range(max(frames - 12, 0), frames):
+            r.apply(pose_at(f / FPS))
+        r.mag_offset = None
     for f in range(frames + 1):
         t = length if (loop and f == frames) else f / FPS
         r.apply(pose_at(0.0 if (loop and f == frames) else t))

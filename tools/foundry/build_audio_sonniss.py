@@ -24,18 +24,35 @@ RATE = 48000
 
 # --- Recipes ------------------------------------------------------------------------
 
+# The rifle is built the way AAA weapons are: layers recorded apart, each kept to its
+# own job and lined up on the shot's first transient.
+#   base   the shove below 150 Hz: a .338 Lapua's on-gun mic, and a synthesized sub;
+#   punch  the body, 90 Hz-3.5 kHz: a .30-06 BAR 10 cm from the muzzle, a full-power
+#          rifle round like the AK's 7.62, with the .338's mids for length;
+#   high   the crack, kept bright but short: an L85 a metre off axis, shaped to a
+#          snap, with a narrow notch where it bites instead of a lowpass;
+#   mech   the action, from the L85's on-gun mic;
+#   tail   the space, per shot (tailshot-*) and longer when a burst ends (tail-*).
 L85_1M = "Enfield_L85_rifle_5.56mm_1m_left_off_axis"
 L85_GUN = "Enfield_L85_rifle_5.56mm_on_gun"
-HK416_GUN = "HK_416_5.56mm_on_gun"
+BAR_CLOSE = "M1918_Browning_Automatic_Rifle_.30cal_0.1m"
+BARRETT_GUN = "Barrett_M98B"
 
-# Five variants, so that automatic fire never repeats one sample. Each takes the k-th
-# shot of each recording. Measured: the shots sit about 0.23 s apart, each followed by
-# its own echoes 50-100 ms later, so a take must end before the next shot starts.
+# Five variants, so that automatic fire never repeats one sample. Measured onsets:
+# the L85 shots sit about 0.23 s apart; the BAR fires two, 0.105 s apart, so its
+# takes end before the next and alternate, pitched a little apart; the Barrett's are
+# single shots seconds apart.
 SHOT_VARIANTS = 5
 CRACK_TAKES = [0.023, 0.266, 0.518, 0.741, 0.963]
 MECH_TAKES = [0.013, 0.256, 0.508, 0.733, 0.955]
-BODY_TAKES = [0.016, 0.287, 0.611, 0.902, 1.215]
-TAKE_LENGTH = 0.215
+PUNCH_TAKES = [(0.408, 0.0), (0.513, 0.0), (0.408, -0.6), (0.513, 0.5), (0.408, 0.4)]
+BASE_TAKES = [0.046, 3.049, 7.044, 15.043, 23.042]
+TAKE_LENGTH = 0.24
+
+# A short tail with every shot, from rifles in the two spaces: a long corridor and an
+# open field (onsets measured); the direct sound is skipped, the reflections kept.
+SHOT_TAILS = [("tailshot-hall", "AK4_long_corridor", [0.452, 7.713, 31.453]),
+              ("tailshot-yard", "AK47_big_open_area", [0.835, 9.555, 13.860])]
 
 # One-shots: name, channels, then layers of (file, start, length, gain[, semitones]).
 ONE_SHOTS = [
@@ -147,6 +164,24 @@ def filtered(x, low, high):
     return np.frombuffer(out, dtype=np.float32).reshape(-1, channels).copy()
 
 
+def eq(x, chain):
+    """Runs an ffmpeg audio filter chain over `x`."""
+    channels = x.shape[1]
+    out = run_ffmpeg(["-f", "f32le", "-ac", str(channels), "-ar", str(RATE), "-i", "-", "-af", chain,
+                      "-f", "f32le", "-"], x.astype(np.float32).tobytes())
+    return np.frombuffer(out, dtype=np.float32).reshape(-1, channels).copy()
+
+
+def thump(length, channels):
+    """A sub-bass kick: a sine falling from 68 to 42 Hz, gone in about 150 ms.
+    It's the weight a rifle has at the shoulder that a microphone barely takes."""
+    t = np.arange(int(length * RATE)) / RATE
+    freq = 42.0 + 26.0 * np.exp(-t / 0.03)
+    phase = 2.0 * np.pi * np.cumsum(freq) / RATE
+    x = np.sin(phase) * np.exp(-t / 0.055) * np.minimum(t / 0.002, 1.0)
+    return np.repeat(x[:, None], channels, axis=1).astype(np.float32)
+
+
 def band_limit(x, name):
     low, high = BANDS.get(name, DEFAULT_BAND)
     return filtered(x, low, high)
@@ -207,24 +242,46 @@ def seamless(x, fade_seconds):
 # --- The rifle -----------------------------------------------------------------------
 
 def build_shots(find, out):
-    crack_at, mech_at, body_at = CRACK_TAKES, MECH_TAKES, BODY_TAKES
     length = TAKE_LENGTH
+    early = int(0.06 * RATE)
+
+    def norm(x, db):
+        # Balanced by their first 60 ms, where the shot lives.
+        return x * (10 ** ((db - level(x[:early])) / 20))
+
+    def snap(x, decay):
+        # Keeps a layer's transient and lets it die fast after it: the attack
+        # carries the detail, a sustained fizz only tires the ear.
+        t = np.arange(x.shape[0]) / RATE
+        return x * np.maximum(np.exp(-np.maximum(t - 0.004, 0.0) / decay), 0.0)[:, None]
+
     for k in range(SHOT_VARIANTS):
-        # Each layer starts 3 ms before its own transient, so the three line up.
-        crack = filtered(read(find(L85_1M), crack_at[k] - 0.003, length, 2), 60, 16000)
-        mech = filtered(read(find(L85_GUN), mech_at[k] - 0.003, length, 2), 120, 14000)
-        body = filtered(read(find(HK416_GUN), body_at[k % len(body_at)] - 0.003, length, 2), 50, 2400)
-        # Balanced by their first 60 ms, where the shot lives. The action carries the
-        # first-person mix's detail; the body is the weight a rifle has at the shoulder.
-        early = int(0.06 * RATE)
-        def norm(x, db):
-            return x * (10 ** ((db - level(x[:early])) / 20))
-        x = norm(crack, -14.0) + norm(mech, -20.0) + norm(body, -17.0)
-        x = soft_clip(x * 1.4, 1.5)
+        # Each layer starts 3 ms before its own transient, so they line up.
+        base = eq(read(find(BARRETT_GUN), BASE_TAKES[k] - 0.003, length, 2), "highpass=f=28,lowpass=f=150")
+        punch_at, semis = PUNCH_TAKES[k]
+        punch = eq(read(find(BAR_CLOSE), punch_at - 0.003, 0.1, 2, semis), "highpass=f=90,lowpass=f=3500")
+        punch = np.concatenate([fade(punch, 0.0, 0.03), np.zeros((int(length * RATE) - punch.shape[0], 2), np.float32)])
+        body = eq(read(find(BARRETT_GUN), BASE_TAKES[k] - 0.003, length, 2), "highpass=f=150,lowpass=f=2200")
+        high = eq(read(find(L85_1M), CRACK_TAKES[k] - 0.003, length, 2),
+                  "highpass=f=1800,equalizer=f=3200:t=q:w=2.0:g=-5,highshelf=f=9000:g=-2")
+        high = snap(high, 0.022)
+        mech = snap(eq(read(find(L85_GUN), MECH_TAKES[k] - 0.003, length, 2), "highpass=f=700,lowpass=f=9000"), 0.05)
+        n = min(p.shape[0] for p in (base, punch, body, high, mech))
+        x = (norm(base[:n], -18.0) + norm(punch[:n], -13.0) + norm(body[:n], -20.0) + norm(high[:n], -15.5) +
+             norm(mech[:n], -22.0) + norm(thump(n / RATE, 2), -20.0))
+        x = soft_clip(x * 1.2, 1.2)
         x = fade(trim_tail(x, -46.0), 0.0015, 0.07)
         x *= 0.89 / (np.abs(x).max() + 1e-9)
         write(os.path.join(out, f"shot{k + 1}.wav"), x)
         print(f"shot{k + 1}       {x.shape[0] / RATE:5.2f}s level {level(x):6.1f}")
+
+    for name, source, onsets in SHOT_TAILS:
+        for i, at in enumerate(onsets):
+            x = eq(read(find(source), at + 0.05, 0.9, 2), "highpass=f=90,lowpass=f=9000")
+            x = fade(trim_tail(x, -45.0), 0.015, 0.3)
+            x *= 0.79 / (np.abs(x).max() + 1e-9)
+            write(os.path.join(out, f"{name}{i + 1}.wav"), x)
+        print(f"{name:14} x{len(onsets)}")
 
 
 def main():

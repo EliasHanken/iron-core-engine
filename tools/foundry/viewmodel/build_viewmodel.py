@@ -23,8 +23,8 @@ sys.path.insert(0, HERE)
 sys.path.insert(0, os.path.dirname(HERE))
 import rig  # noqa: E402
 from ak_material import make_ak_material  # noqa: E402
-from clips import (FPS, Hand, Place, Pose, Rig, bake_clip, ease_in, ease_out, mix_hand, mix_place,  # noqa: E402
-                   smooth, track)
+from clips import (FPS, Hand, Hold, Place, Pose, Rig, bake_clip, ease_in, ease_out, mix_hand,  # noqa: E402
+                   mix_place, smooth, track)
 
 args = sys.argv[sys.argv.index("--") + 1:]
 ak_dir, out_path = args[0], args[1]
@@ -36,6 +36,7 @@ arms = bpy.data.objects["arms"]
 rig.to_metres_at_eye(arms, bpy.data.objects["Camera"])
 skeleton, rifle = rig.import_rifle(os.path.join(ak_dir, "SKM_AK47.fbx"))
 rig.merge_rifle(arms, skeleton, rifle)
+rig.setup_forearm_twist(arms)
 rest = {s: rig.hand_rest(arms, s) for s in ("r", "l")}
 for o in list(bpy.data.objects):
     if o.type == "CAMERA":
@@ -47,11 +48,17 @@ for o in list(bpy.data.objects):
 # 0.119..0.157 high, so its middle is (0, 0.32, 0.138).
 FIST = {"index": (0.2, 0.3, 0.2), "middle": (1.1, 1.2, 0.7), "ring": (1.2, 1.2, 0.7), "pinky": (1.2, 1.2, 0.7)}
 WRAP = {"index": (0.65, 1.15, 0.85), "middle": (0.7, 1.2, 0.85), "ring": (0.75, 1.2, 0.85), "pinky": (0.8, 1.15, 0.85)}
-GRIP = Hand(Vector((0.004, 0.0, 0.05)), Vector((-1.0, 0.4, 0.0)), Vector((-0.3, 0.9, -0.35)), FIST)
+# The pistol grip: about 3 cm through, raked back; the fingers wrap its front, the
+# thumb comes round its left side.
+GRIP_HOLD = Hold(Vector((0.004, 0.0, 0.05)), Vector((-0.16, -0.4, -0.9)).normalized(), 0.014)
+# The lower handguard, round its own middle, along the barrel.
+HANDGUARD_HOLD = Hold(Vector((0.0, 0.32, 0.138)), Vector((0.0, 1.0, 0.0)), 0.021)
+GRIP = Hand(Vector((0.004, 0.0, 0.05)), Vector((-1.0, 0.4, 0.0)), Vector((-0.3, 0.9, -0.35)), FIST,
+            thumb=(0.5, 0.6, 0.4), hold=GRIP_HOLD, spin=20.0, yaw=20.0)
 # The palm under the handguard's left edge, facing up and in; the fingers run
 # across beneath it and close up its right side; the thumb lies along the left.
-HANDGUARD = Hand(Vector((0.03, 0.32, 0.142)), Vector((0.5, 0.0, 1.0)), Vector((1.0, 0.15, -0.3)), WRAP,
-                 thumb=(0.1, 0.2, 0.1))
+HANDGUARD = Hand(Vector((0.03, 0.30, 0.142)), Vector((0.5, 0.0, 1.0)), Vector((1.0, 0.15, -0.3)), WRAP,
+                 thumb=(0.1, 0.2, 0.1), hold=HANDGUARD_HOLD, spin=12.0)
 POLES = {"r": Vector((0.45, 0.05, -0.55)), "l": Vector((-0.35, 0.25, -0.6))}
 
 # Where the rifle sits, in the eye's space (x right, y ahead, z up). At the hip
@@ -60,7 +67,7 @@ HIP = Place(Vector((0.13, 0.2, -0.27)), pitch=3.0, yaw=7.0, roll=-5.0)
 # Aimed: the line over the rear notch and the front post (0.185 above the grip)
 # runs through the eye. As in most shooters the rifle sits further out than a real
 # cheek weld would put it, so the stock doesn't fill the bottom of the view.
-AIM = Place(Vector((0.0, 0.28, -0.185)))
+AIM = Place(Vector((0.0, 0.22, -0.185)))
 
 r = Rig(arms, rest, POLES)
 EVENTS = {}
@@ -81,7 +88,8 @@ def idle(t):
 def aim(t):
     """Aimed, breathing less."""
     b = math.sin(t / 3.2 * 2.0 * math.pi)
-    return held(AIM.moved(Vector((0.0, 0.0, 0.0012 * b)), pitch=0.15 * b))
+    # Leaning into the rifle: the support shoulder rolls further forward.
+    return held(AIM.moved(Vector((0.0, 0.0, 0.0012 * b)), pitch=0.15 * b), shoulders={"l": 46.0, "r": 8.0})
 
 
 def fire(t):
@@ -274,8 +282,33 @@ def report(pose):
         for f in ("index", "middle", "ring", "pinky", "thumb"):
             print(f"HAND {side} {f:6s} tip {tuple(round(c, 3) for c in inv @ bones[f'finger_{f}3.{side}'].tail)}")
         print(f"HAND {side} elbow          {tuple(round(c, 3) for c in inv @ bones[f'forearm.{side}'].head)}")
+        shoulder = bones[f"bicep.{side}"].head
+        reach = (bones[f"wrist.{side}"].head - shoulder).length
+        arm = bones[f"bicep.{side}"].length + bones[f"forearm.{side}"].length
+        print(f"HAND {side} reach {reach:.3f} of {arm:.3f} ({100 * reach / arm:.0f}%), shoulder at "
+              f"{tuple(round(c, 3) for c in shoulder)} in the eye's space")
     print(f"MAG head {tuple(round(c, 3) for c in inv @ bones['MAGAZINE'].head)}")
 
+
+if "--joints" in args:
+    # --joints: each clip's worst wrist, against what a wrist can do (twist about
+    # +-80 from neutral, bend about +-70, sideways -30..+20).
+    for name, length, fn, _, _ in CLIPS:
+        worst = {}
+        for i in range(int(length / 0.05) + 1):
+            t = min(i * 0.05, length)
+            r.mag_offset = None
+            if i == 0:
+                r.elbows = {}
+            r.apply(fn(t))
+            for side in ("r", "l"):
+                tw, fl, dv, carried = rig.wrist_angles(arms, side)
+                for key, v in (("twist", tw), ("flex", fl), ("dev", dv)):
+                    k = f"{side} {key}"
+                    if k not in worst or abs(v) > abs(worst[k][0]):
+                        worst[k] = (v, t, carried if key == "twist" else None)
+        print("JOINTS", name, "  ".join(f"{k} {v:6.1f}@{t:.2f}" + (f"(arm {c:5.1f})" if c is not None else "")
+                                        for k, (v, t, c) in sorted(worst.items())))
 
 if "--report" in args:
     # --report [clip@time]: the hold at the hip, or a clip's pose at a moment.
@@ -309,7 +342,15 @@ if preview:
             "righthand": (tuple(hand_r + Vector((0.28, -0.05, 0.0))), tuple(hand_r), 35.0),
             "righthand_left": (tuple(hand_r + Vector((-0.28, 0.05, 0.05))), tuple(hand_r), 35.0),
         }),
-        "aim": (0.0, {"aim_eye": ((0.0, 0.0, 0.0), (0.0, 1.0, 0.0), EYE_LENS)}),
+        "aim": (0.0, {
+            "aim_eye": ((0.0, 0.0, 0.0), (0.0, 1.0, 0.0), EYE_LENS),
+            "aim_left": ((-0.8, 0.3, -0.15), (0.0, 0.3, -0.2), 35.0),
+            "aim_below": ((0.0, 0.35, -0.9), (0.0, 0.35, -0.2), 35.0),
+            "aim_hand": (tuple(AIM.matrix() @ (HANDGUARD.socket + Vector((-0.25, -0.05, -0.05)))),
+                         tuple(AIM.matrix() @ HANDGUARD.socket), 35.0),
+            "aim_grip": (tuple(AIM.matrix() @ (GRIP.socket + Vector((0.25, 0.0, 0.0)))),
+                         tuple(AIM.matrix() @ GRIP.socket), 35.0),
+        }),
     }
     # The moving clips, from the eye and from a little way off to the right.
     side = ((0.75, 0.0, 0.1), (0.05, 0.3, -0.2), 30.0)
