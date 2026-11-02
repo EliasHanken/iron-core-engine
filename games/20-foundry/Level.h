@@ -79,6 +79,14 @@ struct Placed {
     float   scale = 1.0f;
     float   mass = 0.0f;
     Surface surface = Surface::Metal;
+    bool    collide = true;  // False for what's out of reach overhead: drawn, with no body.
+};
+
+// A patch of standing water on the ground, as a glossy decal.
+struct Puddle {
+    Vec3  center;
+    float size;    // Half-width in metres.
+    float spin;    // Radians about the vertical.
 };
 
 struct Level {
@@ -87,6 +95,7 @@ struct Level {
     std::vector<Plate>  plates;
     std::vector<Lamp>   lamps;
     std::vector<Placed> placed;
+    std::vector<Puddle> puddles;
     Vec3  spawn{0.0f, 0.0f, 24.0f};
     float spawnYaw = 0.0f;  // Facing -z, toward the hall.
 };
@@ -144,11 +153,12 @@ inline void crateStack(Level& level, Vec3 base, int wide, int high) {
 }
 
 inline void lampPost(Level& level, Vec3 base, float height) {
+    // A steel post with an arm, and a modelled flood on the end, sodium-lit.
     box(level, {base.x - 0.09f, 0.0f, base.z - 0.09f}, {base.x + 0.09f, height, base.z + 0.09f}, Look::Steel);
-    box(level, {base.x - 0.09f, height - 0.1f, base.z - 0.09f}, {base.x + 0.09f, height, base.z + 1.0f},
+    box(level, {base.x - 0.06f, height - 0.1f, base.z - 0.06f}, {base.x + 0.06f, height, base.z + 1.0f},
         Look::Steel);
-    box(level, {base.x - 0.22f, height - 0.22f, base.z + 0.7f}, {base.x + 0.22f, height - 0.1f, base.z + 1.1f},
-        Look::Lamp);
+    level.placed.push_back({"security_light", {base.x, height - 0.55f, base.z + 0.95f}, 0.0f, 1.4f, 0.0f,
+                            Surface::Metal, false});
     level.lamps.push_back({{base.x, height - 0.5f, base.z + 0.9f}, {1.0f, 0.58f, 0.24f}, 6.0f, 13.0f});
 }
 
@@ -213,6 +223,70 @@ inline void placeProps(Level& level) {
     barrel({-6.9f, 0.0f, -55.2f}, 1, 0.8f);
     barrel({6.4f, 0.0f, -56.8f}, 2, 1.6f);
     p.push_back({"metal_jerrycan", {7.0f, 0.0f, -55.9f}, 0.3f, 1.0f, 8.0f, Surface::Metal});
+
+    // --- The hall's working kit ---
+    // An overhead crane on the trusses, its hook hanging over the floor.
+    p.push_back({"overhead_crane", {0.0f, 4.9f, -40.5f}, 0.0f, 1.5f, 0.0f, Surface::Metal, false});
+    // Ducting along the right side under the roof.
+    for (float z = -22.6f; z > -62.0f; z -= 1.46f) {
+        p.push_back({"modular_airduct_circular_01", {12.6f, 10.2f, z}, 0.0f, 1.0f, 0.0f, Surface::Metal, false});
+    }
+    // A work bay on the right: welding, tools, racks, a drill press.
+    p.push_back({"portable_welding_cart", {10.8f, 0.0f, -44.2f}, -0.6f, 1.0f, 0.0f, Surface::Metal});
+    p.push_back({"tool_cart", {11.8f, 0.0f, -41.0f}, 0.25f, 1.0f, 0.0f, Surface::Metal});
+    p.push_back({"metal_tool_chest", {11.7f, 0.96f, -41.0f}, 0.4f, 1.0f, 0.0f, Surface::Metal});
+    for (float z : {-37.6f, -38.6f}) {
+        p.push_back({"worn_metal_rack", {15.3f, 0.0f, z}, -1.5708f, 1.0f, 0.0f, Surface::Metal});
+    }
+    p.push_back({"old_drill_press", {14.6f, 0.0f, -49.5f}, -1.5708f, 1.0f, 0.0f, Surface::Metal});
+    p.push_back({"hand_truck", {8.4f, 0.0f, -35.6f}, 0.8f, 1.0f, 18.0f, Surface::Metal});
+    p.push_back({"ladder_sectioned_01", {-11.2f, 0.0f, -46.6f}, 1.5708f, 1.0f, 0.0f, Surface::Metal});
+    p.push_back({"power_box_01", {-15.6f, 1.5f, -32.0f}, 1.5708f, 1.0f, 0.0f, Surface::Metal, false});
+    for (Vec3 at : {Vec3{-15.3f, 0.0f, -27.2f}, Vec3{15.3f, 0.0f, -46.0f}, Vec3{-15.3f, 0.0f, -52.4f}}) {
+        p.push_back({"korean_fire_extinguisher_01", at, at.x > 0.0f ? -1.5708f : 1.5708f, 1.0f, 9.0f, Surface::Metal});
+    }
+    // Stores by the shelves, and crates by the furnace.
+    for (Vec3 at : {Vec3{14.0f, 0.0f, -27.6f}, Vec3{14.05f, 0.34f, -27.62f}, Vec3{13.7f, 0.0f, -33.2f}}) {
+        p.push_back({"cardboard_box_01", at, at.z * 0.7f, 1.0f, 3.0f, Surface::Wood});
+    }
+    for (Vec3 at : {Vec3{12.4f, 0.0f, -57.6f}, Vec3{12.9f, 0.0f, -58.2f}, Vec3{12.6f, 0.27f, -57.9f}}) {
+        p.push_back({"plastic_crate_03", at, at.x, 1.0f, 2.0f, Surface::Wood});
+    }
+    // The floor's wet by the steam pipes.
+    p.push_back({"WetFloorSign_01", {-12.6f, 0.0f, -41.0f}, 0.4f, 1.0f, 1.5f, Surface::Wood});
+
+    // --- The yard's street furniture ---
+    // Security floods over the hall door and a camera at its corner.
+    for (float x : {-7.0f, 7.0f}) {
+        p.push_back({"security_light", {x, 7.6f, kHallFront + 0.35f}, 3.1416f, 1.6f, 0.0f, Surface::Metal, false});
+    }
+    p.push_back({"security_camera_01", {15.4f, 6.6f, kHallFront + 0.5f}, 2.4f, 1.4f, 0.0f, Surface::Metal, false});
+    // Aircon units on the hall's front, either side of the door.
+    for (float x : {-10.5f, 10.5f}) {
+        p.push_back({"exterior_aircon_unit", {x, 0.0f, kHallFront + 0.6f}, 3.1416f, 1.3f, 0.0f, Surface::Metal});
+    }
+    // Utility boxes on the yard walls, a bin, wheel rims by the tyre, a covered car.
+    p.push_back({"utility_box_02", {-33.0f, 0.0f, 20.0f}, 1.5708f, 1.0f, 0.0f, Surface::Metal});
+    p.push_back({"utility_box_01", {33.0f, 0.0f, -6.0f}, -1.5708f, 1.0f, 0.0f, Surface::Metal});
+    p.push_back({"utility_box_01", {-20.0f, 0.0f, 34.0f}, 3.1416f, 1.0f, 0.0f, Surface::Metal});
+    p.push_back({"metal_trash_can", {-15.4f, 0.0f, -17.6f}, 0.3f, 1.0f, 12.0f, Surface::Metal});
+    p.push_back({"metal_trash_can", {4.8f, 0.0f, -17.8f}, 1.9f, 1.0f, 12.0f, Surface::Metal});
+    for (Vec3 at : {Vec3{22.9f, 0.0f, 8.6f}, Vec3{24.2f, 0.0f, 6.8f}}) {
+        p.push_back({"rusted_wheel_rim_01", at, at.x, 1.0f, 6.0f, Surface::Metal});
+    }
+    p.push_back({"covered_car", {-26.5f, 0.0f, 25.0f}, 0.35f, 1.0f, 0.0f, Surface::Metal});
+    for (Vec3 at : {Vec3{1.5f, 0.0f, 6.5f}, Vec3{-9.0f, 0.0f, 25.0f}, Vec3{14.0f, 0.0f, -9.5f}}) {
+        p.push_back({"water_manhole_cover", at, at.x, 1.0f, 0.0f, Surface::Metal, false});
+    }
+
+    // Standing water from the night's rain, in the low spots.
+    for (const Puddle& pd : {Puddle{{3.0f, 0.0f, 9.0f}, 2.2f, 0.4f}, Puddle{{-6.5f, 0.0f, 2.0f}, 1.6f, 1.3f},
+                             Puddle{{11.0f, 0.0f, -10.5f}, 2.6f, 2.2f}, Puddle{{-11.0f, 0.0f, 22.0f}, 1.8f, 0.9f},
+                             Puddle{{19.0f, 0.0f, 16.5f}, 2.0f, 2.9f}, Puddle{{-1.5f, 0.0f, -11.0f}, 1.4f, 0.2f},
+                             Puddle{{-24.0f, 0.0f, 0.5f}, 2.4f, 1.7f}, Puddle{{6.0f, 0.0f, 27.0f}, 1.7f, 0.6f},
+                             Puddle{{-13.0f, 0.0f, -41.0f}, 1.5f, 0.5f}}) {
+        level.puddles.push_back(pd);
+    }
 }
 
 inline Level buildLevel() {

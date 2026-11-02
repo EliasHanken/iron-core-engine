@@ -120,6 +120,17 @@ def scorch(out_dir):
     save("scorch", rgb, alpha, out_dir)
 
 
+def puddle(out_dir):
+    # Standing water: an uneven pool, darker and smooth (the decal makes it glossy),
+    # thinning out at a ragged rim.
+    n = fbm(131, 5)
+    edge = r + (n - 0.5) * 0.7
+    wet = smooth(0.95, 0.35, edge)
+    rgb = np.dstack([np.full_like(r, 0.12), np.full_like(r, 0.125), np.full_like(r, 0.13)])
+    alpha = wet * (0.75 + 0.2 * fbm(141))
+    save("puddle", rgb, alpha, out_dir)
+
+
 if __name__ == "__main__":
     out = sys.argv[1]
     os.makedirs(out, exist_ok=True)
@@ -127,3 +138,4 @@ if __name__ == "__main__":
     metal(out)
     wood(out)
     scorch(out)
+    puddle(out)
