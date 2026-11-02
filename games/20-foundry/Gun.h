@@ -46,6 +46,7 @@ struct GunTuning {
     float aimInRate = 7.5f;         // Aim blend per second.
     int   magazine = 30;
     float reloadSeconds = 1.9f;
+    float reloadEmptySeconds = 2.6f;  // With the bolt to rack.
 };
 
 // One random stream per gun, so that a recording plays back the same.
@@ -72,7 +73,7 @@ public:
         moving_ = std::clamp(moving, 0.0f, 1.0f);
         grounded_ = grounded;
 
-        if (reloadPressed && !reloading() && rounds_ < tuning_.magazine) reloadLeft_ = tuning_.reloadSeconds;
+        if (reloadPressed && !reloading() && rounds_ < tuning_.magazine) startReload();
         if (reloading()) {
             reloadLeft_ = std::max(reloadLeft_ - dt, 0.0f);
             if (reloadLeft_ == 0.0f) rounds_ = tuning_.magazine;
@@ -99,7 +100,7 @@ public:
             }
             recoil_.x += (settleTarget_.x - recoil_.x) * std::min(tuning_.recoverRate * dt, 1.0f);
             recoil_.y += (settleTarget_.y - recoil_.y) * std::min(tuning_.recoverRate * dt, 1.0f);
-            if (rounds_ == 0 && trigger && !reloading()) reloadLeft_ = tuning_.reloadSeconds;
+            if (rounds_ == 0 && trigger && !reloading()) startReload();
         }
 
         bloom_ = std::max(bloom_ - tuning_.bloomDecay * dt, 0.0f);
@@ -143,8 +144,10 @@ public:
     bool reloading() const { return reloadLeft_ > 0.0f; }
     // 0 at the start of a reload, 1 when it's done.
     float reloadProgress() const {
-        return reloading() ? 1.0f - reloadLeft_ / tuning_.reloadSeconds : 1.0f;
+        return reloading() ? 1.0f - reloadLeft_ / reloadLength_ : 1.0f;
     }
+    // Whether the reload under way started from an empty magazine.
+    bool reloadingEmpty() const { return reloading() && reloadEmpty_; }
     const GunTuning& tuning() const { return tuning_; }
 
     // How far the weapon is moved from where its animation holds it, in view space
@@ -157,21 +160,28 @@ public:
         at.x += std::sin(bobPhase_) * 0.010f * bob + swayX_.value * 0.05f * (1.0f - 0.7f * a);
         at.y += -std::abs(std::cos(bobPhase_)) * 0.012f * bob + swayY_.value * 0.05f * (1.0f - 0.7f * a);
         at.z += kick_.value;
-        // A reload dips the weapon out of the way and brings it back.
-        if (reloading()) {
-            const float t = reloadProgress();
-            at.y -= std::sin(t * 3.1415927f) * 0.09f;
-        }
         return at;
     }
     Vec3 viewTilt() const {
-        float roll = swayX_.value * 0.8f;
-        if (reloading()) roll += std::sin(reloadProgress() * 3.1415927f) * 0.6f;
+        const float roll = swayX_.value * 0.8f;
         return {kickPitch_.value + swayY_.value * 0.4f, swayX_.value * 0.4f, roll};
+    }
+
+    // How long a reload takes, from a part-used magazine and from an empty one
+    // (which has the bolt to rack): the animation's lengths.
+    void setReloadSeconds(float partial, float empty) {
+        tuning_.reloadSeconds = partial;
+        tuning_.reloadEmptySeconds = empty;
     }
 
 private:
     static float smooth(float t) { return t * t * (3.0f - 2.0f * t); }
+
+    void startReload() {
+        reloadEmpty_ = rounds_ == 0;
+        reloadLength_ = reloadEmpty_ ? tuning_.reloadEmptySeconds : tuning_.reloadSeconds;
+        reloadLeft_ = reloadLength_;
+    }
 
     void fire() {
         --rounds_;
@@ -187,6 +197,8 @@ private:
     Random    random_;
     int       rounds_ = 30;
     float     reloadLeft_ = 0.0f;
+    float     reloadLength_ = 1.0f;
+    bool      reloadEmpty_ = false;
     float     cooldown_ = 0.0f;
     bool      held_ = false;
     Vec2      recoil_{0.0f, 0.0f};

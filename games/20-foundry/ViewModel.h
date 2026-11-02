@@ -40,7 +40,10 @@ public:
         aim_ = model_.findClip("aim");
         fire_ = model_.findClip("fire");
         reload_ = model_.findClip("reload");
+        reloadEmpty_ = model_.findClip("reload_empty");
         draw_ = model_.findClip("draw");
+        sprint_ = model_.findClip("sprint");
+        inspect_ = model_.findClip("inspect");
         muzzleBone_ = model_.findBone("FX_FIRE");
         casingBone_ = model_.findBone("FX_CASING");
         weaponBone_ = model_.findBone("weapon");
@@ -55,22 +58,36 @@ public:
         return true;
     }
 
-    // Advances the clips; `aim` is 0 at the hip and 1 raised to the eye. Returns the
-    // events crossed, for sounds.
-    const std::vector<iron::SkeletalAnimator::Fired>& update(float dt, float aim) {
-        animator_.setBaseWeight(idle_, 1.0f - aim);
-        animator_.setBaseWeight(aim_, aim);
+    // Advances the clips; `aim` is 0 at the hip and 1 raised to the eye, `sprint`
+    // how far into a run. Returns the events crossed, for sounds.
+    const std::vector<iron::SkeletalAnimator::Fired>& update(float dt, float aim, float sprint) {
+        sprint = sprint_ ? sprint : 0.0f;
+        animator_.setBaseWeight(idle_, (1.0f - aim) * (1.0f - sprint));
+        animator_.setBaseWeight(aim_, aim * (1.0f - sprint));
+        animator_.setBaseWeight(sprint_, sprint);
         const auto& fired = animator_.update(dt);
         animator_.evaluate();
         return fired;
     }
 
     void fire() { animator_.playAdditive(fire_); }
-    // Plays the reload, if the model has one. Returns its length in seconds, or 0.
-    float reload() {
-        if (!reload_) return 0.0f;
-        animator_.playOneShot(reload_, 0.2f, 0.3f);
-        return reload_->duration;
+    // Plays the reload: from empty it racks the bolt as well.
+    void reload(bool empty) {
+        const iron::AnimationClip* clip = empty && reloadEmpty_ ? reloadEmpty_ : reload_;
+        if (clip) animator_.playOneShot(clip, 0.15f, 0.3f);
+    }
+    // Its length in seconds, or `fallback` if the model has none.
+    float reloadSeconds(bool empty, float fallback) const {
+        const iron::AnimationClip* clip = empty && reloadEmpty_ ? reloadEmpty_ : reload_;
+        return clip ? clip->duration : fallback;
+    }
+    // Turns the rifle over to look at it, unless something else is playing.
+    void inspect() {
+        if (inspect_ && !animator_.oneShotPlaying()) animator_.playOneShot(inspect_, 0.25f, 0.35f);
+    }
+    // Stops an inspection, to shoot or aim.
+    void interrupt() {
+        if (inspect_ && animator_.oneShot() == inspect_) animator_.stopOneShot(0.15f);
     }
 
     // Where things are on the rifle, in the model's (the eye's) space.
@@ -115,7 +132,10 @@ private:
     const iron::AnimationClip* aim_ = nullptr;
     const iron::AnimationClip* fire_ = nullptr;
     const iron::AnimationClip* reload_ = nullptr;
+    const iron::AnimationClip* reloadEmpty_ = nullptr;
     const iron::AnimationClip* draw_ = nullptr;
+    const iron::AnimationClip* sprint_ = nullptr;
+    const iron::AnimationClip* inspect_ = nullptr;
     int muzzleBone_ = -1;
     int casingBone_ = -1;
     int weaponBone_ = -1;

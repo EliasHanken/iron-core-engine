@@ -22,6 +22,7 @@
 #include <filesystem>
 #include <map>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace foundry {
@@ -137,20 +138,25 @@ public:
         duck_ = 1.0f;
     }
 
-    // The reload's moments, as the gun's progress passes them.
-    void reload(float progress, bool reloading) {
+    // The weapon's handling sounds, on the animation's events: the magazine out
+    // and in, the bolt racked back and let fly, a hand taking hold.
+    void foley(std::string_view event) {
         if (!aloud_) return;
-        if (!reloading) {
-            reloadStep_ = 0;
-            return;
+        iron::SoundHandle h = iron::kInvalidSound;
+        float gain = 0.85f, pitch = 0.98f + random() * 0.04f;
+        if (event == "mag_out") h = magOut_;
+        else if (event == "mag_in") h = magIn_;
+        else if (event == "bolt_back") h = charge_;
+        else if (event == "bolt_forward") {
+            h = charge_;
+            pitch *= 1.18f;
+            gain = 0.6f;
+        } else if (event == "grab" || event == "draw") {
+            h = charge_;
+            pitch *= 0.62f;
+            gain = 0.18f;
         }
-        const std::array<float, 3> at = {0.12f, 0.55f, 0.82f};
-        const std::array<iron::SoundHandle, 3> sounds = {magOut_, magIn_, charge_};
-        while (reloadStep_ < 3 && progress >= at[static_cast<std::size_t>(reloadStep_)]) {
-            const auto h = sounds[static_cast<std::size_t>(reloadStep_)];
-            if (h) audio_.playSoundLocal(h, kHeadroom * 0.85f, 0.98f + random() * 0.04f);
-            ++reloadStep_;
-        }
+        if (h) audio_.playSoundLocal(h, kHeadroom * gain, pitch);
     }
 
     void impact(Surface surface, bool plate, Vec3 at) {
@@ -239,7 +245,6 @@ private:
     float duck_ = 0.0f;
     float indoor_ = 0.0f;
     float creakIn_ = 6.0f;
-    int reloadStep_ = 0;
     iron::ReverbSettings reverb_;
     float reverbIn_ = 0.0f;
 };

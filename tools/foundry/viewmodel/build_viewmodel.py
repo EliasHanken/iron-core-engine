@@ -23,7 +23,8 @@ sys.path.insert(0, HERE)
 sys.path.insert(0, os.path.dirname(HERE))
 import rig  # noqa: E402
 from ak_material import make_ak_material  # noqa: E402
-from clips import FPS, Hand, Place, Pose, Rig, bake_clip, ease_out, mix_hand, mix_place, smooth, track  # noqa: E402
+from clips import (FPS, Hand, Place, Pose, Rig, bake_clip, ease_in, ease_out, mix_hand, mix_place,  # noqa: E402
+                   smooth, track)
 
 args = sys.argv[sys.argv.index("--") + 1:]
 ak_dir, out_path = args[0], args[1]
@@ -94,10 +95,131 @@ def fire(t):
     return held(HIP, bolt=bolt, trigger=trigger)
 
 
+# --- Hands for the reload, in the rifle's space ---
+# The magazine hangs from y 0.16, curving forward to y 0.21 at its foot (z -0.05).
+# The support hand takes it from the left, palm on its side, fingers round its
+# front, thumb on the release behind it.
+CUP = {"index": (0.55, 0.8, 0.5), "middle": (0.6, 0.85, 0.5), "ring": (0.65, 0.85, 0.5), "pinky": (0.7, 0.8, 0.5)}
+MAG_GRAB = Hand(Vector((0.0, 0.19, 0.0)), Vector((1.0, 0.0, 0.1)), Vector((0.0, 0.6, -0.8)), CUP,
+                thumb=(0.4, 0.6, 0.4))
+# Rocked forward off its catch: the hand rolls the magazine's foot ahead.
+MAG_ROCKED = Hand(Vector((0.0, 0.235, -0.03)), Vector((1.0, 0.0, 0.35)), Vector((0.0, 0.85, -0.5)), CUP,
+                  thumb=(0.4, 0.6, 0.4))
+# Down out of the view, and the "new" one coming back up.
+MAG_AWAY = Hand(Vector((-0.06, 0.12, -0.32)), Vector((1.0, 0.0, 0.0)), Vector((0.0, 0.3, -1.0)), CUP,
+                thumb=(0.4, 0.6, 0.4))
+MAG_RISING = Hand(Vector((-0.02, 0.24, -0.12)), Vector((1.0, 0.0, 0.3)), Vector((0.0, 0.8, -0.6)), CUP,
+                  thumb=(0.4, 0.6, 0.4))
+# On the way from the handguard to the magazine, below the receiver.
+UNDER = Hand(Vector((-0.03, 0.26, 0.03)), Vector((0.8, 0.0, 0.6)), Vector((0.3, 0.6, -0.7)),
+             {k: (0.3, 0.4, 0.3) for k in CUP}, thumb=(0.2, 0.3, 0.2))
+# The right hand off the grip, up over the receiver, hooking the charging handle on
+# the right of the bolt carrier.
+HOOK = {"index": (0.9, 1.2, 0.8), "middle": (1.0, 1.2, 0.8), "ring": (1.1, 1.2, 0.8), "pinky": (1.1, 1.1, 0.8)}
+OVER = Hand(Vector((0.08, 0.06, 0.15)), Vector((-0.7, 0.0, -0.7)), Vector((-0.2, 0.7, 0.6)),
+            {k: (0.4, 0.5, 0.3) for k in HOOK})
+CHARGE = Hand(Vector((0.055, 0.2, 0.15)), Vector((-1.0, -0.2, 0.0)), Vector((0.0, 0.3, 1.0)), HOOK)
+BOLT_TRAVEL = 0.085
+
+
+def hands(t, keys_r, keys_l):
+    return track(keys_r, t, mix_hand), track(keys_l, t, mix_hand)
+
+
+def draw(t):
+    """Brought up from below and to the right, rolled over, swinging past the hip
+    and settling."""
+    low = Place(Vector((0.26, 0.06, -0.62)), pitch=-55.0, yaw=35.0, roll=70.0)
+    place = track([(0.0, low), (0.42, HIP.moved(Vector((-0.01, 0.01, 0.012)), pitch=5.0, roll=-6.0), ease_out),
+                   (0.75, HIP, smooth)], t, mix_place)
+    return held(place)
+
+
+def reload_pose(t, empty):
+    """A magazine change: the rifle cants towards the support hand, which strips
+    the magazine forward off its catch, drops it out of view, rocks the new one
+    in and returns. From empty, the right hand then racks the charging handle."""
+    # Lifted and canted so the magazine well turns towards the eye, in view.
+    tilt = Place(Vector((0.13, 0.25, -0.15)), pitch=8.0, yaw=6.0, roll=65.0)
+    end = 2.3 if not empty else 3.0
+    place_keys = [
+        (0.0, HIP),
+        (0.08, HIP.moved(Vector((0.0, 0.0, -0.008)), pitch=-2.0), smooth),   # Anticipation.
+        (0.35, tilt, ease_out),
+        (0.62, tilt.moved(Vector((0.004, 0.0, -0.006)), roll=-3.0), smooth),  # Tugged by the strip.
+        (0.72, tilt, smooth),
+        (1.62, tilt.moved(Vector((0.0, 0.0, 0.004)), roll=2.0), smooth),
+        (1.70, tilt.moved(Vector((0.0, 0.0, -0.010)), pitch=-2.5), ease_out),  # The new one seats.
+        (1.85, tilt, smooth),
+    ]
+    if empty:
+        rack = tilt.moved(Vector((0.02, 0.0, 0.0)), roll=-18.0, yaw=-4.0)
+        place_keys += [(2.05, rack, smooth), (2.3, rack.moved(Vector((0.0, -0.01, 0.0)), pitch=2.0), ease_out),
+                       (2.42, rack.moved(Vector((0.0, 0.006, 0.0)), pitch=-1.5), ease_out)]
+    place_keys += [(end - 0.35, HIP.moved(Vector((0.0, 0.0, 0.006)), pitch=2.0, roll=-3.0), smooth),
+                   (end, HIP, smooth)]
+    place = track(place_keys, t, mix_place)
+
+    left_keys = [(0.0, HANDGUARD), (0.2, HANDGUARD), (0.38, UNDER, smooth), (0.5, MAG_GRAB, ease_out),
+                 (0.58, MAG_GRAB), (0.72, MAG_ROCKED, ease_out), (1.05, MAG_AWAY, ease_in),
+                 (1.15, MAG_AWAY), (1.45, MAG_RISING, ease_out), (1.58, MAG_ROCKED, smooth),
+                 (1.72, MAG_GRAB, ease_out), (1.8, MAG_GRAB)]
+    left_keys += [(1.98, UNDER, smooth), (2.15 if not empty else 2.6, HANDGUARD, ease_out)]
+    right_keys = [(0.0, GRIP)]
+    bolt = 0.0
+    if empty:
+        right_keys += [(1.8, GRIP), (1.95, OVER, smooth), (2.08, CHARGE, ease_out), (2.12, CHARGE),
+                       (2.28, Hand(CHARGE.socket - Vector((0.0, BOLT_TRAVEL, 0.0)), CHARGE.palm, CHARGE.forward,
+                                   CHARGE.curl), ease_out),
+                       (2.36, Hand(CHARGE.socket - Vector((0.0, BOLT_TRAVEL + 0.01, -0.03)), CHARGE.palm,
+                                   CHARGE.forward, {k: (0.3, 0.4, 0.3) for k in HOOK}), smooth),
+                       (2.62, GRIP, smooth)]
+        lin = lambda a, b, s: a + (b - a) * s  # noqa: E731
+        bolt = track([(0.0, 0.0), (2.12, 0.0), (2.28, BOLT_TRAVEL, ease_out), (2.31, BOLT_TRAVEL),
+                      (2.34, 0.0, ease_in)], t, lin)
+    right, left = hands(t, right_keys, left_keys)
+    magazine = "hand" if 0.55 <= t < 1.75 else "gun"
+    return Pose(place, right, left, bolt=bolt, magazine=magazine)
+
+
+def reload(t):
+    return reload_pose(t, empty=False)
+
+
+def reload_empty(t):
+    return reload_pose(t, empty=True)
+
+
+def sprint(t):
+    """Running: the rifle swung low and across the chest, bouncing in a figure
+    eight with the stride (two steps a cycle)."""
+    phase = t / 0.62 * 2.0 * math.pi
+    base = Place(Vector((0.11, 0.2, -0.25)), pitch=-12.0, yaw=28.0, roll=-22.0)
+    return held(base.moved(Vector((0.018 * math.sin(phase), 0.0, 0.016 * abs(math.sin(phase)) - 0.008)),
+                           pitch=2.5 * math.sin(2.0 * phase), roll=4.0 * math.sin(phase)))
+
+
+def inspect(t):
+    """Turned over in the hands to look at: the left side, then the right."""
+    left_side = Place(Vector((0.04, 0.24, -0.19)), pitch=12.0, yaw=-12.0, roll=68.0)
+    right_side = Place(Vector((0.09, 0.23, -0.2)), pitch=8.0, yaw=34.0, roll=-55.0)
+    place = track([(0.0, HIP), (0.7, left_side, smooth), (1.9, left_side.moved(Vector((0.0, 0.01, 0.006)), roll=6.0),
+                                                          smooth),
+                   (2.6, right_side, smooth), (3.6, right_side.moved(Vector((0.0, 0.0, 0.006)), pitch=3.0), smooth),
+                   (4.3, HIP, smooth)], t, mix_place)
+    return held(place)
+
+
 CLIPS = [
     ("idle", 3.2, idle, True, []),
     ("aim", 3.2, aim, True, []),
     ("fire", 0.2, fire, False, []),
+    ("draw", 0.75, draw, False, [(0.0, "draw")]),
+    ("reload", 2.3, reload, False, [(0.4, "grab"), (0.66, "mag_out"), (1.7, "mag_in")]),
+    ("reload_empty", 3.0, reload_empty, False,
+     [(0.4, "grab"), (0.66, "mag_out"), (1.7, "mag_in"), (2.24, "bolt_back"), (2.33, "bolt_forward")]),
+    ("sprint", 0.62, sprint, True, []),
+    ("inspect", 4.3, inspect, False, [(0.2, "grab"), (2.0, "grab")]),
 ]
 
 for name, length, fn, loop, events in CLIPS:
@@ -149,8 +271,15 @@ if preview:
         }),
         "aim": (0.0, {"aim_eye": ((0.0, 0.0, 0.0), (0.0, 1.0, 0.0), EYE_LENS)}),
     }
-    for clip, (t, views) in shots.items():
-        arms.animation_data.action = bpy.data.actions[clip]
+    # The moving clips, from the eye and from a little way off to the right.
+    side = ((0.75, 0.0, 0.1), (0.05, 0.3, -0.2), 30.0)
+    for clip, times in {"draw": (0.15, 0.4), "reload": (0.3, 0.55, 0.7, 1.1, 1.5, 1.72, 2.0),
+                        "reload_empty": (2.1, 2.27, 2.45), "sprint": (0.15, 0.45), "inspect": (1.2, 3.0)}.items():
+        for t in times:
+            shots[f"{clip}@{t}"] = (t, {f"{clip}@{t}_eye": ((0.0, 0.0, 0.0), (0.0, 1.0, 0.0), EYE_LENS),
+                                        f"{clip}@{t}_side": side})
+    for key, (t, views) in shots.items():
+        arms.animation_data.action = bpy.data.actions[key.split("@")[0]]
         bpy.context.scene.frame_set(round(t * FPS))
         rig.render_views(preview, views)
     arms.animation_data.action = None

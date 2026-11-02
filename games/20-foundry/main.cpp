@@ -14,6 +14,8 @@
 //   motion   show motion vectors
 //   rig      watch the player's arms and rifle from the side, to tune the grip
 //   aim      hold the rifle up to the eye throughout
+//   reload   fire a burst, then reload (stays put)
+//   inspect  turn the rifle over to look at it
 //   overview look down on the stockyard from above, to see culling at work
 //   lod      tint instance groups by level of detail
 //   freeze   freeze culling at the start
@@ -377,7 +379,7 @@ public:
             const float y = h - 112.0f * unit;
             rect(bars, 0.0f, y, w, 46.0f * unit, {0.0f, 0.0f, 0.0f, 0.45f * hint});
             text::appendCentered(smallText, small_,
-                                 "WASD  MOVE     CLICK  FIRE     RIGHT CLICK  AIM     R  RELOAD     "
+                                 "WASD  MOVE     CLICK  FIRE     RIGHT CLICK  AIM     R  RELOAD     I  INSPECT     "
                                  "F1  FRAME     F2  MOTION     F3  FREEZE CULLING     F4  LODS     F5  AA",
                                  cx, y + 29.0f * unit, 1.0f, 0.24f, {1.0f, 0.93f, 0.84f, hint});
         }
@@ -691,6 +693,7 @@ int main(int argc, char** argv) {
     if (!viewModel.load(renderer, models, iron::executableDir() + "/assets/models/viewmodel/viewmodel.gltf")) {
         return 1;
     }
+    float sprintBlend = 0.0f;
     const iron::MeshHandle flashMesh = renderer.createMesh(buildFlash());
     const iron::MeshHandle bitMesh = renderer.createMesh(iron::makeCube());
 
@@ -718,6 +721,7 @@ int main(int argc, char** argv) {
     float stepDistance = 0.0f;
     Vec3 horizontal{0.0f, 0.0f, 0.0f};
     foundry::Gun gun;
+    gun.setReloadSeconds(viewModel.reloadSeconds(false, 1.9f), viewModel.reloadSeconds(true, 2.6f));
 
     // --- Sound ---
     foundry::Sound sound;
@@ -755,6 +759,7 @@ int main(int argc, char** argv) {
     float mouseY = 0.0f;
     bool jumpPressed = false;
     bool reloadPressed = false;
+    bool inspectPressed = false;
     bool escapePressed = false;
     bool quitPressed = false;
     bool clicked = false;
@@ -770,6 +775,7 @@ int main(int argc, char** argv) {
         mouseY += static_cast<float>(input.mouseDeltaY());
         jumpPressed = jumpPressed || input.keyPressed(GLFW_KEY_SPACE);
         reloadPressed = reloadPressed || input.keyPressed(GLFW_KEY_R);
+        inspectPressed = inspectPressed || input.keyPressed(GLFW_KEY_I);
         escapePressed = escapePressed || input.keyPressed(GLFW_KEY_ESCAPE);
         quitPressed = quitPressed || input.keyPressed(GLFW_KEY_Q);
         clicked = clicked || input.mouseButtonPressed(GLFW_MOUSE_BUTTON_LEFT);
@@ -845,6 +851,12 @@ int main(int argc, char** argv) {
             }
             trigger = wp.fire;
             aiming = wp.aim || sceneHas("aim");
+            // Clip checks: a short burst then a reload, or a look at the rifle.
+            if (sceneHas("reload")) {
+                trigger = seconds > 0.9f && seconds < 1.2f;
+                reloadPressed = reloadPressed || (seconds > 1.4f && seconds < 1.45f);
+            }
+            inspectPressed = inspectPressed || (sceneHas("inspect") && seconds > 0.9f && seconds < 0.95f);
         } else if (!paused) {
             look = {-mouseX * kMouseRadiansPerPixel, -mouseY * kMouseRadiansPerPixel};
             const auto down = [&](int k) { return input.keyDown(k) ? 1.0f : 0.0f; };
@@ -913,9 +925,17 @@ int main(int argc, char** argv) {
         }
 
         // --- The gun ---
+        const bool wasReloading = gun.reloading();
         const int shots = gun.update(simDt, trigger && !paused, aiming, reloadPressed, look,
                                      speed / kRunSpeed, grounded);
         reloadPressed = false;
+        if (!wasReloading && gun.reloading()) viewModel.reload(gun.reloadingEmpty());
+        if (trigger || aiming) viewModel.interrupt();
+        if (inspectPressed && !gun.reloading() && !aiming) viewModel.inspect();
+        inspectPressed = false;
+        // Running swings the rifle down across the chest; it eases in and out.
+        sprintBlend += ((running && speed > 0.6f * kRunSpeed ? 1.0f : 0.0f) - sprintBlend) *
+                       std::min(simDt * 7.0f, 1.0f);
         const Vec2 kick = gun.viewKick();
         const float viewYaw = yaw + kick.x;
         const float viewPitch = pitch + kick.y;
@@ -944,9 +964,7 @@ int main(int argc, char** argv) {
             const Vec3 v = transformPoint(viewModelInView, onModel);
             return transformPoint(cameraToWorld, Vec3{v.x * fovStretch, v.y * fovStretch, v.z});
         };
-        for (const auto& fired : viewModel.update(simDt, aimBlend)) {
-            iron::Log::info("foundry: view model event '%s'", fired.name.c_str());
-        }
+        for (const auto& fired : viewModel.update(simDt, aimBlend, sprintBlend)) sound.foley(fired.name);
         for (int i = 0; i < shots; ++i) viewModel.fire();
         const Vec3 muzzle = apparent(viewModel.muzzle());
 
@@ -1180,7 +1198,6 @@ int main(int argc, char** argv) {
             }
         }
 
-        sound.reload(gun.reloadProgress(), gun.reloading());
         sound.update(simDt, eye, aimDir, indoorAt(eye), seconds);
 
         Interface::State state;

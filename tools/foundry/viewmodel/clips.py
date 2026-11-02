@@ -66,13 +66,28 @@ def mix_hand(a, b, s):
     return Hand(a.socket.lerp(b.socket, s), q.col[1].copy(), q.col[0].copy(), curl, thumb)
 
 
+def ease_in(s):
+    s = min(max(s, 0.0), 1.0)
+    return s * s * s
+
+
+def overshoot(s, amount=1.6):
+    """Eases past the target and settles back: a back-out curve."""
+    s = min(max(s, 0.0), 1.0) - 1.0
+    return 1.0 + s * s * ((amount + 1.0) * s + amount)
+
+
 def track(keys, t, mix, ease=smooth):
-    """Value at `t` along keys [(time, value)], eased between neighbours."""
+    """Value at `t` along keys [(time, value)] or [(time, value, ease)], eased
+    between neighbours; a key's own ease shapes the way into it."""
     if t <= keys[0][0]:
         return keys[0][1]
-    for (t0, a), (t1, b) in zip(keys, keys[1:]):
+    for k0, k1 in zip(keys, keys[1:]):
+        t0, a = k0[0], k0[1]
+        t1, b = k1[0], k1[1]
         if t <= t1:
-            return mix(a, b, ease((t - t0) / (t1 - t0)) if t1 > t0 else 1.0)
+            curve = k1[2] if len(k1) > 2 else ease
+            return mix(a, b, curve((t - t0) / (t1 - t0)) if t1 > t0 else 1.0)
     return keys[-1][1]
 
 
