@@ -369,31 +369,53 @@ void main() {
         return;
     }
 
-    // March it, a different offset each pixel and frame (TAA gathers them).
-    const int kSteps = 64;
-    float dt = (t1 - t0) / float(kSteps);
+    // March it in fixed fine steps through smoke, striding over empty air and
+    // backing up to fine steps on the way in, so every ray samples smoke the same
+    // however far the scene behind it is. A different offset each pixel and frame
+    // (TAA gathers them).
+    const float kFine = 0.25;
+    const float kStride = 1.0;
     float jitter = fract(52.9829189 * fract(dot(vec2(px) + pc.b.x * 5.588238, vec2(0.06711056, 0.00583715))));
     vec3 gathered = vec3(0.0);
     float through = 1.0;
-    for (int k = 0; k < kSteps; ++k) {
-        float t = t0 + (float(k) + jitter) * dt;
+    float t = t0 + jitter * kFine;
+    bool striding = false;
+    for (int k = 0; k < 220 && t < t1; ++k) {
         vec3 w = o + dir * t;
+        float dt = kFine;
         float sigma = 0.0;
         float scatter = 0.0;
+        float heat = 0.0;
         for (int i = 0; i < 4; ++i) {
             vec2 f = fluidAt(i, w);
-            // Heat bends the light through it, unless smoke in front hides it.
-            shimmer += f.y * dt * through * 0.12;
+            heat += f.y;
             sigma += f.x;
             scatter += f.x * p.fluid[i * 2 + 1].w;
         }
-        if (sigma < 1e-3) continue;
+        if (sigma < 1e-3) {
+            // Empty air: stride on (heat still bends the light across the stride).
+            shimmer += heat * kStride * through * 0.12;
+            t += kStride;
+            striding = true;
+            continue;
+        }
+        if (striding) {
+            // Just struck smoke from a stride: back up and come in finely.
+            t -= kStride - kFine;
+            striding = false;
+            continue;
+        }
+        // Heat bends the light through it, unless smoke in front hides it.
+        shimmer += heat * dt * through * 0.12;
+        t += dt;
         // Billows: the thin outer smoke is eaten away by drifting noise finer
         // than the fluid's cells; the thick core is left whole.
+        // Finer noise all through hides the fluid's cells: they'd show as soft
+        // blocks up close.
         vec3 drift = w - p.wind.xyz * p.wind.w * 0.5;
-        float n = 0.62 * noise3(drift * 1.7) + 0.38 * noise3(drift * 4.3 + 7.1);
-        float edge = 1.0 - smoothstep(0.4, 3.0, sigma);
-        float eaten = max(1.0 - (1.0 - n) * 1.6 * edge, 0.0);
+        float n = 0.5 * noise3(drift * 1.7) + 0.3 * noise3(drift * 4.3 + 7.1) + 0.2 * noise3(drift * 9.7 + 3.3);
+        float edge = 1.0 - smoothstep(0.05, 0.9, sigma);
+        float eaten = max(1.0 - (1.0 - n) * 1.3 * edge, 0.0) * (0.55 + 0.9 * n);
         sigma *= eaten;
         scatter *= eaten;
         if (sigma < 1e-3) continue;

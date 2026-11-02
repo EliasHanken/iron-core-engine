@@ -94,6 +94,10 @@ public:
     VkImageView shimmer() const { return shimmerThisFrame_ ? shimmer_.view() : VK_NULL_HANDLE; }
     // The same image whether or not there's heat this frame, to bind once.
     VkImageView shimmerTarget() const { return shimmer_.view(); }
+    // Per pixel, how much of the scene shows through the fluids' smoke (alpha,
+    // VK_IMAGE_LAYOUT_GENERAL); only written on frames with smoke.
+    VkImageView smokeTarget() const { return smoke_.view(); }
+    bool smokeThisFrame() const { return smokeThisFrame_; }
 
 private:
     // Marches fluids' smoke per pixel into smoke_, after the grid is integrated.

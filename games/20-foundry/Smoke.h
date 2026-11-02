@@ -155,7 +155,7 @@ public:
             fog.fluid = s.fluid.get();
             // Thick enough that nothing shows through its heart: white smoke, or
             // dark soot that drinks the light.
-            fog.density = s.kind == Kind::Canister ? 3.2f : 2.6f;
+            fog.density = s.kind == Kind::Canister ? 9.0f : 5.5f;
             fog.albedo = s.kind == Kind::Canister ? 0.95f : 0.22f;
             fog.offset = s.origin;
             renderer.submitFogFluid(fog);
@@ -353,7 +353,7 @@ void fluidSource(vec3 p, inout vec3 velocity, inout float density, inout float h
         density += inside * params.heat.w * 0.45 * fluid.dt;
     }
     // Warm smoke rises a little; as it cools it spreads, and dense smoke sinks.
-    velocity.y += (heat * 2.2 - density * 0.06) * fluid.dt;
+    velocity.y += (heat * 1.4 - density * 0.05) * fluid.dt;
     heat -= heat * 0.6 * fluid.dt;
     // The wind carries it, more higher up.
     velocity += (params.wind.xyz * params.counts.w - velocity) * min(fluid.dt * 0.25, 1.0) * smoothstep(0.0, 3.0, p.y);
