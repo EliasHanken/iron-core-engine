@@ -216,6 +216,10 @@ layout(set = 0, binding = 0) uniform LitUbo {
     vec4 volumeMin;     // M73 — xyz = LightVolume min; w = intensity (0 = no volume)
     vec4 volumeInvSize; // M73 — xyz = 1 / LightVolume extent
     vec4 pointShadow;   // M73 — xyz = shadow centre; w = strength (0 = off)
+    mat4 cascadeViewProj[4];  // Cascaded sun shadows: each cascade's light view-projection
+    vec4 cascadeEnds;         // distance from the camera where each ends
+    vec4 cascadeRadii;        // each one's half-width, metres
+    vec4 cascadeParams;       // x = on, y = caster reach, z = tile texels
 } u;
 
 layout(set = 0, binding = 1) uniform sampler2D uDiffuse;
@@ -247,6 +251,51 @@ float shadowFactor(vec4 lightSpacePos, float bias) {
         }
     }
     return sum / 9.0;
+}
+
+// Cascaded sun shadow: the cascades share the map as a 2x2 atlas. The point moves
+// out along its normal by about a texel of its cascade before the lookup, which
+// keeps surfaces from shadowing themselves at any distance; PCF taps stay inside
+// the cascade's tile.
+float cascadeShadow(int c, vec3 worldPos, vec3 normal) {
+    float texelWorld = 2.0 * u.cascadeRadii[c] / u.cascadeParams.z;
+    vec4 lp = u.cascadeViewProj[c] * vec4(worldPos + normal * texelWorld * 1.5, 1.0);
+    vec3 proj = lp.xyz / lp.w;
+    if (abs(proj.x) > 1.0 || abs(proj.y) > 1.0 || proj.z > 1.0) return 1.0;
+    vec2 tile = vec2(float(c % 2), float(c / 2)) * 0.5;
+    vec2 uv = (proj.xy * 0.5 + 0.5) * 0.5 + tile;
+    vec2 texel = 1.0 / vec2(textureSize(uShadowMap, 0));
+    vec2 lo = tile + texel * 1.5;
+    vec2 hi = tile + vec2(0.5) - texel * 1.5;
+    // A texel of depth, in this cascade's depth range.
+    float bias = texelWorld / (2.0 * u.cascadeRadii[c] + u.cascadeParams.y);
+    float sum = 0.0;
+    for (int y = -1; y <= 1; ++y) {
+        for (int x = -1; x <= 1; ++x) {
+            float stored = texture(uShadowMap, clamp(uv + vec2(x, y) * texel, lo, hi)).r;
+            sum += (proj.z - bias > stored) ? 0.0 : 1.0;
+        }
+    }
+    return sum / 9.0;
+}
+
+// Which cascade covers the point, blending into the next across the last tenth of
+// each, and fading out at the far end.
+float cascadedShadow(vec3 worldPos, vec3 normal) {
+    float d = length(worldPos - u.cameraPos.xyz);
+    float start = 0.0;
+    for (int c = 0; c < 4; ++c) {
+        float end = u.cascadeEnds[c];
+        if (d < end) {
+            float s = cascadeShadow(c, worldPos, normal);
+            float band = (end - start) * 0.1;
+            float t = clamp((d - (end - band)) / band, 0.0, 1.0);
+            if (t > 0.0) s = mix(s, c < 3 ? cascadeShadow(c + 1, worldPos, normal) : 1.0, t);
+            return s;
+        }
+        start = end;
+    }
+    return 1.0;
 }
 
 // Cook-Torrance GGX PBR helpers — lockstep with engine/render/Pbr.h.
@@ -343,7 +392,8 @@ void main() {
     vec3  V         = normalize(u.cameraPos.xyz - vWorldPos);
     vec3  N_        = perturbedN;
 
-    float shadow = shadowFactor(vLightSpacePos, bias);
+    float shadow = u.cascadeParams.x > 0.5 ? cascadedShadow(vWorldPos, normalize(vNormal))
+                                           : shadowFactor(vLightSpacePos, bias);
 
     // Directional light (sun).
     vec3 Lo = pbrContrib(N_, V, -normalize(u.sunDir.xyz), albedo, metallic, roughness, F0,

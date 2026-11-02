@@ -552,7 +552,9 @@ int main(int argc, char** argv) {
     vulkan->setSsaoRadius(0.7f);
     vulkan->setSsaoStrength(0.85f);
     renderer.setSkybox(vulkan->bakeSky(kSkyGlsl, 256));
-    renderer.setShadowBounds({0.0f, 0.0f, -16.0f}, 58.0f);
+    renderer.setShadowBounds({0.0f, 0.0f, -16.0f}, 58.0f);  // Without cascades (--scene flatshadow).
+    // Four cascades out to 120 m: sharp at the player's feet, wide across the yard.
+    if (!sceneHas("flatshadow")) renderer.setShadowCascades(120.0f);
 
     iron::CinematicSettings lens;
     lens.enabled = true;

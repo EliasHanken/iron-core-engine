@@ -3,6 +3,7 @@
 // and the per-frame pipeline.
 
 #include "render/backends/vulkan/VulkanRenderer.h"
+#include "render/ShadowCascades.h"
 #include "render/backends/vulkan/VkLightVolume.h"
 #include "render/backends/vulkan/VkUtils.h"
 #include "render/PostChainPlan.h"
@@ -405,8 +406,23 @@ struct LitUbo {
     Vec4 volumeMin;           // 16  M73 — xyz = LightVolume min; w = intensity
     Vec4 volumeInvSize;       // 16  M73 — xyz = 1 / LightVolume extent
     Vec4 pointShadow;         // 16  M73 — xyz = shadow centre; w = strength
+    // Cascaded sun shadows, at the end so shaders that stop short still match.
+    Mat4 cascadeViewProj[4];  // 256 each cascade's light view-projection (its own 0..1)
+    Vec4 cascadeEnds;         // 16  distance from the camera where each cascade ends
+    Vec4 cascadeRadii;        // 16  each cascade's half-width, in metres
+    Vec4 cascadeParams;       // 16  x = cascades on (0/1), y = caster reach, z = tile texels
 };
-static_assert(sizeof(LitUbo) == 1056, "LitUbo std140 layout (M73 light volume, point shadow)");
+static_assert(sizeof(LitUbo) == 1360, "LitUbo std140 layout (cascaded shadows)");
+
+void fillCascadeUbo(LitUbo& ubo, const ShadowCascades* cascades, float reach) {
+    if (!cascades) return;
+    for (int i = 0; i < ShadowCascades::kCount; ++i) {
+        ubo.cascadeViewProj[i] = cascades->viewProj[static_cast<std::size_t>(i)];
+    }
+    ubo.cascadeEnds = Vec4{cascades->ends[0], cascades->ends[1], cascades->ends[2], cascades->ends[3]};
+    ubo.cascadeRadii = Vec4{cascades->radii[0], cascades->radii[1], cascades->radii[2], cascades->radii[3]};
+    ubo.cascadeParams = Vec4{1.0f, reach, static_cast<float>(VkShadowMap::kTile), 0.0f};
+}
 
 void fillLightVolumeUbo(LitUbo& ubo, const LightVolume* volume, float intensity) {
     if (!volume) return;
@@ -606,6 +622,43 @@ void VulkanRenderer::beginFrame(Vec3 clearColor, const DirectionalLight& light,
     pendingCameraPos_ = extractCameraPos(view);
     pendingLightViewProj_ = computeLightViewProj(
         pendingSunDir_, pendingShadowCenter_, pendingShadowRadius_);
+    // Cascades follow the camera, out to the shadow distance. The widest stands in
+    // for the single map: it culls the sun's casters, and shaders that know only one
+    // light matrix get it, scaled into its corner of the atlas.
+    cascadesActive_ = shadowCascadeDistance_ > 0.0f;
+    if (cascadesActive_) {
+        ShadowCascadeSettings settings;
+        settings.distance = shadowCascadeDistance_;
+        settings.casterReach = kCascadeCasterReach;
+        settings.resolution = VkShadowMap::kTile;
+        const float fovY = 2.0f * std::atan(1.0f / projection.at(1, 1));
+        const float aspect = projection.at(1, 1) / projection.at(0, 0);
+        pendingCascades_ = computeShadowCascades(pendingSunDir_, inverse(view), fovY, aspect, settings);
+        // The far cascades take turns: each is redrawn every other frame. Everything
+        // is redrawn when the sun moves or the cascades have just come on.
+        ++shadowFrame_;
+        const bool fresh = !renderedValid_ || dot(normalize(renderedSun_), normalize(pendingSunDir_)) < 0.99999f;
+        shadowRedraw_ = fresh ? 0xFu : (0x3u | ((shadowFrame_ & 1u) != 0u ? 0x8u : 0x4u));
+        for (int c = 0; c < ShadowCascades::kCount; ++c) {
+            if ((shadowRedraw_ & (1u << c)) == 0) continue;
+            renderedCascades_.viewProj[static_cast<std::size_t>(c)] = pendingCascades_.viewProj[static_cast<std::size_t>(c)];
+            renderedCascades_.radii[static_cast<std::size_t>(c)] = pendingCascades_.radii[static_cast<std::size_t>(c)];
+        }
+        renderedCascades_.ends = pendingCascades_.ends;
+        renderedValid_ = true;
+        renderedSun_ = pendingSunDir_;
+        pendingLightViewProj_ = renderedCascades_.viewProj[ShadowCascades::kCount - 1];
+        Mat4 corner = Mat4::identity();  // NDC into the last tile: x right half, y lower half.
+        corner.at(0, 0) = 0.5f;
+        corner.at(1, 1) = 0.5f;
+        corner.at(0, 3) = 0.5f;
+        corner.at(1, 3) = 0.5f;
+        legacyLightViewProj_ = corner * pendingLightViewProj_;
+    } else {
+        legacyLightViewProj_ = pendingLightViewProj_;
+        renderedValid_ = false;
+        shadowRedraw_ = ~0u;
+    }
     pendingPointLightCount_ = static_cast<int>(
         std::min<std::size_t>(pointLights.size(), kMaxPointLights));
     for (int i = 0; i < pendingPointLightCount_; ++i) {
@@ -715,7 +768,8 @@ void VulkanRenderer::recordSceneDraw(VkCommandBuffer cb, const DrawCall& call, c
                         call.material.emissive.y,
                         call.material.emissive.z,
                         0.0f};
-    ubo.lightViewProj = pendingLightViewProj_;
+    ubo.lightViewProj = legacyLightViewProj_;
+    fillCascadeUbo(ubo, cascadesActive_ ? &renderedCascades_ : nullptr, kCascadeCasterReach);
     ubo.cameraPos = Vec4{pendingCameraPos_.x,
                          pendingCameraPos_.y,
                          pendingCameraPos_.z,
@@ -995,7 +1049,8 @@ void VulkanRenderer::recordSkinnedDraw(VkCommandBuffer cb,
                         call.material.emissive.y,
                         call.material.emissive.z,
                         0.0f};
-    ubo.lightViewProj = pendingLightViewProj_;
+    ubo.lightViewProj = legacyLightViewProj_;
+    fillCascadeUbo(ubo, cascadesActive_ ? &renderedCascades_ : nullptr, kCascadeCasterReach);
     ubo.cameraPos = Vec4{pendingCameraPos_.x,
                          pendingCameraPos_.y,
                          pendingCameraPos_.z,
@@ -1265,16 +1320,22 @@ void VulkanRenderer::endFrame() {
     if (!instanceGroups_.empty()) {
         profiler_.begin(cb, "Culling");
         const float pixelsPerUnit = pendingProjection_.at(1, 1) * 0.5f * static_cast<float>(postProcess_.extent().height);
-        instanceGroups_.cull(cb, frames_.currentIndex(), pendingProjection_ * pendingView_, pendingLightViewProj_,
-                             pendingCameraPos_, pixelsPerUnit, postProcess_.extent());
+        instanceGroups_.cull(cb, frames_.currentIndex(), pendingProjection_ * pendingView_, shadowViewsThisFrame(),
+                             pendingCameraPos_, pixelsPerUnit, postProcess_.extent(), shadowRedraw_);
         profiler_.end(cb);
     }
 
     // --- Pass 1: shadow ---
     profiler_.begin(cb, "Shadows");
-    const auto instancedShadows = instanceGroups_.shadowDraws(frames_.currentIndex(), meshes_);
-    shadowMap_.record(cb, context_.device(), frames_, meshes_,
-                     pendingLightViewProj_, sceneDraws_, instancedShadows);
+    const std::span<const Mat4> shadowViews = shadowViewsThisFrame();
+    std::array<std::vector<VkInstanceGroups::Draw>, ShadowCascades::kCount> instancedShadows;
+    for (std::size_t v = 0; v < shadowViews.size(); ++v) {
+        instancedShadows[v] = instanceGroups_.shadowDraws(frames_.currentIndex(), meshes_, v);
+    }
+    shadowMap_.record(cb, context_.device(), frames_, meshes_, shadowViews, sceneDraws_,
+                      std::span<const std::vector<VkInstanceGroups::Draw>>(instancedShadows.data(),
+                                                                         shadowViews.size()),
+                      shadowRedraw_);
     profiler_.end(cb);
 
     // --- Pass 2: planar reflection (if a plane is set) ---

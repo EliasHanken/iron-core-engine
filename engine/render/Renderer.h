@@ -228,6 +228,10 @@ public:
     // shadow map must cover. A game calls this once with bounds enclosing its
     // scene.
     virtual void setShadowBounds(Vec3 center, float radius) = 0;
+    // Cascaded sun shadows out to `distance` metres from the camera: sharp up close,
+    // wide far off, following the camera wherever it goes. Replaces the bounds above
+    // while on; 0 (the default) turns them off.
+    virtual void setShadowCascades(float distance) { (void)distance; }
 
     // M50b — toggle global wireframe (line polygon mode) for scene geometry.
     virtual void setWireframe(bool enable) = 0;

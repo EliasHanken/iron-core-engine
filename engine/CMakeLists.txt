@@ -64,6 +64,7 @@ add_library(ironcore STATIC
   render/PostChainPlan.cpp
   render/GpuTimings.cpp
   render/Culling.cpp
+  render/ShadowCascades.cpp
   scene/MeshLod.cpp
   render/ReflectionPlane.cpp
   render/ProceduralSky.cpp
