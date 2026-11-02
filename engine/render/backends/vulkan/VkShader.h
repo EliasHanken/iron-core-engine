@@ -20,6 +20,7 @@ struct VkShader {
     VkShaderModule        teseModule      = VK_NULL_HANDLE;  // M50b — tessellation evaluation (optional)
     VkDescriptorSetLayout setLayout       = VK_NULL_HANDLE;
     VkPipelineLayout      pipelineLayout  = VK_NULL_HANDLE;
+    bool                  instanced       = false;  // Reads instances at bindings 16 and 17.
 };
 
 // Compile a GLSL string for the given stage to SPIR-V. Returns an empty
@@ -31,9 +32,11 @@ std::vector<std::uint32_t> compileGlsl(VkShaderStageFlagBits stage,
 
 class VkShaderStore {
 public:
+    // `instanced` adds the instance group bindings: 16 = instances, 17 = visible list.
     ShaderHandle create(VkContext& ctx,
                         const std::string& vertSrc,
-                        const std::string& fragSrc);
+                        const std::string& fragSrc,
+                        bool instanced = false);
     // M23 — like create(), but builds an 8-binding descriptor set layout
     // (the 7 scene bindings + binding 7 = vertex-stage UBO of bone matrices).
     ShaderHandle createSkinned(VkContext& ctx,

@@ -21,6 +21,7 @@
 #include "render/backends/vulkan/VkReflectionTarget.h"
 #include "render/backends/vulkan/VkPostProcess.h"
 #include "render/backends/vulkan/VkGpuProfiler.h"
+#include "render/backends/vulkan/VkInstanceGroups.h"
 #include "render/ReflectionPlane.h"
 #include "render/ReflectionProbe.h"
 
@@ -127,6 +128,12 @@ public:
 
     std::span<const GpuTiming> gpuTimings() const override { return profiler_.latest(); }
 
+    ShaderHandle createInstancedShader(const std::string& vertexSrc, const std::string& fragmentSrc) override;
+    InstanceGroupHandle createInstanceGroup(const InstanceGroupDesc& desc) override;
+    void setInstances(InstanceGroupHandle group, std::span<const Mat4> transforms) override;
+    CullStats cullStats() const override { return instanceGroups_.stats(); }
+    void setCullingFrozen(bool frozen) override { instanceGroups_.setFrozen(frozen); }
+
     // M36 — stores an effect style; looked up each frame via runChain.
     void setEffectStyle(uint8_t effectId, const EffectStyle& style) override;
 
@@ -206,7 +213,10 @@ public:
 
     // Shows the renderer's own data in place of the picture (needs the cinematic
     // composite enabled). See RenderDebugView.
-    void setDebugView(RenderDebugView view) { postProcess_.setDebugView(view); }
+    void setDebugView(RenderDebugView view) {
+        debugView_ = view;
+        postProcess_.setDebugView(view);
+    }
 
     // Engine-internal: subsystems that record their own GPU work can time it
     // with this. Scopes must be balanced within a frame.
@@ -285,7 +295,14 @@ private:
     // Destroys any existing semaphores first; call after every swapchain
     // (re)creation. Returns false on semaphore creation failure.
     bool recreateImageSemaphores();
-    void recordSceneDraw(VkCommandBuffer cb, const DrawCall& call);
+    // Where an instance group's draw finds its instances and its indirect command.
+    struct IndirectSource {
+        VkBuffer     instances;
+        VkBuffer     visible;
+        VkBuffer     commands;
+        VkDeviceSize offset;
+    };
+    void recordSceneDraw(VkCommandBuffer cb, const DrawCall& call, const IndirectSource* indirect = nullptr);
     void recordSkinnedDraw(VkCommandBuffer cb, const SkinnedDrawCall& call,
                            const std::vector<Mat4>& bones);
     // M36 Phase C: records one static mesh draw into the mask pass. Pushes
@@ -313,6 +330,8 @@ private:
     float              pointShadowStrength_ = 0.0f;
     CinematicSettings  cinematic_;
     VkGpuProfiler      profiler_;
+    VkInstanceGroups   instanceGroups_;
+    RenderDebugView    debugView_ = RenderDebugView::None;
     MotionHistory      motionHistory_;
     std::vector<VelocityObject> velocityObjects_;
     Mat4               previousViewProjection_ = Mat4::identity();

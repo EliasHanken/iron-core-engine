@@ -220,6 +220,8 @@ inline Level buildLevel() {
 
     // Ground: one slab under the yard and the hall.
     box(level, {-34.0f, -0.5f, -68.0f}, {34.0f, 0.0f, 36.0f}, Look::ConcreteFloor);
+    // The stockyard around the walls, a little lower so that the two never fight.
+    box(level, {-170.0f, -0.6f, -110.0f}, {170.0f, -0.03f, 175.0f}, Look::ConcreteFloor);
 
     // The yard's walls, low enough to see the sky over.
     box(level, {-34.0f, 0.0f, 34.5f}, {34.0f, 3.6f, 35.5f}, Look::ConcreteWall);

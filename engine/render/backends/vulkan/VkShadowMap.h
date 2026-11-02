@@ -6,6 +6,9 @@
 
 #include "math/Mat4.h"
 #include "render/Renderer.h"
+#include "render/backends/vulkan/VkInstanceGroups.h"
+
+#include <span>
 
 #include <vulkan/vulkan.h>
 #include <vk_mem_alloc.h>
@@ -33,10 +36,12 @@ public:
     // begin depth-only render pass, replay `draws` with the depth-only
     // pipeline, end render pass. The render pass's final layout is
     // SHADER_READ_ONLY_OPTIMAL so subsequent passes can sample.
+    // `instanced` are instance groups as the sun's culling left them: indirect draws.
     void record(VkCommandBuffer cb, VkDevice device, VkFrameRing& frames,
                 VkMeshStore& meshes,
                 const Mat4& lightViewProj,
-                const std::vector<DrawCall>& draws);
+                const std::vector<DrawCall>& draws,
+                std::span<const VkInstanceGroups::Draw> instanced = {});
 
     VkImageView depthView() const { return depthView_; }
     VkSampler   sampler()   const { return sampler_; }
@@ -55,6 +60,9 @@ private:
     VkDescriptorSetLayout setLayout_ = VK_NULL_HANDLE;
     VkPipelineLayout pipelineLayout_ = VK_NULL_HANDLE;
     ::VkPipeline    pipeline_       = VK_NULL_HANDLE;
+    VkDescriptorSetLayout instancedSetLayout_ = VK_NULL_HANDLE;
+    VkPipelineLayout instancedLayout_ = VK_NULL_HANDLE;
+    ::VkPipeline    instancedPipeline_ = VK_NULL_HANDLE;
     VkSampler       sampler_        = VK_NULL_HANDLE;
 };
 

@@ -8,6 +8,7 @@ namespace iron {
 enum class RenderDebugView {
     None = 0,
     MotionVectors = 1,  // Each pixel's motion since the last frame: hue is direction.
+    LevelsOfDetail = 2, // Instance groups tinted by level: white, green, yellow, red.
 };
 
 // What a film camera does to an image, applied while compositing. Off by default,

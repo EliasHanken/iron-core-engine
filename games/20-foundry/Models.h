@@ -7,7 +7,9 @@
 #include "core/Log.h"
 #include "math/Aabb.h"
 #include "math/Transform.h"
+#include "render/InstanceGroup.h"
 #include "render/Renderer.h"
+#include "scene/MeshLod.h"
 
 #include <map>
 #include <memory>
@@ -25,6 +27,17 @@ struct ModelSection {
 struct Model {
     std::vector<ModelSection> sections;
     iron::Aabb bounds{};
+
+    iron::Vec3 size() const { return bounds.max - bounds.min; }
+    iron::Vec3 center() const { return (bounds.min + bounds.max) * 0.5f; }
+};
+
+// A model drawn as many copies on the GPU: an instance group per section, each with
+// levels of detail. Every group takes the same transforms.
+struct InstancedModel {
+    std::vector<iron::InstanceGroupHandle> groups;
+    iron::Aabb bounds{};
+    std::size_t triangles = 0;  // At the finest level, all sections.
 
     iron::Vec3 size() const { return bounds.max - bounds.min; }
     iron::Vec3 center() const { return (bounds.min + bounds.max) * 0.5f; }
@@ -50,18 +63,7 @@ public:
             ModelSection section;
             section.mesh = renderer_.createMesh(s.mesh);
             section.node = s.node;
-            iron::Material& m = section.material;
-            m.texture = texture(s.materialPaths.albedo, true);
-            m.normalMap = texture(s.materialPaths.normal, false);
-            m.metallicRoughnessMap = texture(s.materialPaths.metalRoughness, false);
-            m.aoMap = texture(s.materialPaths.occlusion, false);
-            m.emissiveMap = texture(s.materialPaths.emissive, true);
-            m.metallic = s.metallicFactor;
-            m.roughness = s.roughnessFactor;
-            m.baseColorFactor = s.baseColorFactor;
-            m.emissive = s.emissiveFactor;
-            m.normalScale = s.normalScale;
-            m.heightScale = 0.0f;
+            section.material = materialFor(s);
             model->sections.push_back(section);
         }
         const iron::Vec3 size = model->size();
@@ -71,7 +73,52 @@ public:
         return slot.get();
     }
 
+    // The model as instance groups, loading it on first use. `lodPixels` are the
+    // heights on screen at which each level gives way to the next.
+    const InstancedModel* instanced(const std::string& name, iron::ShaderHandle shader,
+                                    std::array<float, 3> lodPixels = {160.0f, 60.0f, 20.0f}) {
+        const auto found = instanced_.find(name);
+        if (found != instanced_.end()) return found->second.get();
+        auto& slot = instanced_[name];
+        const auto loaded = iron::loadGltfStaticModel(folder_ + name + "/" + name + ".gltf");
+        if (!loaded) {
+            iron::Log::error("foundry: model '%s' didn't load", name.c_str());
+            return nullptr;
+        }
+        auto model = std::make_unique<InstancedModel>();
+        model->bounds = loaded->bounds;
+        for (const iron::GltfSection& s : loaded->sections) {
+            iron::InstanceGroupDesc desc;
+            for (const iron::MeshData& lod : iron::generateLods(s.mesh, 4)) desc.lods.push_back(renderer_.createMesh(lod));
+            desc.lodPixels = lodPixels;
+            desc.shader = shader;
+            desc.material = materialFor(s);
+            desc.bounds = loaded->bounds;  // Every section culls with the whole model.
+            model->triangles += s.mesh.indices.size() / 3;
+            const iron::InstanceGroupHandle group = renderer_.createInstanceGroup(desc);
+            if (group != iron::kInvalidInstanceGroup) model->groups.push_back(group);
+        }
+        slot = std::move(model);
+        return slot.get();
+    }
+
 private:
+    iron::Material materialFor(const iron::GltfSection& s) {
+        iron::Material m;
+        m.texture = texture(s.materialPaths.albedo, true);
+        m.normalMap = texture(s.materialPaths.normal, false);
+        m.metallicRoughnessMap = texture(s.materialPaths.metalRoughness, false);
+        m.aoMap = texture(s.materialPaths.occlusion, false);
+        m.emissiveMap = texture(s.materialPaths.emissive, true);
+        m.metallic = s.metallicFactor;
+        m.roughness = s.roughnessFactor;
+        m.baseColorFactor = s.baseColorFactor;
+        m.emissive = s.emissiveFactor;
+        m.normalScale = s.normalScale;
+        m.heightScale = 0.0f;
+        return m;
+    }
+
     iron::TextureHandle texture(const std::string& path, bool srgb) {
         if (path.empty()) return iron::kInvalidHandle;
         const std::string key = path + (srgb ? "|s" : "|l");
@@ -83,6 +130,7 @@ private:
     iron::Renderer& renderer_;
     std::string folder_;
     std::map<std::string, std::unique_ptr<Model>> models_;
+    std::map<std::string, std::unique_ptr<InstancedModel>> instanced_;
     std::map<std::string, iron::TextureHandle> textures_;
 };
 

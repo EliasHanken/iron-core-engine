@@ -29,6 +29,24 @@ void main() {
 }
 )";
 
+// Instance groups: the UBO holds the light's view-projection alone, and each
+// instance's transform comes from its group's instance buffer.
+const char* kInstancedVert = R"(#version 450
+layout(location = 0) in vec3 aPos;
+
+layout(set = 0, binding = 0) uniform LightUbo {
+    mat4 lightViewProj;
+} u;
+
+struct Instance { mat4 model; vec4 sphere; };
+layout(std430, set = 0, binding = 1) readonly buffer Instances { Instance inst[]; };
+layout(std430, set = 0, binding = 2) readonly buffer Visible { uint visible[]; };
+
+void main() {
+    gl_Position = u.lightViewProj * inst[visible[gl_InstanceIndex]].model * vec4(aPos, 1.0);
+}
+)";
+
 }  // namespace
 
 bool VkShadowMap::init(VkContext& ctx) {
@@ -232,6 +250,39 @@ bool VkShadowMap::init(VkContext& ctx) {
 
     vkDestroyShaderModule(ctx.device(), vsm, nullptr);
 
+    // The instanced variant: the same state, another vertex stage and layout.
+    {
+        VkDescriptorSetLayoutBinding ib[3]{};
+        ib[0] = {0, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1, VK_SHADER_STAGE_VERTEX_BIT, nullptr};
+        ib[1] = {1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_VERTEX_BIT, nullptr};
+        ib[2] = {2, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_VERTEX_BIT, nullptr};
+        VkDescriptorSetLayoutCreateInfo il{};
+        il.sType        = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+        il.bindingCount = 3;
+        il.pBindings    = ib;
+        VK_CHECK(vkCreateDescriptorSetLayout(ctx.device(), &il, nullptr, &instancedSetLayout_));
+        VkPipelineLayoutCreateInfo ipl{};
+        ipl.sType          = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+        ipl.setLayoutCount = 1;
+        ipl.pSetLayouts    = &instancedSetLayout_;
+        VK_CHECK(vkCreatePipelineLayout(ctx.device(), &ipl, nullptr, &instancedLayout_));
+
+        const auto ispv = compileGlsl(VK_SHADER_STAGE_VERTEX_BIT, kInstancedVert);
+        if (ispv.empty()) {
+            Log::error("VkShadowMap: instanced vertex shader compile failed");
+            return false;
+        }
+        smInfo.codeSize = ispv.size() * sizeof(std::uint32_t);
+        smInfo.pCode = ispv.data();
+        VkShaderModule ism = VK_NULL_HANDLE;
+        VK_CHECK(vkCreateShaderModule(ctx.device(), &smInfo, nullptr, &ism));
+        stage.module = ism;
+        vi.vertexAttributeDescriptionCount = 1;  // Position only.
+        pInfo.layout = instancedLayout_;
+        VK_CHECK(vkCreateGraphicsPipelines(ctx.device(), VK_NULL_HANDLE, 1, &pInfo, nullptr, &instancedPipeline_));
+        vkDestroyShaderModule(ctx.device(), ism, nullptr);
+    }
+
     // --- Sampler: NEAREST, CLAMP_TO_BORDER, white border (matches GL) ---
     VkSamplerCreateInfo sInfo{};
     sInfo.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
@@ -253,6 +304,9 @@ bool VkShadowMap::init(VkContext& ctx) {
 void VkShadowMap::destroy(VkContext& ctx) {
     if (sampler_)        { vkDestroySampler(ctx.device(), sampler_, nullptr); sampler_ = VK_NULL_HANDLE; }
     if (pipeline_)       { vkDestroyPipeline(ctx.device(), pipeline_, nullptr); pipeline_ = VK_NULL_HANDLE; }
+    if (instancedPipeline_) { vkDestroyPipeline(ctx.device(), instancedPipeline_, nullptr); instancedPipeline_ = VK_NULL_HANDLE; }
+    if (instancedLayout_) { vkDestroyPipelineLayout(ctx.device(), instancedLayout_, nullptr); instancedLayout_ = VK_NULL_HANDLE; }
+    if (instancedSetLayout_) { vkDestroyDescriptorSetLayout(ctx.device(), instancedSetLayout_, nullptr); instancedSetLayout_ = VK_NULL_HANDLE; }
     if (pipelineLayout_) { vkDestroyPipelineLayout(ctx.device(), pipelineLayout_, nullptr); pipelineLayout_ = VK_NULL_HANDLE; }
     if (setLayout_)      { vkDestroyDescriptorSetLayout(ctx.device(), setLayout_, nullptr); setLayout_ = VK_NULL_HANDLE; }
     if (framebuffer_)    { vkDestroyFramebuffer(ctx.device(), framebuffer_, nullptr); framebuffer_ = VK_NULL_HANDLE; }
@@ -265,7 +319,8 @@ void VkShadowMap::destroy(VkContext& ctx) {
 void VkShadowMap::record(VkCommandBuffer cb, VkDevice device, VkFrameRing& frames,
                          VkMeshStore& meshes,
                          const Mat4& lightViewProj,
-                         const std::vector<DrawCall>& draws) {
+                         const std::vector<DrawCall>& draws,
+                         std::span<const VkInstanceGroups::Draw> instanced) {
     if (!ok_ || cb == VK_NULL_HANDLE) return;
 
     // Begin depth-only render pass.
@@ -333,6 +388,40 @@ void VkShadowMap::record(VkCommandBuffer cb, VkDevice device, VkFrameRing& frame
         vkCmdBindVertexBuffers(cb, 0, 1, &mesh.vertexBuffer, offsets);
         vkCmdBindIndexBuffer(cb, mesh.indexBuffer, 0, VK_INDEX_TYPE_UINT32);
         vkCmdDrawIndexed(cb, mesh.indexCount, 1, 0, 0, 0);
+    }
+
+    if (!instanced.empty() && instancedPipeline_) {
+        vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, instancedPipeline_);
+        LightUbo ubo;
+        std::memcpy(ubo.lightModelViewProj, lightViewProj.m, sizeof(ubo.lightModelViewProj));
+        const VkDeviceSize uboOffset = frames.allocateUbo(&ubo, sizeof(ubo));
+        for (const VkInstanceGroups::Draw& d : instanced) {
+            VkDescriptorSetAllocateInfo dsInfo{};
+            dsInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+            dsInfo.descriptorPool = frames.current().descriptorPool;
+            dsInfo.descriptorSetCount = 1;
+            dsInfo.pSetLayouts = &instancedSetLayout_;
+            VkDescriptorSet set = VK_NULL_HANDLE;
+            VK_CHECK(vkAllocateDescriptorSets(device, &dsInfo, &set));
+            const VkDescriptorBufferInfo buffers[3] = {{frames.current().uboBuffer, uboOffset, sizeof(ubo)},
+                                                       {d.instances, 0, VK_WHOLE_SIZE},
+                                                       {d.visible, 0, VK_WHOLE_SIZE}};
+            VkWriteDescriptorSet writes[3]{};
+            for (std::uint32_t i = 0; i < 3; ++i) {
+                writes[i].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+                writes[i].dstSet = set;
+                writes[i].dstBinding = i;
+                writes[i].descriptorType = i == 0 ? VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER : VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+                writes[i].descriptorCount = 1;
+                writes[i].pBufferInfo = &buffers[i];
+            }
+            vkUpdateDescriptorSets(device, 3, writes, 0, nullptr);
+            vkCmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, instancedLayout_, 0, 1, &set, 0, nullptr);
+            VkDeviceSize offsets[1] = {0};
+            vkCmdBindVertexBuffers(cb, 0, 1, &d.vertexBuffer, offsets);
+            vkCmdBindIndexBuffer(cb, d.indexBuffer, 0, VK_INDEX_TYPE_UINT32);
+            vkCmdDrawIndexedIndirect(cb, d.indirect, d.indirectOffset, 1, sizeof(VkDrawIndexedIndirectCommand));
+        }
     }
 
     vkCmdEndRenderPass(cb);

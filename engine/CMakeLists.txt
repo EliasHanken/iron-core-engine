@@ -61,6 +61,8 @@ add_library(ironcore STATIC
   render/RendererFactory.cpp
   render/PostChainPlan.cpp
   render/GpuTimings.cpp
+  render/Culling.cpp
+  scene/MeshLod.cpp
   render/ReflectionPlane.cpp
   render/ProceduralSky.cpp
   render/TextureLoader.cpp
@@ -88,6 +90,10 @@ target_link_libraries(ironcore PUBLIC
 
 target_link_libraries(ironcore PRIVATE
   Jolt::Jolt)
+
+# Level-of-detail meshes are simplified with meshoptimizer (MIT).
+find_package(meshoptimizer CONFIG REQUIRED)
+target_link_libraries(ironcore PRIVATE meshoptimizer::meshoptimizer)
 
 # M29 — scene serialization uses nlohmann/json (header-only, vendored).
 # PUBLIC: M39 ReflectionIO.h includes <nlohmann/json.hpp> in its template
@@ -140,6 +146,7 @@ if (IRON_RENDER_BACKEND STREQUAL "vulkan")
       render/backends/vulkan/VkPostProcess.cpp
       render/backends/vulkan/VkVelocityPass.cpp
       render/backends/vulkan/VkGpuProfiler.cpp
+      render/backends/vulkan/VkInstanceGroups.cpp
     )
     target_compile_definitions(ironcore PUBLIC IRON_RENDER_BACKEND_VULKAN)
     target_link_libraries(ironcore PUBLIC

@@ -2,8 +2,10 @@
 
 #include "math/Mat4.h"
 #include "math/Vec.h"
+#include "render/Culling.h"
 #include "render/Fog.h"
 #include "render/GpuTimings.h"
+#include "render/InstanceGroup.h"
 #include "render/Handles.h"
 #include "render/HudBatch.h"
 #include "render/Light.h"
@@ -281,6 +283,30 @@ public:
     // How long each part of a recent frame took on the GPU, in the order the parts
     // ran. A frame or two old, so reading it never waits. Empty where unsupported.
     virtual std::span<const GpuTiming> gpuTimings() const { return {}; }
+
+    // --- Instance groups: GPU-driven drawing (see InstanceGroup.h) ---
+    // A shader for instance groups: its vertex stage reads each instance's transform
+    // from bindings 16 and 17. kInvalidHandle where unsupported.
+    virtual ShaderHandle createInstancedShader(const std::string& vertexSrc, const std::string& fragmentSrc) {
+        (void)vertexSrc; (void)fragmentSrc;
+        return kInvalidHandle;
+    }
+    ShaderHandle createInstancedLitShader() {
+        return createInstancedShader(standardLitInstancedVertSource(), standardLitFragSource());
+    }
+    // Groups draw every frame from then on, with no submit.
+    virtual InstanceGroupHandle createInstanceGroup(const InstanceGroupDesc& desc) {
+        (void)desc;
+        return kInvalidInstanceGroup;
+    }
+    // Replaces a group's instances. Cheap to call rarely; not meant for every frame.
+    virtual void setInstances(InstanceGroupHandle group, std::span<const Mat4> transforms) {
+        (void)group; (void)transforms;
+    }
+    // What culling did a frame or two ago, across every group.
+    virtual CullStats cullStats() const { return {}; }
+    // Keeps culling to the camera of the moment it was frozen, to see what it skips.
+    virtual void setCullingFrozen(bool frozen) { (void)frozen; }
 };
 
 } // namespace iron
