@@ -60,7 +60,7 @@ public:
             float        scale = 1.0f;
             float        albedo = 0.6f;
         };
-        std::array<Fluid, 3> fluids{};
+        std::array<Fluid, 4> fluids{};
         std::size_t fluidCount = 0;
         std::span<const HeatSource> heat;
         Mat4 view;

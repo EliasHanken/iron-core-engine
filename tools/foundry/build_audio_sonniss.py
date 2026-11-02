@@ -346,9 +346,13 @@ def build_shots(find, out):
         high = snap(high, 0.022)
         mech = snap(eq(read(find(L85_GUN), MECH_TAKES[k] - 0.003, length, 2), "highpass=f=700,lowpass=f=9000"), 0.05)
         n = min(p.shape[0] for p in (base, punch, body, high, mech))
-        x = (norm(base[:n], -18.0) + norm(punch[:n], -13.0) + norm(body[:n], -20.0) + norm(high[:n], -15.5) +
-             norm(mech[:n], -22.0) + norm(thump(n / RATE, 2), -20.0))
+        x = (norm(base[:n], -21.0) + norm(punch[:n], -13.0) + norm(body[:n], -20.0) + norm(high[:n], -15.5) +
+             norm(mech[:n], -22.0) + norm(thump(n / RATE, 2), -23.0))
         x = soft_clip(x * 1.2, 1.2)
+        # Mastered like a game weapon: compressed so the body holds up right behind
+        # the crack, then limited, so it's loud and dense rather than just peaky.
+        x = eq(x, "acompressor=threshold=-26dB:ratio=6:attack=0.5:release=80:makeup=12dB,"
+                  "alimiter=limit=0.89:attack=0.3:release=20")
         x = fade(trim_tail(x, -46.0), 0.0015, 0.07)
         x *= 0.89 / (np.abs(x).max() + 1e-9)
         write(os.path.join(out, f"shot{k + 1}.wav"), x)

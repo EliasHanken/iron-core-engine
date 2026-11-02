@@ -40,7 +40,7 @@ struct SmokeCollider {
 
 class Smoke {
 public:
-    static constexpr int kSlots = 2;
+    static constexpr int kSlots = 3;
     static constexpr int kMaxBoxes = 40;
     static constexpr int kMaxWakes = 16;
     static constexpr int kMaxBlasts = 4;
@@ -49,6 +49,7 @@ public:
     static constexpr float kHeight = 7.2f;
     static constexpr float kLife = 22.0f;    // Seconds from the first puff until it's gone.
     static constexpr float kPour = 9.0f;     // Seconds the canister keeps pouring.
+    static constexpr float kSootLife = 14.0f;  // A blast's soot, from the bang until it's gone.
 
     // The hall the air fills, in the world.
     struct Hall {
@@ -80,8 +81,12 @@ public:
         return true;
     }
 
-    // A canister has started pouring at `at` (where it came to rest).
-    void start(Vec3 at) {
+    // What a slot holds: a smoke grenade's white smoke, or a blast's soot.
+    enum class Kind : std::uint8_t { Canister, Soot };
+
+    // A canister has started pouring at `at` (where it came to rest), or a blast
+    // went off there and threw up its soot.
+    void start(Vec3 at, Kind kind = Kind::Canister) {
         if (!ready_) return;
         // A free slot, or the oldest.
         Slot* slot = &slots_[0];
@@ -93,6 +98,7 @@ public:
             if (s.age > slot->age) slot = &s;
         }
         slot->active = true;
+        slot->kind = kind;
         slot->age = 0.0f;
         slot->origin = {at.x, std::max(at.y - 0.2f, 0.0f), at.z};
         slot->emitter = at;
@@ -121,24 +127,36 @@ public:
         for (Slot& s : slots_) {
             if (!s.active) continue;
             s.age += dt;
-            if (s.age > kLife) {
+            const float life = s.kind == Kind::Canister ? kLife : kSootLife;
+            if (s.age > life) {
                 s.active = false;
                 continue;
             }
             Params p = params(s, world, colliders);
-            // A hard first burst, then a steady pour, then it gives out.
-            const float pour = s.age < 2.0f ? 34.0f : s.age < kPour ? 12.0f : 0.0f;
-            put(p.emitter, s.emitter - s.origin + Vec3{0.0f, 0.15f, 0.0f}, pour);
+            if (s.kind == Kind::Canister) {
+                // A hard first burst, then a steady pour, then it gives out.
+                const float pour = s.age < 2.0f ? 40.0f : s.age < kPour ? 15.0f : 0.0f;
+                put(p.emitter, s.emitter - s.origin + Vec3{0.0f, 0.15f, 0.0f}, pour);
+            } else {
+                // A blast: one violent belch of soot, hot, so it rolls up and over
+                // before it spreads and settles.
+                const float belch = s.age < 0.5f ? 160.0f : 0.0f;
+                put(p.emitter, s.emitter - s.origin + Vec3{0.0f, 0.4f, 0.0f}, belch);
+                put(p.heat, s.emitter - s.origin + Vec3{0.0f, 0.6f, 0.0f}, s.age < 1.2f ? 9.0f : 0.0f);
+                put(p.heatHalf, {1.0f, 0.7f, 1.0f}, 0.0f);
+            }
             put(p.wind, wind, 0.0f);
             s.fluid->setParams(&p);
             // It hangs, then thins away over the last few seconds.
-            const float fading = std::clamp((s.age - (kLife - 6.0f)) / 6.0f, 0.0f, 1.0f);
+            const float fading = std::clamp((s.age - (life - 6.0f)) / 6.0f, 0.0f, 1.0f);
             s.fluid->setDissipation(0.01f + 0.6f * fading * fading);
             for (int i = 0; i < steps; ++i) s.fluid->step();
             iron::FogFluid fog;
             fog.fluid = s.fluid.get();
-            fog.density = 1.4f;
-            fog.albedo = 0.95f;
+            // Thick enough that nothing shows through its heart: white smoke, or
+            // dark soot that drinks the light.
+            fog.density = s.kind == Kind::Canister ? 3.2f : 2.6f;
+            fog.albedo = s.kind == Kind::Canister ? 0.95f : 0.22f;
             fog.offset = s.origin;
             renderer.submitFogFluid(fog);
         }
@@ -168,6 +186,7 @@ private:
     struct Slot {
         std::unique_ptr<iron::FluidVolume> fluid;
         bool active = false;
+        Kind kind = Kind::Canister;
         float age = 0.0f;
         Vec3 origin{};
         Vec3 emitter{};

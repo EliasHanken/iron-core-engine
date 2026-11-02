@@ -1315,6 +1315,7 @@ int main(int argc, char** argv) {
             }
             stirs.blast(at);
             smoke.blast(at);
+            smoke.start(at, foundry::Smoke::Kind::Soot);
             const float distance = iron::length(at - eye);
             sound.blast(at, distance);
             sound.deafen(std::clamp(1.0f - distance / 16.0f, 0.0f, 1.0f));
@@ -1436,7 +1437,7 @@ int main(int argc, char** argv) {
         hitMarker = std::max(hitMarker - simDt, 0.0f);
 
         holes.update(simDt);
-        stirs.update(simDt, volumetric.wind);
+        stirs.update(simDt);
 
         // --- Bits and flashes age ---
         for (Bit& b : bits) {
@@ -1641,11 +1642,11 @@ int main(int argc, char** argv) {
         }
         // The effects, lit by roughly where the player is: open daylight or the hall.
         {
-            const float lit = 1.0f - 0.55f * indoorAt(eye);
-            vfx.setInput("dustColor", Vec3{0.42f, 0.4f, 0.37f} * lit);
-            vfx.setInput("chipColor", Vec3{0.3f, 0.29f, 0.27f} * lit);
-            vfx.setInput("muzzleColor", Vec3{0.5f, 0.5f, 0.5f} * lit);
-            vfx.setInput("blastColor", Vec3{0.24f, 0.22f, 0.2f} * lit);
+            const float lightLevel = 1.0f - 0.55f * indoorAt(eye);
+            vfx.setInput("dustColor", Vec3{0.42f, 0.4f, 0.37f} * lightLevel);
+            vfx.setInput("chipColor", Vec3{0.3f, 0.29f, 0.27f} * lightLevel);
+            vfx.setInput("muzzleColor", Vec3{0.5f, 0.5f, 0.5f} * lightLevel);
+            vfx.setInput("blastColor", Vec3{0.24f, 0.22f, 0.2f} * lightLevel);
             vfx.simulate(simDt);
             vfx.render(renderView, renderProjection);
         }
