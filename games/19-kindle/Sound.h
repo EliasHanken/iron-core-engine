@@ -5,10 +5,10 @@
 // no one-shot plays twice at the same pitch. A log of what played gives a recording
 // the same mix afterwards, because the capture path has no audio of its own.
 
-#include "AudioPak.h"
 #include "Swarm.h"
 
 #include "audio/AudioEngine.h"
+#include "common/AudioPak.h"
 
 #include <algorithm>
 #include <array>
@@ -19,6 +19,9 @@
 #include <string>
 
 namespace kindle {
+
+using audiopak::readAudioPak;
+using audiopak::scramble;
 
 class Sound {
 public:

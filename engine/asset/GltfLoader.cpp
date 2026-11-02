@@ -23,6 +23,7 @@
 #include <cstdint>
 #include <cstring>
 #include <filesystem>
+#include <map>
 #include <unordered_map>
 #include <utility>
 
@@ -777,6 +778,212 @@ std::optional<MeshData> loadGltfMesh(const std::string& path) {
     auto model = loadGltfModel(path);
     if (!model) return std::nullopt;
     return std::move(model->mesh);
+}
+
+namespace {
+
+// A node's own transform, from its matrix or its translation, rotation and scale.
+Mat4 nodeLocalMatrix(const tinygltf::Node& node) {
+    if (node.matrix.size() == 16) {
+        Mat4 m;
+        for (int c = 0; c < 4; ++c) {
+            for (int r = 0; r < 4; ++r) m.at(r, c) = static_cast<float>(node.matrix[c * 4 + r]);
+        }
+        return m;
+    }
+    Mat4 t = Mat4::identity();
+    if (node.translation.size() == 3) {
+        t = translation({static_cast<float>(node.translation[0]), static_cast<float>(node.translation[1]),
+                         static_cast<float>(node.translation[2])});
+    }
+    Mat4 r = Mat4::identity();
+    if (node.rotation.size() == 4) {
+        r = Quat{static_cast<float>(node.rotation[0]), static_cast<float>(node.rotation[1]),
+                 static_cast<float>(node.rotation[2]), static_cast<float>(node.rotation[3])}.toMat4();
+    }
+    Mat4 s = Mat4::identity();
+    if (node.scale.size() == 3) {
+        s = scaling({static_cast<float>(node.scale[0]), static_cast<float>(node.scale[1]),
+                     static_cast<float>(node.scale[2])});
+    }
+    return t * r * s;
+}
+
+// Tangents along +U, per vertex, from each triangle's UV gradient.
+std::vector<Vec3> computeTangents(const std::vector<Vec3>& p, const std::vector<Vec3>& n,
+                                  const std::vector<Vec2>& uv, const std::vector<std::uint32_t>& idx) {
+    std::vector<Vec3> t(p.size(), Vec3{0.0f, 0.0f, 0.0f});
+    for (std::size_t i = 0; i + 2 < idx.size(); i += 3) {
+        const std::uint32_t a = idx[i], b = idx[i + 1], c = idx[i + 2];
+        if (a >= p.size() || b >= p.size() || c >= p.size()) continue;
+        const Vec3 e1 = p[b] - p[a];
+        const Vec3 e2 = p[c] - p[a];
+        const float du1 = uv[b].x - uv[a].x, dv1 = uv[b].y - uv[a].y;
+        const float du2 = uv[c].x - uv[a].x, dv2 = uv[c].y - uv[a].y;
+        const float det = du1 * dv2 - du2 * dv1;
+        if (std::abs(det) < 1e-12f) continue;
+        const Vec3 tangent = (e1 * dv2 - e2 * dv1) * (1.0f / det);
+        t[a] = t[a] + tangent;
+        t[b] = t[b] + tangent;
+        t[c] = t[c] + tangent;
+    }
+    for (std::size_t i = 0; i < t.size(); ++i) {
+        // Gram-Schmidt against the normal, with a fallback for untextured faces.
+        Vec3 v = t[i] - n[i] * dot(n[i], t[i]);
+        if (dot(v, v) < 1e-12f) {
+            const Vec3 helper = std::abs(n[i].x) < 0.9f ? Vec3{1.0f, 0.0f, 0.0f} : Vec3{0.0f, 1.0f, 0.0f};
+            v = cross(helper, n[i]);
+        }
+        t[i] = normalize(v);
+    }
+    return t;
+}
+
+}  // namespace
+
+std::optional<GltfStaticModel> loadGltfStaticModel(const std::string& path, const GltfStaticOptions& options) {
+    tinygltf::Model model;
+    tinygltf::TinyGLTF loader;
+    std::string err, warn;
+    loader.SetImageLoader(
+        [](tinygltf::Image*, const int, std::string*, std::string*, int, int,
+           const unsigned char*, int, void*) { return true; },
+        nullptr);
+    const std::string ext = std::filesystem::path(path).extension().string();
+    const bool ok = (ext == ".glb" || ext == ".GLB") ? loader.LoadBinaryFromFile(&model, &err, &warn, path)
+                                                     : loader.LoadASCIIFromFile(&model, &err, &warn, path);
+    if (!warn.empty()) Log::warn("GltfLoader: %s", warn.c_str());
+    if (!ok || model.scenes.empty()) {
+        Log::error("GltfLoader: could not read %s: %s", path.c_str(), err.c_str());
+        return std::nullopt;
+    }
+    const int sceneIdx = model.defaultScene >= 0 && model.defaultScene < static_cast<int>(model.scenes.size())
+                             ? model.defaultScene : 0;
+    const std::filesystem::path dir = std::filesystem::absolute(path).parent_path();
+
+    const auto resolve = [&](int textureIndex) -> std::string {
+        if (textureIndex < 0 || textureIndex >= static_cast<int>(model.textures.size())) return {};
+        const auto& tex = model.textures[textureIndex];
+        if (tex.source < 0 || tex.source >= static_cast<int>(model.images.size())) return {};
+        const auto& img = model.images[tex.source];
+        if (img.uri.empty() || img.uri.substr(0, 5) == "data:") return {};
+        return (dir / img.uri).string();
+    };
+
+    GltfStaticModel out;
+    std::map<std::pair<std::string, int>, std::size_t> slots;  // (node, material) -> section
+    bool first = true;
+
+    // Depth first, carrying each node's world transform.
+    std::vector<std::pair<int, Mat4>> stack;
+    for (auto it = model.scenes[sceneIdx].nodes.rbegin(); it != model.scenes[sceneIdx].nodes.rend(); ++it) {
+        stack.emplace_back(*it, Mat4::identity());
+    }
+    while (!stack.empty()) {
+        const auto [nodeIdx, parent] = stack.back();
+        stack.pop_back();
+        if (nodeIdx < 0 || nodeIdx >= static_cast<int>(model.nodes.size())) continue;
+        const auto& node = model.nodes[nodeIdx];
+        const Mat4 world = parent * nodeLocalMatrix(node);
+        for (auto it = node.children.rbegin(); it != node.children.rend(); ++it) stack.emplace_back(*it, world);
+        if (node.mesh < 0 || node.mesh >= static_cast<int>(model.meshes.size())) continue;
+
+        // Normals go through the inverse transpose, so that non-uniform scale keeps them square.
+        const Mat4 normalMatrix = transpose(inverse(world));
+        for (const auto& prim : model.meshes[node.mesh].primitives) {
+            if (prim.mode != TINYGLTF_MODE_TRIANGLES && prim.mode != -1) continue;
+            const auto posIt = prim.attributes.find("POSITION");
+            if (posIt == prim.attributes.end()) continue;
+            const auto positions = readVec3Accessor(model, posIt->second);
+            if (positions.empty()) continue;
+            const std::size_t n = positions.size();
+            std::vector<std::uint32_t> indices = prim.indices >= 0 ? readIndicesAccessor(model, prim.indices)
+                                                                   : synthesizeSequentialIndices(n);
+            if (indices.empty()) continue;
+            std::vector<Vec3> normals;
+            if (const auto it = prim.attributes.find("NORMAL"); it != prim.attributes.end()) {
+                normals = readVec3Accessor(model, it->second);
+            }
+            if (normals.size() != n) normals = computeNormalsFromIndices(positions, indices);
+            std::vector<Vec2> uvs;
+            if (const auto it = prim.attributes.find("TEXCOORD_0"); it != prim.attributes.end()) {
+                uvs = readVec2Accessor(model, it->second);
+            }
+            if (uvs.size() != n) uvs.assign(n, Vec2{0.0f, 0.0f});
+            std::vector<Vec3> tangents;
+            if (const auto it = prim.attributes.find("TANGENT"); it != prim.attributes.end()) {
+                tangents = readVec4AsVec3Accessor(model, it->second);
+            }
+            if (tangents.size() != n) tangents = computeTangents(positions, normals, uvs, indices);
+
+            const auto key = std::make_pair(options.splitByNode ? node.name : std::string{}, prim.material);
+            auto slot = slots.find(key);
+            if (slot == slots.end()) {
+                GltfSection section;
+                section.node = key.first;
+                if (prim.material >= 0 && prim.material < static_cast<int>(model.materials.size())) {
+                    const auto& mat = model.materials[prim.material];
+                    section.materialPaths.albedo = resolve(mat.pbrMetallicRoughness.baseColorTexture.index);
+                    section.materialPaths.normal = resolve(mat.normalTexture.index);
+                    section.materialPaths.metalRoughness =
+                        resolve(mat.pbrMetallicRoughness.metallicRoughnessTexture.index);
+                    section.materialPaths.occlusion = resolve(mat.occlusionTexture.index);
+                    section.materialPaths.emissive = resolve(mat.emissiveTexture.index);
+                    section.metallicFactor = static_cast<float>(mat.pbrMetallicRoughness.metallicFactor);
+                    section.roughnessFactor = static_cast<float>(mat.pbrMetallicRoughness.roughnessFactor);
+                    const auto& bcf = mat.pbrMetallicRoughness.baseColorFactor;
+                    if (bcf.size() >= 3) {
+                        section.baseColorFactor = {static_cast<float>(bcf[0]), static_cast<float>(bcf[1]),
+                                                   static_cast<float>(bcf[2])};
+                    }
+                    const auto& ef = mat.emissiveFactor;
+                    if (ef.size() >= 3) {
+                        section.emissiveFactor = {static_cast<float>(ef[0]), static_cast<float>(ef[1]),
+                                                  static_cast<float>(ef[2])};
+                    }
+                    section.normalScale = static_cast<float>(mat.normalTexture.scale);
+                }
+                out.sections.push_back(std::move(section));
+                slot = slots.emplace(key, out.sections.size() - 1).first;
+            }
+
+            MeshData& mesh = out.sections[slot->second].mesh;
+            const auto base = static_cast<std::uint32_t>(mesh.vertices.size());
+            for (std::size_t i = 0; i < n; ++i) {
+                const Vec4 p = world * Vec4{positions[i].x, positions[i].y, positions[i].z, 1.0f};
+                const Vec4 nn = normalMatrix * Vec4{normals[i].x, normals[i].y, normals[i].z, 0.0f};
+                const Vec4 tt = world * Vec4{tangents[i].x, tangents[i].y, tangents[i].z, 0.0f};
+                Vertex v;
+                v.position = {p.x, p.y, p.z};
+                v.normal = normalize(Vec3{nn.x, nn.y, nn.z});
+                v.tangent = normalize(Vec3{tt.x, tt.y, tt.z});
+                v.uv = uvs[i];
+                mesh.vertices.push_back(v);
+                if (first) {
+                    out.bounds = {v.position, v.position};
+                    first = false;
+                }
+                out.bounds.min = {std::min(out.bounds.min.x, p.x), std::min(out.bounds.min.y, p.y),
+                                  std::min(out.bounds.min.z, p.z)};
+                out.bounds.max = {std::max(out.bounds.max.x, p.x), std::max(out.bounds.max.y, p.y),
+                                  std::max(out.bounds.max.z, p.z)};
+            }
+            // A mirrored node flips its triangles' winding, so flip it back.
+            const bool mirrored = dot(cross(Vec3{world.at(0, 0), world.at(1, 0), world.at(2, 0)},
+                                            Vec3{world.at(0, 1), world.at(1, 1), world.at(2, 1)}),
+                                      Vec3{world.at(0, 2), world.at(1, 2), world.at(2, 2)}) < 0.0f;
+            for (std::size_t i = 0; i + 2 < indices.size(); i += 3) {
+                mesh.indices.push_back(base + indices[i]);
+                mesh.indices.push_back(base + indices[mirrored ? i + 2 : i + 1]);
+                mesh.indices.push_back(base + indices[mirrored ? i + 1 : i + 2]);
+            }
+        }
+    }
+    if (out.sections.empty()) {
+        Log::error("GltfLoader: no triangle meshes in %s", path.c_str());
+        return std::nullopt;
+    }
+    return out;
 }
 
 const AnimationClip* GltfModel::findClip(std::string_view name) const {

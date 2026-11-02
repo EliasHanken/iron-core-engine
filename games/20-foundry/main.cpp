@@ -17,6 +17,8 @@
 #include "common/TrackedText.h"
 #include "Gun.h"
 #include "Level.h"
+#include "Models.h"
+#include "Sound.h"
 
 #include "audio/AudioEngine.h"
 #include "core/Application.h"
@@ -62,6 +64,7 @@ constexpr float kRecordSeconds = 34.0f;
 constexpr std::uint32_t kGunMotionId = 1;
 constexpr std::uint32_t kPropMotionBase = 100;
 constexpr std::uint32_t kPlateMotionBase = 400;
+constexpr std::uint32_t kPlacedMotionBase = 600;
 constexpr std::uint32_t kBitMotionBase = 1000;
 
 // Low and gold, behind the yard: long shadows reach for the hall.
@@ -148,7 +151,7 @@ std::array<iron::Material, static_cast<std::size_t>(Look::Count)> loadLooks(iron
     at(Look::ConcreteWall) = loadMaterial(renderer, {"textures/concrete_wall_008", "jpg", true}, 0.3f, 0.0f);
     at(Look::Brick) = loadMaterial(renderer, {"cc0/brick", "png", false}, 0.35f, 0.0f, {0.85f, 0.78f, 0.74f});
     at(Look::Rust) = loadMaterial(renderer, {"textures/rusty_metal_02", "jpg", true}, 0.45f, 0.35f,
-                                  {0.5f, 0.42f, 0.38f});
+                                  {0.42f, 0.37f, 0.35f});
     at(Look::Corrugated) = loadMaterial(renderer, {"textures/corrugated_iron_02", "jpg", true}, 0.4f, 0.6f);
     at(Look::Shutter) = loadMaterial(renderer, {"textures/painted_metal_shutter", "jpg", true}, 0.3f, 0.4f);
     at(Look::Steel) = loadMaterial(renderer, {"cc0/metal", "png", false}, 0.8f, 1.0f, {0.55f, 0.55f, 0.58f});
@@ -215,6 +218,7 @@ struct Bit {
     float gravity = 9.8f;
     float bounce = 0.0f; // 0 dies on the ground.
     bool  brass = false;
+    bool  landed = false;  // Brass rings once, on its first bounce.
     std::uint32_t motionId = 0;
 };
 
@@ -491,15 +495,14 @@ struct ImpactStyle {
     int   sparks;
     Vec3  chip;       // Dull bits, as a colour.
     int   chips;
-    float pitch;      // Of the hit sound.
 };
 
 ImpactStyle impactStyle(Surface surface) {
     switch (surface) {
-        case Surface::Metal: return {{14.0f, 7.0f, 2.2f}, 9, {0.2f, 0.2f, 0.2f}, 1, 1.25f};
-        case Surface::Brick: return {{6.0f, 2.6f, 0.8f}, 2, {0.42f, 0.2f, 0.14f}, 7, 0.85f};
-        case Surface::Wood: return {{0.0f, 0.0f, 0.0f}, 0, {0.45f, 0.33f, 0.2f}, 7, 0.7f};
-        default: return {{5.0f, 2.4f, 0.8f}, 2, {0.5f, 0.49f, 0.46f}, 8, 0.95f};
+        case Surface::Metal: return {{14.0f, 7.0f, 2.2f}, 9, {0.2f, 0.2f, 0.2f}, 1};
+        case Surface::Brick: return {{6.0f, 2.6f, 0.8f}, 2, {0.42f, 0.2f, 0.14f}, 7};
+        case Surface::Wood: return {{0.0f, 0.0f, 0.0f}, 0, {0.45f, 0.33f, 0.2f}, 7};
+        default: return {{5.0f, 2.4f, 0.8f}, 2, {0.5f, 0.49f, 0.46f}, 8};
     }
 }
 
@@ -589,6 +592,8 @@ int main(int argc, char** argv) {
         iron::MeshHandle mesh;
         Look look;
         std::uint32_t motionId;
+        const foundry::Model* model = nullptr;  // Drawn instead of the mesh, when set.
+        Mat4 offset = Mat4::identity();           // From the body's centre to the model's.
     };
     std::vector<Dynamic> dynamics;
     for (std::size_t i = 0; i < level.props.size(); ++i) {
@@ -613,6 +618,35 @@ int main(int argc, char** argv) {
         iron::appendBox(data, {p.size.x * 0.3f, p.size.y * 0.5f + kHanger * 0.5f, 0.0f}, {0.025f, kHanger, 0.025f});
         dynamics.push_back({plate, renderer.createMesh(data), Look::Shutter,
                             kPlateMotionBase + static_cast<std::uint32_t>(i)});
+    }
+
+    // Modelled props: a fitted box each for physics, and the model's sections to draw.
+    foundry::ModelLibrary models(renderer, iron::executableDir() + "/assets/models/");
+    struct PlacedStatic {
+        const foundry::Model* model;
+        Mat4 transform;
+    };
+    std::vector<PlacedStatic> placedStatics;
+    for (std::size_t i = 0; i < level.placed.size(); ++i) {
+        const foundry::Placed& p = level.placed[i];
+        const foundry::Model* model = models.get(p.model);
+        if (!model) continue;
+        const Vec3 size = model->size() * p.scale;
+        const Vec3 center = model->center();
+        // From the model's own space to one centred on its box.
+        const Mat4 centred = iron::scaling({p.scale, p.scale, p.scale}) * iron::translation(center * -1.0f);
+        const iron::Quat rotation = iron::Quat::fromAxisAngle({0.0f, 1.0f, 0.0f}, p.yaw);
+        const Vec3 boxCenter = p.base + Vec3{0.0f, size.y * 0.5f, 0.0f};
+        if (p.mass > 0.0f) {
+            const iron::BodyId body = world.createDynamicBox(boxCenter, size * 0.5f, p.mass, rotation);
+            surfaces[body.value] = p.surface;
+            dynamics.push_back({body, iron::kInvalidHandle, Look::Steel,
+                                kPlacedMotionBase + static_cast<std::uint32_t>(i), model, centred});
+        } else {
+            const iron::BodyId body = world.createStaticBox(boxCenter, size * 0.5f, rotation);
+            surfaces[body.value] = p.surface;
+            placedStatics.push_back({model, iron::translation(boxCenter) * iron::rotationY(p.yaw) * centred});
+        }
     }
 
     const iron::ShaderHandle lit = renderer.createStandardLitShader();
@@ -651,19 +685,22 @@ int main(int argc, char** argv) {
     foundry::Gun gun;
 
     // --- Sound ---
-    iron::AudioEngine audio;
-    const bool hasAudio = audio.init();
-    const std::string sfx = iron::executableDir() + "/assets/sfx/";
-    const iron::SoundHandle shotSound = hasAudio ? audio.loadSound(sfx + "gunshot-rifle.wav") : iron::kInvalidSound;
-    const iron::SoundHandle hitSound = hasAudio ? audio.loadSound(sfx + "hit.wav") : iron::kInvalidSound;
-    const iron::SoundHandle jumpSound = hasAudio ? audio.loadSound(sfx + "jump.wav") : iron::kInvalidSound;
-    std::array<iron::SoundHandle, 4> stepSounds{};
-    for (int i = 0; i < 4; ++i) {
-        char name[32];
-        std::snprintf(name, sizeof(name), "footstep-%02d.wav", i + 1);
-        stepSounds[static_cast<std::size_t>(i)] = hasAudio ? audio.loadSound(sfx + name) : iron::kInvalidSound;
-    }
+    foundry::Sound sound;
+    sound.init(iron::executableDir() + "/assets/", {0.0f, 1.8f, foundry::layout::kHallBack + 6.6f});
+    iron::Log::info("foundry: %s sound set", sound.licensed() ? "licensed" : "free");
     foundry::Random noise;
+
+    // How far into the hall a point is, 0 outside to 1 a few metres in.
+    const auto indoorAt = [](Vec3 p) {
+        using namespace foundry::layout;
+        const float depth = std::clamp((kHallFront + 1.0f - p.z) / 6.0f, 0.0f, 1.0f);
+        const float side = std::clamp((kHallHalfWidth - std::abs(p.x)) / 1.0f, 0.0f, 1.0f);
+        return depth * side;
+    };
+    const auto floorAt = [&](Vec3 feet) {
+        if (feet.y > 4.5f && feet.x < -11.4f) return foundry::Floor::Metal;
+        return indoorAt(feet) > 0.5f ? foundry::Floor::Concrete : foundry::Floor::Ground;
+    };
 
     Interface screen;
     if (!screen.load(renderer, app.window().height())) {
@@ -806,14 +843,14 @@ int main(int argc, char** argv) {
             const float dlen = iron::length(delta);
             horizontal = dlen <= reach ? wish : horizontal + delta * (reach / dlen);
             const bool jumping = wantJump && grounded;
-            if (jumping && jumpSound) audio.playSoundLocal(jumpSound, 0.25f);
+            if (jumping) sound.step(floorAt(body.footPosition()), body.footPosition(), 0.6f);
             body.update(kPhysicsStep, horizontal, wantJump, grounded);
             wantJump = false;
             world.step(kPhysicsStep);
             const bool nowGrounded = body.isGrounded();
             if (nowGrounded && !grounded && lastFallSpeed < -3.0f) {
                 landDipVelocity -= std::min(-lastFallSpeed * 0.06f, 0.6f);
-                if (stepSounds[0]) audio.playSoundLocal(stepSounds[1], 0.4f, 0.9f);
+                sound.step(floorAt(body.footPosition()), body.footPosition(), 1.0f);
             }
             lastFallSpeed = body.velocity().y;
             grounded = nowGrounded;
@@ -830,8 +867,7 @@ int main(int argc, char** argv) {
             const float stride = running ? 2.4f : 1.9f;
             if (stepDistance > stride) {
                 stepDistance -= stride;
-                const auto s = stepSounds[static_cast<std::size_t>(noise.next() * 3.99f)];
-                if (s) audio.playSoundAt(s, feet, running ? 0.42f : 0.3f, 0.92f + noise.next() * 0.16f);
+                sound.step(floorAt(feet), feet, running ? 0.8f : 0.55f);
             }
         }
 
@@ -861,7 +897,7 @@ int main(int argc, char** argv) {
         for (int i = 0; i < shots; ++i) {
             ++shotCount;
             flashRoll = noise.next() * kPi;
-            if (shotSound) audio.playSoundLocal(shotSound, 0.5f, 0.94f + noise.next() * 0.1f);
+            sound.shot();
             const Vec2 dev = gun.shotDeviation();
             const Vec3 dir = lookDirection(viewYaw + dev.x, viewPitch + dev.y);
             const iron::PhysicsWorld::RaycastHit hit = world.raycast(eye, dir, 300.0f);
@@ -898,13 +934,16 @@ int main(int argc, char** argv) {
             const auto found = surfaces.find(hit.body.value);
             const Surface surface = found != surfaces.end() ? found->second : Surface::Concrete;
             const ImpactStyle style = impactStyle(surface);
-            if (hitSound) audio.playSoundAt(hitSound, hit.point, 0.35f, style.pitch * (0.92f + noise.next() * 0.16f));
 
             // Push what can move; mark the hit when it's a target.
             world.applyImpulseAtPoint(hit.body, dir * 9.0f, hit.point);
+            bool plate = false;
             for (const Dynamic& d : dynamics) {
-                if (d.body.value == hit.body.value) hitMarker = 0.18f;
+                if (d.body.value != hit.body.value) continue;
+                hitMarker = 0.18f;
+                plate = d.motionId >= kPlateMotionBase;
             }
+            sound.impact(surface, plate, hit.point);
 
             const Vec3 n = hit.normal;
             const Vec3 reflect = dir - n * (2.0f * iron::dot(dir, n));
@@ -948,6 +987,10 @@ int main(int argc, char** argv) {
             b.velocity.y -= b.gravity * simDt;
             b.position = b.position + b.velocity * simDt;
             if (b.position.y < 0.0f && b.velocity.y < 0.0f) {
+                if (b.brass && !b.landed) {
+                    b.landed = true;
+                    sound.casing(b.position);
+                }
                 if (b.bounce > 0.0f && std::abs(b.velocity.y) > 0.6f) {
                     b.position.y = 0.0f;
                     b.velocity = {b.velocity.x * 0.6f, -b.velocity.y * b.bounce, b.velocity.z * 0.6f};
@@ -999,7 +1042,25 @@ int main(int argc, char** argv) {
             renderer.submit(call);
             ++draws;
         }
+        const auto drawModel = [&](const foundry::Model& model, const Mat4& transform, std::uint32_t motionId) {
+            for (std::size_t s = 0; s < model.sections.size(); ++s) {
+                iron::DrawCall call;
+                call.mesh = model.sections[s].mesh;
+                call.shader = lit;
+                call.model = transform;
+                call.material = model.sections[s].material;
+                // Each section moves with the rest, but needs its own history.
+                call.motionId = motionId == 0 ? 0 : motionId * 8u + static_cast<std::uint32_t>(s);
+                renderer.submit(call);
+                ++draws;
+            }
+        };
+        for (const PlacedStatic& p : placedStatics) drawModel(*p.model, p.transform, 0);
         for (const Dynamic& d : dynamics) {
+            if (d.model) {
+                drawModel(*d.model, world.bodyTransform(d.body) * d.offset, d.motionId);
+                continue;
+            }
             iron::DrawCall call;
             call.mesh = d.mesh;
             call.shader = lit;
@@ -1051,7 +1112,8 @@ int main(int argc, char** argv) {
             }
         }
 
-        if (hasAudio) audio.setListener(eye, aimDir, {0.0f, 1.0f, 0.0f});
+        sound.reload(gun.reloadProgress(), gun.reloading());
+        sound.update(simDt, eye, aimDir, indoorAt(eye), seconds);
 
         Interface::State state;
         state.seconds = seconds;

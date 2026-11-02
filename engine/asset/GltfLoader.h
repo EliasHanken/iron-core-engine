@@ -1,6 +1,7 @@
 #pragma once
 
 #include "asset/Animation.h"
+#include "math/Aabb.h"
 #include "scene/Mesh.h"
 #include "scene/SkinnedMesh.h"
 
@@ -58,5 +59,36 @@ std::optional<GltfModel> loadGltfModel(const std::string& path);
 // Backward-compatible: returns just the mesh (drops material paths).
 // Implemented as a thin wrapper over loadGltfModel.
 std::optional<MeshData> loadGltfMesh(const std::string& path);
+
+// One part of a static model that shares a material: a material slot, in Unreal's
+// terms. Vertices are in the model's space, with every node's transform applied.
+struct GltfSection {
+    std::string       node;           // The node it came from, when split by node.
+    MeshData          mesh;
+    GltfMaterialPaths materialPaths;
+    float metallicFactor  = 1.0f;
+    float roughnessFactor = 1.0f;
+    Vec3  baseColorFactor{1.0f, 1.0f, 1.0f};
+    Vec3  emissiveFactor{0.0f, 0.0f, 0.0f};
+    float normalScale     = 1.0f;
+};
+
+// Every mesh in a glTF scene, not just the first: the whole node tree is walked,
+// node transforms are baked into the vertices, and primitives are merged by
+// material. Tangents missing from the file are computed from the UVs. Skins and
+// animation are ignored; use loadGltfModel for a skinned mesh.
+struct GltfStaticModel {
+    std::vector<GltfSection> sections;
+    Aabb bounds{};
+};
+
+struct GltfStaticOptions {
+    // Keep each node's primitives apart, so that parts can move on their own (a
+    // rifle's bolt, a magazine). Otherwise everything with one material merges.
+    bool splitByNode = false;
+};
+
+std::optional<GltfStaticModel> loadGltfStaticModel(const std::string& path,
+                                                   const GltfStaticOptions& options = {});
 
 }  // namespace iron

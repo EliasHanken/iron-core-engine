@@ -46,6 +46,24 @@ From the [Khronos glTF Sample Assets](https://github.com/KhronosGroup/glTF-Sampl
 | Box, Box Textured | `tests/assets/gltf/` | Cesium | CC BY 4.0. The Cesium logo is a trademark of Cesium |
 | Triangle | `tests/assets/gltf/` | Khronos | CC0 |
 
+Foundry's props, in `games/20-foundry/assets/models/`, all come from [Poly Haven](https://polyhaven.com) under CC0, with each model's authors in its `CREDITS.txt`:
+
+| Models | Authors |
+|---|---|
+| Barrel_01, Barrel_02, modular_industrial_pipes_01 | Jorge Camacho |
+| barrel_03 | Serhii Khromov |
+| wooden_crate_02 | James Ray Cock, Jurita Burger |
+| steel_frame_shelves_01, portable_generator | James Ray Cock |
+| old_military_crate | Jack Mava |
+| propane_tank | Slinc |
+| small_lpg_tank | Ulan Cabanilla |
+| hanging_industrial_lamp | Kuutti Siitonen |
+| concrete_road_barrier_02 | Amal Kumar |
+| old_military_compressor | Brian Speight |
+| metal_jerrycan | Sean Buckley |
+| cement_bag | PierreB3D |
+| old_tyre | MP |
+
 The Damaged Helmet is only a viewer and editor sample. Anyone building a commercial product from this repo should remove it.
 
 ## Textures and environments
@@ -80,4 +98,4 @@ These files have no recorded author, so they aren't covered by `LICENSE` and no 
 
 ## Not in this repository
 
-The downloadable build of Kindle also contains licensed sound recordings and a score, packed in `audio.pak`. They aren't part of this repository, aren't covered by `LICENSE`, and may not be extracted or redistributed as sound effects.
+The downloadable builds of Kindle and Foundry also contain licensed sound recordings (and Kindle a score), packed in `audio.pak`. They aren't part of this repository, aren't covered by `LICENSE`, and may not be extracted or redistributed as sound effects.

@@ -46,3 +46,4 @@ games/19-kindle/assets/audio-hq/
 # Local Cloudflare Worker state.
 .wrangler/
 .dev.vars
+games/20-foundry/assets/audio-hq/

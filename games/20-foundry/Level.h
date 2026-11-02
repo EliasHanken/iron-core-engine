@@ -69,11 +69,23 @@ struct Lamp {
     float range;
 };
 
+// A modelled prop from assets/models, standing with its base at `base`. With a mass
+// it's a physics body, a box fitted to the model; without one it stays put.
+struct Placed {
+    const char* model;
+    Vec3    base;
+    float   yaw = 0.0f;
+    float   scale = 1.0f;
+    float   mass = 0.0f;
+    Surface surface = Surface::Metal;
+};
+
 struct Level {
-    std::vector<Block> blocks;
-    std::vector<Prop>  props;
-    std::vector<Plate> plates;
-    std::vector<Lamp>  lamps;
+    std::vector<Block>  blocks;
+    std::vector<Prop>   props;
+    std::vector<Plate>  plates;
+    std::vector<Lamp>   lamps;
+    std::vector<Placed> placed;
     Vec3  spawn{0.0f, 0.0f, 24.0f};
     float spawnYaw = 0.0f;  // Facing -z, toward the hall.
 };
@@ -140,6 +152,67 @@ inline void lampPost(Level& level, Vec3 base, float height) {
 }
 
 }  // namespace layout
+
+// The modelled props: barrels and gas bottles that can be knocked about, and the
+// heavier things a steelworks leaves lying around.
+inline void placeProps(Level& level) {
+    using namespace layout;
+    auto& p = level.placed;
+    const auto barrel = [&](Vec3 at, int kind, float yaw) {
+        static const char* const kinds[3] = {"Barrel_01", "Barrel_02", "barrel_03"};
+        p.push_back({kinds[kind % 3], at, yaw, 1.0f, 45.0f, Surface::Metal});
+    };
+
+    // Yard: barrels by the containers and the hall door.
+    barrel({-18.4f, 0.0f, 8.2f}, 0, 0.3f);
+    barrel({-17.7f, 0.0f, 8.9f}, 1, 1.1f);
+    barrel({-17.3f, 0.0f, 8.0f}, 2, 2.0f);
+    barrel({19.6f, 0.0f, 9.6f}, 2, 0.7f);
+    barrel({20.3f, 0.0f, 10.3f}, 0, 2.6f);
+    barrel({-7.2f, 0.0f, -17.4f}, 1, 0.2f);
+    barrel({-6.4f, 0.0f, -17.0f}, 0, 1.4f);
+    p.push_back({"metal_jerrycan", {-16.8f, 0.0f, 9.5f}, 0.6f, 1.0f, 8.0f, Surface::Metal});
+    p.push_back({"metal_jerrycan", {5.6f, 0.0f, 3.2f}, 2.1f, 1.0f, 8.0f, Surface::Metal});
+    for (Vec3 at : {Vec3{13.8f, 0.0f, -18.3f}, Vec3{14.3f, 0.0f, -18.6f}, Vec3{13.3f, 0.0f, -18.7f}}) {
+        p.push_back({"propane_tank", at, at.x, 1.0f, 22.0f, Surface::Metal});
+    }
+    p.push_back({"small_lpg_tank", {12.6f, 0.0f, -18.4f}, 0.4f, 1.0f, 30.0f, Surface::Metal});
+
+    // Barriers along the yard, and two by the door, pushed aside.
+    for (float x : {-12.4f, -10.8f, -9.2f}) {
+        p.push_back({"concrete_road_barrier_02", {x, 0.0f, 16.5f}, 0.0f, 1.0f, 0.0f, Surface::Concrete});
+    }
+    p.push_back({"concrete_road_barrier_02", {8.0f, 0.0f, -15.2f}, 0.35f, 1.0f, 0.0f, Surface::Concrete});
+    p.push_back({"concrete_road_barrier_02", {9.7f, 0.0f, -15.6f}, 0.15f, 1.0f, 0.0f, Surface::Concrete});
+
+    // Machinery and stores.
+    p.push_back({"old_military_compressor", {12.0f, 0.0f, -4.0f}, 1.2f, 1.0f, 0.0f, Surface::Metal});
+    p.push_back({"portable_generator", {6.0f, 0.0f, 22.0f}, 2.4f, 1.0f, 0.0f, Surface::Metal});
+    p.push_back({"old_military_crate", {2.0f, 0.0f, 26.0f}, 0.3f, 1.0f, 0.0f, Surface::Wood});
+    p.push_back({"old_tyre", {23.6f, 0.0f, 7.6f}, 1.6f, 1.0f, 0.0f, Surface::Concrete});
+    for (int i = 0; i < 4; ++i) {
+        p.push_back({"cement_bag", {-10.0f + 0.05f * static_cast<float>(i % 2), 0.18f * static_cast<float>(i), -15.6f},
+                     0.1f * static_cast<float>(i), 1.0f, 0.0f, Surface::Concrete});
+    }
+    for (Vec3 at : {Vec3{-4.0f, 0.0f, 12.0f}, Vec3{10.6f, 0.0f, 15.2f}, Vec3{-3.4f, 0.0f, 13.4f}}) {
+        p.push_back({"wooden_crate_02", at, at.z, 1.0f, 15.0f, Surface::Wood});
+    }
+
+    // Hall: shelving down the right wall, pipework on the left, stores by the furnace.
+    for (float z : {-26.0f, -30.0f, -34.0f}) {
+        p.push_back({"steel_frame_shelves_01", {kHallHalfWidth - 0.65f, 0.0f, z}, 1.5708f, 0.1f, 0.0f, Surface::Metal});
+    }
+    for (float z : {-36.0f, -37.4f, -38.8f, -44.0f, -45.4f}) {
+        p.push_back({"modular_industrial_pipes_01", {-kHallHalfWidth + 0.5f, 1.0f, z}, 1.5708f, 1.0f, 0.0f,
+                     Surface::Metal});
+    }
+    p.push_back({"portable_generator", {-13.6f, 0.0f, -30.0f}, 0.4f, 1.0f, 0.0f, Surface::Metal});
+    p.push_back({"old_military_crate", {9.0f, 0.0f, -58.5f}, 1.2f, 1.0f, 0.0f, Surface::Wood});
+    barrel({-6.2f, 0.0f, -56.0f}, 0, 0.0f);
+    barrel({-6.9f, 0.0f, -55.2f}, 1, 0.8f);
+    barrel({6.4f, 0.0f, -56.8f}, 2, 1.6f);
+    p.push_back({"metal_jerrycan", {7.0f, 0.0f, -55.9f}, 0.3f, 1.0f, 8.0f, Surface::Metal});
+}
 
 inline Level buildLevel() {
     using namespace layout;
@@ -213,9 +286,10 @@ inline Level buildLevel() {
     for (float x : {-8.0f, 8.0f}) crateStack(level, {x, 0.0f, -40.0f}, 3, 2);
     crateStack(level, {12.5f, 0.0f, -54.0f}, 4, 3);
 
-    // Hall lamps: a few, hung low and warm.
+    // Hall lamps: a few, hung from the trusses, warm. The light sits in the shade.
     for (float z : {-27.0f, -41.0f, -55.0f}) {
-        level.lamps.push_back({{0.0f, 9.0f, z}, {1.0f, 0.78f, 0.55f}, 3.5f, 15.0f});
+        level.placed.push_back({"hanging_industrial_lamp", {0.0f, h - 0.8f - 1.36f, z}});
+        level.lamps.push_back({{0.0f, h - 0.8f - 1.25f, z}, {1.0f, 0.78f, 0.55f}, 4.5f, 16.0f});
     }
 
     // --- The yard ---
@@ -256,6 +330,7 @@ inline Level buildLevel() {
         lampPost(level, at, 6.5f);
     }
 
+    placeProps(level);
     return level;
 }
 
