@@ -67,6 +67,7 @@ struct Lamp {
     Vec3  color;
     float intensity;
     float range;
+    float spotAngle = 0.0f;  // A cone's half-angle shining straight down, or 0 all round.
 };
 
 // A modelled prop from assets/models, standing with its base at `base`. With a mass
@@ -288,10 +289,13 @@ inline Level buildLevel() {
     for (float x : {-8.0f, 8.0f}) crateStack(level, {x, 0.0f, -40.0f}, 3, 2);
     crateStack(level, {12.5f, 0.0f, -54.0f}, 4, 3);
 
-    // Hall lamps: a few, hung from the trusses, warm. The light sits in the shade.
-    for (float z : {-27.0f, -41.0f, -55.0f}) {
-        level.placed.push_back({"hanging_industrial_lamp", {0.0f, h - 0.8f - 1.36f, z}});
-        level.lamps.push_back({{0.0f, h - 0.8f - 1.25f, z}, {1.0f, 0.78f, 0.55f}, 4.5f, 16.0f});
+    // Hall lamps: three rows hung from the trusses, warm, each shade throwing a cone
+    // onto the floor. Fifteen lights, more than a draw could carry before clustering.
+    for (float x : {-7.0f, 0.0f, 7.0f}) {
+        for (float z : {-27.0f, -34.0f, -41.0f, -48.0f, -55.0f}) {
+            level.placed.push_back({"hanging_industrial_lamp", {x, h - 0.8f - 1.36f, z}});
+            level.lamps.push_back({{x, h - 0.8f - 1.3f, z}, {1.0f, 0.78f, 0.55f}, 3.2f, 16.0f, 0.75f});
+        }
     }
 
     // --- The yard ---

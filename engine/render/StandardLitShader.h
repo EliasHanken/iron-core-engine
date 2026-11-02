@@ -237,6 +237,27 @@ layout(set = 0, binding = 13) uniform sampler2D   uHeightMap;     // M50a — PO
 layout(set = 0, binding = 14) uniform sampler3D   uLightVolume;   // M73 — light from particles
 layout(set = 0, binding = 15) uniform sampler2D   uPointShadow;   // M73 — occluder distance, latitude-longitude
 
+// Clustered lights and decals: the frame's set, shared by every lit draw. Each
+// cluster lists up to 64 lights then up to 32 decals, at a stride of 96.
+layout(std140, set = 1, binding = 0) uniform Clusters { mat4 view; vec4 proj; vec4 grid; vec4 counts; vec4 screen; } cl;
+struct ClusterLight { vec4 positionRange; vec4 colorIntensity; vec4 spot; vec4 spot2; };
+struct ClusterDecal { mat4 worldToDecal; vec4 axis; vec4 tint; vec4 glow; vec4 sphere; };
+layout(std430, set = 1, binding = 1) readonly buffer ClusterLights { ClusterLight clLights[]; };
+layout(std430, set = 1, binding = 2) readonly buffer ClusterDecals { ClusterDecal clDecals[]; };
+layout(std430, set = 1, binding = 3) readonly buffer ClusterCells { uvec4 clCells[]; };
+layout(std430, set = 1, binding = 4) readonly buffer ClusterItems { uint clItems[]; };
+layout(set = 1, binding = 5) uniform sampler2DArray uDecalTextures;
+
+// The cluster this fragment falls in: its screen tile, and a depth slice spaced
+// logarithmically from near to far.
+uint clusterOf(vec3 worldPos) {
+    vec2 tile = gl_FragCoord.xy / cl.screen.xy * cl.grid.xy;
+    float z = -(cl.view * vec4(worldPos, 1.0)).z;
+    float slice = log(max(z, cl.proj.z) / cl.proj.z) / cl.counts.z * cl.grid.z;
+    ivec3 g = clamp(ivec3(int(tile.x), int(tile.y), int(slice)), ivec3(0), ivec3(cl.grid.xyz) - 1);
+    return uint(g.x) + uint(g.y) * uint(cl.grid.x) + uint(g.z) * uint(cl.grid.x * cl.grid.y);
+}
+
 float shadowFactor(vec4 lightSpacePos, float bias) {
     vec3 proj = lightSpacePos.xyz / lightSpacePos.w;
     vec2 uv = proj.xy * 0.5 + 0.5;
@@ -253,7 +274,8 @@ float shadowFactor(vec4 lightSpacePos, float bias) {
     return sum / 9.0;
 }
 
-// Cascaded sun shadow: the cascades share the map as a 2x2 atlas. The point moves
+)GLSL"
+           R"GLSL(// Cascaded sun shadow: the cascades share the map as a 2x2 atlas. The point moves
 // out along its normal by about a texel of its cascade before the lookup, which
 // keeps surfaces from shadowing themselves at any distance; PCF taps stay inside
 // the cascade's tile.
@@ -298,7 +320,8 @@ float cascadedShadow(vec3 worldPos, vec3 normal) {
     return 1.0;
 }
 
-// Cook-Torrance GGX PBR helpers — lockstep with engine/render/Pbr.h.
+)GLSL"
+           R"GLSL(// Cook-Torrance GGX PBR helpers — lockstep with engine/render/Pbr.h.
 const float PI = 3.14159265359;
 vec3 fresnelSchlick(float cosT, vec3 F0) { return F0 + (1.0 - F0) * pow(clamp(1.0 - cosT, 0.0, 1.0), 5.0); }
 float distributionGGX(float nDotH, float rough) {
@@ -358,7 +381,8 @@ vec2 parallaxOcclusionUV(vec2 uv, vec3 viewTS, float heightScale) {
     return mix(curUV, prevUV, weight);
 }
 
-void main() {
+)GLSL"
+           R"GLSL(void main() {
     float uvScale = u.materialParams.x;
     float bias    = u.materialParams.w;
     vec2 uv = vUV * uvScale;
@@ -388,6 +412,31 @@ void main() {
     float roughness = clamp(u.materialParams.y * texture(uMetallicRoughnessMap, uv).g, 0.04, 1.0);
     float metallic  = clamp(u.materialParams2.x * texture(uMetallicRoughnessMap, uv).b, 0.0, 1.0);
     float ao        = u.materialParams2.y * texture(uAoMap, uv).r;
+
+    // Decals in this pixel's cluster, painted into the surface before it's lit:
+    // colour, roughness and glow, fading where the surface turns away from the
+    // decal and towards the ends of its box.
+    bool clustered = u.cascadeParams.w > 0.5;
+    uint cluster = clustered ? clusterOf(vWorldPos) : 0u;
+    vec3 decalGlow = vec3(0.0);
+    if (clustered) {
+        uvec4 cell = clCells[cluster];
+        uint base = cluster * 96u + 64u;
+        vec3 surfaceN = normalize(vNormal);
+        for (uint k = 0u; k < cell.y; ++k) {
+            ClusterDecal d = clDecals[clItems[base + k]];
+            vec3 q = (d.worldToDecal * vec4(vWorldPos, 1.0)).xyz;
+            if (any(greaterThan(abs(q), vec3(0.5)))) continue;
+            float fade = smoothstep(0.2, 0.5, dot(surfaceN, d.axis.xyz)) * (1.0 - smoothstep(0.35, 0.5, abs(q.z)));
+            if (fade <= 0.0) continue;
+            vec4 t = texture(uDecalTextures, vec3(q.x + 0.5, 0.5 - q.y, d.axis.w));
+            float a = t.a * d.tint.a * fade;
+            albedo = mix(albedo, t.rgb * d.tint.rgb, a);
+            if (d.glow.w >= 0.0) roughness = mix(roughness, clamp(d.glow.w, 0.04, 1.0), a);
+            metallic = mix(metallic, 0.0, a);
+            decalGlow += d.glow.rgb * a;
+        }
+    }
     vec3  F0        = mix(vec3(0.04), albedo, metallic);
     vec3  V         = normalize(u.cameraPos.xyz - vWorldPos);
     vec3  N_        = perturbedN;
@@ -399,20 +448,39 @@ void main() {
     vec3 Lo = pbrContrib(N_, V, -normalize(u.sunDir.xyz), albedo, metallic, roughness, F0,
                          u.sunColor.xyz) * shadow;
 
-    // Point lights (M15).
-    int plCount = int(u.lightCounts.x);
+    // Point and spot lights (M15): with clusters, every light that reaches this
+    // pixel's cluster; without, the first 16 in the draw's block.
+    int plCount = clustered ? int(clCells[cluster].x) : int(u.lightCounts.x);
+    uint lightBase = cluster * 96u;
     for (int i = 0; i < plCount; ++i) {
-        vec3 toLight = u.pointPositions[i].xyz - vWorldPos;
+        vec4 lp, lc;
+        vec4 spot = vec4(0.0, -1.0, 0.0, -2.0);
+        float spotInner = -2.0;
+        uint lightIndex = uint(i);
+        if (clustered) {
+            lightIndex = clItems[lightBase + uint(i)];
+            ClusterLight cl_ = clLights[lightIndex];
+            lp = vec4(cl_.positionRange.xyz, cl_.colorIntensity.w);
+            lc = vec4(cl_.colorIntensity.rgb, cl_.positionRange.w);
+            spot = cl_.spot;
+            spotInner = cl_.spot2.x;
+        } else {
+            lp = u.pointPositions[i];
+            lc = u.pointColors[i];
+        }
+        vec3 toLight = lp.xyz - vWorldPos;
         float dist  = length(toLight);
-        float range = u.pointColors[i].w;
+        float range = lc.w;
         if (dist < 0.0001 || dist >= range) continue;
         vec3 Lp = toLight / dist;
         float falloff   = 1.0 - smoothstep(0.0, range, dist);
-        float intensity = u.pointPositions[i].w;
-        vec3 radiance = u.pointColors[i].xyz * intensity * falloff;
+        if (spot.w > -1.5) falloff *= smoothstep(spot.w, max(spotInner, spot.w + 1e-4), dot(-Lp, spot.xyz));
+        if (falloff <= 0.0) continue;
+        float intensity = lp.w;
+        vec3 radiance = lc.xyz * intensity * falloff;
         // M73 — the first point light can cast shadows. The bias is generous because
         // occluders are spheres, so a lumpy rock must not shade its own lit face.
-        if (i == 0 && u.pointShadow.w > 0.0) {
+        if (lightIndex == 0u && u.pointShadow.w > 0.0) {
             vec3 d = vWorldPos - u.pointShadow.xyz;
             float r = length(d);
             d /= max(r, 1e-3);
@@ -468,6 +536,7 @@ void main() {
     }
 
     vec3 emissive = u.emissive.xyz * texture(uEmissiveMap, uv).rgb;
+    emissive += decalGlow;  // Its own line: the surface hooks below replace the one above.
     vec3 color = ambient + Lo + emissive;
 
     // M17 — planar reflection (preferred when active) with M16 cubemap fallback.
@@ -630,6 +699,10 @@ inline std::string standardLitFragSourceWithSurface(const std::string& hookGlsl)
     const std::string entry = "void main() {";
 
     std::string source = standardLitFragSource();
+    if (source.find(term) == std::string::npos || source.find(fresnel) == std::string::npos) {
+        // The standard shader changed under the hook: fail loudly, not with a throw.
+        return std::string("#error standardLitFragSourceWithSurface: insertion point missing\n");
+    }
     source.replace(source.find(term), term.size(), "vec3 emissive = surfaceEmissive;");
     source.insert(source.find(fresnel),
                   "    vec3 surfaceEmissive = vec3(0.0);\n"
@@ -649,6 +722,9 @@ inline std::string standardLitFragSourceWithEmission(const std::string& hookGlsl
     const std::string entry = "void main() {";
 
     std::string source = standardLitFragSource();
+    if (source.find(term) == std::string::npos) {
+        return std::string("#error standardLitFragSourceWithEmission: insertion point missing\n");
+    }
     source.replace(source.find(term), term.size(),
                    "vec3 emissive = surfaceEmission(vWorldPos, u.emissive.xyz);");
     source.insert(source.find(entry), hookGlsl + "\n");

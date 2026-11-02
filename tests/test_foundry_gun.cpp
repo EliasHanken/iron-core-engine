@@ -118,8 +118,10 @@ void the_level_holds_together() {
     CHECK(!level.blocks.empty());
     CHECK(!level.props.empty());
     CHECK(!level.plates.empty());
-    // The renderer takes 16 point lights, and the game keeps a few for flashes.
-    CHECK(level.lamps.size() <= 11);
+    // Clustered lighting takes up to 1024 lights a frame; the hall's grid of spots and
+    // the yard's posts stay far below, with room for every flash.
+    CHECK(level.lamps.size() >= 15);
+    CHECK(level.lamps.size() <= 256);
     for (const foundry::Block& b : level.blocks) {
         CHECK(b.size.x > 0.0f && b.size.y > 0.0f && b.size.z > 0.0f);
     }

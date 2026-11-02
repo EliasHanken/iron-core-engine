@@ -16,6 +16,7 @@
 //   aim      hold the rifle up to the eye throughout
 //   reload   fire a burst, then reload (stays put)
 //   inspect  turn the rifle over to look at it
+//   decals   fire a burst into the floor ahead, to see the holes
 //   overview look down on the stockyard from above, to see culling at work
 //   lod      tint instance groups by level of detail
 //   freeze   freeze culling at the start
@@ -523,6 +524,73 @@ ImpactStyle impactStyle(Surface surface) {
     }
 }
 
+// Bullet holes: decals where shots land, the newest few hundred kept. A hole in
+// metal glows from the heat for a moment.
+class Holes {
+public:
+    static constexpr std::size_t kMax = 400;
+
+    void add(Vec3 at, Vec3 normal, Surface surface, float spin) {
+        Hole h;
+        // The image faces out of the surface (+z), turned at random about it.
+        const Vec3 z = iron::normalize(normal);
+        const Vec3 helper = std::fabs(z.y) < 0.9f ? Vec3{0.0f, 1.0f, 0.0f} : Vec3{1.0f, 0.0f, 0.0f};
+        Vec3 x = iron::normalize(iron::cross(helper, z));
+        Vec3 y = iron::cross(z, x);
+        const float a = spin * 6.2831853f;
+        const Vec3 rx = x * std::cos(a) + y * std::sin(a);
+        y = iron::cross(z, rx);
+        x = rx;
+        float size = 0.24f;
+        h.decal.layer = 0;
+        h.decal.roughness = 0.95f;
+        if (surface == Surface::Metal) {
+            size = 0.15f;
+            h.decal.layer = 1;
+            h.decal.roughness = 0.35f;
+            h.hot = true;
+        } else if (surface == Surface::Wood) {
+            size = 0.2f;
+            h.decal.layer = 2;
+            h.decal.roughness = 0.9f;
+        }
+        Mat4 m = Mat4::identity();
+        m.at(0, 0) = x.x * size; m.at(1, 0) = x.y * size; m.at(2, 0) = x.z * size;
+        m.at(0, 1) = y.x * size; m.at(1, 1) = y.y * size; m.at(2, 1) = y.z * size;
+        m.at(0, 2) = z.x * 0.12f; m.at(1, 2) = z.y * 0.12f; m.at(2, 2) = z.z * 0.12f;
+        m.at(0, 3) = at.x; m.at(1, 3) = at.y; m.at(2, 3) = at.z;
+        h.decal.transform = m;
+        if (holes_.size() < kMax) {
+            holes_.push_back(h);
+        } else {
+            holes_[next_] = h;
+            next_ = (next_ + 1) % kMax;
+        }
+    }
+
+    void update(float dt) {
+        for (Hole& h : holes_) {
+            h.age += dt;
+            // Hot metal: orange-white, cooling to a dull red and out over a second and a half.
+            const float heat = h.hot ? std::max(1.0f - h.age / 1.5f, 0.0f) : 0.0f;
+            h.decal.glow = Vec3{6.0f, 2.2f, 0.5f} * (heat * heat);
+        }
+    }
+
+    void submit(iron::Renderer& renderer) const {
+        for (const Hole& h : holes_) renderer.submitDecal(h.decal);
+    }
+
+private:
+    struct Hole {
+        iron::Decal decal;
+        float age = 0.0f;
+        bool  hot = false;
+    };
+    std::vector<Hole> holes_;
+    std::size_t next_ = 0;
+};
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -696,6 +764,13 @@ int main(int argc, char** argv) {
         return 1;
     }
     float sprintBlend = 0.0f;
+    Holes holes;
+    {
+        const std::string dir = iron::executableDir() + "/assets/decals/";
+        const std::string decals[] = {dir + "concrete_hole.png", dir + "metal_hole.png", dir + "wood_hole.png",
+                                      dir + "scorch.png"};
+        if (!renderer.setDecalTextures(decals)) iron::Log::warn("foundry: no decal textures");
+    }
     const iron::MeshHandle flashMesh = renderer.createMesh(buildFlash());
     const iron::MeshHandle bitMesh = renderer.createMesh(iron::makeCube());
 
@@ -859,6 +934,13 @@ int main(int argc, char** argv) {
                 reloadPressed = reloadPressed || (seconds > 1.4f && seconds < 1.45f);
             }
             inspectPressed = inspectPressed || (sceneHas("inspect") && seconds > 0.9f && seconds < 0.95f);
+            // Decal check: stand still, look down at the floor ahead and fire a burst into it.
+            if (sceneHas("decals")) {
+                look = {0.0f, (-0.6f - pitch) * std::min(dt * 4.0f, 1.0f)};
+                forward = 0.0f;
+                strafe = 0.0f;
+                trigger = seconds > 1.0f && seconds < 1.35f;
+            }
         } else if (!paused) {
             look = {-mouseX * kMouseRadiansPerPixel, -mouseY * kMouseRadiansPerPixel};
             const auto down = [&](int k) { return input.keyDown(k) ? 1.0f : 0.0f; };
@@ -1023,6 +1105,10 @@ int main(int argc, char** argv) {
 
             const Vec3 n = hit.normal;
             const Vec3 reflect = dir - n * (2.0f * iron::dot(dir, n));
+            // A hole in what stands still (things that move would slide out from under it).
+            bool moves = false;
+            for (const Dynamic& d : dynamics) moves = moves || d.body.value == hit.body.value;
+            if (!moves) holes.add(hit.point, n, surface, noise.next());
             for (int k = 0; k < style.sparks; ++k) {
                 Bit spark;
                 spark.position = hit.point + n * 0.02f;
@@ -1057,6 +1143,8 @@ int main(int argc, char** argv) {
         }
         hitMarker = std::max(hitMarker - simDt, 0.0f);
 
+        holes.update(simDt);
+
         // --- Bits and flashes age ---
         for (Bit& b : bits) {
             b.life -= simDt;
@@ -1084,7 +1172,6 @@ int main(int argc, char** argv) {
         // --- Lights: what's moving first, then the nearest lamps ---
         std::vector<iron::PointLight> lights;
         for (const Flash& f : flashes) {
-            if (lights.size() >= 5) break;
             const float t = f.life / f.maxLife;
             lights.push_back({f.position, f.color, f.intensity * t, f.range});
         }
@@ -1092,9 +1179,12 @@ int main(int argc, char** argv) {
         std::sort(lamps.begin(), lamps.end(), [&](const foundry::Lamp& a, const foundry::Lamp& b) {
             return iron::length(a.position - eye) < iron::length(b.position - eye);
         });
+        // Clustered lighting takes them all; each pixel pays only for those near it.
         for (const foundry::Lamp& l : lamps) {
-            if (lights.size() >= static_cast<std::size_t>(iron::kMaxPointLights)) break;
-            lights.push_back({l.position, l.color, l.intensity, l.range});
+            iron::PointLight light{l.position, l.color, l.intensity, l.range};
+            light.spotAngle = l.spotAngle;
+            light.direction = {0.0f, -1.0f, 0.0f};
+            lights.push_back(light);
         }
 
         iron::DirectionalLight sun;
@@ -1185,6 +1275,7 @@ int main(int argc, char** argv) {
         }
         {
             draws += viewModel.draw(renderer, viewModelToWorld, kGunMotionId);
+            holes.submit(renderer);
             if (gun.flash() > 0.0f) {
                 iron::DrawCall flash;
                 flash.mesh = flashMesh;

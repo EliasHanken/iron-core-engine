@@ -39,6 +39,7 @@ VulkanRenderer::~VulkanRenderer() {
         debugLines_.destroy(context_);
         profiler_.destroy(context_);
         instanceGroups_.destroy(context_);
+        clusters_.destroy(context_);
         if (reflectionPipeline_)       vkDestroyPipeline(context_.device(), reflectionPipeline_, nullptr);
         if (reflectionPipelineLayout_) vkDestroyPipelineLayout(context_.device(), reflectionPipelineLayout_, nullptr);
         if (reflectionSetLayout_)      vkDestroyDescriptorSetLayout(context_.device(), reflectionSetLayout_, nullptr);
@@ -186,6 +187,12 @@ bool VulkanRenderer::init(Window& window) {
     if (!instanceGroups_.init(context_, frames_)) {
         Log::error("VulkanRenderer: instance groups failed to initialise");
         return false;
+    }
+    // Clustered lights and decals: every lit pipeline takes their set as set 1.
+    if (clusters_.init(context_, VkFrameRing::kFramesInFlight)) {
+        shaders_.setFrameSetLayout(clusters_.setLayout());
+    } else {
+        Log::error("VulkanRenderer: clustered lighting failed to initialise; lights fall back to 16 per draw");
     }
 
     initOk_ = true;
@@ -659,6 +666,7 @@ void VulkanRenderer::beginFrame(Vec3 clearColor, const DirectionalLight& light,
         renderedValid_ = false;
         shadowRedraw_ = ~0u;
     }
+    pendingAllLights_.assign(pointLights.begin(), pointLights.end());
     pendingPointLightCount_ = static_cast<int>(
         std::min<std::size_t>(pointLights.size(), kMaxPointLights));
     for (int i = 0; i < pendingPointLightCount_; ++i) {
@@ -723,6 +731,7 @@ void VulkanRenderer::beginFrame(Vec3 clearColor, const DirectionalLight& light,
     profiler_.begin(cb, "Simulation");
 
     sceneDraws_.clear();
+    pendingDecals_.clear();
     skinnedDraws_.clear();
     skinnedBoneMatricesStash_.clear();
     deferredSceneCompute_.clear();
@@ -770,6 +779,7 @@ void VulkanRenderer::recordSceneDraw(VkCommandBuffer cb, const DrawCall& call, c
                         0.0f};
     ubo.lightViewProj = legacyLightViewProj_;
     fillCascadeUbo(ubo, cascadesActive_ ? &renderedCascades_ : nullptr, kCascadeCasterReach);
+    ubo.cascadeParams.w = shaders_.hasFrameSet() ? 1.0f : 0.0f;  // Clustered lights and decals.
     ubo.cameraPos = Vec4{pendingCameraPos_.x,
                          pendingCameraPos_.y,
                          pendingCameraPos_.z,
@@ -1015,6 +1025,10 @@ void VulkanRenderer::recordSceneDraw(VkCommandBuffer cb, const DrawCall& call, c
     bindLightVolume(set);
     vkCmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_GRAPHICS,
                             sh.pipelineLayout, 0, 1, &set, 0, nullptr);
+    if (shaders_.hasFrameSet()) {
+        const VkDescriptorSet frameSet = clusters_.set(frames_.currentIndex());
+        vkCmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, sh.pipelineLayout, 1, 1, &frameSet, 0, nullptr);
+    }
 
     const auto& mesh = meshes_.get(call.mesh);
     VkDeviceSize offsets[1] = {0};
@@ -1051,6 +1065,7 @@ void VulkanRenderer::recordSkinnedDraw(VkCommandBuffer cb,
                         0.0f};
     ubo.lightViewProj = legacyLightViewProj_;
     fillCascadeUbo(ubo, cascadesActive_ ? &renderedCascades_ : nullptr, kCascadeCasterReach);
+    ubo.cascadeParams.w = shaders_.hasFrameSet() ? 1.0f : 0.0f;  // Clustered lights and decals.
     ubo.cameraPos = Vec4{pendingCameraPos_.x,
                          pendingCameraPos_.y,
                          pendingCameraPos_.z,
@@ -1281,6 +1296,10 @@ void VulkanRenderer::recordSkinnedDraw(VkCommandBuffer cb,
     bindLightVolume(set);
     vkCmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_GRAPHICS,
                             sh.pipelineLayout, 0, 1, &set, 0, nullptr);
+    if (shaders_.hasFrameSet()) {
+        const VkDescriptorSet frameSet = clusters_.set(frames_.currentIndex());
+        vkCmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, sh.pipelineLayout, 1, 1, &frameSet, 0, nullptr);
+    }
 
     // --- 5. Bind vertex/index buffers + draw ---
     const auto& mesh = skinnedMeshes_.get(call.skinnedMesh);
@@ -1322,6 +1341,13 @@ void VulkanRenderer::endFrame() {
         const float pixelsPerUnit = pendingProjection_.at(1, 1) * 0.5f * static_cast<float>(postProcess_.extent().height);
         instanceGroups_.cull(cb, frames_.currentIndex(), pendingProjection_ * pendingView_, shadowViewsThisFrame(),
                              pendingCameraPos_, pixelsPerUnit, postProcess_.extent(), shadowRedraw_);
+        profiler_.end(cb);
+    }
+    if (clusters_.active()) {
+        profiler_.begin(cb, "Light clusters");
+        clusters_.upload(frames_.currentIndex(), pendingAllLights_, pendingDecals_, pendingView_,
+                         pendingUnjitteredProjection_, postProcess_.extent());
+        clusters_.record(cb, frames_.currentIndex());
         profiler_.end(cb);
     }
 

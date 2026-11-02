@@ -151,6 +151,7 @@ if (IRON_RENDER_BACKEND STREQUAL "vulkan")
       render/backends/vulkan/VkTemporalAA.cpp
       render/backends/vulkan/VkGpuProfiler.cpp
       render/backends/vulkan/VkInstanceGroups.cpp
+      render/backends/vulkan/VkClusters.cpp
     )
     target_compile_definitions(ironcore PUBLIC IRON_RENDER_BACKEND_VULKAN)
     target_link_libraries(ironcore PUBLIC

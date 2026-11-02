@@ -3,6 +3,7 @@
 #include "math/Mat4.h"
 #include "math/Vec.h"
 #include "render/AntiAliasing.h"
+#include "render/Decal.h"
 #include "render/Culling.h"
 #include "render/Fog.h"
 #include "render/GpuTimings.h"
@@ -221,6 +222,11 @@ public:
     // Records one draw call for this frame. Each DrawCall supplies its model
     // matrix; the camera comes from beginFrame.
     virtual void submit(const DrawCall& call) = 0;
+    // A decal for this frame, like a draw: submit each frame it should show.
+    virtual void submitDecal(const Decal& decal) { (void)decal; }
+    // The images decals use, as layers in order: Decal::layer indexes this list.
+    // They should share a size. Returns false if any fails to load.
+    virtual bool setDecalTextures(std::span<const std::string> paths) { (void)paths; return false; }
     // Renders every buffered draw call for the frame.
     virtual void endFrame() = 0;
 

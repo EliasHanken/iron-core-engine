@@ -32,6 +32,11 @@ std::vector<std::uint32_t> compileGlsl(VkShaderStageFlagBits stage,
 
 class VkShaderStore {
 public:
+    // A set every pipeline made from here takes as set 1, shared by all draws in a
+    // frame (clustered lights and decals). Set before creating shaders.
+    void setFrameSetLayout(VkDescriptorSetLayout layout) { frameSetLayout_ = layout; }
+    bool hasFrameSet() const { return frameSetLayout_ != VK_NULL_HANDLE; }
+
     // `instanced` adds the instance group bindings: 16 = instances, 17 = visible list.
     ShaderHandle create(VkContext& ctx,
                         const std::string& vertSrc,
@@ -66,6 +71,7 @@ public:
 private:
     std::unordered_map<ShaderHandle, VkShader> shaders_;
     ShaderHandle nextHandle_ = 1;
+    VkDescriptorSetLayout frameSetLayout_ = VK_NULL_HANDLE;
 };
 
 }  // namespace iron

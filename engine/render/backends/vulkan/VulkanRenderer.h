@@ -22,6 +22,7 @@
 #include "render/backends/vulkan/VkReflectionTarget.h"
 #include "render/backends/vulkan/VkPostProcess.h"
 #include "render/backends/vulkan/VkGpuProfiler.h"
+#include "render/backends/vulkan/VkClusters.h"
 #include "render/backends/vulkan/VkInstanceGroups.h"
 #include "render/ReflectionPlane.h"
 #include "render/ReflectionProbe.h"
@@ -137,6 +138,12 @@ public:
     void setCullingFrozen(bool frozen) override { instanceGroups_.setFrozen(frozen); }
     void setAntiAliasing(AntiAliasing mode) override;
     void setSharpness(float amount) override { postProcess_.setTaaSharpness(amount); }
+    void submitDecal(const Decal& decal) override {
+        if (!skipFrame_) pendingDecals_.push_back(decal);
+    }
+    bool setDecalTextures(std::span<const std::string> paths) override {
+        return clusters_.setDecalTextures(context_, paths);
+    }
     void setViewModelFov(float verticalRadians) override { viewModelFov_ = verticalRadians; }
     void resetTemporalHistory() override;
 
@@ -337,6 +344,9 @@ private:
     CinematicSettings  cinematic_;
     VkGpuProfiler      profiler_;
     VkInstanceGroups   instanceGroups_;
+    VkClusters         clusters_;
+    std::vector<PointLight> pendingAllLights_;  // Every light this frame, for the clusters.
+    std::vector<Decal>      pendingDecals_;
     RenderDebugView    debugView_ = RenderDebugView::None;
     MotionHistory      motionHistory_;
     PaletteHistory     paletteHistory_;
