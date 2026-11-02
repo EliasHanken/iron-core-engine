@@ -36,6 +36,7 @@ VulkanRenderer::~VulkanRenderer() {
         skybox_.destroy(context_);
         shadowMap_.destroy(context_);
         debugLines_.destroy(context_);
+        profiler_.destroy(context_);
         if (reflectionPipeline_)       vkDestroyPipeline(context_.device(), reflectionPipeline_, nullptr);
         if (reflectionPipelineLayout_) vkDestroyPipelineLayout(context_.device(), reflectionPipelineLayout_, nullptr);
         if (reflectionSetLayout_)      vkDestroyDescriptorSetLayout(context_.device(), reflectionSetLayout_, nullptr);
@@ -177,6 +178,9 @@ bool VulkanRenderer::init(Window& window) {
         Log::error("VulkanRenderer: volume defaults failed");
         return false;
     }
+
+    // Optional: without it the game still runs, with no GPU timings.
+    profiler_.init(context_);
 
     initOk_ = true;
     Log::info("VulkanRenderer: context + swapchain + frames + pipeline + textures up");
@@ -426,7 +430,9 @@ Vec3 extractCameraPos(const Mat4& view) {
 // Builds the directional light's orthographic view-projection matrix.
 // `dir` is the sun direction (engine convention: direction the light
 // travels). Eye = center - dir * 2r so the camera sits behind the scene
-// relative to the sun. Matches the OpenGL backend's computeLightViewProj.
+// relative to the sun. Unlike the OpenGL backend's, depth comes out in Vulkan's
+// 0..1: the orthographic matrix gives -1..1, and Vulkan clips everything below 0,
+// which would drop every caster nearer the sun than `center`.
 Mat4 computeLightViewProj(Vec3 dir, Vec3 center, float radius) {
     const Vec3 dn = normalize(dir);
     const Vec3 up = (std::fabs(dn.y) > 0.99f)
@@ -441,7 +447,10 @@ Mat4 computeLightViewProj(Vec3 dir, Vec3 center, float radius) {
     const Mat4 proj = orthographic(-radius, radius,
                                    -radius, radius,
                                    radius * 0.5f, radius * 3.5f);
-    return proj * view;
+    Mat4 toVulkanDepth = Mat4::identity();
+    toVulkanDepth.at(2, 2) = 0.5f;
+    toVulkanDepth.at(2, 3) = 0.5f;
+    return toVulkanDepth * proj * view;
 }
 
 // Set viewport + scissor on the active command buffer. Vulkan clip-Y points
@@ -614,6 +623,12 @@ void VulkanRenderer::beginFrame(Vec3 clearColor, const DirectionalLight& light,
     begin.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
     begin.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
     VK_CHECK(vkBeginCommandBuffer(cb, &begin));
+
+    // Whatever the game records before endFrame (particle and fluid steps) is
+    // its simulation.
+    profiler_.beginFrame(cb, frames_.currentIndex());
+    profiler_.begin(cb, "Frame");
+    profiler_.begin(cb, "Simulation");
 
     sceneDraws_.clear();
     skinnedDraws_.clear();
@@ -1169,13 +1184,17 @@ void VulkanRenderer::endFrame() {
 
     VkFrameRing::Frame& f = frames_.current();
     VkCommandBuffer cb = f.commandBuffer;
+    profiler_.end(cb);  // Simulation
 
     // --- Pass 1: shadow ---
+    profiler_.begin(cb, "Shadows");
     shadowMap_.record(cb, context_.device(), frames_, meshes_,
                      pendingLightViewProj_, sceneDraws_);
+    profiler_.end(cb);
 
     // --- Pass 2: planar reflection (if a plane is set) ---
     if (reflectionPlane_.has_value()) {
+        profiler_.begin(cb, "Reflection");
         const ReflectionPlane& plane = *reflectionPlane_;
         const Mat4 mirror = reflectionMatrix(plane);
         const Mat4 reflectionVP = pendingProjection_ * (pendingView_ * mirror);
@@ -1247,11 +1266,13 @@ void VulkanRenderer::endFrame() {
         }
 
         reflection_.endPass(cb);
+        profiler_.end(cb);
     }
 
     // --- M36 Pass 3: offscreen scene pass — geometry renders into post-process target ---
     {
         const float clear[4] = {pendingClear_.x, pendingClear_.y, pendingClear_.z, 1.0f};
+        profiler_.begin(cb, "Opaque");
         postProcess_.beginScenePass(cb, clear);
         // beginScenePass sets a positive-height viewport; override with the
         // negative-height (clip-Y-flipped) convention so GL-style projection
@@ -1279,14 +1300,40 @@ void VulkanRenderer::endFrame() {
         }
 
         postProcess_.endScenePass(cb);
+        profiler_.end(cb);
+
+        // Motion vectors: the camera's for every pixel, then each moving object's.
+        profiler_.begin(cb, "Motion vectors");
+        {
+            const Mat4 viewProjection = pendingProjection_ * pendingView_;
+            const Mat4 lastViewProjection = hasPreviousViewProjection_ ? previousViewProjection_
+                                                                       : viewProjection;
+            velocityObjects_.clear();
+            for (const DrawCall& call : sceneDraws_) {
+                if (call.motionId == 0 || !meshes_.has(call.mesh)) continue;
+                const auto& mesh = meshes_.get(call.mesh);
+                const Mat4 lastModel = motionHistory_.previous(call.motionId, call.model);
+                // The same product, in the same order, as the lit shader's mvp.
+                velocityObjects_.push_back({mesh.vertexBuffer, mesh.indexBuffer, mesh.indexCount,
+                                            pendingProjection_ * pendingView_ * call.model,
+                                            lastViewProjection * lastModel});
+            }
+            motionHistory_.endFrame();
+            postProcess_.recordVelocity(cb, lastViewProjection * iron::inverse(viewProjection),
+                                        velocityObjects_);
+        }
+        profiler_.end(cb);
 
         // Depth is complete and readable here, outside any render pass.
+        profiler_.begin(cb, "Scene compute");
         for (auto& fn : deferredSceneCompute_) {
             fn(cb);
         }
         deferredSceneCompute_.clear();
+        profiler_.end(cb);
 
         // Transparent draws (e.g. particles) continue the same HDR image.
+        profiler_.begin(cb, "Transparent");
         postProcess_.beginTransparentPass(cb);
         setSceneViewport(cb, postProcess_.extent());
         for (auto& fn : deferredScenePass_) {
@@ -1294,6 +1341,7 @@ void VulkanRenderer::endFrame() {
         }
         deferredScenePass_.clear();
         postProcess_.endTransparentPass(cb);
+        profiler_.end(cb);
     }
 
     // --- M36: derive per-frame active effects from actually-tagged draws ---
@@ -1317,6 +1365,7 @@ void VulkanRenderer::endFrame() {
     // --- M36 Pass 3b: mask pass — tagged draws write effectId + depth ---
     // Only runs when this frame has at least one effective tagged draw. Skinned
     // draws are not yet supported in the mask pass (out of scope for this task).
+    profiler_.begin(cb, "Outline effects");
     if (anyTaggedThisFrame) {
         postProcess_.beginMaskPass(cb);
         postProcess_.bindMaskPipeline(cb);
@@ -1335,12 +1384,15 @@ void VulkanRenderer::endFrame() {
         const std::vector<PostPass> passes = planPostChain(activeKindsThisFrame);
         postProcess_.runChainOffscreenPasses(cb, passes, effects_, swapchain_.extent());
     }
+    profiler_.end(cb);
 
     // --- M47: bloom down/up mip-chain pre-pass. Records its own render passes,
     // so it must run OUTSIDE the viewport pass (like glow above). Runs every
     // frame; intensity controls visibility in the composite. ---
+    profiler_.begin(cb, "Bloom");
     postProcess_.runBloomOffscreenPasses(cb, pendingBloomThreshold_,
                                          pendingBloomKnee_, pendingBloomScatter_);
+    profiler_.end(cb);
 
     // --- M48: SSAO pre-pass. Also records its own render passes, so it must run
     // OUTSIDE the viewport pass. Update the per-frame UBO (projection + kernel +
@@ -1348,12 +1400,15 @@ void VulkanRenderer::endFrame() {
     const int ssaoFrame = frames_.currentIndex();
     postProcess_.updateSsaoUbo(ssaoFrame, pendingProjection_, iron::inverse(pendingProjection_),
                                pendingSsaoRadius_, pendingSsaoBias_, pendingSsaoPower_);
+    profiler_.begin(cb, "SSAO");
     postProcess_.runSsaoPass(cb, ssaoFrame);
+    profiler_.end(cb);
 
     // --- M43a Pass 4: viewport pass — composite scene + overlays into the
     // offscreen sampleable target (instead of straight to the swapchain). ---
     {
         const float clear[4] = {0.0f, 0.0f, 0.0f, 1.0f};
+        profiler_.begin(cb, "Composite");
         postProcess_.beginViewportPass(cb, clear);
 
         // Composite chain (Copy/Outline/GlowComposite/XRay) — UV-space; the
@@ -1392,6 +1447,7 @@ void VulkanRenderer::endFrame() {
         }
 
         postProcess_.endViewportPass(cb);
+        profiler_.end(cb);
     }
 
     // A surface that can't copy from the window falls back to the scene alone.
@@ -1419,6 +1475,7 @@ void VulkanRenderer::endFrame() {
         rpBegin.renderArea.extent = swapchain_.extent();
         rpBegin.clearValueCount = 2;
         rpBegin.pClearValues = clears;
+        profiler_.begin(cb, "Present and UI");
         vkCmdBeginRenderPass(cb, &rpBegin, VK_SUBPASS_CONTENTS_INLINE);
 
         // Plain positive-height viewport covering the swapchain (ImGui pass).
@@ -1448,6 +1505,7 @@ void VulkanRenderer::endFrame() {
         deferredUiPass_.clear();
 
         vkCmdEndRenderPass(cb);
+        profiler_.end(cb);
     }
 
     if (pendingCapture_ && captureWindow) {
@@ -1456,6 +1514,7 @@ void VulkanRenderer::endFrame() {
                                       VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT);
     }
 
+    profiler_.end(cb);  // Frame
     VK_CHECK(vkEndCommandBuffer(cb));
 
     const VkPipelineStageFlags waitStages[] =

@@ -4,9 +4,15 @@
 
 namespace iron {
 
+// A view of the renderer's own data, shown in place of the picture.
+enum class RenderDebugView {
+    None = 0,
+    MotionVectors = 1,  // Each pixel's motion since the last frame: hue is direction.
+};
+
 // What a film camera does to an image, applied while compositing. Off by default,
-// so that games which don't ask for it keep the plain composite. SSAO isn't applied
-// on this path, so turn its strength down when enabling this.
+// so that games which don't ask for it keep the plain composite. SSAO applies here
+// as in the plain composite, at the renderer's SSAO strength.
 struct CinematicSettings {
     bool  enabled = false;
     float motionBlur = 0.0f;           // 1 = a full 180-degree shutter.

@@ -298,6 +298,10 @@ void PhysicsWorld::applyForceAtPoint(BodyId b, Vec3 f, Vec3 worldP) {
     if (!b.isValid()) return;
     impl_->system->GetBodyInterface().AddForce(toJoltBodyId(b), toJ(f), toJ(worldP));
 }
+void PhysicsWorld::applyImpulseAtPoint(BodyId b, Vec3 imp, Vec3 worldP) {
+    if (!b.isValid()) return;
+    impl_->system->GetBodyInterface().AddImpulse(toJoltBodyId(b), toJ(imp), toJ(worldP));
+}
 void PhysicsWorld::setVelocity(BodyId b, Vec3 v) {
     if (!b.isValid()) return;
     impl_->system->GetBodyInterface().SetLinearVelocity(toJoltBodyId(b), toJ(v));
