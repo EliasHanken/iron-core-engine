@@ -95,11 +95,11 @@ constexpr std::uint32_t kGrenadeMotionBase = 1u << 22;  // Two each: the body an
 constexpr float kBlastRadius = 9.0f;  // How far a grenade shoves things.
 
 // Low and white, behind the yard: long winter shadows reach for the hall.
-const Vec3 kTowardSun = iron::normalize(Vec3{0.62f, 0.24f, 0.74f});
+const Vec3 kTowardSun = iron::normalize(Vec3{0.84f, 0.3f, 0.45f});
 
 const char* const kSkyGlsl = R"GLSL(
 vec3 skyColor(vec3 d) {
-    vec3 sun = normalize(vec3(0.62, 0.24, 0.74));
+    vec3 sun = normalize(vec3(0.84, 0.3, 0.45));
     float h = clamp(d.y, -1.0, 1.0);
     // A pale winter sky: grey-blue overhead, washed out towards a misty horizon.
     vec3 zenith = vec3(0.09, 0.13, 0.20);
@@ -867,7 +867,7 @@ int main(int argc, char** argv) {
     volumetric.density = 0.012f;
     volumetric.heightFalloff = 0.07f;
     volumetric.albedo = {0.86f, 0.9f, 0.95f};
-    volumetric.anisotropy = 0.65f;
+    volumetric.anisotropy = 0.45f;
     volumetric.ambient = {0.03f, 0.036f, 0.046f};
     volumetric.distance = 90.0f;
     volumetric.noise = 0.6f;
@@ -1560,7 +1560,7 @@ int main(int argc, char** argv) {
             iron::FogVolume hall;
             hall.min = {-foundry::layout::kHallHalfWidth, 0.0f, foundry::layout::kHallBack};
             hall.max = {foundry::layout::kHallHalfWidth, foundry::layout::kHallHeight, foundry::layout::kHallFront};
-            hall.density = 0.045f;
+            hall.density = 0.07f;
             hall.edge = 6.0f;
             renderer.submitFogVolume(hall);
             stirs.submit(renderer);
