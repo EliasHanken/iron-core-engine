@@ -34,3 +34,6 @@
 
 # Video
 *.mp4   filter=lfs diff=lfs merge=lfs -text
+
+# Patches for vcpkg ports apply byte for byte, so they keep LF everywhere.
+ports/**/*.diff text eol=lf
