@@ -12,10 +12,12 @@
 //   hall     start on the firing line inside the hall
 //   frame    open the frame breakdown
 //   motion   show motion vectors
+//   rig      watch the player's arms and rifle from the side, to tune the grip
 
 #include "common/CaptureLoop.h"
 #include "common/TrackedText.h"
 #include "Gun.h"
+#include "Arms.h"
 #include "Level.h"
 #include "Models.h"
 #include "Sound.h"
@@ -62,10 +64,12 @@ constexpr float kMouseRadiansPerPixel = 0.0022f;
 constexpr float kPhysicsStep = 1.0f / 60.0f;
 constexpr float kRecordSeconds = 34.0f;
 constexpr std::uint32_t kGunMotionId = 1;
+constexpr std::uint32_t kArmsMotionId = 2;
 constexpr std::uint32_t kPropMotionBase = 100;
 constexpr std::uint32_t kPlateMotionBase = 400;
 constexpr std::uint32_t kPlacedMotionBase = 600;
-constexpr std::uint32_t kBitMotionBase = 1000;
+// Bits get ids far above anything else; a model's sections take the low 4 bits.
+constexpr std::uint32_t kBitMotionBase = 1u << 24;
 
 // Low and gold, behind the yard: long shadows reach for the hall.
 const Vec3 kTowardSun = iron::normalize(Vec3{0.62f, 0.24f, 0.74f});
@@ -167,31 +171,26 @@ std::array<iron::Material, static_cast<std::size_t>(Look::Count)> loadLooks(iron
     return looks;
 }
 
-// --- The rifle's mesh ----------------------------------------------------------
+// --- The rifle -------------------------------------------------------------------
 
-// Built from boxes in its own space: x right, y up, -z out of the barrel, the
-// receiver at the origin. Reads as a compact carbine at arm's length.
-iron::MeshData buildRifle() {
-    iron::MeshData m;
-    iron::appendBox(m, {0.0f, 0.0f, 0.0f}, {0.046f, 0.072f, 0.30f});        // Receiver.
-    iron::appendBox(m, {0.0f, 0.004f, -0.235f}, {0.054f, 0.058f, 0.19f});   // Handguard.
-    iron::appendBox(m, {0.0f, 0.012f, -0.40f}, {0.022f, 0.022f, 0.16f});    // Barrel.
-    iron::appendBox(m, {0.0f, 0.012f, -0.488f}, {0.032f, 0.032f, 0.03f});   // Muzzle brake.
-    iron::appendBox(m, {0.0f, -0.092f, -0.045f}, {0.030f, 0.12f, 0.062f});  // Magazine.
-    iron::appendBox(m, {0.0f, -0.075f, 0.085f}, {0.030f, 0.095f, 0.036f});  // Grip.
-    iron::appendBox(m, {0.0f, -0.012f, 0.24f}, {0.036f, 0.062f, 0.17f});    // Stock.
-    iron::appendBox(m, {0.0f, 0.044f, -0.03f}, {0.022f, 0.014f, 0.26f});    // Rail.
-    // The sights: a notch at the back, a post at the front, both topped at y = 0.073
-    // so that aiming puts the line of sight straight through them.
-    iron::appendBox(m, {-0.0085f, 0.062f, 0.075f}, {0.007f, 0.022f, 0.012f});
-    iron::appendBox(m, {0.0085f, 0.062f, 0.075f}, {0.007f, 0.022f, 0.012f});
-    iron::appendBox(m, {0.0f, 0.053f, 0.075f}, {0.024f, 0.004f, 0.012f});
-    iron::appendBox(m, {0.0f, 0.058f, -0.31f}, {0.0035f, 0.03f, 0.004f});
-    return m;
-}
+// The L85A1 model (assets/models/l85a1, exported by tools/foundry/export_rifle.py) has
+// its origin at the bottom of the pistol grip, looks down -z, and is a bullpup: the
+// magazine and the action sit behind the grip, near the cheek.
+constexpr Vec3 kMuzzleLocal{0.0f, 0.157f, -0.43f};
+constexpr Vec3 kEjectLocal{0.034f, 0.175f, 0.10f};
 
-constexpr Vec3 kMuzzleLocal{0.0f, 0.012f, -0.51f};
-constexpr Vec3 kEjectLocal{0.03f, 0.02f, -0.02f};
+// The arms' shoulders, below and just behind the eye. The rig's arms are short for a
+// grown man (47 cm shoulder to wrist), so they're drawn a little larger.
+constexpr Vec3 kShoulders{0.0f, -0.21f, -0.02f};
+constexpr float kArmScale = 1.22f;
+
+// How each hand holds the rifle, in the rifle's space (+y up, -z out of the muzzle).
+// The right hand wraps the pistol grip, knuckles stacked up it; the left cups the
+// handguard from below. Poles point the elbows down and out, in the arms' space.
+const foundry::Arms::Grip kRightGrip{{0.012f, 0.075f, 0.018f}, {-0.15f, 0.25f, -0.95f}, {0.0f, 1.0f, -0.3f},
+                                     {0.7f, -1.0f, 0.5f}, 1.0f};
+const foundry::Arms::Grip kLeftGrip{{-0.045f, 0.105f, -0.22f}, {0.75f, 0.45f, -0.5f}, {0.0f, 0.1f, -1.0f},
+                                    {-0.8f, -1.0f, 0.3f}, 1.0f};
 
 // Three crossed planes, both faces, for a flash seen from any angle.
 iron::MeshData buildFlash() {
@@ -650,15 +649,13 @@ int main(int argc, char** argv) {
     }
 
     const iron::ShaderHandle lit = renderer.createStandardLitShader();
-    const iron::MeshHandle rifleMesh = renderer.createMesh(buildRifle());
+    const foundry::Model* rifle = models.get("l85a1");
+    if (!rifle) return 1;
+    foundry::Arms arms;
+    const bool hasArms = arms.load(renderer, iron::executableDir() + "/assets/models/arms/arms.gltf");
     const iron::MeshHandle flashMesh = renderer.createMesh(buildFlash());
     const iron::MeshHandle bitMesh = renderer.createMesh(iron::makeCube());
 
-    iron::Material rifleLook;
-    rifleLook.texture = renderer.whiteTexture();
-    rifleLook.baseColorFactor = {0.045f, 0.045f, 0.05f};
-    rifleLook.metallic = 0.55f;
-    rifleLook.roughness = 0.42f;
     iron::Material flashLook;
     flashLook.texture = renderer.whiteTexture();
     flashLook.baseColorFactor = {0.0f, 0.0f, 0.0f};
@@ -746,7 +743,7 @@ int main(int argc, char** argv) {
     const auto spawnBit = [&](const Bit& b) {
         if (bits.size() >= 220) bits.erase(bits.begin());
         Bit copy = b;
-        copy.motionId = kBitMotionBase + (nextBitId++ % 60000u);
+        copy.motionId = kBitMotionBase + (nextBitId++ % (1u << 20));
         bits.push_back(copy);
     };
 
@@ -1031,7 +1028,14 @@ int main(int argc, char** argv) {
 
         vulkan->setDebugView(showMotion ? iron::RenderDebugView::MotionVectors : iron::RenderDebugView::None);
         vulkan->setCinematic(lens);
-        renderer.beginFrame({0.05f, 0.04f, 0.04f}, sun, lights, fog, view, projection);
+        // The rig view looks at the player from the side; the player still aims as before.
+        Mat4 renderView = view;
+        if (sceneHas("rig")) {
+            const Vec3 side = transformPoint(cameraToWorld, {0.55f, 0.0f, -0.2f});
+            const Vec3 at = transformPoint(cameraToWorld, {0.05f, -0.2f, -0.3f});
+            renderView = iron::lookAt(side, at, {0.0f, 1.0f, 0.0f});
+        }
+        renderer.beginFrame({0.05f, 0.04f, 0.04f}, sun, lights, fog, renderView, projection);
 
         int draws = 0;
         for (const StaticMesh& s : statics) {
@@ -1050,7 +1054,7 @@ int main(int argc, char** argv) {
                 call.model = transform;
                 call.material = model.sections[s].material;
                 // Each section moves with the rest, but needs its own history.
-                call.motionId = motionId == 0 ? 0 : motionId * 8u + static_cast<std::uint32_t>(s);
+                call.motionId = motionId == 0 ? 0 : (motionId << 4) | static_cast<std::uint32_t>(s & 15u);
                 renderer.submit(call);
                 ++draws;
             }
@@ -1090,14 +1094,20 @@ int main(int argc, char** argv) {
             ++draws;
         }
         {
-            iron::DrawCall call;
-            call.mesh = rifleMesh;
-            call.shader = lit;
-            call.model = rifleModel;
-            call.material = rifleLook;
-            call.motionId = kGunMotionId;
-            renderer.submit(call);
-            ++draws;
+            drawModel(*rifle, rifleModel, kGunMotionId);
+            if (hasArms) {
+                const Mat4 armsToWorld = cameraToWorld * iron::translation(kShoulders) *
+                                         iron::scaling({kArmScale, kArmScale, kArmScale});
+                arms.pose(iron::inverse(rifleModel) * armsToWorld, kRightGrip, kLeftGrip);
+                iron::DrawCall call;
+                call.mesh = arms.upload(renderer);
+                call.shader = lit;
+                call.model = armsToWorld;
+                call.material = arms.material();
+                call.motionId = kArmsMotionId;
+                renderer.submit(call);
+                ++draws;
+            }
             if (gun.flash() > 0.0f) {
                 iron::DrawCall flash;
                 flash.mesh = flashMesh;

@@ -64,6 +64,13 @@ Foundry's props, in `games/20-foundry/assets/models/`, all come from [Poly Haven
 | cement_bag | PierreB3D |
 | old_tyre | MP |
 
+Foundry's first-person rifle and arms are also CC0:
+
+| Model | Where | Credit | Licence |
+|---|---|---|---|
+| L85A1 rifle | `games/20-foundry/assets/models/l85a1/` | Tabasco, "Various Small Arms" ([OpenGameArt](https://opengameart.org/node/3609)), exported by `tools/foundry/export_rifle.py` | CC0 (placed in the public domain by the author, 2023) |
+| WRAD ARMS | `games/20-foundry/assets/models/arms/` | wriks ([GitHub](https://github.com/wwwriks/wrad-arms)), exported by `tools/foundry/export_arms.py` | CC0 |
+
 The Damaged Helmet is only a viewer and editor sample. Anyone building a commercial product from this repo should remove it.
 
 ## Textures and environments
