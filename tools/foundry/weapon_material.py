@@ -1,4 +1,5 @@
-"""The AK-47's material for glTF, from Stein Games' textures (CC0).
+"""A gun's material for glTF, from Stein Games' textures (CC0): its colour map, and
+the pack's RMAO and normal maps.
 
 The pack's RMAO (roughness, metal, AO) becomes glTF's ORM (AO, roughness, metal),
 and its DirectX normal map gets its green channel flipped for glTF's OpenGL
@@ -10,35 +11,36 @@ import bpy
 import numpy as np
 
 
-def make_ak_material(src, work):
-    def load(name):
-        img = bpy.data.images.load(os.path.join(src, name))
+def make_weapon_material(src, work, color, rmao, normal, name):
+    """The material `name` from the maps in `src`; repacked maps go to `work`."""
+    def load(file):
+        img = bpy.data.images.load(os.path.join(src, file))
         img.colorspace_settings.name = "Non-Color"
         w, h = img.size
         px = np.empty(w * h * 4, dtype=np.float32)
         img.pixels.foreach_get(px)
         return img, px.reshape(h, w, 4)
 
-    def save(name, px, srgb=False):
+    def save(image, px, srgb=False):
         h, w = px.shape[:2]
-        img = bpy.data.images.new(name, w, h, alpha=False)
+        img = bpy.data.images.new(image, w, h, alpha=False)
         img.colorspace_settings.name = "sRGB" if srgb else "Non-Color"
         img.pixels.foreach_set(px.ravel())
-        img.filepath_raw = os.path.join(work, name + ".png")
+        img.filepath_raw = os.path.join(work, image + ".png")
         img.file_format = "PNG"
         img.save()
         return img
 
-    _, rmao = load("T_AK47_RMAO.png")
+    _, rmao = load(rmao)
     orm = np.stack([rmao[..., 2], rmao[..., 0], rmao[..., 1], np.ones_like(rmao[..., 0])], axis=-1)
-    orm_img = save("ak47_orm", orm)
-    _, nrm = load("T_AK47_N.png")
+    orm_img = save(name + "_orm", orm)
+    _, nrm = load(normal)
     nrm[..., 1] = 1.0 - nrm[..., 1]
-    nrm_img = save("ak47_normal", nrm)
-    color_img = bpy.data.images.load(os.path.join(src, "T_AK47_C.png"))
+    nrm_img = save(name + "_normal", nrm)
+    color_img = bpy.data.images.load(os.path.join(src, color))
     color_img.colorspace_settings.name = "sRGB"
 
-    mat = bpy.data.materials.new("ak47")
+    mat = bpy.data.materials.new(name)
     if hasattr(mat, "use_nodes"):
         mat.use_nodes = True
     nodes, links = mat.node_tree.nodes, mat.node_tree.links

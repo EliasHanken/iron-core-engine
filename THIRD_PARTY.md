@@ -64,11 +64,11 @@ Foundry's props, in `games/20-foundry/assets/models/`, all come from [Poly Haven
 | cement_bag | PierreB3D |
 | old_tyre | MP |
 
-Foundry's first-person view model is built from two CC0 assets, rigged and animated together in Blender by `tools/foundry/viewmodel/build_viewmodel.py`:
+Foundry's first-person view models (one per gun) are built from CC0 assets, rigged and animated together in Blender by `tools/foundry/viewmodel/build_viewmodel.py`. The M700's scope is modelled by the tool itself (`tools/foundry/viewmodel/scope.py`).
 
 | Model | Where | Credit | Licence |
 |---|---|---|---|
-| AK-47 rifle | `games/20-foundry/assets/models/viewmodel/` | Stein Games, "Free Classic Weapons Pack" ([itch.io](https://stein-indie.itch.io/classic-weapons-pack)) | CC0 1.0 |
+| AK-47 rifle, M1911 pistol, M700 rifle | `games/20-foundry/assets/models/viewmodel/` | Stein Games, "Free Classic Weapons Pack" ([itch.io](https://stein-indie.itch.io/classic-weapons-pack)) | CC0 1.0 |
 | WRAD ARMS | `games/20-foundry/assets/models/viewmodel/` | wriks ([GitHub](https://github.com/wwwriks/wrad-arms)) | CC0 |
 
 The Damaged Helmet is only a viewer and editor sample. Anyone building a commercial product from this repo should remove it.

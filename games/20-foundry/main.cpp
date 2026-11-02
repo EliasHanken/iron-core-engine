@@ -38,7 +38,7 @@
 #include "Level.h"
 #include "Stockyard.h"
 #include "Models.h"
-#include "ViewModel.h"
+#include "Arsenal.h"
 #include "Sound.h"
 
 #include "audio/AudioEngine.h"
@@ -290,6 +290,20 @@ public:
     bool load(iron::Renderer& renderer, int height) {
         const std::uint8_t white[4] = {255, 255, 255, 255};
         solid_ = renderer.createTexture(1, 1, white, false);
+        // The scope's tube seen from the eyepiece: black round a clear circle, its
+        // edge soft and shadowed the way the eye sees the inside of the tube.
+        constexpr int kScope = 512;
+        std::vector<std::uint8_t> mask(kScope * kScope * 4, 0);
+        for (int y = 0; y < kScope; ++y) {
+            for (int x = 0; x < kScope; ++x) {
+                const float dx = (static_cast<float>(x) + 0.5f) / kScope - 0.5f;
+                const float dy = (static_cast<float>(y) + 0.5f) / kScope - 0.5f;
+                const float r = std::sqrt(dx * dx + dy * dy) * 2.0f;
+                const float shade = 0.7f * ramp(0.72f, 0.96f, r) + 0.3f * ramp(0.95f, 1.0f, r);
+                mask[(y * kScope + x) * 4 + 3] = static_cast<std::uint8_t>(std::clamp(shade, 0.0f, 1.0f) * 255.0f);
+            }
+        }
+        scopeMask_ = renderer.createTexture(kScope, kScope, mask.data(), false);
         return bake(renderer, height);
     }
 
@@ -310,6 +324,8 @@ public:
         int   rounds = 30;
         bool  reloading = false;
         float reloadProgress = 1.0f;
+        const char* weapon = "AK-47";
+        float scope = 0.0f;     // 0 none .. 1 looking through a scope.
         float hitMarker = 0.0f;
         bool  paused = false;
         bool  showFrame = false;
@@ -346,6 +362,37 @@ public:
 
         const Vec4 warm{1.0f, 0.93f, 0.84f, 0.92f};
 
+        // Through a scope: the tube's black round the glass, and a duplex reticle,
+        // thick posts thinning to fine crosshairs at the middle, with mil dots.
+        iron::HudDrawGroup scopeGroup;
+        scopeGroup.texture = scopeMask_;
+        if (s.scope > 0.0f && !s.paused && !s.engineView) {
+            const float size = h * 1.02f;
+            const float a = s.scope;
+            const Vec4 black{0.0f, 0.0f, 0.0f, a};
+            rect(scopeGroup, cx - size * 0.5f, cy - size * 0.5f, size, size, black);
+            rect(bars, 0.0f, 0.0f, cx - size * 0.5f + 1.0f, h, black);
+            rect(bars, cx + size * 0.5f - 1.0f, 0.0f, w - (cx + size * 0.5f) + 1.0f, h, black);
+            const Vec4 ink{0.02f, 0.02f, 0.02f, 0.95f * a};
+            const float fine = std::max(1.2f * unit, 1.0f);
+            const float post = 5.0f * unit;
+            const float inner = 0.16f * size;
+            const float outer = 0.5f * size;
+            rect(bars, cx - inner, cy - fine * 0.5f, inner * 2.0f, fine, ink);
+            rect(bars, cx - fine * 0.5f, cy - inner, fine, inner * 2.0f, ink);
+            rect(bars, cx - outer, cy - post * 0.5f, outer - inner, post, ink);
+            rect(bars, cx + inner, cy - post * 0.5f, outer - inner, post, ink);
+            rect(bars, cx - post * 0.5f, cy + inner, post, outer - inner, ink);
+            rect(bars, cx - post * 0.5f, cy - outer, post, outer - inner, ink);
+            const float dot = 2.6f * unit;
+            for (int i = 1; i <= 4; ++i) {
+                const float d = inner * static_cast<float>(i) / 5.0f;
+                for (const Vec2 at : {Vec2{cx + d, cy}, Vec2{cx - d, cy}, Vec2{cx, cy + d}, Vec2{cx, cy - d}}) {
+                    rect(bars, at.x - dot * 0.5f, at.y - dot * 0.5f, dot, dot, ink);
+                }
+            }
+        }
+
         // Crosshair: four ticks that open with the spread, and fade when aiming.
         const float crossAlpha =
             (1.0f - ramp(0.2f, 0.7f, s.aim)) * (s.paused || s.engineView ? 0.0f : 0.9f);
@@ -380,7 +427,7 @@ public:
             std::snprintf(count, sizeof(count), "%02d", s.rounds);
             const Vec4 color = s.rounds <= 5 ? Vec4{1.0f, 0.45f, 0.25f, 0.95f} : warm;
             text::appendCentered(bigText, big_, count, right - 40.0f * unit, base, 1.0f, 0.08f, color);
-            text::appendCentered(smallText, small_, s.reloading ? "RELOADING" : "AK-47", right - 40.0f * unit,
+            text::appendCentered(smallText, small_, s.reloading ? "RELOADING" : s.weapon, right - 40.0f * unit,
                                  base + 26.0f * unit, 1.0f, 0.3f, {0.8f, 0.84f, 0.9f, 0.8f});
             if (s.reloading) {
                 const float bw = 110.0f * unit;
@@ -397,7 +444,8 @@ public:
             const float y = h - 112.0f * unit;
             rect(bars, 0.0f, y, w, 46.0f * unit, {0.0f, 0.0f, 0.0f, 0.45f * hint});
             text::appendCentered(smallText, small_,
-                                 "WASD  MOVE     CLICK  FIRE     RIGHT CLICK  AIM     R  RELOAD     I  INSPECT     "
+                                 "WASD  MOVE     CLICK  FIRE     RIGHT CLICK  AIM     R  RELOAD     1 2 3  WEAPONS     "
+                                 "I  INSPECT     "
                                  "F1  FRAME     F2  MOTION     F3  FREEZE CULLING     F4  LODS     F5  AA     "
                                  "TAB  ENGINE VIEW",
                                  cx, y + 29.0f * unit, 1.0f, 0.24f, {1.0f, 0.93f, 0.84f, hint});
@@ -427,7 +475,7 @@ public:
         }
 
         iron::HudBatch batch;
-        for (iron::HudDrawGroup* g : {&bars, &bigText, &bodyText, &smallText}) {
+        for (iron::HudDrawGroup* g : {&scopeGroup, &bars, &bigText, &bodyText, &smallText}) {
             if (!g->vertices.empty()) batch.push_back(std::move(*g));
         }
         if (!batch.empty()) renderer.drawHud(batch, width, height);
@@ -522,6 +570,7 @@ private:
     iron::FontAtlas body_;
     iron::FontAtlas small_;
     iron::TextureHandle solid_ = iron::kInvalidHandle;
+    iron::TextureHandle scopeMask_ = iron::kInvalidHandle;
     int bakedHeight_ = 0;
     int heightStable_ = 0;
     std::vector<float> smoothed_;
@@ -855,10 +904,10 @@ int main(int argc, char** argv) {
         }
         iron::Log::info("foundry: stockyard of %zu instances", instances);
     }
-    foundry::ViewModel viewModel;
-    if (!viewModel.load(renderer, models, iron::executableDir() + "/assets/models/viewmodel/viewmodel.gltf")) {
-        return 1;
-    }
+    // The rifle, the pistol and the sniper (1, 2, 3); --scene pistol or sniper starts with one.
+    foundry::Arsenal arsenal;
+    if (!arsenal.load(renderer, models, iron::executableDir() + "/assets/models/viewmodel/")) return 1;
+    arsenal.equip(sceneHas("pistol") ? 1 : sceneHas("sniper") ? 2 : 0);
     float sprintBlend = 0.0f;
     // Winter mist over the yard, drifting in wisps, with the hall full of smoke; lit by
     // the low sun through the shadows and by every lamp (--scene nofog for none).
@@ -964,8 +1013,7 @@ int main(int argc, char** argv) {
     float lastFallSpeed = 0.0f;
     float stepDistance = 0.0f;
     Vec3 horizontal{0.0f, 0.0f, 0.0f};
-    foundry::Gun gun;
-    gun.setReloadSeconds(viewModel.reloadSeconds(false, 1.9f), viewModel.reloadSeconds(true, 2.6f));
+    float lastFov = kHipFov;  // Last frame's, to slow the mouse as the view zooms.
 
     // --- Sound ---
     foundry::Sound sound;
@@ -1006,6 +1054,8 @@ int main(int argc, char** argv) {
     bool inspectPressed = false;
     bool grenadePressed = false;
     bool smokePressed = false;
+    int  selectPressed = -1;  // A weapon picked by its number.
+    int  cycleSteps = 0;      // Weapons stepped through on the wheel.
     bool escapePressed = false;
     bool quitPressed = false;
     bool clicked = false;
@@ -1027,6 +1077,12 @@ int main(int argc, char** argv) {
         inspectPressed = inspectPressed || input.keyPressed(GLFW_KEY_I);
         grenadePressed = grenadePressed || input.keyPressed(GLFW_KEY_G);
         smokePressed = smokePressed || input.keyPressed(GLFW_KEY_F);
+        for (int i = 0; i < foundry::Arsenal::kCount; ++i) {
+            if (input.keyPressed(GLFW_KEY_1 + i)) selectPressed = i;
+        }
+        const double wheel = input.scrollDelta();
+        if (wheel > 0.0) --cycleSteps;
+        if (wheel < 0.0) ++cycleSteps;
         escapePressed = escapePressed || input.keyPressed(GLFW_KEY_ESCAPE);
         quitPressed = quitPressed || input.keyPressed(GLFW_KEY_Q);
         clicked = clicked || input.mouseButtonPressed(GLFW_MOUSE_BUTTON_LEFT);
@@ -1070,6 +1126,18 @@ int main(int argc, char** argv) {
         escapePressed = false;
         quitPressed = false;
         const float simDt = paused ? 0.0f : dt;
+
+        // --- The weapon in hand: switching puts one away and draws the next ---
+        if (!paused) {
+            if (selectPressed >= 0) arsenal.select(selectPressed);
+            else if (cycleSteps != 0) arsenal.cycle(cycleSteps > 0 ? 1 : -1);
+        }
+        selectPressed = -1;
+        cycleSteps = 0;
+        arsenal.update(simDt);
+        foundry::Weapon& weapon = arsenal.current();
+        foundry::ViewModel& viewModel = weapon.viewModel;
+        foundry::Gun& gun = weapon.gun;
 
         // --- What the player wants this frame ---
         Vec2 look{0.0f, 0.0f};
@@ -1151,7 +1219,10 @@ int main(int argc, char** argv) {
                 grenadePressed = grenadePressed || (seconds > 10.0f && seconds < 10.05f);
             }
         } else if (!paused) {
-            look = {-mouseX * kMouseRadiansPerPixel, -mouseY * kMouseRadiansPerPixel};
+            // Zoomed in, the mouse turns the view less, so the aim moves across the
+            // screen as it does at the hip.
+            const float zoom = std::tan(lastFov * 0.5f) / std::tan(kHipFov * 0.5f);
+            look = {-mouseX * kMouseRadiansPerPixel * zoom, -mouseY * kMouseRadiansPerPixel * zoom};
             const auto down = [&](int k) { return input.keyDown(k) ? 1.0f : 0.0f; };
             forward = down(GLFW_KEY_W) - down(GLFW_KEY_S);
             strafe = down(GLFW_KEY_D) - down(GLFW_KEY_A);
@@ -1221,13 +1292,22 @@ int main(int argc, char** argv) {
         }
 
         // --- The gun ---
-        const bool wasReloading = gun.reloading();
-        const int shots = gun.update(simDt, trigger && !paused, aiming, reloadPressed, look,
-                                     speed / kRunSpeed, grounded);
+        const bool switching = arsenal.busy();
+        const int shots = gun.update(simDt, trigger && !paused && !switching, aiming && !switching,
+                                     reloadPressed && !switching, look, speed / kRunSpeed, grounded);
         reloadPressed = false;
-        if (!wasReloading && gun.reloading()) viewModel.reload(gun.reloadingEmpty());
+        // The gun says what its hands do next: a reload, a round at a time, the bolt.
+        switch (gun.takeCue()) {
+            case foundry::GunCue::Reload: viewModel.reload(false); break;
+            case foundry::GunCue::ReloadEmpty: viewModel.reload(true); break;
+            case foundry::GunCue::ReloadStart: viewModel.play("reload_start", 0.12f, 0.05f); break;
+            case foundry::GunCue::ReloadRound: viewModel.play("reload_round", 0.05f, 0.05f); break;
+            case foundry::GunCue::ReloadEnd: viewModel.play("reload_end", 0.05f, 0.2f); break;
+            case foundry::GunCue::Bolt: viewModel.play("bolt", 0.06f, 0.15f); break;
+            case foundry::GunCue::None: break;
+        }
         if (trigger || aiming) viewModel.interrupt();
-        if (inspectPressed && !gun.reloading() && !aiming) viewModel.inspect();
+        if (inspectPressed && !gun.reloading() && !aiming && !switching) viewModel.inspect();
         inspectPressed = false;
         // Running swings the rifle down across the chest; it eases in and out.
         sprintBlend += ((running && speed > 0.6f * kRunSpeed ? 1.0f : 0.0f) - sprintBlend) *
@@ -1238,8 +1318,12 @@ int main(int argc, char** argv) {
         const float shake = trauma * trauma;
         const Vec2 jolt{shake * 0.04f * (0.6f * std::sin(seconds * 37.0f) + 0.4f * std::sin(seconds * 23.0f + 1.3f)),
                         shake * 0.035f * (0.6f * std::sin(seconds * 31.0f + 0.7f) + 0.4f * std::sin(seconds * 19.0f))};
-        const float viewYaw = yaw + kick.x + jolt.x;
-        const float viewPitch = pitch + kick.y + jolt.y;
+        // Through a scope the reticle drifts with the breath, slow and small.
+        const float scopeHold = weapon.scoped ? std::pow(gun.aim(), 4.0f) : 0.0f;
+        const Vec2 breath{scopeHold * 0.0016f * std::sin(seconds * 0.9f),
+                          scopeHold * 0.0012f * std::sin(seconds * 1.7f + 0.6f)};
+        const float viewYaw = yaw + kick.x + jolt.x + breath.x;
+        const float viewPitch = pitch + kick.y + jolt.y + breath.y;
         // The camera rides between the last two physics steps rather than jumping
         // sixty times a second: smooth at any frame rate.
         const float between = std::clamp(physicsClock / kPhysicsStep, 0.0f, 1.0f);
@@ -1249,14 +1333,20 @@ int main(int argc, char** argv) {
         const Mat4 view = iron::lookAt(eye, eye + aimDir, {0.0f, 1.0f, 0.0f});
         const Mat4 cameraToWorld = iron::inverse(view);
         const float aimBlend = gun.aim() * gun.aim() * (3.0f - 2.0f * gun.aim());
-        const float fov = kHipFov + (kAimFov - kHipFov) * aimBlend;
+        // A scope zooms in late, as the eye meets it; iron sights narrow the view a little.
+        const float zoomIn = weapon.scoped ? aimBlend * aimBlend * aimBlend : aimBlend;
+        const float fov = kHipFov + (weapon.aimFov - kHipFov) * zoomIn;
+        lastFov = fov;
+        const float scopeView = weapon.scoped ? std::clamp((aimBlend - 0.82f) / 0.14f, 0.0f, 1.0f) : 0.0f;
         const float aspect = static_cast<float>(width) / static_cast<float>(std::max(height, 1));
         const Mat4 projection = iron::perspective(fov, aspect, 0.05f, 400.0f);
 
         // The arms and rifle hang off the camera; the gun's kick, sway and bob move
         // them as one, about a point near the grip.
-        const Vec3 off = gun.viewOffset();
-        const Vec3 tilt = gun.viewTilt();
+        // Being put away, it drops down and out of view.
+        const float lowered = arsenal.lowered();
+        const Vec3 off = gun.viewOffset() + Vec3{0.03f * lowered, -0.32f * lowered, 0.06f * lowered};
+        const Vec3 tilt = gun.viewTilt() + Vec3{-0.7f * lowered, 0.0f, 0.25f * lowered};
         const Mat4 viewModelInView = iron::translation(off + kViewPivot) * iron::rotationY(tilt.y) *
                                      iron::rotationX(tilt.x) * iron::rotationZ(tilt.z) *
                                      iron::translation(kViewPivot * -1.0f);
@@ -1269,7 +1359,28 @@ int main(int argc, char** argv) {
             const Vec3 v = transformPoint(viewModelInView, onModel);
             return transformPoint(cameraToWorld, Vec3{v.x * fovStretch, v.y * fovStretch, v.z});
         };
-        for (const auto& fired : viewModel.update(simDt, aimBlend, sprintBlend)) sound.foley(fired.name);
+        // A spent case, kicked out of the ejection port to the right: from each shot,
+        // or from a bolt-action as its bolt is drawn back.
+        const auto ejectCasing = [&]() {
+            const Vec3 right = transformPoint(cameraToWorld, {1.0f, 0.0f, 0.0f}) - eye;
+            const Vec3 up = transformPoint(cameraToWorld, {0.0f, 1.0f, 0.0f}) - eye;
+            const float size = weapon.arm == foundry::Arm::Pistol ? 0.7f : weapon.arm == foundry::Arm::Sniper ? 1.3f : 1.0f;
+            Bit casing;
+            casing.position = apparent(viewModel.ejectionPort());
+            casing.velocity = horizontal + right * ((2.4f + noise.next()) * (weapon.arm == foundry::Arm::Sniper ? 0.6f : 1.0f)) +
+                              up * (1.6f + noise.next()) + aimDir * (noise.next() - 0.5f);
+            casing.size = Vec3{0.022f, 0.009f, 0.009f} * size;
+            casing.color = {0.78f, 0.58f, 0.24f};
+            casing.maxLife = 2.5f;
+            casing.life = casing.maxLife;
+            casing.bounce = 0.35f;
+            casing.brass = true;
+            spawnBit(casing);
+        };
+        for (const auto& fired : viewModel.update(simDt, aimBlend, sprintBlend)) {
+            sound.foley(fired.name, weapon.arm);
+            if (weapon.gun.tuning().boltAction && fired.name == "bolt_back") ejectCasing();
+        }
         for (int i = 0; i < shots; ++i) viewModel.fire();
         const Vec3 muzzle = apparent(viewModel.muzzle());
 
@@ -1336,27 +1447,14 @@ int main(int argc, char** argv) {
             barrelHeat = std::min(barrelHeat + 0.04f, 1.0f);
             ++shotCount;
             flashRoll = noise.next() * kPi;
-            sound.shot();
-            vfx.emit("muzzle", muzzle, aimDir, 4u);
+            sound.shot(weapon.arm);
+            vfx.emit("muzzle", muzzle, aimDir, weapon.arm == foundry::Arm::Sniper ? 14u : 4u);
             const Vec2 dev = gun.shotDeviation();
             const Vec3 dir = lookDirection(viewYaw + dev.x, viewPitch + dev.y);
             // The round: into what it meets, through what it can pierce, off what it grazes.
             const std::vector<iron::BulletImpact> impacts = iron::traceBullet(world, materials, eye, dir);
 
-            // A casing, kicked out to the right.
-            const Vec3 right = transformPoint(cameraToWorld, {1.0f, 0.0f, 0.0f}) - eye;
-            const Vec3 up = transformPoint(cameraToWorld, {0.0f, 1.0f, 0.0f}) - eye;
-            Bit casing;
-            casing.position = apparent(viewModel.ejectionPort());
-            casing.velocity = horizontal + right * (2.4f + noise.next()) + up * (1.6f + noise.next()) +
-                              aimDir * (noise.next() - 0.5f);
-            casing.size = {0.022f, 0.009f, 0.009f};
-            casing.color = {0.78f, 0.58f, 0.24f};
-            casing.maxLife = 2.5f;
-            casing.life = casing.maxLife;
-            casing.bounce = 0.35f;
-            casing.brass = true;
-            spawnBit(casing);
+            if (!gun.tuning().boltAction) ejectCasing();
 
             // The round's path in straight pieces: from the muzzle to where it first
             // lands, on from wherever it comes out or glances off, and away out of
@@ -1712,12 +1810,13 @@ int main(int argc, char** argv) {
             }
             renderer.flushDebugLines(renderView, renderProjection);
         } else {
-            draws += viewModel.draw(renderer, viewModelToWorld, kGunMotionId);
-            if (gun.flash() > 0.0f) {
+            // Looking through the scope, the rifle is behind the eye's view of it.
+            if (scopeView < 0.5f) draws += viewModel.draw(renderer, viewModelToWorld, kGunMotionId);
+            if (gun.flash() > 0.0f && scopeView < 0.5f) {
                 iron::DrawCall flash;
                 flash.mesh = flashMesh;
                 flash.shader = lit;
-                const float size = 0.8f + 0.5f * (gun.flash() / 0.05f);
+                const float size = (0.8f + 0.5f * (gun.flash() / 0.05f)) * weapon.flash;
                 flash.model = viewModelToWorld * iron::translation(viewModel.muzzle()) * iron::rotationZ(flashRoll) *
                               iron::scaling({size, size, size * 1.3f});
                 flash.material = flashLook;
@@ -1738,6 +1837,8 @@ int main(int argc, char** argv) {
         state.rounds = gun.rounds();
         state.reloading = gun.reloading();
         state.reloadProgress = gun.reloadProgress();
+        state.weapon = weapon.label;
+        state.scope = scopeView;
         state.hitMarker = hitMarker;
         state.paused = paused;
         state.showFrame = showFrame;

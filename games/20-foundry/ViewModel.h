@@ -1,13 +1,13 @@
 #pragma once
 
-// The player's arms and rifle: one skinned model built and animated in Blender
-// (tools/foundry/viewmodel), played back here. Its space is the eye's: origin at
-// the eye, looking down -z, +y up, so it hangs straight off the camera.
+// The player's arms and a gun: one skinned model per weapon, built and animated in
+// Blender (tools/foundry/viewmodel), played back here. Its space is the eye's:
+// origin at the eye, looking down -z, +y up, so it hangs straight off the camera.
 //
 // The clips layer the way a first-person rig does: idle and aim blend by how far
-// the rifle is raised, one-shots (reload, draw) play over them, and each shot adds
-// its bolt and trigger on top. The kick, sway and bob stay procedural (Gun), as a
-// transform on the whole model, so the hands never leave the rifle.
+// the gun is raised, one-shots (reload, draw, the bolt worked) play over them, and
+// each shot adds its moving parts on top. The kick, sway and bob stay procedural
+// (Gun), as a transform on the whole model, so the hands never leave the gun.
 
 #include "Models.h"
 #include "asset/GltfLoader.h"
@@ -16,6 +16,7 @@
 #include "render/Renderer.h"
 
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace foundry {
@@ -53,9 +54,25 @@ public:
         }
         animator_.setSkeleton(&model_.skeleton);
         animator_.setBaseWeight(idle_, 1.0f);
+        redraw();
+        return true;
+    }
+
+    // Brings the gun up from out of view, as when it's drawn.
+    void redraw() {
         if (draw_) animator_.playOneShot(draw_, 0.0f, 0.15f);
         animator_.evaluate();
-        return true;
+    }
+
+    // Plays a clip by name over the rest (a bolt worked, a round loaded), if the
+    // model has it.
+    void play(std::string_view name, float blendIn = 0.08f, float blendOut = 0.15f) {
+        if (const iron::AnimationClip* clip = model_.findClip(name)) animator_.playOneShot(clip, blendIn, blendOut);
+    }
+    // A clip's length in seconds, or `fallback` if the model has none.
+    float seconds(std::string_view name, float fallback) const {
+        const iron::AnimationClip* clip = model_.findClip(name);
+        return clip ? clip->duration : fallback;
     }
 
     // Advances the clips; `aim` is 0 at the hip and 1 raised to the eye, `sprint`

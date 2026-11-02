@@ -5,11 +5,13 @@
 // build's audio-hq folder. Without either, the CC0 shooter set stands in where it can,
 // and the rest stays silent.
 //
-// The rifle is layered like a AAA weapon: a dry shot per round (base, punch, crack and
+// Every gun is layered like a AAA weapon: a dry shot per round (base, punch, crack and
 // action, built by the tool), a short tail of the space with every round, and the
-// space's longer tail when a burst ends. Two spaces, the open yard and the hall, crossfade by how far
+// space's longer tail when a burst ends; the sniper's report also rolls away across
+// open ground. Its handling (magazines, the pistol's slide, the bolt) is layered too. Two spaces, the open yard and the hall, crossfade by how far
 // inside the player is: the ambience beds, the gun's tail and the reverb.
 
+#include "Gun.h"
 #include "Level.h"
 
 #include "audio/AudioEngine.h"
@@ -45,6 +47,17 @@ public:
         cc0_ = assets + "sfx/";
 
         for (int i = 0; i < 5; ++i) shots_.push_back(load("shot" + std::to_string(i + 1), "gunshot-rifle"));
+        for (int i = 0; i < 4; ++i) pistolShots_.push_back(load("pistol" + std::to_string(i + 1), "gunshot-rifle"));
+        for (int i = 0; i < 3; ++i) sniperShots_.push_back(load("sniper" + std::to_string(i + 1), "gunshot-rifle"));
+        tailSniper_ = load("tail-sniper");
+        magRelease_ = load("mag-release");
+        slideBack_ = load("slide-back");
+        slideForward_ = load("slide-forward");
+        boltUp_ = load("bolt-up");
+        boltBack_ = load("bolt-back");
+        boltForward_ = load("bolt-forward");
+        boltDown_ = load("bolt-down");
+        roundIn_ = load("round-in");
         for (int i = 0; i < 3; ++i) {
             shotTailsHall_.push_back(load("tailshot-hall" + std::to_string(i + 1)));
             shotTailsYard_.push_back(load("tailshot-yard" + std::to_string(i + 1)));
@@ -149,15 +162,23 @@ public:
         (void)seconds;
     }
 
-    void shot() {
-        if (!aloud_ || shots_.empty()) return;
+    void shot(Arm arm = Arm::Rifle) {
+        const std::vector<iron::SoundHandle>& set = arm == Arm::Pistol ? pistolShots_
+                                                    : arm == Arm::Sniper ? sniperShots_
+                                                                         : shots_;
+        if (!aloud_ || set.empty()) return;
         // Never the same take twice in a row.
-        std::size_t pick = static_cast<std::size_t>(random() * (static_cast<float>(shots_.size()) - 0.01f));
-        if (pick == lastShot_) pick = (pick + 1) % shots_.size();
+        std::size_t pick = static_cast<std::size_t>(random() * (static_cast<float>(set.size()) - 0.01f));
+        if (pick == lastShot_) pick = (pick + 1) % set.size();
         lastShot_ = pick;
-        // The rifle is the loudest thing in the world, right at the ear: full scale,
-        // where everything else sits at half.
-        if (shots_[pick]) audio_.playSoundLocal(shots_[pick], kHeadroom * 2.0f, 0.97f + random() * 0.06f);
+        // A gun is the loudest thing in the world, right at the ear: full scale,
+        // where everything else sits at half (a pistol a little under).
+        const float loud = arm == Arm::Pistol ? 1.7f : 2.0f;
+        if (set[pick]) audio_.playSoundLocal(set[pick], kHeadroom * loud, 0.97f + random() * 0.06f);
+        // A sniper's crack carries: its report rolls away over the open ground.
+        if (arm == Arm::Sniper && tailSniper_) {
+            audio_.playSoundLocal(tailSniper_, kHeadroom * (0.9f - 0.5f * indoor_), 0.96f + random() * 0.05f);
+        }
         // The space answering this round: the hall and the yard by how far in the player is.
         const std::size_t tail = static_cast<std::size_t>(random() * 2.99f);
         if (tail < shotTailsHall_.size() && shotTailsHall_[tail] && indoor_ > 0.02f) {
@@ -171,19 +192,47 @@ public:
         duck_ = 1.0f;
     }
 
-    // The weapon's handling sounds, on the animation's events: the magazine out
-    // and in, the bolt racked back and let fly, a hand taking hold.
-    void foley(std::string_view event) {
+    // A gun's handling sounds, on its animation's events: the magazine out and in,
+    // the bolt or slide racked back and let fly, a round pressed in, a hand taking
+    // hold. Each gun has its own; missing ones fall back on the rifle's.
+    void foley(std::string_view event, Arm arm = Arm::Rifle) {
         if (!aloud_) return;
         iron::SoundHandle h = iron::kInvalidSound;
         float gain = 0.85f, pitch = 0.98f + random() * 0.04f;
-        if (event == "mag_out") h = magOut_;
-        else if (event == "mag_in") h = magIn_;
-        else if (event == "bolt_back") h = charge_;
-        else if (event == "bolt_forward") {
-            h = charge_;
-            pitch *= 1.18f;
+        const auto either = [](iron::SoundHandle a, iron::SoundHandle b) { return a ? a : b; };
+        const bool pistol = arm == Arm::Pistol;
+        if (event == "mag_out") {
+            h = magOut_;
+            if (pistol) {  // A smaller magazine, lighter.
+                pitch *= 1.3f;
+                gain = 0.7f;
+            }
+        } else if (event == "mag_in") {
+            h = magIn_;
+            if (pistol) {
+                pitch *= 1.25f;
+                gain = 0.8f;
+            }
+        } else if (event == "mag_release") {
+            h = either(magRelease_, charge_);
             gain = 0.6f;
+        } else if (event == "bolt_back") {
+            h = pistol ? either(slideBack_, charge_) : arm == Arm::Sniper ? either(boltBack_, charge_) : charge_;
+        } else if (event == "bolt_forward") {
+            h = pistol ? either(slideForward_, charge_) : arm == Arm::Sniper ? either(boltForward_, charge_) : charge_;
+            if (arm == Arm::Rifle) {  // The rifle's charge, quicker going home.
+                pitch *= 1.18f;
+                gain = 0.6f;
+            }
+        } else if (event == "bolt_up") {
+            h = either(boltUp_, charge_);
+            gain = 0.75f;
+        } else if (event == "bolt_down") {
+            h = either(boltDown_, charge_);
+            gain = 0.75f;
+        } else if (event == "round_in") {
+            h = either(roundIn_, magIn_);
+            gain = 0.7f;
         } else if (event == "grab" || event == "draw") {
             h = charge_;
             pitch *= 0.62f;
@@ -291,6 +340,17 @@ private:
     std::uint32_t seed_ = 0x2545f491u;
 
     std::vector<iron::SoundHandle> shots_;
+    std::vector<iron::SoundHandle> pistolShots_;
+    std::vector<iron::SoundHandle> sniperShots_;
+    iron::SoundHandle tailSniper_ = iron::kInvalidSound;
+    iron::SoundHandle magRelease_ = iron::kInvalidSound;
+    iron::SoundHandle slideBack_ = iron::kInvalidSound;
+    iron::SoundHandle slideForward_ = iron::kInvalidSound;
+    iron::SoundHandle boltUp_ = iron::kInvalidSound;
+    iron::SoundHandle boltBack_ = iron::kInvalidSound;
+    iron::SoundHandle boltForward_ = iron::kInvalidSound;
+    iron::SoundHandle boltDown_ = iron::kInvalidSound;
+    iron::SoundHandle roundIn_ = iron::kInvalidSound;
     iron::SoundHandle tailHall_ = iron::kInvalidSound;
     iron::SoundHandle tailYard_ = iron::kInvalidSound;
     iron::SoundHandle magOut_ = iron::kInvalidSound;

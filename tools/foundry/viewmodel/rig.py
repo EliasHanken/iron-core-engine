@@ -22,6 +22,7 @@ import os
 
 import bpy
 from mathutils import Matrix, Quaternion, Vector
+from mathutils.bvhtree import BVHTree
 
 SHOULDER_TO_WRIST = 0.62  # A tall man's arm, in metres: first-person rigs run long.
 RIFLE_LENGTH = 0.88       # An AK-47 with its fixed stock.
@@ -101,6 +102,87 @@ def import_rifle(fbx_path):
     rifle.matrix_world = shift @ rifle.matrix_world
     apply_transform(skeleton, rifle)
     return skeleton, rifle
+
+
+def import_gun(fbx_path, length=None, keep_unbound=False, keep_rounds=False):
+    """Imports any gun from the pack: its meshes joined into one (the rounds and
+    glow sights dropped), muzzle down +Y, at its own metric size (or scaled to
+    `length`), the origin at the trigger with the sights' line on x = 0. Meshes
+    bound to no bone are the pack's optional accessories (rails, lights): dropped,
+    or with `keep_unbound` fixed to the frame. With `keep_rounds`, the cartridges
+    stay, on a brass material of their own (the mesh's second slot). Returns
+    (armature, mesh)."""
+    before = set(bpy.data.objects)
+    bpy.ops.import_scene.fbx(filepath=fbx_path)
+    new = [o for o in bpy.data.objects if o not in before]
+    skeleton = next(o for o in new if o.type == "ARMATURE")
+    meshes = []
+    for o in new:
+        if o.type != "MESH" or len(o.data.vertices) <= 64:
+            continue
+        bound = any(v.groups for v in o.data.vertices)
+        if not bound:
+            if not keep_unbound:
+                continue
+            group = o.vertex_groups.get("FRAME") or o.vertex_groups.new(name="FRAME")
+            group.add(range(len(o.data.vertices)), 1.0, "REPLACE")
+            if not any(m.type == "ARMATURE" for m in o.modifiers):
+                o.modifiers.new("Armature", "ARMATURE").object = skeleton
+        meshes.append(o)
+    for o in new:
+        if o is not skeleton and o not in meshes:
+            bpy.data.objects.remove(o, do_unlink=True)
+    select_only(*meshes)
+    if len(meshes) > 1:
+        bpy.ops.object.join()
+    gun = bpy.context.view_layer.objects.active
+
+    # The glow inserts go, and the rounds unless kept: they have materials of
+    # their own, untextured.
+    def kind(material):
+        name = material.name.upper() if material else ""
+        return "round" if "BULLET" in name else "glow" if "GLOW" in name else "gun"
+    select_only(gun)
+    bpy.ops.object.mode_set(mode="EDIT")
+    bpy.ops.mesh.select_all(action="DESELECT")
+    bpy.ops.object.mode_set(mode="OBJECT")
+    kinds = [kind(gun.material_slots[p.material_index].material) for p in gun.data.polygons]
+    for p, k in zip(gun.data.polygons, kinds):
+        p.select = k == "glow" or (k == "round" and not keep_rounds)
+    bpy.ops.object.mode_set(mode="EDIT")
+    bpy.ops.mesh.delete(type="FACE")
+    bpy.ops.object.mode_set(mode="OBJECT")
+    # The gun's textures cover every part; the rounds, if kept, are plain brass.
+    rounds = [kind(gun.material_slots[p.material_index].material) == "round" for p in gun.data.polygons]
+    gun.data.materials.clear()
+    gun.data.materials.append(bpy.data.materials.new("gun"))
+    if any(rounds):
+        brass = bpy.data.materials.new("rounds")
+        if hasattr(brass, "use_nodes"):
+            brass.use_nodes = True
+        bsdf = next(n for n in brass.node_tree.nodes if n.type == "BSDF_PRINCIPLED")
+        bsdf.inputs["Base Color"].default_value = (0.78, 0.56, 0.3, 1.0)
+        bsdf.inputs["Metallic"].default_value = 1.0
+        bsdf.inputs["Roughness"].default_value = 0.32
+        gun.data.materials.append(brass)
+    for p, is_round in zip(gun.data.polygons, rounds):
+        p.material_index = 1 if is_round else 0
+    apply_transform(skeleton, gun)
+
+    ys = [(gun.matrix_world @ v.co).y for v in gun.data.vertices]
+    scale = 1.0 if length is None else length / (max(ys) - min(ys))
+    turn = Matrix.Rotation(math.pi, 4, "Z") @ Matrix.Scale(scale, 4)
+    skeleton.matrix_world = turn @ skeleton.matrix_world
+    gun.matrix_world = turn @ gun.matrix_world
+    apply_transform(skeleton, gun)
+
+    trigger = skeleton.data.bones["TRIGGER"].head_local
+    x_mid = skeleton.data.bones["IRONSIGHT"].head_local.x
+    shift = Matrix.Translation(-Vector((x_mid, trigger.y, trigger.z)))
+    skeleton.matrix_world = shift @ skeleton.matrix_world
+    gun.matrix_world = shift @ gun.matrix_world
+    apply_transform(skeleton, gun)
+    return skeleton, gun
 
 
 def merge_rifle(arms, skeleton, rifle):
@@ -328,47 +410,451 @@ def solve_elbow_pose(arms, side, authored_pole, swing):
     bpy.context.view_layer.update()
 
 
-SKIN = 0.009  # From a finger bone to the skin over it, in metres.
+SKIN = 0.009        # From a finger bone to the skin over it, in metres (without skin vertices).
+PALM_SKIN = 0.012   # From the hand's bones to the skin of the palm (likewise).
+TOUCH = 0.0012      # How close skin comes to the gun where it rests on it: just touching.
 
 
-def grip_contact(arms, side, rest, hand, weapon_matrix):
-    """Closes each finger, and the thumb, until it meets what the hand holds (a
-    cylinder): the hand's curls set each digit's shape, and how far along it
-    each goes is searched, so fingers wrap the part rather than float off it or
-    sink in. Digits that can't reach keep their authored curl."""
+def hand_skin(arms, skin, side, per_bone=48):
+    """The skin each part of a hand carries: for every finger bone and the wrist
+    (the palm and the back of the hand), the vertices it moves most, in that
+    bone's rest space. Posed with the bone, they're where the skin is, so contact
+    can be measured on the skin itself rather than guessed from the bones."""
+    names = {g.index: g.name for g in skin.vertex_groups}
+    to_arms = arms.matrix_world.inverted() @ skin.matrix_world
+    verts = skin.data.vertices
+
+    def owner(indices):
+        """The bone that moves these vertices most, and by how much."""
+        totals = {}
+        for i in indices:
+            for g in verts[i].groups:
+                totals[g.group] = totals.get(g.group, 0.0) + g.weight / len(indices)
+        if not totals:
+            return None, 0.0
+        group, weight = max(totals.items(), key=lambda kv: kv[1])
+        return names[group], weight
+
+    # Every vertex, and the middle of every face: the arms are low-poly, and a
+    # finger's faces are wide enough for an edge of the gun to slip between corners.
+    samples = [((v.index,), v.co) for v in verts]
+    samples += [(tuple(p.vertices), p.center) for p in skin.data.polygons]
+    parts = {}
+    for indices, co in samples:
+        name, weight = owner(indices)
+        if name is None or weight < 0.5 or not name.endswith("." + side):
+            continue
+        if not (name.startswith("finger_") or name == f"wrist.{side}"):
+            continue
+        bone = arms.data.bones[name]
+        local = bone.matrix_local.inverted() @ (to_arms @ co)
+        if name.startswith("wrist") and local.y < 0.15 * bone.length:
+            continue  # The wrist's own skin, not the hand's.
+        if name[-3] == "1" and local.y < 0.4 * bone.length:
+            continue  # A finger's root is the palm's skin: it rests on the gun with the palm.
+        parts.setdefault(name, []).append(local)
+    for name, verts in parts.items():
+        limit = per_bone * (2 if name.startswith("wrist") else 1)
+        if len(verts) > limit:
+            stride = len(verts) / limit
+            parts[name] = [verts[int(i * stride)] for i in range(limit)]
+    return parts
+# How far each finger joint closes at most, in radians (knuckle, middle, tip);
+# the thumb's own.
+JOINT_LIMITS = {"finger": (1.65, 1.9, 1.45), "thumb": (1.1, 1.3, 1.4)}
+
+
+class GunSurface:
+    """The gun's surface as it is this frame, moving parts and all (a magazine in
+    the hand, the slide back), for palms to rest on and fingers to close round;
+    and, for a pistol's support hand, the firing hand's skin as well, so it wraps
+    the hand that holds the grip rather than sinking through it."""
+
+    def __init__(self, gun, skin=None):
+        self.gun = gun
+        self.skin = skin
+        self.tree = None
+        self.hand_tree = None
+        self.to_local = Matrix()
+        self.hand_polys = {}
+
+    def update(self, with_hand=None):
+        """Rebuilds from the gun as posed now; `with_hand` ("r", "l") adds that
+        hand's skin as posed now."""
+        depsgraph = bpy.context.evaluated_depsgraph_get()
+        self.tree = BVHTree.FromObject(self.gun, depsgraph)
+        self.to_local = self.gun.matrix_world.inverted() @ self.gun.parent.matrix_world
+        self.hand_tree = None
+        if with_hand and self.skin is not None:
+            polys = self._hand_polys(with_hand)
+            mesh = self.skin.evaluated_get(depsgraph).to_mesh()
+            to_arms = self.gun.parent.matrix_world.inverted() @ self.skin.matrix_world
+            to_local = self.to_local @ to_arms
+            verts = [to_local @ v.co for v in mesh.vertices]
+            self.hand_tree = BVHTree.FromPolygons(verts, polys)
+            self.skin.evaluated_get(depsgraph).to_mesh_clear()
+
+    def _hand_polys(self, side):
+        """The skin's faces a hand's bones move (its fingers and palm)."""
+        if side not in self.hand_polys:
+            names = {g.index: g.name for g in self.skin.vertex_groups}
+            verts = self.skin.data.vertices
+
+            def on_hand(i):
+                if not verts[i].groups:
+                    return False
+                g = max(verts[i].groups, key=lambda g: g.weight)
+                name = names[g.group]
+                return name.endswith("." + side) and (name.startswith("finger_") or name.startswith("wrist"))
+            self.hand_polys[side] = [tuple(p.vertices) for p in self.skin.data.polygons
+                                     if all(on_hand(i) for i in p.vertices)]
+        return self.hand_polys[side]
+
+    def signed(self, p, far=0.06):
+        """How far a point (armature space) is outside the gun; negative inside."""
+        q = self.to_local @ p
+        d = self._signed(self.tree, q, far)
+        if self.hand_tree is not None:
+            d = min(d, self._signed(self.hand_tree, q, far))
+        return d
+
+    @staticmethod
+    def _signed(tree, q, far):
+        loc, normal, _, dist = tree.find_nearest(q, far)
+        if loc is None:
+            return far
+        # Inside, by the nearest face's facing; but not trusted far from it: a
+        # stray inward face (a hollow part's inner wall) would read a point well
+        # clear of the gun as deep in it, and nothing gets far in unnoticed.
+        return dist if (q - loc).dot(normal) >= 0.0 or dist > 0.012 else -dist
+
+
+def _curl_sign(arms, side, rest):
+    """Which way round a finger joint turns to close towards the palm."""
+    key = ("curl_sign", side)
+    if key not in rest:
+        pb = arms.pose.bones[f"finger_index1.{side}"]
+        rest_m = pb.bone.matrix_local.to_3x3()
+        local_axis = (rest_m.inverted() @ rest["across"]).normalized()
+        tip = rest_m @ Vector((0.0, 1.0, 0.0))
+        moved = rest_m @ (Quaternion(local_axis, 0.3) @ Vector((0.0, 1.0, 0.0)))
+        rest[key] = 1.0 if (moved - tip).dot(rest["palm"]) > 0.0 else -1.0
+    return rest[key]
+
+
+def _fan(arms, side, rest, digit):
+    """How far a finger fans out from the middle one at rest, in radians about the
+    palm's normal: the rig's resting hand is splayed, a gripping one isn't."""
+    key = ("fan", side, digit)
+    if key not in rest:
+        b = arms.data.bones
+        normal = rest["palm"]
+
+        def flat(name):
+            d = b[name].tail_local - b[name].head_local
+            return (d - normal * d.dot(normal)).normalized()
+        middle, own = flat(f"finger_middle1.{side}"), flat(f"finger_{digit}1.{side}")
+        rest[key] = math.atan2(middle.cross(own).dot(normal), middle.dot(own))
+    return rest[key]
+
+
+def digit_rotations(arms, side, rest, digit, angles, together=0.0, spread=0.0):
+    """Each joint's local rotation closing a digit by `angles` (radians): fingers
+    fold about the knuckles' line, the thumb about the hand's length. At the
+    knuckle a finger also swings about the palm's normal: `together` (0..1) closes
+    the rest pose's splay, `spread` (radians) swings it further on its own. The
+    thumb's `spread` is a pair: its base swung about the palm's normal, and towards
+    or away from the palm."""
+    sign = _curl_sign(arms, side, rest)
+    world_axis = rest["forward"] if digit == "thumb" else rest["across"]
+    if digit == "thumb":
+        sign *= 1.0 if side == "r" else -1.0
+    out = []
+    for j, angle in zip((1, 2, 3), angles):
+        rest_m = arms.pose.bones[f"finger_{digit}{j}.{side}"].bone.matrix_local.to_3x3()
+        q = Quaternion((rest_m.inverted() @ world_axis).normalized(), sign * angle)
+        if j == 1 and digit != "thumb":
+            swing = -_fan(arms, side, rest, digit) * together + spread
+            if swing:
+                q = Quaternion((rest_m.inverted() @ rest["palm"]).normalized(), swing) @ q
+        elif j == 1 and spread:
+            about_palm, towards_palm = spread
+            q = (Quaternion((rest_m.inverted() @ rest["palm"]).normalized(), about_palm) @
+                 Quaternion((rest_m.inverted() @ rest["across"]).normalized(), towards_palm) @ q)
+        out.append(q)
+    return out
+
+
+def digit_points(arms, side, rest, digit, angles, wrist_matrix, start=1, together=0.0, spread=0.0, at=None):
+    """Points along a digit closed by `angles`, from joint `start` out to its tip,
+    in armature space: forward kinematics from the posed wrist, so a grasp can try
+    many closings without updating the scene."""
     bones = arms.pose.bones
-    centre = weapon_matrix @ hand.hold.centre
-    axis = (weapon_matrix.to_3x3() @ hand.hold.axis).normalized()
-    reach = hand.hold.radius + SKIN
-    digits = ("index", "middle", "ring", "pinky", "thumb")
-
-    def touching(digit):
-        points = [bones[f"finger_{digit}{j}.{side}"].head for j in (2, 3)] + [bones[f"finger_{digit}3.{side}"].tail]
-        for p in points:
-            d = p - centre
-            if (d - axis * d.dot(axis)).length < reach:
-                return True
-        return False
-
-    def pose(scale):
-        curls = {f: tuple(a * scale[f] for a in hand.curl[f]) for f in hand.curl}
-        curl_fingers(arms, side, rest, curls, tuple(a * scale["thumb"] for a in hand.thumb))
-        bpy.context.view_layer.update()
-
-    lo = {d: 0.1 for d in digits}
-    hi = {d: 2.0 for d in digits}
-    pose(hi)
-    reaches = {d: touching(d) for d in digits}
-    for _ in range(7):
-        mid = {d: (lo[d] + hi[d]) * 0.5 for d in digits}
-        pose(mid)
-        for d in digits:
-            if touching(d):
-                hi[d] = mid[d]
+    parent_rest = bones[f"wrist.{side}"].bone.matrix_local
+    m = wrist_matrix
+    points = []
+    for j, q in zip((1, 2, 3), digit_rotations(arms, side, rest, digit, angles, together, spread)):
+        b = bones[f"finger_{digit}{j}.{side}"].bone
+        m = m @ (parent_rest.inverted() @ b.matrix_local) @ q.to_matrix().to_4x4()
+        parent_rest = b.matrix_local
+        if j >= start:
+            skin = rest.get("skin", {}).get(b.name)
+            if skin and at is None:
+                points += [m @ v for v in skin]
             else:
-                lo[d] = mid[d]
+                points += [m @ Vector((0.0, b.length * t, 0.0)) for t in (at or (0.3, 0.65, 1.0))]
+    return points
+
+
+def _clearance(rest):
+    """How close a digit's sample points may come to the gun: the skin itself just
+    touching, or the guessed skin over the bone's line."""
+    return TOUCH if rest.get("skin") else SKIN
+
+
+def _first(test, lo, hi, step):
+    """The least value in [lo, hi] where `test` turns true, found by stepping then
+    halving (so thin parts aren't stepped over); None if it never does."""
+    if test(lo):
+        return lo
+    prev, v = lo, lo
+    while v < hi:
+        v = min(v + step, hi)
+        if test(v):
+            for _ in range(6):
+                mid = (prev + v) * 0.5
+                if test(mid):
+                    v = mid
+                else:
+                    prev = mid
+            return v
+        prev = v
+    return None
+
+
+def seat_palm(arms, side, rest, hand, surface, memory=None):
+    """Fits the hand onto the gun: slides it (along its palm's facing, along its
+    fingers and across its knuckles, a couple of centimetres at most) to where no
+    skin is buried in the gun, the open fingers and the thumb's root included, and
+    the palm rests on the surface. A hand authored roughly in place ends up
+    holding, not hovering, with its fingers free to wrap from there.
+
+    The fit is remembered in the hand's own frame (`memory["fit"]`): a hand that
+    then carries what it took (a magazine out of the gun) keeps it (carry_fit)."""
+    bones = arms.pose.bones
     w = max(0.0, min(1.0, hand.contact))
-    pose({d: 1.0 + ((hi[d] if reaches[d] else 1.0) - 1.0) * w for d in digits})
+    skin = rest.get("skin", {})
+    wrist = bones[f"wrist.{side}"]
+    if f"wrist.{side}" not in skin:
+        return Vector()
+    m = wrist.matrix.copy()
+    turn = m.to_3x3() @ wrist.bone.matrix_local.to_3x3().inverted()
+    axes = [(turn @ rest[k]).normalized() for k in ("palm", "forward", "across")]
+    palm_points = [m @ v for v in skin[f"wrist.{side}"]]
+    held = []
+    for f in hand.curl:
+        if f not in hand.free and not (f == "index" and hand.trigger is not None):
+            held += digit_points(arms, side, rest, f, (0.0, 0.0, 0.0), m, 1, hand.together)
+    thumb_root = len(skin.get(f"finger_thumb1.{side}", []))
+    held += digit_points(arms, side, rest, "thumb", hand.thumb, m, 1)[:thumb_root]
+
+    def cost(t):
+        buried = 0.0
+        nearest = 1.0
+        for p in palm_points:
+            d = surface.signed(p + t)
+            nearest = min(nearest, d)
+            buried += max(0.0, TOUCH - d)
+        for p in held:
+            buried += max(0.0, -surface.signed(p + t))
+        return buried + 0.3 * max(0.0, nearest - TOUCH) + 5.0 * t.length_squared
+
+    t = Vector()
+    best = cost(t)
+    for step in (0.008, 0.004, 0.002, 0.001):
+        improved = True
+        while improved:
+            improved = False
+            for axis in axes:
+                for sign in (1.0, -1.0):
+                    trial = t + axis * (step * sign)
+                    if max(abs(trial.dot(a)) for a in axes) > 0.025:
+                        continue
+                    c = cost(trial)
+                    if c < best - 1e-7:
+                        best, t, improved = c, trial, True
+    if os.environ.get("VM_DEBUG"):  # VM_DEBUG=1: how each hand was fitted, in the gun's space.
+        inv = hand.weapon_matrix.inverted().to_3x3()
+        print("FIT", side, "moved", tuple(round(c, 4) for c in inv @ t), "cost", round(best, 5))
+    target = bones[f"wrist_ik.{side}"]
+    if memory is not None:
+        memory["fit"] = turn.inverted() @ t
+    target.matrix = Matrix.Translation(t * w) @ target.matrix
+    bpy.context.view_layer.update()
+    return t * w
+
+
+def carry_fit(arms, side, rest, hand, memory):
+    """Keeps the last fit (seat_palm) on a hand that carries what it took: the
+    offset rides in the hand's frame, so hand and load move as one, no pop."""
+    fit = memory.get("fit")
+    if fit is None:
+        return
+    wrist = arms.pose.bones[f"wrist.{side}"]
+    turn = wrist.matrix.to_3x3() @ wrist.bone.matrix_local.to_3x3().inverted()
+    w = max(0.0, min(1.0, hand.contact))
+    target = arms.pose.bones[f"wrist_ik.{side}"]
+    target.matrix = Matrix.Translation((turn @ fit) * w) @ target.matrix
+    bpy.context.view_layer.update()
+
+
+def _thumb_swing(arms, side, rest, hand, shape, wrist_matrix, surface, previous=None):
+    """Where the thumb's base swings so the thumb clears the gun: the rig's thumb
+    only rolls about the hand's length, which can leave it through a grip whatever
+    its curl. Searches the base's swing for the pose that rests its outer joints on
+    the gun without burying them (its root is the hand fit's to clear), pointing
+    along `hand.thumb_aim`, nearest the authored one. With last frame's swing
+    (`previous`, degrees), it only searches near it, so the thumb doesn't jump."""
+    def cost(about, towards):
+        spread = (math.radians(about), math.radians(towards))
+        points = digit_points(arms, side, rest, "thumb", shape, wrist_matrix, 2, 0.0, spread)
+        gaps = [surface.signed(p) for p in points]
+        buried = sum(max(0.0, TOUCH - d) for d in gaps)
+        # A thumb lies along the gun, not off in the air, pointing where the hold
+        # wants it (forward along a handguard, round a grip).
+        hover = max(0.0, min(gaps) - TOUCH)
+        c = buried + 0.15 * hover + 0.0004 * (about * about + towards * towards) / 900.0
+        if aim is not None:
+            line = digit_points(arms, side, rest, "thumb", shape, wrist_matrix, 2, 0.0, spread, at=(0.0, 1.0))
+            pointing = (line[-1] - line[0]).normalized()
+            c += 0.006 * (1.0 - pointing.dot(aim))
+        return c
+
+    aim = (hand.weapon_matrix.to_3x3() @ hand.thumb_aim).normalized() if hand.thumb_aim is not None else None
+
+    if previous is None:
+        best = min(((a, t) for a in range(-50, 51, 10) for t in range(-50, 51, 10)), key=lambda at: cost(*at))
+    else:
+        best = previous
+    for step in (5.0, 2.5, 1.0):
+        a0, t0 = best
+        best = min(((a0 + da, t0 + dt) for da in (-step, 0.0, step) for dt in (-step, 0.0, step)),
+                   key=lambda at: cost(*at))
+    return best
+
+
+def grasp(arms, side, rest, hand, surface, memory=None):
+    """Closes each finger and the thumb onto the gun, the way a hand takes hold:
+    the whole digit folds in its authored shape until its skin meets the surface,
+    then the joints past the contact keep closing, middle then tip, until they
+    meet it too, wrapping what's held. Skin that already rests on the gun with the
+    hand open (a finger's length lying along a grip) only counts once it presses
+    in. Digits with nothing in reach keep their authored curl, as do the hand's
+    `free` ones; `hand.contact` blends between authored and gripped. `memory`
+    carries the searches' answers from frame to frame."""
+    memory = {} if memory is None else memory
+    w = max(0.0, min(1.0, hand.contact))
+    clear = _clearance(rest)
+    wrist_m = arms.pose.bones[f"wrist.{side}"].matrix.copy()
+    shapes = dict(hand.curl)
+    shapes["thumb"] = hand.thumb
+    solved = {}
+    spreads = {}
+    if hand.trigger is not None and w > 0.0:
+        angles, spread, memory["trigger"] = trigger_finger(arms, side, rest, hand, wrist_m, surface,
+                                                           memory.get("trigger"))
+        solved["index"] = tuple(a + (b - a) * w for a, b in zip(hand.curl["index"], angles))
+        spreads["index"] = spread * w
+        shapes.pop("index")
+    for digit, shape in shapes.items():
+        if digit in hand.free:
+            solved[digit] = tuple(shape)
+            continue
+        limits = JOINT_LIMITS["thumb" if digit == "thumb" else "finger"]
+        spread = 0.0
+        if digit == "thumb":
+            memory["thumb"] = _thumb_swing(arms, side, rest, hand, shape, wrist_m, surface, memory.get("thumb"))
+            spread = (math.radians(memory["thumb"][0]), math.radians(memory["thumb"][1]))
+            spreads["thumb"] = (spread[0] * w, spread[1] * w)
+
+        def points(angles, start, digit=digit, spread=spread):
+            return digit_points(arms, side, rest, digit, angles, wrist_m, start, hand.together, spread)
+        opened = {start: [surface.signed(p) for p in points((0.0, 0.0, 0.0), start)] for start in (1, 2, 3)}
+
+        def touches(angles, start=1, opened=opened, points=points):
+            for p, before in zip(points(angles, start), opened[start]):
+                d = surface.signed(p)
+                if (d < clear) if before > clear + 0.002 else (d < before - 0.002):
+                    return True
+            return False
+
+        angles = list(shape)
+        # Small steps: the gun's thin shells (a handguard's wood) mustn't be stepped through.
+        if digit == "thumb":
+            # The thumb starts from its authored curl, where the hand was fitted
+            # clear of the gun (opened right out, its root swings into the gun):
+            # it closes on from there, or opens just until its skin is clear.
+            def buried(s):
+                return any(surface.signed(p) < clear for p in points([a * s for a in shape], 1))
+            if buried(1.0):
+                back = _first(lambda x: not buried(1.0 - x), 0.0, 1.0, 0.04)
+                scale = 1.0 - (back if back is not None else 0.0)
+            else:
+                scale = _first(lambda s: buried(s), 1.0, 2.0, 0.04)
+        else:
+            scale = _first(lambda s: touches([a * s for a in shape]), 0.0, 2.0, 0.04)
+        if scale is not None:
+            angles = [min(a * scale, lim) for a, lim in zip(shape, limits)]
+            for j in (1, 2):
+                if touches(angles, j + 1):
+                    continue
+                trial = lambda e: touches(angles[:j] + [angles[j] + e] + angles[j + 1:], j + 1)  # noqa: E731
+                extra = _first(trial, 0.0, max(limits[j] - angles[j], 0.0), 0.04)
+                if extra is not None:
+                    angles[j] += extra
+        solved[digit] = tuple(a + (b - a) * w for a, b in zip(shape, angles))
+        if os.environ.get("VM_DEBUG"):  # VM_DEBUG=1: each digit's closing and its skin's nearest gap.
+            gap = min(surface.signed(p) for p in points(angles, 1))
+            print("GRASP", side, digit, "angles", [round(a, 2) for a in angles], "gap", round(gap, 4))
+    thumb = solved.pop("thumb")
+    curl_fingers(arms, side, rest, solved, thumb, hand.together, spreads)
+    bpy.context.view_layer.update()
+
+
+def trigger_finger(arms, side, rest, hand, wrist_matrix, surface, previous=None):
+    """Lays the index finger on the trigger: the pad of its last joint (the first
+    crease) on `hand.trigger`, by searching how far it closes, how its joints share
+    the bend, and how far it swings sideways, keeping it out of the guard and the
+    frame. Near last frame's (bias, spread) if given, so it doesn't jump. Returns
+    (angles, spread, (bias, spread in degrees))."""
+    target = hand.weapon_matrix @ hand.trigger
+    best = None
+    if previous is None:
+        tries = [(b, d) for b in (0.6, 0.85, 1.1, 1.35) for d in range(-24, 25, 4)]
+    else:
+        tries = [(previous[0] + db, previous[1] + dd) for db in (-0.06, 0.0, 0.06) for dd in (-2, 0, 2)]
+    for bias, spread_deg in tries:
+        spread = math.radians(spread_deg)
+
+        def miss(s):
+            angles = (0.55 * s, 0.9 * s * bias, 0.5 * s * bias)
+            pad = digit_points(arms, side, rest, "index", angles, wrist_matrix, 3, hand.together, spread,
+                               at=(0.45,))[0]
+            return (pad - target).length, angles
+        lo, hi = 0.0, 2.0
+        for _ in range(16):
+            a, b = lo + (hi - lo) * 0.382, lo + (hi - lo) * 0.618
+            if miss(a)[0] < miss(b)[0]:
+                hi = b
+            else:
+                lo = a
+        d, angles = miss((lo + hi) * 0.5)
+        inside = sum(max(0.0, -surface.signed(p))
+                     for p in digit_points(arms, side, rest, "index", angles, wrist_matrix, 2, hand.together, spread))
+        cost = d + 4.0 * inside + 0.002 * abs(spread_deg) / 24.0
+        if best is None or cost < best[0]:
+            best = (cost, angles, spread, (bias, spread_deg))
+    return best[1], best[2], best[3]
 
 
 def hand_rest(arms, side):
@@ -408,28 +894,18 @@ def place_hand(arms, side, rest, socket, palm, forward, weapon_matrix):
     arms.pose.bones[f"wrist_ik.{side}"].matrix = target
 
 
-def curl_fingers(arms, side, rest, curls, thumb):
-    """Closes each finger joint about the knuckles' line, towards the palm.
-    `curls` maps finger name to three joint angles in radians."""
-    axis_sign = None
-    for f, angles in curls.items():
-        for j, angle in zip((1, 2, 3), angles):
-            pb = arms.pose.bones[f"finger_{f}{j}.{side}"]
-            rest_m = pb.bone.matrix_local.to_3x3()
-            local_axis = (rest_m.inverted() @ rest["across"]).normalized()
-            if axis_sign is None:
-                # Which way round curls towards the palm: try it on the rest pose.
-                tip = rest_m @ Vector((0.0, 1.0, 0.0))
-                moved = rest_m @ (Quaternion(local_axis, 0.3) @ Vector((0.0, 1.0, 0.0)))
-                axis_sign = 1.0 if (moved - tip).dot(rest["palm"]) > 0.0 else -1.0
+def curl_fingers(arms, side, rest, curls, thumb, together=0.0, spreads=None):
+    """Closes each finger joint about the knuckles' line, towards the palm, and the
+    thumb about the hand's length. `curls` maps finger name to three joint angles
+    in radians; `together` and `spreads` swing the fingers at the knuckles (see
+    digit_rotations)."""
+    spreads = spreads or {}
+    for digit, angles in list(curls.items()) + [("thumb", thumb)]:
+        for j, q in zip((1, 2, 3), digit_rotations(arms, side, rest, digit, angles, together,
+                                                   spreads.get(digit, 0.0))):
+            pb = arms.pose.bones[f"finger_{digit}{j}.{side}"]
             pb.rotation_mode = "QUATERNION"
-            pb.rotation_quaternion = Quaternion(local_axis, axis_sign * angle)
-    for j, angle in zip((1, 2, 3), thumb):
-        pb = arms.pose.bones[f"finger_thumb{j}.{side}"]
-        rest_m = pb.bone.matrix_local.to_3x3()
-        local_axis = (rest_m.inverted() @ rest["forward"]).normalized()
-        pb.rotation_mode = "QUATERNION"
-        pb.rotation_quaternion = Quaternion(local_axis, axis_sign * angle * (1.0 if side == "r" else -1.0))
+            pb.rotation_quaternion = q
 
 
 def render_views(path_prefix, views):
