@@ -122,8 +122,9 @@ private:
     std::vector<Live> live_;
 };
 
-// The fog, stirred: wakes behind rounds, the shock of a blast, its smoke. Each
-// grows and fades on its own clock and is handed to the renderer every frame.
+// The fog, stirred: wakes behind rounds and the shock of a blast. Each grows and
+// fades on its own clock and is handed to the renderer every frame. (Smoke itself
+// is a fluid: see Smoke.h.)
 class FogStirs {
 public:
     static constexpr std::size_t kMaxWakes = 60;
@@ -138,22 +139,11 @@ public:
         stirs_.push_back({Kind::Wake, from, to, 0.0f, 1.6f});
     }
 
-    void blast(Vec3 at) {
-        stirs_.push_back({Kind::Shock, at, at, 0.0f, 1.4f});
-        stirs_.push_back({Kind::Smoke, at, at, 0.0f, 16.0f});
-    }
+    // A blast's shock, clearing the air. (Its soot is real smoke: see Smoke.)
+    void blast(Vec3 at) { stirs_.push_back({Kind::Shock, at, at, 0.0f, 1.4f}); }
 
-    // `wind` is the fog's own drift, which carries the smoke.
-    void update(float dt, Vec3 wind) {
-        for (Stir& s : stirs_) {
-            s.age += dt;
-            if (s.kind == Kind::Smoke) {
-                // Rising as it cools, and carried off.
-                const Vec3 drift = wind * 0.6f + Vec3{0.0f, 0.45f * std::exp(-s.age * 0.15f), 0.0f};
-                s.b = s.b + drift * dt;
-                s.a = s.a + wind * (0.6f * dt);
-            }
-        }
+    void update(float dt) {
+        for (Stir& s : stirs_) s.age += dt;
         std::erase_if(stirs_, [](const Stir& s) { return s.age >= s.life; });
     }
 
@@ -177,23 +167,13 @@ public:
                     d.softness = 0.5f;
                     break;
                 }
-                case Kind::Smoke: {
-                    // Sooty, thick and tight, swelling, thinning and greying as it rises.
-                    d.a = s.a + Vec3{0.0f, 0.4f, 0.0f};
-                    d.radius = 1.2f + 3.6f * (1.0f - std::exp(-s.age * 0.9f));
-                    d.add = 3.0f * smooth(0.0f, 0.03f, t) * (1.0f - t) * (1.0f - t) / (1.0f + s.age * 0.35f);
-                    d.albedo = 0.15f + 0.45f * t;
-                    d.clear = 0.0f;
-                    d.softness = 0.8f;
-                    break;
-                }
             }
             renderer.submitFogDisturbance(d);
         }
     }
 
 private:
-    enum class Kind : std::uint8_t { Wake, Shock, Smoke };
+    enum class Kind : std::uint8_t { Wake, Shock };
     struct Stir {
         Kind kind;
         Vec3 a;

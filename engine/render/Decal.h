@@ -21,6 +21,7 @@ struct Decal {
     float         opacity = 1.0f;
     float         roughness = -1.0f;  // The surface's roughness where it shows, or < 0 to keep it.
     Vec3          glow{0.0f, 0.0f, 0.0f};  // Emitted light where it shows: hot metal, embers.
+    float         flatten = 0.0f;   // 0 keeps the surface's bumps; 1 lays it flat where it shows: standing water.
 };
 
 }  // namespace iron

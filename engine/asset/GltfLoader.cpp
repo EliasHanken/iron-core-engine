@@ -921,18 +921,29 @@ std::optional<GltfStaticModel> loadGltfStaticModel(const std::string& path, cons
     std::map<std::pair<std::string, int>, std::size_t> slots;  // (node, material) -> section
     bool first = true;
 
-    // Depth first, carrying each node's world transform.
-    std::vector<std::pair<int, Mat4>> stack;
+    // Depth first, carrying each node's world transform, and whether it's one of the
+    // nodes asked for (or hangs from one).
+    struct Visit {
+        int node;
+        Mat4 parent;
+        bool kept;
+    };
+    const bool everything = options.onlyNodes.empty();
+    std::vector<Visit> stack;
     for (auto it = model.scenes[sceneIdx].nodes.rbegin(); it != model.scenes[sceneIdx].nodes.rend(); ++it) {
-        stack.emplace_back(*it, Mat4::identity());
+        stack.push_back({*it, Mat4::identity(), everything});
     }
     while (!stack.empty()) {
-        const auto [nodeIdx, parent] = stack.back();
+        const Visit visit = stack.back();
         stack.pop_back();
+        const int nodeIdx = visit.node;
         if (nodeIdx < 0 || nodeIdx >= static_cast<int>(model.nodes.size())) continue;
         const auto& node = model.nodes[nodeIdx];
-        const Mat4 world = parent * nodeLocalMatrix(node);
-        for (auto it = node.children.rbegin(); it != node.children.rend(); ++it) stack.emplace_back(*it, world);
+        const Mat4 world = visit.parent * nodeLocalMatrix(node);
+        const bool kept = visit.kept || std::find(options.onlyNodes.begin(), options.onlyNodes.end(), node.name) !=
+                                            options.onlyNodes.end();
+        for (auto it = node.children.rbegin(); it != node.children.rend(); ++it) stack.push_back({*it, world, kept});
+        if (!kept) continue;
         if (node.mesh < 0 || node.mesh >= static_cast<int>(model.meshes.size())) continue;
 
         // Normals go through the inverse transpose, so that non-uniform scale keeps them square.

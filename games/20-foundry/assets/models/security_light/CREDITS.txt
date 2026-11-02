@@ -1,0 +1,3 @@
+Security Light by Maximilian Schuster
+Source: https://polyhaven.com/a/security_light
+License: CC0 (https://creativecommons.org/publicdomain/zero/1.0/)

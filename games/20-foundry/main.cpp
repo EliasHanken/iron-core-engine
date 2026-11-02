@@ -820,10 +820,14 @@ int main(int argc, char** argv) {
             dynamics.push_back({body, iron::kInvalidHandle, Look::Steel,
                                 kPlacedMotionBase + static_cast<std::uint32_t>(i), model, centred});
         } else {
-            const iron::BodyId body = world.createStaticBox(boxCenter, size * 0.5f, rotation);
-            surfaces[body.value] = p.surface;
-            materials.assign(body, propMaterial(p.model, p.surface));
-            colliders.push_back({boxCenter, size * 0.5f, p.yaw});
+            // Overhead decoration has no body: nothing could reach it, and its box
+            // would block far more than the model does.
+            if (p.collide) {
+                const iron::BodyId body = world.createStaticBox(boxCenter, size * 0.5f, rotation);
+                surfaces[body.value] = p.surface;
+                materials.assign(body, propMaterial(p.model, p.surface));
+                colliders.push_back({boxCenter, size * 0.5f, p.yaw});
+            }
             placedStatics.push_back({model, iron::translation(boxCenter) * iron::rotationY(p.yaw) * centred});
         }
     }
@@ -871,10 +875,27 @@ int main(int argc, char** argv) {
     volumetric.wind = {0.6f, 0.05f, 0.25f};
     renderer.setVolumetricFog(volumetric);
     Holes holes;
+    // Standing water: glossy, dark decals laid flat on the ground.
+    std::vector<iron::Decal> puddles;
+    for (const foundry::Puddle& pd : level.puddles) {
+        iron::Decal d;
+        d.layer = 4;
+        d.roughness = 0.04f;
+        d.flatten = 1.0f;  // Water lies flat over the concrete's bumps: a mirror for the sky.
+        const float c = std::cos(pd.spin), s = std::sin(pd.spin);
+        Mat4 m = Mat4::identity();
+        // x and y across the ground, z (the decal's depth) up through it.
+        m.at(0, 0) = c * pd.size;  m.at(2, 0) = -s * pd.size;
+        m.at(0, 1) = s * pd.size;  m.at(2, 1) = c * pd.size;   m.at(1, 1) = 0.0f;
+        m.at(1, 2) = 0.25f;        m.at(0, 2) = 0.0f;          m.at(2, 2) = 0.0f;
+        m.at(0, 3) = pd.center.x;  m.at(1, 3) = pd.center.y;   m.at(2, 3) = pd.center.z;
+        d.transform = m;
+        puddles.push_back(d);
+    }
     {
         const std::string dir = iron::executableDir() + "/assets/decals/";
         const std::string decals[] = {dir + "concrete_hole.png", dir + "metal_hole.png", dir + "wood_hole.png",
-                                      dir + "scorch.png"};
+                                      dir + "scorch.png", dir + "puddle.png"};
         if (!renderer.setDecalTextures(decals)) iron::Log::warn("foundry: no decal textures");
     }
     const iron::MeshHandle flashMesh = renderer.createMesh(buildFlash());
@@ -1295,6 +1316,7 @@ int main(int argc, char** argv) {
             }
             stirs.blast(at);
             smoke.blast(at);
+            smoke.start(at, foundry::Smoke::Kind::Soot);
             const float distance = iron::length(at - eye);
             sound.blast(at, distance);
             sound.deafen(std::clamp(1.0f - distance / 16.0f, 0.0f, 1.0f));
@@ -1416,7 +1438,7 @@ int main(int argc, char** argv) {
         hitMarker = std::max(hitMarker - simDt, 0.0f);
 
         holes.update(simDt);
-        stirs.update(simDt, volumetric.wind);
+        stirs.update(simDt);
 
         // --- Bits and flashes age ---
         for (Bit& b : bits) {
@@ -1621,11 +1643,11 @@ int main(int argc, char** argv) {
         }
         // The effects, lit by roughly where the player is: open daylight or the hall.
         {
-            const float lit = 1.0f - 0.55f * indoorAt(eye);
-            vfx.setInput("dustColor", Vec3{0.42f, 0.4f, 0.37f} * lit);
-            vfx.setInput("chipColor", Vec3{0.3f, 0.29f, 0.27f} * lit);
-            vfx.setInput("muzzleColor", Vec3{0.5f, 0.5f, 0.5f} * lit);
-            vfx.setInput("blastColor", Vec3{0.24f, 0.22f, 0.2f} * lit);
+            const float lightLevel = 1.0f - 0.55f * indoorAt(eye);
+            vfx.setInput("dustColor", Vec3{0.42f, 0.4f, 0.37f} * lightLevel);
+            vfx.setInput("chipColor", Vec3{0.3f, 0.29f, 0.27f} * lightLevel);
+            vfx.setInput("muzzleColor", Vec3{0.5f, 0.5f, 0.5f} * lightLevel);
+            vfx.setInput("blastColor", Vec3{0.24f, 0.22f, 0.2f} * lightLevel);
             vfx.simulate(simDt);
             vfx.render(renderView, renderProjection);
         }
@@ -1649,6 +1671,7 @@ int main(int argc, char** argv) {
             ++draws;
         }
         holes.submit(renderer);
+        for (const iron::Decal& d : puddles) renderer.submitDecal(d);
         if (engineView) {
             // Where the player stands, and what their camera sees, out to 60 metres:
             // its edges, and where the levels of detail roughly change.

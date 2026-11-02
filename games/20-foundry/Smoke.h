@@ -40,7 +40,7 @@ struct SmokeCollider {
 
 class Smoke {
 public:
-    static constexpr int kSlots = 2;
+    static constexpr int kSlots = 3;
     static constexpr int kMaxBoxes = 40;
     static constexpr int kMaxWakes = 16;
     static constexpr int kMaxBlasts = 4;
@@ -49,6 +49,8 @@ public:
     static constexpr float kHeight = 7.2f;
     static constexpr float kLife = 22.0f;    // Seconds from the first puff until it's gone.
     static constexpr float kPour = 9.0f;     // Seconds the canister keeps pouring.
+    static constexpr float kSootLife = 9.0f;  // A blast's soot, from the bang until it's gone.
+    static constexpr float kFadeOut = 5.0f;   // Seconds over which any smoke thins to nothing.
 
     // The hall the air fills, in the world.
     struct Hall {
@@ -80,8 +82,12 @@ public:
         return true;
     }
 
-    // A canister has started pouring at `at` (where it came to rest).
-    void start(Vec3 at) {
+    // What a slot holds: a smoke grenade's white smoke, or a blast's soot.
+    enum class Kind : std::uint8_t { Canister, Soot };
+
+    // A canister has started pouring at `at` (where it came to rest), or a blast
+    // went off there and threw up its soot.
+    void start(Vec3 at, Kind kind = Kind::Canister) {
         if (!ready_) return;
         // A free slot, or the oldest.
         Slot* slot = &slots_[0];
@@ -93,6 +99,7 @@ public:
             if (s.age > slot->age) slot = &s;
         }
         slot->active = true;
+        slot->kind = kind;
         slot->age = 0.0f;
         slot->origin = {at.x, std::max(at.y - 0.2f, 0.0f), at.z};
         slot->emitter = at;
@@ -121,24 +128,41 @@ public:
         for (Slot& s : slots_) {
             if (!s.active) continue;
             s.age += dt;
-            if (s.age > kLife) {
+            const float life = s.kind == Kind::Canister ? kLife : kSootLife;
+            if (s.age > life) {
                 s.active = false;
                 continue;
             }
             Params p = params(s, world, colliders);
-            // A hard first burst, then a steady pour, then it gives out.
-            const float pour = s.age < 2.0f ? 34.0f : s.age < kPour ? 12.0f : 0.0f;
-            put(p.emitter, s.emitter - s.origin + Vec3{0.0f, 0.15f, 0.0f}, pour);
+            if (s.kind == Kind::Canister) {
+                // A hard first burst, then a steady pour, then it gives out.
+                const float pour = s.age < 2.0f ? 40.0f : s.age < kPour ? 15.0f : 0.0f;
+                put(p.emitter, s.emitter - s.origin + Vec3{0.0f, 0.15f, 0.0f}, pour);
+            } else {
+                // A blast: one violent belch of soot, hot, so it rolls up and over
+                // before it spreads and settles.
+                const float belch = s.age < 0.35f ? 75.0f : 0.0f;
+                put(p.emitter, s.emitter - s.origin + Vec3{0.0f, 0.4f, 0.0f}, belch);
+                put(p.heat, s.emitter - s.origin + Vec3{0.0f, 0.6f, 0.0f}, s.age < 1.2f ? 9.0f : 0.0f);
+                put(p.heatHalf, {1.0f, 0.7f, 1.0f}, 0.0f);
+            }
             put(p.wind, wind, 0.0f);
             s.fluid->setParams(&p);
-            // It hangs, then thins away over the last few seconds.
-            const float fading = std::clamp((s.age - (kLife - 6.0f)) / 6.0f, 0.0f, 1.0f);
-            s.fluid->setDissipation(0.01f + 0.6f * fading * fading);
+            // It hangs, then thins away: the fluid loses density faster towards the
+            // end, and what's left fades out of the fog over the last few seconds,
+            // so it's gone by the time the slot is let go, never cut off. Soot
+            // thins all along: it's a puff, not a wall.
+            const float fading = std::clamp((s.age - (life - kFadeOut)) / kFadeOut, 0.0f, 1.0f);
+            const float thinning = s.kind == Kind::Canister ? 0.01f : 0.12f;
+            s.fluid->setDissipation(thinning + 0.5f * fading);
             for (int i = 0; i < steps; ++i) s.fluid->step();
             iron::FogFluid fog;
             fog.fluid = s.fluid.get();
-            fog.density = 1.4f;
-            fog.albedo = 0.95f;
+            // Thick enough that nothing shows through a smoke grenade's heart; a
+            // blast's soot is dark grey and thinner.
+            const float fadeOut = 1.0f - fading * fading * (3.0f - 2.0f * fading);
+            fog.density = (s.kind == Kind::Canister ? 9.0f : 2.4f) * fadeOut;
+            fog.albedo = s.kind == Kind::Canister ? 0.95f : 0.32f;
             fog.offset = s.origin;
             renderer.submitFogFluid(fog);
         }
@@ -168,6 +192,7 @@ private:
     struct Slot {
         std::unique_ptr<iron::FluidVolume> fluid;
         bool active = false;
+        Kind kind = Kind::Canister;
         float age = 0.0f;
         Vec3 origin{};
         Vec3 emitter{};
@@ -284,7 +309,8 @@ private:
             if (wakes >= kMaxWakes) break;
             const float strength = 1.0f - w.age / 0.12f;
             put(p.wakes[wakes * 2], w.from - s.origin, strength);
-            put(p.wakes[wakes * 2 + 1], w.to - s.origin, 0.35f);
+            // Wide and soft enough to read as round, not the fluid's square cells.
+            put(p.wakes[wakes * 2 + 1], w.to - s.origin, 0.5f);
             ++wakes;
         }
         int blasts = 0;
@@ -334,7 +360,7 @@ void fluidSource(vec3 p, inout vec3 velocity, inout float density, inout float h
         density += inside * params.heat.w * 0.45 * fluid.dt;
     }
     // Warm smoke rises a little; as it cools it spreads, and dense smoke sinks.
-    velocity.y += (heat * 2.2 - density * 0.06) * fluid.dt;
+    velocity.y += (heat * 1.4 - density * 0.05) * fluid.dt;
     heat -= heat * 0.6 * fluid.dt;
     // The wind carries it, more higher up.
     velocity += (params.wind.xyz * params.counts.w - velocity) * min(fluid.dt * 0.25, 1.0) * smoothstep(0.0, 3.0, p.y);

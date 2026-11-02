@@ -24,11 +24,16 @@
 #include <vector>
 
 #ifdef _WIN32
-#define IRON_POPEN _popen
-#define IRON_PCLOSE _pclose
-#else
-#define IRON_POPEN popen
-#define IRON_PCLOSE pclose
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#include <windows.h>
+// windows.h defines these as nothing, which breaks any variable so named.
+#undef near
+#undef far
 #endif
 
 namespace capture {
@@ -66,7 +71,10 @@ struct Options {
 // capture can be requested first.
 using FrameFn = std::function<void(float seconds, float dt, int width, int height)>;
 
-// A live pipe into ffmpeg, which owns all the image and video encoding.
+// A live pipe into ffmpeg, which owns all the image and video encoding. On
+// Windows ffmpeg is started directly and without a window: through a shell
+// (_popen runs cmd.exe), a game with no console of its own would open one, and
+// it would take the focus from whatever the person is doing.
 class FfmpegPipe {
 public:
     FfmpegPipe(int width, int height, const std::string& output) {
@@ -74,28 +82,90 @@ public:
         const std::string command =
             "ffmpeg -y -loglevel error -f rawvideo -pix_fmt rgba -s " + size +
             " -r 60 -i - " + output;
-        pipe_ = IRON_POPEN(command.c_str(), "wb");
+#ifdef _WIN32
+        SECURITY_ATTRIBUTES inherit{sizeof(SECURITY_ATTRIBUTES), nullptr, TRUE};
+        HANDLE readEnd = nullptr;
+        HANDLE writeEnd = nullptr;
+        if (!CreatePipe(&readEnd, &writeEnd, &inherit, 1u << 20)) {
+            iron::Log::error("capture: could not make a pipe for ffmpeg");
+            return;
+        }
+        SetHandleInformation(writeEnd, HANDLE_FLAG_INHERIT, 0);  // Only ffmpeg's end goes across.
+        STARTUPINFOA startup{};
+        startup.cb = sizeof(startup);
+        startup.dwFlags = STARTF_USESTDHANDLES;
+        startup.hStdInput = readEnd;
+        startup.hStdOutput = GetStdHandle(STD_OUTPUT_HANDLE);
+        startup.hStdError = GetStdHandle(STD_ERROR_HANDLE);
+        PROCESS_INFORMATION process{};
+        std::vector<char> line(command.begin(), command.end());
+        line.push_back('\0');
+        const BOOL started = CreateProcessA(nullptr, line.data(), nullptr, nullptr, TRUE, CREATE_NO_WINDOW, nullptr,
+                                            nullptr, &startup, &process);
+        CloseHandle(readEnd);
+        if (!started) {
+            CloseHandle(writeEnd);
+            iron::Log::error("capture: could not start ffmpeg (is it on PATH?)");
+            return;
+        }
+        CloseHandle(process.hThread);
+        process_ = process.hProcess;
+        input_ = writeEnd;
+#else
+        pipe_ = popen(command.c_str(), "w");
         if (!pipe_) iron::Log::error("capture: could not start ffmpeg");
+#endif
     }
 
     ~FfmpegPipe() {
-        if (pipe_) IRON_PCLOSE(pipe_);
+#ifdef _WIN32
+        // Closing its input ends the stream; wait for ffmpeg to finish writing.
+        if (input_) CloseHandle(input_);
+        if (process_) {
+            WaitForSingleObject(process_, INFINITE);
+            CloseHandle(process_);
+        }
+#else
+        if (pipe_) pclose(pipe_);
+#endif
     }
 
     FfmpegPipe(const FfmpegPipe&) = delete;
     FfmpegPipe& operator=(const FfmpegPipe&) = delete;
 
+#ifdef _WIN32
+    bool ok() const { return input_ != nullptr; }
+#else
     bool ok() const { return pipe_ != nullptr; }
+#endif
 
     void write(const std::uint8_t* rgba, int width, int height) {
         const auto bytes = static_cast<std::size_t>(width) * height * 4;
+#ifdef _WIN32
+        std::size_t done = 0;
+        while (done < bytes) {
+            DWORD wrote = 0;
+            const DWORD chunk = static_cast<DWORD>(std::min<std::size_t>(bytes - done, 1u << 30));
+            if (!WriteFile(input_, rgba + done, chunk, &wrote, nullptr) || wrote == 0) {
+                iron::Log::error("capture: writing a frame to ffmpeg failed");
+                return;
+            }
+            done += wrote;
+        }
+#else
         if (std::fwrite(rgba, 1, bytes, pipe_) != bytes) {
             iron::Log::error("capture: writing a frame to ffmpeg failed");
         }
+#endif
     }
 
 private:
+#ifdef _WIN32
+    HANDLE process_ = nullptr;
+    HANDLE input_ = nullptr;
+#else
     FILE* pipe_ = nullptr;
+#endif
 };
 
 inline bool parseOptions(int argc, char** argv, Options& options) {

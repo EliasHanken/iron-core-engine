@@ -90,6 +90,9 @@ struct GltfStaticOptions {
     // Keep each node's primitives apart, so that parts can move on their own (a
     // rifle's bolt, a magazine). Otherwise everything with one material merges.
     bool splitByNode = false;
+    // Only these nodes (and what hangs from them), by name: one piece of a kit that
+    // lays many out side by side. Empty keeps everything.
+    std::vector<std::string> onlyNodes;
 };
 
 std::optional<GltfStaticModel> loadGltfStaticModel(const std::string& path,

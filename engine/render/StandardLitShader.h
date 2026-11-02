@@ -241,7 +241,7 @@ layout(set = 0, binding = 15) uniform sampler2D   uPointShadow;   // M73 — occ
 // cluster lists up to 64 lights then up to 32 decals, at a stride of 96.
 layout(std140, set = 1, binding = 0) uniform Clusters { mat4 view; vec4 proj; vec4 grid; vec4 counts; vec4 screen; } cl;
 struct ClusterLight { vec4 positionRange; vec4 colorIntensity; vec4 spot; vec4 spot2; };
-struct ClusterDecal { mat4 worldToDecal; vec4 axis; vec4 tint; vec4 glow; vec4 sphere; };
+struct ClusterDecal { mat4 worldToDecal; vec4 axis; vec4 tint; vec4 glow; vec4 sphere; vec4 extra; };
 layout(std430, set = 1, binding = 1) readonly buffer ClusterLights { ClusterLight clLights[]; };
 layout(std430, set = 1, binding = 2) readonly buffer ClusterDecals { ClusterDecal clDecals[]; };
 layout(std430, set = 1, binding = 3) readonly buffer ClusterCells { uvec4 clCells[]; };
@@ -434,6 +434,7 @@ vec2 parallaxOcclusionUV(vec2 uv, vec3 viewTS, float heightScale) {
             albedo = mix(albedo, t.rgb * d.tint.rgb, a);
             if (d.glow.w >= 0.0) roughness = mix(roughness, clamp(d.glow.w, 0.04, 1.0), a);
             metallic = mix(metallic, 0.0, a);
+            perturbedN = normalize(mix(perturbedN, surfaceN, a * d.extra.x));
             decalGlow += d.glow.rgb * a;
         }
     }

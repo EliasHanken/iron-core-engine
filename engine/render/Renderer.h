@@ -232,7 +232,7 @@ public:
     // Hot air for this frame (at most eight): the picture shimmers through it.
     // Needs the volumetric fog on. Submit after beginFrame.
     virtual void submitHeat(const HeatSource& heat) { (void)heat; }
-    // Carries a fluid's smoke into the volumetric fog this frame (at most three).
+    // Carries a fluid's smoke into the volumetric fog this frame (at most four).
     // Submit after beginFrame, and after the frame's fluid steps.
     virtual void submitFogFluid(const FogFluid& fluid) { (void)fluid; }
     // A decal for this frame, like a draw: submit each frame it should show.

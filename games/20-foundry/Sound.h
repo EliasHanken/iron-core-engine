@@ -155,7 +155,9 @@ public:
         std::size_t pick = static_cast<std::size_t>(random() * (static_cast<float>(shots_.size()) - 0.01f));
         if (pick == lastShot_) pick = (pick + 1) % shots_.size();
         lastShot_ = pick;
-        if (shots_[pick]) audio_.playSoundLocal(shots_[pick], kHeadroom * 1.0f, 0.97f + random() * 0.06f);
+        // The rifle is the loudest thing in the world, right at the ear: full scale,
+        // where everything else sits at half.
+        if (shots_[pick]) audio_.playSoundLocal(shots_[pick], kHeadroom * 2.0f, 0.97f + random() * 0.06f);
         // The space answering this round: the hall and the yard by how far in the player is.
         const std::size_t tail = static_cast<std::size_t>(random() * 2.99f);
         if (tail < shotTailsHall_.size() && shotTailsHall_[tail] && indoor_ > 0.02f) {

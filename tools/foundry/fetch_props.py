@@ -15,6 +15,14 @@ PROPS = [
     "propane_tank", "small_lpg_tank", "steel_frame_shelves_01", "hanging_industrial_lamp",
     "concrete_road_barrier_02", "modular_industrial_pipes_01", "old_military_compressor",
     "metal_jerrycan", "cement_bag", "old_tyre", "portable_generator",
+    # The level art pass: the hall's working kit, and the yard's street furniture.
+    "overhead_crane", "portable_welding_cart", "tool_cart", "metal_tool_chest", "worn_metal_rack",
+    "old_drill_press", "hand_truck", "ladder_sectioned_01", "modular_airduct_circular_01", "power_box_01",
+    "korean_fire_extinguisher_01", "cardboard_box_01", "plastic_crate_03", "WetFloorSign_01",
+    "security_light", "exterior_aircon_unit", "utility_box_01", "utility_box_02",
+    "metal_trash_can", "rusted_wheel_rim_01", "water_manhole_cover", "covered_car", "security_camera_01",
+    "modular_chainlink_fence", "metal_jerrycan_green", "plastic_jerrycan", "industrial_caged_sconce",
+    "industrial_pastic_container",
 ]
 RESOLUTION = "1k"
 
