@@ -4,6 +4,7 @@
 
 #include "render/backends/vulkan/VulkanRenderer.h"
 #include "render/ShadowCascades.h"
+#include "render/backends/vulkan/VkFluidVolume.h"
 #include "render/backends/vulkan/VkLightVolume.h"
 #include "render/backends/vulkan/VkUtils.h"
 #include "render/PostChainPlan.h"
@@ -734,6 +735,7 @@ void VulkanRenderer::beginFrame(Vec3 clearColor, const DirectionalLight& light,
     pendingDecals_.clear();
     pendingFogVolumes_.clear();
     pendingFogDisturbances_.clear();
+    pendingFogFluids_.clear();
     skinnedDraws_.clear();
     skinnedBoneMatricesStash_.clear();
     deferredSceneCompute_.clear();
@@ -1508,6 +1510,12 @@ void VulkanRenderer::endFrame() {
             fog.fog = volumetricFog_;
             fog.volumes = pendingFogVolumes_;
             fog.disturbances = pendingFogDisturbances_;
+            for (const FogFluid& fluid : pendingFogFluids_) {
+                const auto& vk = static_cast<const VkFluidVolume&>(*fluid.fluid);
+                if (!vk.hasStepped() || fog.fluidCount >= fog.fluids.size()) continue;
+                const VolumeBounds placed{vk.bounds().min + fluid.offset, vk.bounds().max + fluid.offset};
+                fog.fluids[fog.fluidCount++] = {vk.scalarsView(), placed, fluid.density, fluid.albedo};
+            }
             fog.view = pendingView_;
             fog.projection = pendingUnjitteredProjection_;
             fog.previousViewProjection = previousViewProjection_;

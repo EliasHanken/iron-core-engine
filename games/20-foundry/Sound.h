@@ -70,6 +70,7 @@ public:
         blast_ = load("blast", "rocket-explode");
         debris_ = load("debris");
         bounce_ = load("bounce", "footstep-02");
+        smoke_ = load("smoke");
 
         bedYard_ = audio_.playLooping(load("bed-yard"), Vec3{}, 0.0f);
         bedHall_ = audio_.playLooping(load("bed-hall"), Vec3{}, 0.0f);
@@ -215,6 +216,11 @@ public:
         duck_ = 3.0f;
     }
 
+    // A smoke canister igniting and pouring.
+    void smoke(Vec3 at) {
+        if (aloud_ && smoke_) audio_.playSoundAt(smoke_, at, kHeadroom * 1.3f, 0.95f + random() * 0.1f);
+    }
+
     // A grenade landing, hard (1) or softly.
     void bounce(Vec3 at, float hardness) {
         if (!aloud_ || !bounce_) return;
@@ -277,6 +283,7 @@ private:
     iron::SoundHandle blast_ = iron::kInvalidSound;
     iron::SoundHandle debris_ = iron::kInvalidSound;
     iron::SoundHandle bounce_ = iron::kInvalidSound;
+    iron::SoundHandle smoke_ = iron::kInvalidSound;
     struct Later {
         float in;
         iron::SoundHandle sound;

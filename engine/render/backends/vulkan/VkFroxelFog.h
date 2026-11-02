@@ -2,6 +2,7 @@
 
 #include "math/Mat4.h"
 #include "render/ShadowCascades.h"
+#include "render/VolumeBounds.h"
 #include "render/VolumetricFog.h"
 #include "render/backends/vulkan/VkComputeStage.h"
 #include "render/backends/vulkan/VkVolumeImage.h"
@@ -20,8 +21,8 @@ class VulkanRenderer;
 
 // Froxel volumetric fog, as Frostbite and Unreal do it. A grid of cells fitted to
 // the view (160 x 90 tiles by 64 slices spaced logarithmically in depth) is:
-//   1. filled and lit: density from height fog, drifting noise, fog boxes and
-//      disturbances (wakes and blasts pushing it aside, smoke);
+//   1. filled and lit: density from height fog, drifting noise, fog boxes,
+//      fluids' smoke and disturbances (wakes and blasts pushing it aside, smoke);
 //      light from the sun through the cascaded shadows, the clustered point and
 //      spot lights, and ambient; then blended with last frame's grid, reprojected,
 //      over a jittered sample point, so it's smooth without many samples;
@@ -48,6 +49,15 @@ public:
         VolumetricFog fog;
         std::span<const FogVolume> volumes;
         std::span<const FogDisturbance> disturbances;
+        // Fluids' smoke: each one's density field (R) in VK_IMAGE_LAYOUT_GENERAL.
+        struct Fluid {
+            VkImageView  density = VK_NULL_HANDLE;
+            VolumeBounds bounds{};
+            float        scale = 1.0f;
+            float        albedo = 0.6f;
+        };
+        std::array<Fluid, 2> fluids{};
+        std::size_t fluidCount = 0;
         Mat4 view;
         Mat4 projection;          // Unjittered.
         Mat4 previousViewProjection;  // Unjittered, for reprojecting last frame's grid.

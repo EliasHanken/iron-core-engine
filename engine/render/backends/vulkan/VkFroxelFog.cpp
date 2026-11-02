@@ -32,6 +32,7 @@ struct GpuParams {
     float sun[4];          // xyz the way it travels; w = history usable
     float sunColor[4];     // rgb; w = fog boxes
     float camera[4];       // xyz; w = this frame's jitter along depth, 0..1
+    float fluid[4][4];     // Per fluid: min (w = density scale, 0 off), then 1 / size (w = albedo)
 };
 
 struct GpuBox {
@@ -62,6 +63,7 @@ layout(std140, binding = 0) uniform FogParams {
     vec4 sun;
     vec4 sunColor;
     vec4 camera;
+    vec4 fluid[4];
 } p;
 float sliceDepth(float z) { return p.range.x * exp(z / p.grid.z * p.grid.w); }
 )GLSL"
@@ -78,6 +80,8 @@ struct Disturbance { vec4 a; vec4 b; vec4 k; };
 layout(std430, binding = 6) readonly buffer Shapes { Box boxes[32]; Disturbance disturbances[]; };
 layout(binding = 7) uniform sampler3D uHistory;
 layout(rgba16f, binding = 8) writeonly uniform image3D uOut;
+layout(binding = 9) uniform sampler3D uFluid0;
+layout(binding = 10) uniform sampler3D uFluid1;
 
 const float PI = 3.14159265;
 
@@ -104,9 +108,10 @@ float valueNoise(vec3 x) {
 }
 float fbm(vec3 x) { return 0.55 * valueNoise(x) + 0.3 * valueNoise(x * 2.03) + 0.15 * valueNoise(x * 4.07); }
 
-// How much light a metre of air here stops (x), and how much of that it
-// scatters rather than absorbs (y, before the fog's albedo).
-vec2 density(vec3 w) {
+// How much light a metre of air here stops (x), how much of that it scatters
+// rather than absorbs (y, before the fog's albedo), and how much of it is smoke
+// (z: what disturbances and fluids added).
+vec3 density(vec3 w) {
     float d = p.fog.x * exp(-max(w.y - p.fog.z, 0.0) * p.fog.y);
     int boxCount = int(p.sunColor.w);
     for (int i = 0; i < boxCount; ++i) {
@@ -118,6 +123,7 @@ vec2 density(vec3 w) {
     // pushed aside taken out after (so a wake through smoke clears it as well).
     float keep = 1.0;
     float scatter = d;
+    float smoke = 0.0;
     int disturbanceCount = int(p.cascadeInfo.z);
     for (int i = 0; i < disturbanceCount; ++i) {
         vec3 a = disturbances[i].a.xyz;
@@ -128,6 +134,7 @@ vec2 density(vec3 w) {
         k = k * k * (3.0 - 2.0 * k);
         d += k * disturbances[i].k.y;
         scatter += k * disturbances[i].k.y * disturbances[i].k.z;
+        smoke += k * disturbances[i].k.y;
         keep *= 1.0 - k * disturbances[i].k.x;
     }
     if (p.albedo.w > 0.0) {
@@ -135,8 +142,21 @@ vec2 density(vec3 w) {
         float wisps = mix(1.0, clamp(n * 2.2 - 0.4, 0.0, 2.0), p.albedo.w);
         d *= wisps;
         scatter *= wisps;
+        smoke *= wisps;
     }
-    return vec2(d, scatter) * keep;
+    // Fluids' smoke, after the wisps (it has its own shape), before what's pushed
+    // aside (so rounds and blasts cut it too).
+    for (int i = 0; i < 2; ++i) {
+        vec4 lo = p.fluid[i * 2];
+        if (lo.w <= 0.0) continue;
+        vec3 uvw = (w - lo.xyz) * p.fluid[i * 2 + 1].xyz;
+        if (any(lessThan(uvw, vec3(0.0))) || any(greaterThan(uvw, vec3(1.0)))) continue;
+        float s = max(i == 0 ? textureLod(uFluid0, uvw, 0.0).r : textureLod(uFluid1, uvw, 0.0).r, 0.0) * lo.w;
+        d += s;
+        scatter += s * p.fluid[i * 2 + 1].w;
+        smoke += s;
+    }
+    return vec3(d, scatter, smoke) * keep;
 }
 
 float sunShadow(vec3 w, float dist) {
@@ -163,13 +183,19 @@ void main() {
     uvec3 id = gl_GlobalInvocationID;
     if (id.x >= uint(p.grid.x) || id.y >= uint(p.grid.y) || id.z >= uint(p.grid.z)) return;
     vec3 w = froxelWorld(vec3(id) + vec3(0.5, 0.5, p.camera.w));
-    vec2 sigma = density(w);
+    vec3 sigma = density(w);
     float sigmaT = sigma.x;
+    // Thick smoke scatters light many times over, so it glows white from every side
+    // rather than only towards the light like thin haze: where it's smoke, the
+    // phase evens out and the sky lights it more (a cheap stand-in for multiple
+    // scattering).
+    float smokeShare = clamp(sigma.z / max(sigmaT, 1e-5), 0.0, 1.0);
+    float smokeG = mix(p.fog.w, 0.15, smokeShare);
     vec3 toEye = p.camera.xyz - w;
     float dist = length(toEye);
     toEye /= max(dist, 1e-4);
 
-    vec3 radiance = p.sunColor.rgb * sunShadow(w, dist) * phase(dot(p.sun.xyz, toEye), p.fog.w);
+    vec3 radiance = p.sunColor.rgb * sunShadow(w, dist) * phase(dot(p.sun.xyz, toEye), smokeG);
     // Lights through the clusters: this cell's tile and slice in their grid.
     vec2 tile = (vec2(id.xy) + 0.5) / p.grid.xy * cl.grid.xy;
     float d = sliceDepth(float(id.z) + 0.5);
@@ -186,9 +212,9 @@ void main() {
         fromLight /= ld;
         float falloff = 1.0 - smoothstep(0.0, range, ld);
         if (l.spot.w > -1.5) falloff *= smoothstep(l.spot.w, max(l.spot2.x, l.spot.w + 1e-4), dot(fromLight, l.spot.xyz));
-        radiance += l.colorIntensity.rgb * l.colorIntensity.w * falloff * phase(dot(fromLight, toEye), p.fog.w);
+        radiance += l.colorIntensity.rgb * l.colorIntensity.w * falloff * phase(dot(fromLight, toEye), smokeG);
     }
-    radiance += p.ambient.rgb;
+    radiance += p.ambient.rgb * mix(1.0, 5.0, smokeShare);
     vec4 current = vec4(sigma.y * p.albedo.rgb * radiance, sigmaT);
 
     // Last frame's grid at this cell's centre, where it was then.
@@ -284,7 +310,8 @@ bool VkFroxelFog::init(VkContext& ctx, VkFormat sceneFormat) {
                            T::VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, T::VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
                            T::VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, T::VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
                            T::VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, T::VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-                           T::VK_DESCRIPTOR_TYPE_STORAGE_IMAGE}) ||
+                           T::VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, T::VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+                           T::VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER}) ||
         !integrateStage_.init(ctx, kIntegrate,
                               {T::VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, T::VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
                                T::VK_DESCRIPTOR_TYPE_STORAGE_IMAGE})) {
@@ -556,6 +583,20 @@ void VkFroxelFog::record(VulkanRenderer& renderer, VkCommandBuffer cb, const Fra
     p.sunColor[2] = f.sunColor.z;
     const std::size_t boxes = std::min<std::size_t>(f.volumes.size(), kMaxVolumes);
     p.sunColor[3] = static_cast<float>(boxes);
+    for (std::size_t i = 0; i < std::min<std::size_t>(f.fluidCount, f.fluids.size()); ++i) {
+        const Frame::Fluid& fl = f.fluids[i];
+        const Vec3 size = fl.bounds.max - fl.bounds.min;
+        float* lo = p.fluid[i * 2];
+        float* inv = p.fluid[i * 2 + 1];
+        lo[0] = fl.bounds.min.x;
+        lo[1] = fl.bounds.min.y;
+        lo[2] = fl.bounds.min.z;
+        lo[3] = fl.density != VK_NULL_HANDLE ? std::max(fl.scale, 0.0f) : 0.0f;
+        inv[0] = 1.0f / std::max(size.x, 1e-3f);
+        inv[1] = 1.0f / std::max(size.y, 1e-3f);
+        inv[2] = 1.0f / std::max(size.z, 1e-3f);
+        inv[3] = std::clamp(fl.albedo, 0.0f, 1.0f);
+    }
     const std::size_t disturbances = std::min<std::size_t>(f.disturbances.size(), kMaxDisturbances);
     p.cascadeInfo[2] = static_cast<float>(disturbances);
     p.camera[0] = f.cameraPos.x;
@@ -590,6 +631,19 @@ void VkFroxelFog::record(VulkanRenderer& renderer, VkCommandBuffer cb, const Fra
     VkVolumeImage& history = scattering_[static_cast<std::size_t>(1 - current_)];
     out.transition(cb, VK_IMAGE_LAYOUT_GENERAL, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_SHADER_WRITE_BIT);
     history.transition(cb, VK_IMAGE_LAYOUT_GENERAL, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_SHADER_READ_BIT);
+    if (f.fluidCount > 0) {
+        // The fluids stepped earlier in the frame: their writes before these reads.
+        VkMemoryBarrier barrier{};
+        barrier.sType         = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
+        barrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+        barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+        vkCmdPipelineBarrier(cb, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 1,
+                             &barrier, 0, nullptr, 0, nullptr);
+    }
+    // Unused fluid slots still need something bound: last frame's grid stands in.
+    const auto fluidAt = [&](std::size_t i) {
+        return i < f.fluidCount && f.fluids[i].density != VK_NULL_HANDLE ? f.fluids[i].density : history.view();
+    };
     lightStage_.dispatch(renderer, cb,
                          {VkComputeResource::bufferRange(params_[slot].buffer, 0, sizeof(GpuParams)),
                           VkComputeResource::sampled(f.shadowAtlas, f.shadowSampler),
@@ -599,7 +653,9 @@ void VkFroxelFog::record(VulkanRenderer& renderer, VkCommandBuffer cb, const Fra
                           VkComputeResource::bufferRange(f.clusterItems),
                           VkComputeResource::bufferRange(volumes_[slot].buffer),
                           VkComputeResource::sampled(history.view(), linear_, VK_IMAGE_LAYOUT_GENERAL),
-                          VkComputeResource::image(out.view())},
+                          VkComputeResource::image(out.view()),
+                          VkComputeResource::sampled(fluidAt(0), linear_, VK_IMAGE_LAYOUT_GENERAL),
+                          VkComputeResource::sampled(fluidAt(1), linear_, VK_IMAGE_LAYOUT_GENERAL)},
                          nullptr, (kX + 7) / 8, (kY + 7) / 8, kZ);
     out.transition(cb, VK_IMAGE_LAYOUT_GENERAL, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_SHADER_READ_BIT);
     integrated_.transition(cb, VK_IMAGE_LAYOUT_GENERAL, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
