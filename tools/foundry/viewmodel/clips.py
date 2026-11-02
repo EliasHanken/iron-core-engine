@@ -25,13 +25,29 @@ def ease_out(s):
 
 
 @dataclass
+class Hold:
+    """What a hand closes round, in the rifle's space: a cylinder (the handguard,
+    the pistol grip) of `radius` about `axis` through `centre`."""
+    centre: Vector
+    axis: Vector
+    radius: float
+
+
+@dataclass
 class Hand:
-    """A hand on the rifle, in the rifle's space."""
+    """A hand on the rifle, in the rifle's space. `curl` and `thumb` shape the
+    fingers; with a `hold`, each then closes until it meets it. `spin` and `yaw`
+    are how far (degrees) the arm solver may roll the hand round what it holds
+    and turn it about the palm."""
     socket: Vector
     palm: Vector
     forward: Vector
     curl: dict
     thumb: tuple = (0.3, 0.4, 0.3)
+    hold: Hold = None
+    spin: float = 30.0
+    yaw: float = 35.0
+    contact: float = 1.0  # How much the fingers close onto the hold (eases in and out between hands).
 
 
 @dataclass
@@ -63,7 +79,15 @@ def mix_hand(a, b, s):
     q = qa.slerp(qb, s).to_matrix()
     curl = {k: tuple(x + (y - x) * s for x, y in zip(a.curl[k], b.curl[k])) for k in a.curl}
     thumb = tuple(x + (y - x) * s for x, y in zip(a.thumb, b.thumb))
-    return Hand(a.socket.lerp(b.socket, s), q.col[1].copy(), q.col[0].copy(), curl, thumb)
+    if a.hold and b.hold:
+        hold = Hold(a.hold.centre.lerp(b.hold.centre, s), a.hold.axis.lerp(b.hold.axis, s).normalized(),
+                    a.hold.radius + (b.hold.radius - a.hold.radius) * s)
+    else:
+        hold = a.hold or b.hold
+    ca = a.contact if a.hold else 0.0
+    cb = b.contact if b.hold else 0.0
+    return Hand(a.socket.lerp(b.socket, s), q.col[1].copy(), q.col[0].copy(), curl, thumb, hold,
+                a.spin + (b.spin - a.spin) * s, a.yaw + (b.yaw - a.yaw) * s, ca + (cb - ca) * s)
 
 
 def ease_in(s):
@@ -106,7 +130,7 @@ class Pose:
     poles: dict = field(default_factory=dict)
     # How far each shoulder rolls forward, in degrees: holding a rifle out, the
     # support shoulder comes round to reach the handguard.
-    shoulders: dict = field(default_factory=lambda: {"l": 28.0, "r": 8.0})
+    shoulders: dict = field(default_factory=lambda: {"l": 38.0, "r": 8.0})
 
 
 class Rig:
@@ -153,6 +177,8 @@ class Rig:
         for side, hand in (("r", p.right), ("l", p.left)):
             self.elbows[side] = rig.solve_arm(arms, side, self.rest[side], hand, weapon, poles[side],
                                               self.elbows.get(side))
+            if hand.hold is not None and hand.contact > 0.0:
+                rig.grip_contact(arms, side, self.rest[side], hand, weapon)
         # The rifle's moving parts, each moved in the rifle's own space.
         slide = pose["SLIDE"]
         slide.matrix = weapon @ Matrix.Translation((0.0, -p.bolt, 0.0)) @ slide.bone.matrix_local

@@ -233,6 +233,12 @@ def solve_elbow(arms, side, authored_pole, previous=None, steps=16):
     def cost(phi):
         pose_at(phi)
         c = wrist_strain(arms, side) + 0.6 * (phi / math.radians(70.0)) ** 2
+        # With the hand raised, the elbow hangs below it: arms are heavy, and a
+        # raised elbow (a chicken wing) reads as strained.
+        if wrist.z > shoulder.z - 0.1:
+            drop = wrist.z - bones[f"forearm.{side}"].head.z
+            if drop < ELBOW_DROP[side]:
+                c += ((ELBOW_DROP[side] - drop) / 0.04) ** 2
         if previous is not None:
             step = (phi - previous + math.pi) % (2.0 * math.pi) - math.pi
             c += (step / math.radians(12.0)) ** 2
@@ -248,8 +254,9 @@ def solve_elbow(arms, side, authored_pole, previous=None, steps=16):
     return best, cost(best)
 
 
-SPIN_RANGE = 30.0  # Degrees a hand may roll round what it holds, either way.
-YAW_RANGE = 35.0   # And turn about its palm: a grip can run square or diagonal.
+# How far below a raised hand its elbow hangs, at least, in metres: the support
+# arm well under the handguard, the firing arm a little under the grip.
+ELBOW_DROP = {"l": 0.15, "r": 0.07}
 
 
 def solve_arm(arms, side, rest, hand, weapon_matrix, authored_pole, previous=None):
@@ -259,6 +266,7 @@ def solve_arm(arms, side, rest, hand, weapon_matrix, authored_pole, previous=Non
     diagonal; the elbow swings round the shoulder-wrist line. All three go where
     the wrist is least strained. `previous` is last frame's (spin, yaw, swing).
     Leaves the arm posed and returns the new (spin, yaw, swing)."""
+    spin_range, yaw_range = max(hand.spin, 1e-3), max(hand.yaw, 1e-3)
     palm = hand.palm.normalized()
     wrap = palm.cross(hand.forward)
     wrap = wrap.normalized() if wrap.length > 1e-6 else Vector((0.0, 1.0, 0.0))
@@ -269,15 +277,15 @@ def solve_arm(arms, side, rest, hand, weapon_matrix, authored_pole, previous=Non
         return Quaternion(wrap, math.radians(spin)) @ Quaternion(palm, math.radians(yaw))
 
     def attempt(spin, yaw):
-        spin = max(-SPIN_RANGE, min(SPIN_RANGE, spin))
-        yaw = max(-YAW_RANGE, min(YAW_RANGE, yaw))
+        spin = max(-spin_range, min(spin_range, spin))
+        yaw = max(-yaw_range, min(yaw_range, yaw))
         key = (round(spin, 2), round(yaw, 2))
         if key not in tried:
             turn = turned(spin, yaw)
             place_hand(arms, side, rest, hand.socket, turn @ hand.palm, turn @ hand.forward, weapon_matrix)
             bpy.context.view_layer.update()
             swing, c = solve_elbow(arms, side, authored_pole, last[2])
-            c += 0.4 * (spin / SPIN_RANGE) ** 2 + 0.3 * (yaw / YAW_RANGE) ** 2
+            c += 0.4 * (spin / spin_range) ** 2 + 0.3 * (yaw / yaw_range) ** 2
             if previous is not None:
                 c += ((spin - last[0]) / 8.0) ** 2 + ((yaw - last[1]) / 8.0) ** 2
             tried[key] = (c, spin, yaw, swing)
@@ -287,7 +295,7 @@ def solve_arm(arms, side, rest, hand, weapon_matrix, authored_pole, previous=Non
         return min((attempt(s, y) for s, y in pairs), key=lambda x: x[0])
 
     if previous is None:
-        best = best_of([(s, y) for s in (-SPIN_RANGE, 0.0, SPIN_RANGE) for y in (-YAW_RANGE, 0.0, YAW_RANGE)])
+        best = best_of([(s, y) for s in (-spin_range, 0.0, spin_range) for y in (-yaw_range, 0.0, yaw_range)])
     else:
         best = attempt(last[0], last[1])
     for width in (15.0, 7.5, 3.0):
@@ -318,6 +326,49 @@ def solve_elbow_pose(arms, side, authored_pole, swing):
     out = e1 * math.cos(swing) + e2 * math.sin(swing)
     bones[f"arm_target.{side}"].matrix = Matrix.Translation(centre + out * 0.5)
     bpy.context.view_layer.update()
+
+
+SKIN = 0.009  # From a finger bone to the skin over it, in metres.
+
+
+def grip_contact(arms, side, rest, hand, weapon_matrix):
+    """Closes each finger, and the thumb, until it meets what the hand holds (a
+    cylinder): the hand's curls set each digit's shape, and how far along it
+    each goes is searched, so fingers wrap the part rather than float off it or
+    sink in. Digits that can't reach keep their authored curl."""
+    bones = arms.pose.bones
+    centre = weapon_matrix @ hand.hold.centre
+    axis = (weapon_matrix.to_3x3() @ hand.hold.axis).normalized()
+    reach = hand.hold.radius + SKIN
+    digits = ("index", "middle", "ring", "pinky", "thumb")
+
+    def touching(digit):
+        points = [bones[f"finger_{digit}{j}.{side}"].head for j in (2, 3)] + [bones[f"finger_{digit}3.{side}"].tail]
+        for p in points:
+            d = p - centre
+            if (d - axis * d.dot(axis)).length < reach:
+                return True
+        return False
+
+    def pose(scale):
+        curls = {f: tuple(a * scale[f] for a in hand.curl[f]) for f in hand.curl}
+        curl_fingers(arms, side, rest, curls, tuple(a * scale["thumb"] for a in hand.thumb))
+        bpy.context.view_layer.update()
+
+    lo = {d: 0.1 for d in digits}
+    hi = {d: 2.0 for d in digits}
+    pose(hi)
+    reaches = {d: touching(d) for d in digits}
+    for _ in range(7):
+        mid = {d: (lo[d] + hi[d]) * 0.5 for d in digits}
+        pose(mid)
+        for d in digits:
+            if touching(d):
+                hi[d] = mid[d]
+            else:
+                lo[d] = mid[d]
+    w = max(0.0, min(1.0, hand.contact))
+    pose({d: 1.0 + ((hi[d] if reaches[d] else 1.0) - 1.0) * w for d in digits})
 
 
 def hand_rest(arms, side):

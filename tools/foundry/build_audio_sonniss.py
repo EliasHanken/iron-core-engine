@@ -147,6 +147,24 @@ def filtered(x, low, high):
     return np.frombuffer(out, dtype=np.float32).reshape(-1, channels).copy()
 
 
+def eq(x, chain):
+    """Runs an ffmpeg audio filter chain over `x`."""
+    channels = x.shape[1]
+    out = run_ffmpeg(["-f", "f32le", "-ac", str(channels), "-ar", str(RATE), "-i", "-", "-af", chain,
+                      "-f", "f32le", "-"], x.astype(np.float32).tobytes())
+    return np.frombuffer(out, dtype=np.float32).reshape(-1, channels).copy()
+
+
+def thump(length, channels):
+    """A sub-bass kick: a sine falling from 68 to 42 Hz, gone in about 150 ms.
+    It's the weight a rifle has at the shoulder that a microphone barely takes."""
+    t = np.arange(int(length * RATE)) / RATE
+    freq = 42.0 + 26.0 * np.exp(-t / 0.03)
+    phase = 2.0 * np.pi * np.cumsum(freq) / RATE
+    x = np.sin(phase) * np.exp(-t / 0.055) * np.minimum(t / 0.002, 1.0)
+    return np.repeat(x[:, None], channels, axis=1).astype(np.float32)
+
+
 def band_limit(x, name):
     low, high = BANDS.get(name, DEFAULT_BAND)
     return filtered(x, low, high)
@@ -211,16 +229,22 @@ def build_shots(find, out):
     length = TAKE_LENGTH
     for k in range(SHOT_VARIANTS):
         # Each layer starts 3 ms before its own transient, so the three line up.
-        crack = filtered(read(find(L85_1M), crack_at[k] - 0.003, length, 2), 60, 16000)
-        mech = filtered(read(find(L85_GUN), mech_at[k] - 0.003, length, 2), 120, 14000)
-        body = filtered(read(find(HK416_GUN), body_at[k % len(body_at)] - 0.003, length, 2), 50, 2400)
+        # The crack is kept to its body and edge: no fizz above 9 kHz, its 3-8 kHz
+        # bite taken down, which is what made a burst tiring to listen to.
+        crack = eq(read(find(L85_1M), crack_at[k] - 0.003, length, 2),
+                   "highpass=f=80,lowpass=f=9000,highshelf=f=3000:g=-7,equalizer=f=5000:t=q:w=1.2:g=-4")
+        mech = filtered(read(find(L85_GUN), mech_at[k] - 0.003, length, 2), 120, 8000)
+        body = filtered(read(find(HK416_GUN), body_at[k % len(body_at)] - 0.003, length, 2), 45, 2400)
         # Balanced by their first 60 ms, where the shot lives. The action carries the
-        # first-person mix's detail; the body is the weight a rifle has at the shoulder.
+        # first-person mix's detail; the body and a sub thump are the weight a rifle
+        # has at the shoulder.
         early = int(0.06 * RATE)
         def norm(x, db):
             return x * (10 ** ((db - level(x[:early])) / 20))
-        x = norm(crack, -14.0) + norm(mech, -20.0) + norm(body, -17.0)
-        x = soft_clip(x * 1.4, 1.5)
+        x = (norm(crack, -16.0) + norm(mech, -22.0) + norm(body, -13.0) +
+             norm(thump(length, 2), -17.0))
+        x = eq(x, "bass=f=110:g=2:t=q:w=0.8,equalizer=f=260:t=q:w=1.0:g=3")
+        x = soft_clip(x * 1.15, 1.15)
         x = fade(trim_tail(x, -46.0), 0.0015, 0.07)
         x *= 0.89 / (np.abs(x).max() + 1e-9)
         write(os.path.join(out, f"shot{k + 1}.wav"), x)
