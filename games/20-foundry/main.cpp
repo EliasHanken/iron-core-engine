@@ -1072,7 +1072,7 @@ int main(int argc, char** argv) {
             }
             // Smoke check: lob a smoke ahead, fire bursts through it, then a grenade into it.
             if (sceneHas("smoke")) {
-                look = {0.0f, ((seconds < 1.2f ? -0.3f : -0.04f) - pitch) * std::min(dt * 4.0f, 1.0f)};
+                look = {0.0f, ((seconds < 1.2f ? (sceneHas("close") ? -0.55f : -0.3f) : -0.04f) - pitch) * std::min(dt * 4.0f, 1.0f)};
                 forward = 0.0f;
                 strafe = 0.0f;
                 aiming = false;
