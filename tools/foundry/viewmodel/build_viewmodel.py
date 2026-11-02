@@ -99,17 +99,21 @@ def fire(t):
 # The magazine hangs from y 0.16, curving forward to y 0.21 at its foot (z -0.05).
 # The support hand takes it from the left, palm on its side, fingers round its
 # front, thumb on the release behind it.
-CUP = {"index": (0.55, 0.8, 0.5), "middle": (0.6, 0.85, 0.5), "ring": (0.65, 0.85, 0.5), "pinky": (0.7, 0.8, 0.5)}
-MAG_GRAB = Hand(Vector((0.0, 0.19, 0.0)), Vector((1.0, 0.0, 0.1)), Vector((0.0, 0.6, -0.8)), CUP,
-                thumb=(0.4, 0.6, 0.4))
+# Measured: the magazine is 2.6 cm wide (x -0.013..0.013), its front edge near y 0.215
+# at the middle of its height. The palm lies on its left side, the knuckles at the
+# front-left edge, and the fingers curl round the front onto the right side; the
+# thumb reaches back for the release.
+CUP = {"index": (1.25, 1.3, 0.6), "middle": (1.3, 1.3, 0.6), "ring": (1.3, 1.3, 0.6), "pinky": (1.3, 1.25, 0.6)}
+MAG_GRAB = Hand(Vector((0.019, 0.215, 0.0)), Vector((1.0, 0.0, 0.0)), Vector((0.0, 1.0, -0.25)), CUP,
+                thumb=(0.1, 0.2, 0.1))
 # Rocked forward off its catch: the hand rolls the magazine's foot ahead.
-MAG_ROCKED = Hand(Vector((0.0, 0.235, -0.03)), Vector((1.0, 0.0, 0.35)), Vector((0.0, 0.85, -0.5)), CUP,
-                  thumb=(0.4, 0.6, 0.4))
+MAG_ROCKED = Hand(Vector((0.019, 0.24, -0.035)), Vector((1.0, 0.0, 0.0)), Vector((0.0, 0.88, -0.48)), CUP,
+                  thumb=(0.1, 0.2, 0.1))
 # Down out of the view, and the "new" one coming back up.
-MAG_AWAY = Hand(Vector((-0.06, 0.12, -0.32)), Vector((1.0, 0.0, 0.0)), Vector((0.0, 0.3, -1.0)), CUP,
-                thumb=(0.4, 0.6, 0.4))
-MAG_RISING = Hand(Vector((-0.02, 0.24, -0.12)), Vector((1.0, 0.0, 0.3)), Vector((0.0, 0.8, -0.6)), CUP,
-                  thumb=(0.4, 0.6, 0.4))
+MAG_AWAY = Hand(Vector((-0.04, 0.14, -0.32)), Vector((1.0, 0.0, 0.0)), Vector((0.0, 0.5, -0.85)), CUP,
+                thumb=(0.1, 0.2, 0.1))
+MAG_RISING = Hand(Vector((0.01, 0.25, -0.12)), Vector((1.0, 0.0, 0.0)), Vector((0.0, 0.8, -0.6)), CUP,
+                  thumb=(0.1, 0.2, 0.1))
 # On the way from the handguard to the magazine, below the receiver.
 UNDER = Hand(Vector((-0.03, 0.26, 0.03)), Vector((0.8, 0.0, 0.6)), Vector((0.3, 0.6, -0.7)),
              {k: (0.3, 0.4, 0.3) for k in CUP}, thumb=(0.2, 0.3, 0.2))
@@ -120,6 +124,12 @@ OVER = Hand(Vector((0.08, 0.06, 0.15)), Vector((-0.7, 0.0, -0.7)), Vector((-0.2,
             {k: (0.4, 0.5, 0.3) for k in HOOK})
 CHARGE = Hand(Vector((0.055, 0.2, 0.15)), Vector((-1.0, -0.2, 0.0)), Vector((0.0, 0.3, 1.0)), HOOK)
 BOLT_TRAVEL = 0.085
+# Lifted and canted so the magazine well turns towards the eye, in view.
+RELOAD_TILT = Place(Vector((0.13, 0.25, -0.15)), pitch=8.0, yaw=6.0, roll=65.0)
+
+
+def mix_vector(a, b, s):
+    return a.lerp(b, s)
 
 
 def hands(t, keys_r, keys_l):
@@ -139,8 +149,7 @@ def reload_pose(t, empty):
     """A magazine change: the rifle cants towards the support hand, which strips
     the magazine forward off its catch, drops it out of view, rocks the new one
     in and returns. From empty, the right hand then racks the charging handle."""
-    # Lifted and canted so the magazine well turns towards the eye, in view.
-    tilt = Place(Vector((0.13, 0.25, -0.15)), pitch=8.0, yaw=6.0, roll=65.0)
+    tilt = RELOAD_TILT
     end = 2.3 if not empty else 3.0
     place_keys = [
         (0.0, HIP),
@@ -179,7 +188,18 @@ def reload_pose(t, empty):
                       (2.34, 0.0, ease_in)], t, lin)
     right, left = hands(t, right_keys, left_keys)
     magazine = "hand" if 0.55 <= t < 1.75 else "gun"
-    return Pose(place, right, left, bolt=bolt, magazine=magazine)
+    # The left elbow swings out and drops as the hand goes down for the magazine,
+    # and comes back in to seat the new one; racking, the right elbow lifts over.
+    lp = POLES["l"]
+    left_pole = track([(0.0, lp), (0.45, Vector((-0.5, 0.05, -0.5))), (1.05, Vector((-0.45, -0.05, -0.75))),
+                       (1.5, Vector((-0.5, 0.05, -0.5))), (1.9, lp), (end, lp)], t, mix_vector)
+    rp = POLES["r"]
+    right_keys_pole = [(0.0, rp)]
+    if empty:
+        right_keys_pole += [(1.8, rp), (2.0, Vector((0.55, -0.05, -0.1))), (2.35, Vector((0.55, -0.1, -0.15))),
+                            (2.62, rp)]
+    right_pole = track(right_keys_pole, t, mix_vector)
+    return Pose(place, right, left, bolt=bolt, magazine=magazine, poles={"l": left_pole, "r": right_pole})
 
 
 def reload(t):
@@ -195,8 +215,10 @@ def sprint(t):
     eight with the stride (two steps a cycle)."""
     phase = t / 0.62 * 2.0 * math.pi
     base = Place(Vector((0.11, 0.2, -0.25)), pitch=-12.0, yaw=28.0, roll=-22.0)
+    # Elbows tucked in against the body, as when running with a rifle.
     return held(base.moved(Vector((0.018 * math.sin(phase), 0.0, 0.016 * abs(math.sin(phase)) - 0.008)),
-                           pitch=2.5 * math.sin(2.0 * phase), roll=4.0 * math.sin(phase)))
+                           pitch=2.5 * math.sin(2.0 * phase), roll=4.0 * math.sin(phase)),
+                poles={"l": Vector((-0.2, 0.1, -0.7)), "r": Vector((0.3, -0.05, -0.7))})
 
 
 def inspect(t):
@@ -207,7 +229,11 @@ def inspect(t):
                                                           smooth),
                    (2.6, right_side, smooth), (3.6, right_side.moved(Vector((0.0, 0.0, 0.006)), pitch=3.0), smooth),
                    (4.3, HIP, smooth)], t, mix_place)
-    return held(place)
+    # The left elbow rises as the rifle rolls onto its side, then drops for the right.
+    lp = POLES["l"]
+    left_pole = track([(0.0, lp), (0.7, Vector((-0.45, 0.2, -0.25))), (1.9, Vector((-0.45, 0.2, -0.25))),
+                       (2.6, Vector((-0.3, 0.2, -0.75))), (3.6, Vector((-0.3, 0.2, -0.75))), (4.3, lp)], t, mix_vector)
+    return held(place, poles={"l": left_pole})
 
 
 CLIPS = [
@@ -234,21 +260,35 @@ skin = next(o for o in bpy.data.objects if o.type == "MESH" and o is not rifle)
 skin.name = "arms"
 rifle.name = "ak47"
 
-def report_hand(side, place):
-    """Where the hand's parts end up, in the rifle's space, to check a grip."""
+def report(pose):
+    """Where each hand's parts and the magazine end up, in the rifle's space, to
+    check a grip against the measured model."""
     arms.animation_data.action = None
-    r.apply(held(place))
-    inv = place.matrix().inverted()
-    pose = arms.pose.bones
-    for name in ("wrist", "socket", "finger_index1", "finger_middle1", "finger_pinky1", "finger_thumb1"):
-        print(f"HAND {side} {name:15s} head {tuple(round(c, 3) for c in inv @ pose[f'{name}.{side}'].head)}")
-    for f in ("index", "middle", "ring", "pinky", "thumb"):
-        print(f"HAND {side} {f:6s} tip {tuple(round(c, 3) for c in inv @ pose[f'finger_{f}3.{side}'].tail)}")
+    r.mag_offset = None
+    r.apply(pose)
+    inv = pose.place.matrix().inverted()
+    bones = arms.pose.bones
+    for side in ("l", "r"):
+        for name in ("wrist", "socket", "finger_index1", "finger_middle1", "finger_pinky1", "finger_thumb1"):
+            print(f"HAND {side} {name:15s} head {tuple(round(c, 3) for c in inv @ bones[f'{name}.{side}'].head)}")
+        for f in ("index", "middle", "ring", "pinky", "thumb"):
+            print(f"HAND {side} {f:6s} tip {tuple(round(c, 3) for c in inv @ bones[f'finger_{f}3.{side}'].tail)}")
+        print(f"HAND {side} elbow          {tuple(round(c, 3) for c in inv @ bones[f'forearm.{side}'].head)}")
+    print(f"MAG head {tuple(round(c, 3) for c in inv @ bones['MAGAZINE'].head)}")
 
 
 if "--report" in args:
-    report_hand("l", HIP)
-    report_hand("r", HIP)
+    # --report [clip@time]: the hold at the hip, or a clip's pose at a moment.
+    at = args[args.index("--report") + 1] if args.index("--report") + 1 < len(args) else ""
+    if "@" in at:
+        clip, t = at.split("@")
+        fn = {name: f for name, _, f, _, _ in CLIPS}[clip]
+        if clip.startswith("reload"):
+            fn(0.56)  # The magazine is taken at the grab; pose that first.
+            r.apply(fn(0.56))
+        report(fn(float(t)))
+    else:
+        report(held(HIP))
 
 if preview:
     # The game draws the view model 42 degrees tall; at 16:9 on Blender's 36 mm
@@ -278,6 +318,12 @@ if preview:
         for t in times:
             shots[f"{clip}@{t}"] = (t, {f"{clip}@{t}_eye": ((0.0, 0.0, 0.0), (0.0, 1.0, 0.0), EYE_LENS),
                                         f"{clip}@{t}_side": side})
+    # Close on the magazine as it's taken, from beside and from the gun's far side.
+    mag_at = RELOAD_TILT.matrix() @ Vector((0.0, 0.2, 0.0))
+    shots["reload@0.6"] = (0.6, {"magclose_near": (tuple(RELOAD_TILT.matrix() @ Vector((-0.25, 0.25, 0.05))),
+                                                   tuple(mag_at), 30.0),
+                                 "magclose_far": (tuple(RELOAD_TILT.matrix() @ Vector((0.25, 0.2, -0.05))),
+                                                  tuple(mag_at), 30.0)})
     for key, (t, views) in shots.items():
         arms.animation_data.action = bpy.data.actions[key.split("@")[0]]
         bpy.context.scene.frame_set(round(t * FPS))
