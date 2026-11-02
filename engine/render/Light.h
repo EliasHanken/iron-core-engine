@@ -23,6 +23,12 @@ struct PointLight {
     Vec3 color{1.0f, 1.0f, 1.0f};
     float intensity = 1.0f;
     float range = 5.0f;
+    // A spot light: give the cone's half-angle in radians and point `direction`
+    // where it shines; 0 lights all round. The edge fades over `spotSoftness` of
+    // the cone. Spots need clustered lighting (Vulkan); elsewhere they light all round.
+    Vec3  direction{0.0f, -1.0f, 0.0f};
+    float spotAngle = 0.0f;
+    float spotSoftness = 0.25f;
 };
 
 } // namespace iron

@@ -175,8 +175,9 @@ ShaderHandle VkShaderStore::create(VkContext& ctx,
 
     VkPipelineLayoutCreateInfo plInfo{};
     plInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
-    plInfo.setLayoutCount = 1;
-    plInfo.pSetLayouts = &s.setLayout;
+    const VkDescriptorSetLayout setLayouts[2] = {s.setLayout, frameSetLayout_};
+    plInfo.setLayoutCount = frameSetLayout_ ? 2 : 1;
+    plInfo.pSetLayouts = setLayouts;
     VK_CHECK(vkCreatePipelineLayout(ctx.device(), &plInfo, nullptr, &s.pipelineLayout));
 
     const ShaderHandle h = nextHandle_++;
@@ -270,8 +271,9 @@ ShaderHandle VkShaderStore::createSkinned(VkContext& ctx,
 
     VkPipelineLayoutCreateInfo plInfo{};
     plInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
-    plInfo.setLayoutCount = 1;
-    plInfo.pSetLayouts = &s.setLayout;
+    const VkDescriptorSetLayout setLayouts[2] = {s.setLayout, frameSetLayout_};
+    plInfo.setLayoutCount = frameSetLayout_ ? 2 : 1;
+    plInfo.pSetLayouts = setLayouts;
     VK_CHECK(vkCreatePipelineLayout(ctx.device(), &plInfo, nullptr, &s.pipelineLayout));
 
     const ShaderHandle h = nextHandle_++;
@@ -401,8 +403,9 @@ ShaderHandle VkShaderStore::createTessellated(VkContext& ctx,
 
     VkPipelineLayoutCreateInfo plInfo{};
     plInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
-    plInfo.setLayoutCount = 1;
-    plInfo.pSetLayouts = &s.setLayout;
+    const VkDescriptorSetLayout setLayouts[2] = {s.setLayout, frameSetLayout_};
+    plInfo.setLayoutCount = frameSetLayout_ ? 2 : 1;
+    plInfo.pSetLayouts = setLayouts;
     VK_CHECK(vkCreatePipelineLayout(ctx.device(), &plInfo, nullptr, &s.pipelineLayout));
 
     const ShaderHandle h = nextHandle_++;
