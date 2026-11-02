@@ -35,9 +35,15 @@ jobs:
 
     steps:
       - name: Checkout
+        # Game art in LFS (130+ MB) isn't needed to build or test: the builds
+        # copy asset folders as they are. Only the test fixtures are fetched.
         uses: actions/checkout@v4
         with:
-          lfs: true
+          lfs: false
+
+      - name: Fetch test fixtures from LFS
+        # Exactly what the tests read; keep in step with them.
+        run: git lfs pull --include="tests/assets/**,assets/cc0/**,games/12-ui-arena/assets/fonts/**,games/17-iron-core/assets/fonts/**,games/19-kindle/assets/audio/**"
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -57,7 +63,19 @@ jobs:
       - name: Set up sccache
         uses: mozilla-actions/sccache-action@v0.0.9
 
+      - name: Cache installed vcpkg packages
+        # The whole installed tree, keyed on everything that decides it. On a hit
+        # the configure step skips vcpkg entirely (no registry fetch, no compiler
+        # detection, no clone): about a minute saved per run. MSVC 14.x is binary
+        # compatible across updates, so a new runner toolchain doesn't stale it.
+        id: vcpkg-installed
+        uses: actions/cache@v4
+        with:
+          path: ${{ github.workspace }}/build/vcpkg_installed
+          key: vcpkg-installed-${{ runner.os }}-${{ hashFiles('vcpkg.json', 'vcpkg-configuration.json', 'ports/**') }}
+
       - name: Cache vcpkg binary archives
+        if: steps.vcpkg-installed.outputs.cache-hit != 'true'
         # Restore previously-built dep archives. On cache hit, vcpkg install
         # in the Configure step decompresses pre-built packages instead of
         # recompiling GNS + openssl + protobuf + abseil from source (~20 min
@@ -76,10 +94,12 @@ jobs:
             vcpkg-bincache-${{ runner.os }}-
 
       - name: Ensure vcpkg binary cache dir exists
+        if: steps.vcpkg-installed.outputs.cache-hit != 'true'
         shell: bash
         run: mkdir -p "${{ github.workspace }}/vcpkg-bincache"
 
       - name: Setup vcpkg
+        if: steps.vcpkg-installed.outputs.cache-hit != 'true'
         uses: lukka/run-vcpkg@v11
         with:
           vcpkgGitCommitId: 'aa40adda5352e87655b8583cfb2451d5e9e276fd'
@@ -96,15 +116,20 @@ jobs:
         # the MSVC_DEBUG_INFORMATION_FORMAT abstraction (3.25) — without it the
         # variable is silently ignored. Local dev builds (build-vk, MSBuild
         # multi-config) are unaffected; this is CI-only.
+        #
+        # No debug info at all: nobody debugs CI binaries, and without it objects
+        # are smaller (faster sccache round trips) and the ~130 links are quicker.
+        #
+        # With the installed packages restored, vcpkg's install is switched off and
+        # the runner's own vcpkg checkout supplies the toolchain script.
         shell: bash
-        run: >
-          cmake -S . -B build -G Ninja
-          -DCMAKE_BUILD_TYPE=Debug
-          -DCMAKE_TOOLCHAIN_FILE="$VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake"
-          -DCMAKE_C_COMPILER_LAUNCHER=sccache
-          -DCMAKE_CXX_COMPILER_LAUNCHER=sccache
-          -DCMAKE_POLICY_DEFAULT_CMP0141=NEW
-          -DCMAKE_MSVC_DEBUG_INFORMATION_FORMAT=Embedded
+        run: |
+          if [ "${{ steps.vcpkg-installed.outputs.cache-hit }}" = "true" ]; then
+            ROOT="$VCPKG_INSTALLATION_ROOT"; INSTALL=OFF
+          else
+            ROOT="$VCPKG_ROOT"; INSTALL=ON
+          fi
+          cmake -S . -B build -G Ninja             -DCMAKE_BUILD_TYPE=Debug             -DCMAKE_TOOLCHAIN_FILE="$ROOT/scripts/buildsystems/vcpkg.cmake"             -DVCPKG_MANIFEST_INSTALL=$INSTALL             -DCMAKE_C_COMPILER_LAUNCHER=sccache             -DCMAKE_CXX_COMPILER_LAUNCHER=sccache             -DCMAKE_POLICY_DEFAULT_CMP0141=NEW             -DCMAKE_MSVC_DEBUG_INFORMATION_FORMAT=             -DCMAKE_EXE_LINKER_FLAGS_DEBUG=/INCREMENTAL:NO             -DCMAKE_SHARED_LINKER_FLAGS_DEBUG=/INCREMENTAL:NO
 
       - name: Build
         run: cmake --build build
