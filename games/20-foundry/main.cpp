@@ -37,6 +37,7 @@
 #include "core/Platform.h"
 #include "math/Transform.h"
 #include "physics/CharacterController.h"
+#include "physics/Ballistics.h"
 #include "physics/PhysicsWorld.h"
 #include "render/Cinematic.h"
 #include "render/Fog.h"
@@ -643,6 +644,39 @@ int main(int argc, char** argv) {
     iron::PhysicsWorld world;
     if (!world.init()) return 1;
     std::unordered_map<std::uint32_t, Surface> surfaces;
+    // What bullets meet. Resistance is how much of a rifle round a metre takes: it
+    // pierces about 1 / resistance metres. Hollow things cost two walls.
+    iron::PhysicalMaterials materials;
+    const auto material = [&](const char* name, float resistance, float shell, float ricochet) {
+        iron::PhysicalMaterial m;
+        m.name = name;
+        m.resistance = resistance;
+        m.shell = shell;
+        m.ricochetAngle = ricochet;
+        return materials.add(m);
+    };
+    const iron::PhysicalMaterialId kConcrete = material("concrete", 14.0f, 0.0f, 0.12f);
+    const iron::PhysicalMaterialId kBrick = material("brick", 10.0f, 0.0f, 0.1f);
+    const iron::PhysicalMaterialId kSteel = material("steel", 160.0f, 0.0f, 0.35f);
+    const iron::PhysicalMaterialId kSheet = material("sheet steel", 160.0f, 0.0015f, 0.3f);
+    const iron::PhysicalMaterialId kWood = material("wood", 2.5f, 0.0f, 0.0f);
+    const iron::PhysicalMaterialId kCrate = material("crate", 2.5f, 0.02f, 0.0f);
+    const auto solidOf = [&](Surface surface) {
+        switch (surface) {
+            case Surface::Brick: return kBrick;
+            case Surface::Metal: return kSteel;
+            case Surface::Wood: return kWood;
+            default: return kConcrete;
+        }
+    };
+    // Props by what they are: drums, cans and tanks are sheet steel around air,
+    // crates are planks around air.
+    const auto propMaterial = [&](const std::string& model, Surface surface) {
+        const auto has = [&](const char* word) { return model.find(word) != std::string::npos; };
+        if (has("arrel") || has("jerrycan") || has("tank") || has("container")) return kSheet;
+        if (has("crate")) return kCrate;
+        return solidOf(surface);
+    };
 
     // Static geometry: one mesh per look, one body per box.
     struct StaticMesh {
@@ -656,6 +690,8 @@ int main(int argc, char** argv) {
             iron::appendBox(byLook[static_cast<std::size_t>(b.look)], b.center, b.size);
             const iron::BodyId body = world.createStaticBox(b.center, b.size * 0.5f);
             surfaces[body.value] = foundry::surfaceOf(b.look);
+            // Container walls are corrugated sheet; everything else built is solid.
+            materials.assign(body, b.look == Look::Corrugated ? kSheet : solidOf(foundry::surfaceOf(b.look)));
         }
         for (std::size_t i = 0; i < byLook.size(); ++i) {
             if (!byLook[i].vertices.empty()) {
@@ -688,6 +724,9 @@ int main(int argc, char** argv) {
         const foundry::Prop& p = level.props[i];
         const iron::BodyId body = world.createDynamicBox(p.center, p.size * 0.5f, p.mass);
         surfaces[body.value] = foundry::surfaceOf(p.look);
+        // Loose boxes are crates and drums: hollow.
+        const Surface s = foundry::surfaceOf(p.look);
+        materials.assign(body, s == Surface::Wood ? kCrate : s == Surface::Metal ? kSheet : solidOf(s));
         dynamics.push_back({body, boxMesh(p.size), p.look, kPropMotionBase + static_cast<std::uint32_t>(i)});
     }
     for (std::size_t i = 0; i < level.plates.size(); ++i) {
@@ -699,6 +738,8 @@ int main(int argc, char** argv) {
         world.createHingeJoint(anchor, plate, p.pivot, {1.0f, 0.0f, 0.0f}, -1.3f, 1.3f);
         surfaces[anchor.value] = Surface::Metal;
         surfaces[plate.value] = Surface::Metal;
+        materials.assign(anchor, kSteel);
+        materials.assign(plate, kSteel);
         // The plate and the bar it hangs from, as one mesh.
         iron::MeshData data;
         iron::appendBox(data, {0.0f, 0.0f, 0.0f}, p.size);
@@ -728,11 +769,13 @@ int main(int argc, char** argv) {
         if (p.mass > 0.0f) {
             const iron::BodyId body = world.createDynamicBox(boxCenter, size * 0.5f, p.mass, rotation);
             surfaces[body.value] = p.surface;
+            materials.assign(body, propMaterial(p.model, p.surface));
             dynamics.push_back({body, iron::kInvalidHandle, Look::Steel,
                                 kPlacedMotionBase + static_cast<std::uint32_t>(i), model, centred});
         } else {
             const iron::BodyId body = world.createStaticBox(boxCenter, size * 0.5f, rotation);
             surfaces[body.value] = p.surface;
+            materials.assign(body, propMaterial(p.model, p.surface));
             placedStatics.push_back({model, iron::translation(boxCenter) * iron::rotationY(p.yaw) * centred});
         }
     }
@@ -1073,7 +1116,8 @@ int main(int argc, char** argv) {
             sound.shot();
             const Vec2 dev = gun.shotDeviation();
             const Vec3 dir = lookDirection(viewYaw + dev.x, viewPitch + dev.y);
-            const iron::PhysicsWorld::RaycastHit hit = world.raycast(eye, dir, 300.0f);
+            // The round: into what it meets, through what it can pierce, off what it grazes.
+            const std::vector<iron::BulletImpact> impacts = iron::traceBullet(world, materials, eye, dir);
 
             // A casing, kicked out to the right.
             const Vec3 right = transformPoint(cameraToWorld, {1.0f, 0.0f, 0.0f}) - eye;
@@ -1090,36 +1134,60 @@ int main(int argc, char** argv) {
             casing.brass = true;
             spawnBit(casing);
 
-            // Every third round glows, so the stream can be seen.
+            // Every third round glows, so the stream can be seen: from the muzzle to
+            // where it first lands, and on from wherever it comes out or glances off.
             if (shotCount % 3 == 0) {
-                Bit tracer;
-                tracer.position = muzzle + dir * 1.5f;
-                tracer.velocity = dir * 260.0f;
-                tracer.size = {1.6f, 0.012f, 0.012f};
-                tracer.emissive = {30.0f, 16.0f, 6.0f};
-                tracer.maxLife = hit.hit ? std::max(hit.t - 1.5f, 0.0f) / 260.0f : 0.5f;
-                tracer.life = tracer.maxLife;
-                tracer.gravity = 0.0f;
-                if (tracer.maxLife > 0.0f) spawnBit(tracer);
+                const auto streak = [&](Vec3 from, Vec3 way, float length) {
+                    Bit tracer;
+                    tracer.position = from + way * 1.5f;
+                    tracer.velocity = way * 260.0f;
+                    tracer.size = {1.6f, 0.012f, 0.012f};
+                    tracer.emissive = {30.0f, 16.0f, 6.0f};
+                    tracer.maxLife = std::max(length - 1.5f, 0.0f) / 260.0f;
+                    tracer.life = tracer.maxLife;
+                    tracer.gravity = 0.0f;
+                    if (tracer.maxLife > 0.0f) spawnBit(tracer);
+                };
+                Vec3 from = muzzle;
+                Vec3 way = dir;
+                for (const iron::BulletImpact& imp : impacts) {
+                    if (imp.kind == iron::BulletImpact::Kind::Exit) {
+                        from = imp.point;
+                        continue;
+                    }
+                    streak(from, way, iron::length(imp.point - from));
+                    from = imp.point;
+                    way = imp.direction;
+                }
+                const bool flying = impacts.empty() || impacts.back().kind != iron::BulletImpact::Kind::Stop;
+                if (flying) streak(from, way, 120.0f);
             }
 
-            if (!hit.hit) continue;
+            for (const iron::BulletImpact& imp : impacts) {
+            const bool exit = imp.kind == iron::BulletImpact::Kind::Exit;
+            iron::PhysicsWorld::RaycastHit hit;
+            hit.hit = true;
+            hit.body = imp.body;
+            hit.point = imp.point;
+            hit.normal = imp.normal;
+            const Vec3 way = imp.direction;
             const auto found = surfaces.find(hit.body.value);
             const Surface surface = found != surfaces.end() ? found->second : Surface::Concrete;
             const ImpactStyle style = impactStyle(surface);
 
-            // Push what can move; mark the hit when it's a target.
-            world.applyImpulseAtPoint(hit.body, dir * 9.0f, hit.point);
+            // Push what can move, as hard as the round still hits; mark the hit when
+            // it's a target.
+            world.applyImpulseAtPoint(hit.body, way * (9.0f * imp.energy), hit.point);
             bool plate = false;
             for (const Dynamic& d : dynamics) {
                 if (d.body.value != hit.body.value) continue;
                 hitMarker = 0.18f;
                 plate = d.motionId >= kPlateMotionBase;
             }
-            sound.impact(surface, plate, hit.point);
+            if (!exit) sound.impact(surface, plate, hit.point);
 
             const Vec3 n = hit.normal;
-            const Vec3 reflect = dir - n * (2.0f * iron::dot(dir, n));
+            const Vec3 reflect = way - n * (2.0f * iron::dot(way, n));
             // A hole in what stands still (things that move would slide out from under it).
             bool moves = false;
             for (const Dynamic& d : dynamics) moves = moves || d.body.value == hit.body.value;
@@ -1149,8 +1217,9 @@ int main(int argc, char** argv) {
                 chip.bounce = 0.2f;
                 spawnBit(chip);
             }
-            if (style.sparks > 0) {
+            if (style.sparks > 0 && !exit) {
                 flashes.push_back({hit.point + n * 0.25f, {1.0f, 0.6f, 0.3f}, 0.07f, 0.07f, 2.5f, 3.5f});
+            }
             }
         }
         if (gun.flash() > 0.0f && shots > 0) {

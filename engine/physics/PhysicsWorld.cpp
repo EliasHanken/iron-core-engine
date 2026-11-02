@@ -337,6 +337,25 @@ PhysicsWorld::RaycastHit PhysicsWorld::raycast(Vec3 o, Vec3 d, float maxDist) co
     return out;
 }
 
+PhysicsWorld::RaycastHit PhysicsWorld::raycastBody(BodyId id, Vec3 o, Vec3 d, float maxDist) const {
+    RaycastHit out;
+    if (!impl_->system) return out;
+    JPH::BodyLockRead lock(impl_->system->GetBodyLockInterface(), JPH::BodyID(id.value));
+    if (!lock.Succeeded()) return out;
+    const JPH::Body& body = lock.GetBody();
+    JPH::RRayCast ray(toJ(o), toJ(d) * maxDist);
+    JPH::RayCastResult hit;
+    if (!body.GetTransformedShape().CastRay(ray, hit)) return out;
+    out.hit = true;
+    out.body = id;
+    out.t = hit.mFraction;
+    const JPH::Vec3 pt = ray.GetPointOnRay(hit.mFraction);
+    out.point = toI(pt);
+    const JPH::Vec3 n = body.GetWorldSpaceSurfaceNormal(hit.mSubShapeID2, pt);
+    out.normal = Vec3{n.GetX(), n.GetY(), n.GetZ()};
+    return out;
+}
+
 namespace {
 
 JPH::Body& lockBodyForJoint(PhysicsWorld::Impl& impl, BodyId id) {

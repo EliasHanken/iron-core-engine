@@ -89,7 +89,10 @@ public:
         Vec3   normal {};
         float  t      = 0.0f;
     };
+    // `t` is the hit's share of `maxDistance` along the ray (0..1), not metres.
     RaycastHit raycast(Vec3 origin, Vec3 direction, float maxDistance) const;
+    // The same against one body alone: to find a thing's far side, say.
+    RaycastHit raycastBody(BodyId body, Vec3 origin, Vec3 direction, float maxDistance) const;
 
     // --- Joints ---
     // Swing-twist: spine, neck, shoulders, hips. World-space pivot +

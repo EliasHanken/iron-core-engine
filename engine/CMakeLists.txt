@@ -35,6 +35,7 @@ add_library(ironcore STATIC
   ui/UiSerialize.cpp
   physics/Rope.cpp
   physics/PhysicsWorld.cpp
+  physics/Ballistics.cpp
   physics/Ragdoll.cpp
   physics/CharacterController.cpp
   asset/GltfLoader.cpp
