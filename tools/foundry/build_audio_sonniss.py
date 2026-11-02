@@ -323,6 +323,14 @@ def main():
         write(os.path.join(out, name + ".wav"), x)
         print(f"{name:14} {x.shape[0] / RATE:5.2f}s {channels}ch level {level(x):6.1f} loop")
 
+    # Ringing ears after a blast: two close tones near 3.6 kHz beating slowly,
+    # in fast and fading over five seconds (synthesized, not from the kit).
+    t = np.arange(int(5.0 * RATE)) / RATE
+    ring = (np.sin(2 * np.pi * 3580.0 * t) + 0.6 * np.sin(2 * np.pi * 3617.0 * t)) / 1.6
+    ring *= np.minimum(t / 0.08, 1.0) * np.exp(-t / 1.6)
+    write(os.path.join(out, "ring.wav"), (ring * 0.6)[:, None].astype(np.float32))
+    print("ring           5.00s 1ch synthesized")
+
     with open(os.path.join(out, "SOURCES.txt"), "w", encoding="utf-8", newline="\n") as f:
         f.write("\n".join(sorted(used)) + "\n")
 

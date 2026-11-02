@@ -11,6 +11,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cmath>
 #include <cstdint>
 #include <filesystem>
 #include <string>
@@ -74,6 +75,29 @@ struct AudioEngine::Impl {
     ALuint                        reverbEffect = 0;
     ALuint                        reverbSlot = 0;
     std::array<ALuint, kSourcePoolSize> muffles{};  // One lowpass per source.
+    std::array<float, kSourcePoolSize> voiceHighs{};  // Each source's own muffle (1 none).
+    float masterHighs = 1.0f;                          // And everyone's.
+
+    // A source's lowpass: its own muffle times the master's, or none at all.
+    void applyMuffle(std::size_t slot) {
+        if (!effects) return;
+        const float highs = voiceHighs[slot] * masterHighs;
+        if (highs >= 0.999f) {
+            alSourcei(sources[slot], AL_DIRECT_FILTER, AL_FILTER_NULL);
+            return;
+        }
+        filterF(muffles[slot], AL_LOWPASS_GAINHF, std::clamp(highs, 0.0f, 1.0f));
+        alSourcei(sources[slot], AL_DIRECT_FILTER, static_cast<ALint>(muffles[slot]));
+    }
+    // A one-shot starting on a source: no muffle of its own, the master's still.
+    void freshVoice(ALuint source) {
+        for (std::size_t i = 0; i < sources.size(); ++i) {
+            if (sources[i] != source) continue;
+            voiceHighs[i] = 1.0f;
+            applyMuffle(i);
+            return;
+        }
+    }
     bool                          effects = false;
 
     bool initialized      = false;
@@ -113,6 +137,7 @@ bool initEffects(Impl& impl) {
         impl.filterI(impl.muffles[i], AL_FILTER_TYPE, AL_FILTER_LOWPASS);
         impl.filterF(impl.muffles[i], AL_LOWPASS_GAIN, 1.0f);
         impl.filterF(impl.muffles[i], AL_LOWPASS_GAINHF, 1.0f);
+        impl.voiceHighs[i] = 1.0f;
         alSource3i(impl.sources[i], AL_AUXILIARY_SEND_FILTER, static_cast<ALint>(impl.reverbSlot), 0, AL_FILTER_NULL);
     }
     return alGetError() == AL_NO_ERROR;
@@ -315,6 +340,7 @@ void AudioEngine::playSoundAt(SoundHandle h, Vec3 worldPos, float gain, float pi
     alSourcef (chosen, AL_GAIN,             gain);
     alSourcef (chosen, AL_PITCH,            pitch);
     alSourcei (chosen, AL_SOURCE_RELATIVE,  AL_FALSE);
+    impl_->freshVoice(chosen);
     alSourcePlay(chosen);
 }
 
@@ -362,6 +388,7 @@ void AudioEngine::playSoundLocal(SoundHandle h, float gain, float pitch) {
     // listener-local space; position (0,0,0) = "right at the listener", so
     // OpenAL skips spatialization and plays the sound centered.
     alSourcei (chosen, AL_SOURCE_RELATIVE,  AL_TRUE);
+    impl_->freshVoice(chosen);
     alSourcePlay(chosen);
 }
 
@@ -390,6 +417,7 @@ VoiceId AudioEngine::playLooping(SoundHandle h, Vec3 worldPos, float gain) {
     alSourcef (src, AL_GAIN,            gain);
     alSourcei (src, AL_SOURCE_RELATIVE, AL_FALSE);
     alSourcei (src, AL_LOOPING,         AL_TRUE);
+    impl_->freshVoice(src);
     alSourcePlay(src);
 
     impl_->reserved[slot] = true;
@@ -438,8 +466,16 @@ void AudioEngine::setVoiceMuffle(VoiceId v, float highs) {
     auto it = impl_->voiceSlot.find(v);
     if (it == impl_->voiceSlot.end()) return;
     const std::size_t slot = it->second;
-    impl_->filterF(impl_->muffles[slot], AL_LOWPASS_GAINHF, std::clamp(highs, 0.0f, 1.0f));
-    alSourcei(impl_->sources[slot], AL_DIRECT_FILTER, static_cast<ALint>(impl_->muffles[slot]));
+    impl_->voiceHighs[slot] = std::clamp(highs, 0.0f, 1.0f);
+    impl_->applyMuffle(slot);
+}
+
+void AudioEngine::setMasterMuffle(float highs) {
+    if (!impl_->initialized || !impl_->effects) return;
+    const float want = std::clamp(highs, 0.0f, 1.0f);
+    if (std::abs(want - impl_->masterHighs) < 1e-3f) return;
+    impl_->masterHighs = want;
+    for (std::size_t i = 0; i < impl_->sources.size(); ++i) impl_->applyMuffle(i);
 }
 
 void AudioEngine::setReverb(const ReverbSettings& s) {

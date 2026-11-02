@@ -1304,6 +1304,7 @@ int main(int argc, char** argv) {
             smoke.blast(at);
             const float distance = iron::length(at - eye);
             sound.blast(at, distance);
+            sound.deafen(std::clamp(1.0f - distance / 16.0f, 0.0f, 1.0f));
             trauma = std::min(trauma + 1.1f * std::clamp(1.0f - distance / 28.0f, 0.0f, 1.0f), 1.0f);
             blastKick = std::min(blastKick + std::clamp(1.0f - distance / 22.0f, 0.0f, 1.0f), 1.0f);
             hots.push_back({at + up * 1.2f, 1.6f, 1.6f});
