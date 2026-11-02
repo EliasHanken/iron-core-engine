@@ -7,6 +7,7 @@
 //   R       reload          G             throw a grenade
 //   F1      GPU frame breakdown
 //   F2      motion vectors  Esc           pause (Q then quits)
+//   Tab     engine view: watch from outside what the player's camera draws
 //
 // Any capture flag (--shot, --record, --benchmark) plays a scripted walk instead.
 // --scene picks where it starts and what it shows; join names with '+':
@@ -24,6 +25,7 @@
 //   lod      tint instance groups by level of detail
 //   freeze   freeze culling at the start
 //   noaa     start with anti-aliasing off
+//   engine   start in the engine view
 
 #include "common/CaptureLoop.h"
 #include "common/TrackedText.h"
@@ -309,6 +311,7 @@ public:
         bool  showMotion = false;
         bool  showLods = false;
         bool  frozen = false;
+        bool  engineView = false;
         bool  antiAliased = true;
         float cpuMs = 0.0f;
         int   draws = 0;
@@ -339,7 +342,8 @@ public:
         const Vec4 warm{1.0f, 0.93f, 0.84f, 0.92f};
 
         // Crosshair: four ticks that open with the spread, and fade when aiming.
-        const float crossAlpha = (1.0f - ramp(0.2f, 0.7f, s.aim)) * (s.paused ? 0.0f : 0.9f);
+        const float crossAlpha =
+            (1.0f - ramp(0.2f, 0.7f, s.aim)) * (s.paused || s.engineView ? 0.0f : 0.9f);
         if (crossAlpha > 0.0f) {
             const float gap = std::tan(s.spread) / std::tan(s.fov * 0.5f) * cy + 5.0f * unit;
             const float len = 9.0f * unit;
@@ -389,12 +393,15 @@ public:
             rect(bars, 0.0f, y, w, 46.0f * unit, {0.0f, 0.0f, 0.0f, 0.45f * hint});
             text::appendCentered(smallText, small_,
                                  "WASD  MOVE     CLICK  FIRE     RIGHT CLICK  AIM     R  RELOAD     I  INSPECT     "
-                                 "F1  FRAME     F2  MOTION     F3  FREEZE CULLING     F4  LODS     F5  AA",
+                                 "F1  FRAME     F2  MOTION     F3  FREEZE CULLING     F4  LODS     F5  AA     "
+                                 "TAB  ENGINE VIEW",
                                  cx, y + 29.0f * unit, 1.0f, 0.24f, {1.0f, 0.93f, 0.84f, hint});
         }
 
         // What the debug views show, one line at the top.
-        const char* banner = s.showMotion ? "MOTION VECTORS   /   HUE IS DIRECTION, BRIGHTNESS IS SPEED"
+        const char* banner = s.engineView ? "ENGINE VIEW   /   ONLY WHAT THE PLAYER'S CAMERA KEEPS IS DRAWN, TINTED BY "
+                                            "DETAIL   /   OCCLUSION PAUSED"
+                           : s.showMotion ? "MOTION VECTORS   /   HUE IS DIRECTION, BRIGHTNESS IS SPEED"
                            : s.frozen     ? "CULLING FROZEN   /   WALK AWAY TO SEE WHAT IT SKIPPED"
                            : s.showLods   ? "LEVELS OF DETAIL   /   WHITE, GREEN, YELLOW, RED AS THEY SIMPLIFY"
                            : !s.antiAliased ? "ANTI-ALIASING OFF   /   EDGES AS THE RASTERISER DRAWS THEM"
@@ -404,7 +411,8 @@ public:
             text::appendCentered(smallText, small_, banner, cx, 50.0f * unit, 1.0f, 0.24f, warm);
         }
 
-        if (s.showFrame) drawFrame(bars, bodyText, smallText, s, timings, unit);
+        // Below the banner, when there is one.
+        if (s.showFrame) drawFrame(bars, bodyText, smallText, s, timings, unit, (banner ? 96.0f : 34.0f) * unit);
 
         if (s.paused) {
             rect(bars, 0.0f, 0.0f, w, h, {0.0f, 0.0f, 0.0f, 0.55f});
@@ -423,7 +431,7 @@ public:
 private:
     // The GPU's frame, pass by pass, as the hardware timed it.
     void drawFrame(iron::HudDrawGroup& bars, iron::HudDrawGroup& bodyText, iron::HudDrawGroup& smallText,
-                   const State& s, std::span<const iron::GpuTiming> timings, float unit) {
+                   const State& s, std::span<const iron::GpuTiming> timings, float unit, float top) {
         // Smooth the numbers so they can be read; a frame is too noisy.
         if (smoothed_.size() != timings.size()) smoothed_.assign(timings.size(), 0.0f);
         for (std::size_t i = 0; i < timings.size(); ++i) {
@@ -435,7 +443,6 @@ private:
         }
 
         const float left = 34.0f * unit;
-        const float top = 34.0f * unit;
         const float rowH = 24.0f * unit;
         const float panelW = 430.0f * unit;
         int rows = 0;
@@ -939,6 +946,9 @@ int main(int argc, char** argv) {
     bool showMotion = sceneHas("motion");
     bool showLods = sceneHas("lod");
     bool frozen = sceneHas("freeze");
+    bool engineView = sceneHas("engine");
+    Vec3 engineEye{};          // The engine view's camera, easing after the player.
+    bool engineEyeSet = false;
     bool antiAliased = !sceneHas("noaa");
     bool paused = false;
     options.onInput = [&]() {
@@ -957,6 +967,7 @@ int main(int argc, char** argv) {
         if (input.keyPressed(GLFW_KEY_F3)) frozen = !frozen;
         if (input.keyPressed(GLFW_KEY_F4)) showLods = !showLods;
         if (input.keyPressed(GLFW_KEY_F5)) antiAliased = !antiAliased;
+        if (input.keyPressed(GLFW_KEY_TAB)) engineView = !engineView;
     };
     if (!scripted) app.window().setCursorCaptured(true);
 
@@ -1408,7 +1419,7 @@ int main(int argc, char** argv) {
         fog.density = volumetric.enabled ? 0.0f : 0.0022f;  // The volumetric fog replaces it.
 
         vulkan->setDebugView(showMotion ? iron::RenderDebugView::MotionVectors
-                             : showLods ? iron::RenderDebugView::LevelsOfDetail
+                             : showLods || engineView ? iron::RenderDebugView::LevelsOfDetail
                                         : iron::RenderDebugView::None);
         renderer.setCullingFrozen(frozen);
         renderer.setAntiAliasing(antiAliased ? iron::AntiAliasing::Temporal : iron::AntiAliasing::Off);
@@ -1427,7 +1438,29 @@ int main(int argc, char** argv) {
             const Vec3 from{std::sin(a) * 70.0f, 38.0f, 40.0f + std::cos(a) * 70.0f};
             renderView = iron::lookAt(from, {0.0f, 0.0f, 20.0f}, {0.0f, 1.0f, 0.0f});
         }
-        renderer.beginFrame({0.05f, 0.04f, 0.04f}, sun, lights, fog, renderView, projection);
+        // The engine view: a camera up behind the player draws the world, while the
+        // player's own camera goes on culling it; what it drops simply isn't there.
+        Mat4 renderProjection = projection;
+        if (engineView) {
+            const Vec3 flat{-std::sin(yaw), 0.0f, -std::cos(yaw)};
+            const Vec3 side{std::cos(yaw), 0.0f, -std::sin(yaw)};
+            Vec3 want = eye - flat * 16.0f + side * 5.0f + Vec3{0.0f, 11.0f, 0.0f};
+            // Kept out of walls and roofs: pulled in short of whatever stands between.
+            const Vec3 back = want - eye;
+            const float reach = iron::length(back);
+            const iron::PhysicsWorld::RaycastHit blocked = world.raycast(eye, back * (1.0f / reach), reach);
+            if (blocked.hit) want = eye + back * std::max(blocked.t - 0.6f / reach, 0.05f);
+            engineEye = engineEyeSet ? engineEye + (want - engineEye) * (1.0f - std::exp(-dt * 3.0f)) : want;
+            engineEyeSet = true;
+            renderView = iron::lookAt(engineEye, eye + flat * 10.0f, {0.0f, 1.0f, 0.0f});
+            renderProjection = iron::perspective(kHipFov, aspect, 0.1f, 600.0f);
+            const iron::CullingCamera player{view, projection, eye};
+            renderer.setCullingCamera(&player);
+        } else {
+            engineEyeSet = false;
+            renderer.setCullingCamera(nullptr);
+        }
+        renderer.beginFrame({0.05f, 0.04f, 0.04f}, sun, lights, fog, renderView, renderProjection);
         if (volumetric.enabled) {
             // The hall: thick, still air from the furnace, thinning towards the doors.
             iron::FogVolume hall;
@@ -1518,9 +1551,42 @@ int main(int argc, char** argv) {
             renderer.submit(call);
             ++draws;
         }
-        {
+        holes.submit(renderer);
+        if (engineView) {
+            // Where the player stands, and what their camera sees, out to 60 metres:
+            // its edges, and where the levels of detail roughly change.
+            iron::DrawCall marker;
+            marker.mesh = bitMesh;
+            marker.shader = lit;
+            marker.model = iron::translation(feet + Vec3{0.0f, 0.9f, 0.0f}) * iron::rotationY(yaw) *
+                           iron::scaling({0.55f, 1.8f, 0.35f});
+            marker.material.texture = renderer.whiteTexture();
+            marker.material.baseColorFactor = {0.1f, 0.1f, 0.1f};
+            marker.material.emissive = {2.4f, 1.2f, 0.4f};
+            renderer.submit(marker);
+            ++draws;
+            const Vec3 r = transformPoint(cameraToWorld, {1.0f, 0.0f, 0.0f}) - eye;
+            const Vec3 u = transformPoint(cameraToWorld, {0.0f, 1.0f, 0.0f}) - eye;
+            const float ty = std::tan(fov * 0.5f);
+            const float tx = ty * aspect;
+            const auto corner = [&](float d, float x, float y) { return eye + aimDir * d + r * (x * tx * d) + u * (y * ty * d); };
+            // Drawn over the finished frame, so plain display colours.
+            const Vec3 edge{1.0f, 0.55f, 0.2f};
+            for (float x : {-1.0f, 1.0f}) {
+                for (float y : {-1.0f, 1.0f}) renderer.drawLineOverlay(eye, corner(60.0f, x, y), edge);
+            }
+            for (const auto& [d, c] : {std::pair{12.0f, Vec3{0.45f, 1.0f, 0.5f}}, std::pair{30.0f, Vec3{1.0f, 0.9f, 0.3f}},
+                                       std::pair{60.0f, edge}}) {
+                const Vec3 a = corner(d, -1.0f, -1.0f), b = corner(d, 1.0f, -1.0f), e = corner(d, 1.0f, 1.0f),
+                           f = corner(d, -1.0f, 1.0f);
+                renderer.drawLineOverlay(a, b, c);
+                renderer.drawLineOverlay(b, e, c);
+                renderer.drawLineOverlay(e, f, c);
+                renderer.drawLineOverlay(f, a, c);
+            }
+            renderer.flushDebugLines(renderView, renderProjection);
+        } else {
             draws += viewModel.draw(renderer, viewModelToWorld, kGunMotionId);
-            holes.submit(renderer);
             if (gun.flash() > 0.0f) {
                 iron::DrawCall flash;
                 flash.mesh = flashMesh;
@@ -1552,6 +1618,8 @@ int main(int argc, char** argv) {
         state.showMotion = showMotion;
         state.showLods = showLods;
         state.frozen = frozen;
+        state.engineView = engineView;
+        state.showFrame = showFrame || engineView;  // The numbers explain the picture.
         state.antiAliased = antiAliased;
         state.cull = renderer.cullStats();
         state.cpuMs = static_cast<float>((glfwGetTime() - cpuStart) * 1000.0);

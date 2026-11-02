@@ -33,6 +33,14 @@ float projectedPixels(Vec3 center, float radius, Vec3 eye, float pixelsPerUnitAt
 // thresholds[0], 1 while at least thresholds[1], and so on. `levels` caps the result.
 std::uint32_t selectLod(float pixels, std::span<const float> thresholds, std::uint32_t levels);
 
+// A camera that culls without drawing: what the player's view keeps and drops,
+// while another camera watches (see Renderer::setCullingCamera).
+struct CullingCamera {
+    Mat4 view = Mat4::identity();
+    Mat4 projection = Mat4::identity();
+    Vec3 eye{};
+};
+
 // How many objects a culling pass saw, and what it did with them.
 struct CullStats {
     std::uint32_t instances = 0;
