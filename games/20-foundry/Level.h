@@ -274,7 +274,31 @@ inline void placeProps(Level& level) {
     for (Vec3 at : {Vec3{22.9f, 0.0f, 8.6f}, Vec3{24.2f, 0.0f, 6.8f}}) {
         p.push_back({"rusted_wheel_rim_01", at, at.x, 1.0f, 6.0f, Surface::Metal});
     }
-    p.push_back({"covered_car", {-26.5f, 0.0f, 25.0f}, 0.35f, 1.0f, 0.0f, Surface::Metal});
+    // A fenced compound in the back corner, a covered car parked in it.
+    {
+        const char* panel = "modular_chainlink_fence#modular_chainlink_fence_double";
+        const char* post = "modular_chainlink_fence#modular_chainlink_fence_post";
+        for (int i = 0; i < 7; ++i) {
+            const float x = -31.0f + 2.0f * static_cast<float>(i);
+            p.push_back({panel, {x + 1.0f, 0.0f, 27.0f}, 0.0f, 1.0f, 0.0f, Surface::Metal});
+            p.push_back({post, {x, 0.0f, 27.0f}, 0.0f, 1.0f, 0.0f, Surface::Metal});
+        }
+        for (int i = 0; i < 4; ++i) {
+            const float z = 27.0f + 2.0f * static_cast<float>(i);
+            if (i != 1) {  // A gap to walk through.
+                p.push_back({panel, {-17.0f, 0.0f, z + 1.0f}, 1.5708f, 1.0f, 0.0f, Surface::Metal});
+            }
+            p.push_back({post, {-17.0f, 0.0f, z}, 0.0f, 1.0f, 0.0f, Surface::Metal});
+        }
+        p.push_back({post, {-17.0f, 0.0f, 35.0f}, 0.0f, 1.0f, 0.0f, Surface::Metal});
+    }
+    p.push_back({"covered_car", {-25.0f, 0.0f, 30.8f}, 1.45f, 1.0f, 0.0f, Surface::Metal});
+    // Fuel and stores by the generator and the hall door.
+    p.push_back({"metal_jerrycan_green", {6.9f, 0.0f, 21.2f}, 0.4f, 1.0f, 8.0f, Surface::Metal});
+    p.push_back({"plastic_jerrycan", {7.4f, 0.0f, 22.9f}, 2.2f, 1.0f, 3.0f, Surface::Wood});
+    for (Vec3 at : {Vec3{-5.8f, 0.0f, -18.9f}, Vec3{-5.2f, 0.0f, -19.2f}, Vec3{-5.5f, 0.41f, -19.0f}}) {
+        p.push_back({"industrial_pastic_container", at, at.x, 1.0f, 4.0f, Surface::Wood});
+    }
     for (Vec3 at : {Vec3{1.5f, 0.0f, 6.5f}, Vec3{-9.0f, 0.0f, 25.0f}, Vec3{14.0f, 0.0f, -9.5f}}) {
         p.push_back({"water_manhole_cover", at, at.x, 1.0f, 0.0f, Surface::Metal, false});
     }
@@ -362,6 +386,17 @@ inline Level buildLevel() {
     box(level, {-6.0f, 0.0f, -32.5f}, {6.0f, 1.05f, -31.9f}, Look::ConcreteWall);
     for (float x : {-8.0f, 8.0f}) crateStack(level, {x, 0.0f, -40.0f}, 3, 2);
     crateStack(level, {12.5f, 0.0f, -54.0f}, 4, 3);
+
+    // Caged lamps on the hall's columns, warm against the metal-halide white:
+    // pools of light on the steel at head height.
+    for (float z : {-30.0f, -44.0f, -58.0f}) {
+        for (float x : {-10.0f, 10.0f}) {
+            const float face = x < 0.0f ? 0.42f : -0.42f;  // On the column's side facing the middle.
+            level.placed.push_back({"industrial_caged_sconce#industrial_caged_sconce_a", {x + face, 2.6f, z}, 0.0f,
+                                    1.0f, 0.0f, Surface::Metal, false});
+            level.lamps.push_back({{x + face * 1.6f, 2.85f, z}, {1.0f, 0.68f, 0.38f}, 1.6f, 7.0f});
+        }
+    }
 
     // Hall lamps: three rows hung from the trusses, cold metal-halide white, each shade throwing a cone
     // onto the floor. Fifteen lights, more than a draw could carry before clustering.

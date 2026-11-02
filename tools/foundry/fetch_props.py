@@ -21,6 +21,8 @@ PROPS = [
     "korean_fire_extinguisher_01", "cardboard_box_01", "plastic_crate_03", "WetFloorSign_01",
     "security_light", "exterior_aircon_unit", "utility_box_01", "utility_box_02",
     "metal_trash_can", "rusted_wheel_rim_01", "water_manhole_cover", "covered_car", "security_camera_01",
+    "modular_chainlink_fence", "metal_jerrycan_green", "plastic_jerrycan", "industrial_caged_sconce",
+    "industrial_pastic_container",
 ]
 RESOLUTION = "1k"
 

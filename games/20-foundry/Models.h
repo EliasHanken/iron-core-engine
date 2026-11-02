@@ -48,11 +48,16 @@ public:
     ModelLibrary(iron::Renderer& renderer, std::string folder) : renderer_(renderer), folder_(std::move(folder)) {}
 
     // The model, loading it on first use. Null if it can't be read.
+    // `name` is a model's folder, or "folder#node" for one piece of a kit.
     const Model* get(const std::string& name, const iron::GltfStaticOptions& options = {}) {
         const auto found = models_.find(name);
         if (found != models_.end()) return found->second.get();
         auto& slot = models_[name];
-        const auto loaded = iron::loadGltfStaticModel(folder_ + name + "/" + name + ".gltf", options);
+        const std::size_t hash = name.find('#');
+        const std::string folder = name.substr(0, hash);
+        iron::GltfStaticOptions chosen = options;
+        if (hash != std::string::npos) chosen.onlyNodes.push_back(name.substr(hash + 1));
+        const auto loaded = iron::loadGltfStaticModel(folder_ + folder + "/" + folder + ".gltf", chosen);
         if (!loaded) {
             iron::Log::error("foundry: model '%s' didn't load", name.c_str());
             return nullptr;
