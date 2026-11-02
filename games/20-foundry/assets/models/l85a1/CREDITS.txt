@@ -1,0 +1,4 @@
+L85A1 from "Various Small Arms" by Tabasco
+Source: https://opengameart.org/node/3609
+License: CC0 (https://creativecommons.org/publicdomain/zero/1.0/), placed in the public domain by the author on 2023-12-15
+Exported for Foundry by tools/foundry/export_rifle.py: oriented, scaled, smoothed, PBR materials.

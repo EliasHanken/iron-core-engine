@@ -150,8 +150,10 @@ public:
     // Where the weapon sits in view space (x right, y up, z towards the eye), and
     // how it's tilted (pitch, yaw, roll), from all of the above.
     Vec3 viewOffset() const {
-        const Vec3 hip{0.19f, -0.19f, -0.50f};
-        const Vec3 aimed{0.0f, -0.073f, -0.34f};  // Sights on the line of sight.
+        // Where the bottom of the pistol grip sits. Aimed, the line through the rear
+        // aperture and the front post (0.25 m above the grip) passes through the eye.
+        const Vec3 hip{0.13f, -0.29f, -0.34f};
+        const Vec3 aimed{0.0f, -0.248f, -0.285f};
         const float a = smooth(aim_);
         Vec3 at{hip.x + (aimed.x - hip.x) * a, hip.y + (aimed.y - hip.y) * a, hip.z + (aimed.z - hip.z) * a};
         const float bob = bobAmount_ * (1.0f - 0.8f * a);
