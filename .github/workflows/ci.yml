@@ -42,7 +42,8 @@ jobs:
           lfs: false
 
       - name: Fetch test fixtures from LFS
-        run: git lfs pull --include="tests/assets/**"
+        # Exactly what the tests read; keep in step with them.
+        run: git lfs pull --include="tests/assets/**,assets/cc0/**,games/12-ui-arena/assets/fonts/**,games/17-iron-core/assets/fonts/**,games/19-kindle/assets/audio/**"
 
       - name: Set up Python
         uses: actions/setup-python@v5
