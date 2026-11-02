@@ -117,6 +117,10 @@ void Window::setCursorCaptured(bool captured) {
     }
     glfwSetInputMode(handle_, GLFW_CURSOR,
                      captured ? GLFW_CURSOR_DISABLED : GLFW_CURSOR_NORMAL);
+    // Mouse-look reads the mouse itself, not the pointer the OS accelerates.
+    if (glfwRawMouseMotionSupported()) {
+        glfwSetInputMode(handle_, GLFW_RAW_MOUSE_MOTION, captured ? GLFW_TRUE : GLFW_FALSE);
+    }
 }
 
 void Window::setFullscreen(bool fullscreen) {

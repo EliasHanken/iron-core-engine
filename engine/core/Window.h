@@ -25,7 +25,8 @@ public:
     void pollEvents();
     void swapBuffers();
 
-    // Captured = cursor hidden and locked to the window (for mouse-look).
+    // Captured = cursor hidden and locked to the window (for mouse-look), reading
+    // raw mouse motion where the platform has it.
     void setCursorCaptured(bool captured);
 
     // Borderless at the monitor's own resolution, or back to where the window was.
