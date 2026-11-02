@@ -467,6 +467,7 @@ int main(int argc, char** argv) {
 
     iron::Application::Config cfg;
     cfg.title  = "Kindle";
+    cfg.hidden = scripted;  // Captures render out of sight.
     cfg.width  = options.width;
     cfg.height = options.height;
     iron::Application app(cfg);

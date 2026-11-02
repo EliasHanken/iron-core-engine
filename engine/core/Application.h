@@ -21,6 +21,7 @@ public:
         int height = 540;
         std::string title = "Iron Core Engine";
         float fixedStep = 1.0f / 60.0f;
+        bool hidden = false;  // No window on screen: offline captures run without interrupting anyone.
     };
 
     explicit Application(const Config& config);

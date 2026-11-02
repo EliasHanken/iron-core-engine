@@ -306,6 +306,17 @@ void PhysicsWorld::setVelocity(BodyId b, Vec3 v) {
     if (!b.isValid()) return;
     impl_->system->GetBodyInterface().SetLinearVelocity(toJoltBodyId(b), toJ(v));
 }
+void PhysicsWorld::setSurface(BodyId b, float friction, float restitution) {
+    if (!b.isValid()) return;
+    JPH::BodyInterface& bi = impl_->system->GetBodyInterface();
+    bi.SetFriction(toJoltBodyId(b), friction);
+    bi.SetRestitution(toJoltBodyId(b), restitution);
+}
+void PhysicsWorld::setContinuous(BodyId b, bool on) {
+    if (!b.isValid()) return;
+    impl_->system->GetBodyInterface().SetMotionQuality(
+        toJoltBodyId(b), on ? JPH::EMotionQuality::LinearCast : JPH::EMotionQuality::Discrete);
+}
 Vec3 PhysicsWorld::velocityOf(BodyId b) const {
     if (!b.isValid()) return {};
     const JPH::Vec3 v = impl_->system->GetBodyInterface().GetLinearVelocity(toJoltBodyId(b));

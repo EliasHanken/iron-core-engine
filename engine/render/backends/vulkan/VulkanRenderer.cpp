@@ -733,6 +733,7 @@ void VulkanRenderer::beginFrame(Vec3 clearColor, const DirectionalLight& light,
     sceneDraws_.clear();
     pendingDecals_.clear();
     pendingFogVolumes_.clear();
+    pendingFogDisturbances_.clear();
     skinnedDraws_.clear();
     skinnedBoneMatricesStash_.clear();
     deferredSceneCompute_.clear();
@@ -1500,6 +1501,7 @@ void VulkanRenderer::endFrame() {
             VkFroxelFog::Frame fog;
             fog.fog = volumetricFog_;
             fog.volumes = pendingFogVolumes_;
+            fog.disturbances = pendingFogDisturbances_;
             fog.view = pendingView_;
             fog.projection = pendingUnjitteredProjection_;
             fog.previousViewProjection = previousViewProjection_;

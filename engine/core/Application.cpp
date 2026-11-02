@@ -6,7 +6,7 @@
 namespace iron {
 
 Application::Application(const Config& config)
-    : window_(config.width, config.height, config.title),
+    : window_(config.width, config.height, config.title, config.hidden),
       input_(window_.handle()),
       fixedStep_(static_cast<double>(config.fixedStep)) {}
 

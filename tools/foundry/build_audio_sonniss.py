@@ -69,7 +69,7 @@ ONE_SHOTS = [
     # Steel targets ringing.
     ("plate1", 1, [("Metal_Plate_Hit_02", 0.0, 2.5, 1.0)]),
     ("plate2", 1, [("metal_plate_medium", 0.0, 2.6, 1.0)]),
-    ("plate3", 1, [("Metal_Ringout_DPA4060", 0.0, 2.5, 1.0)]),
+    ("plate3", 1, [("Plate_Impact_Hard_02", 0.0, 0.76, 1.0)]),
 
     # Footsteps: dirt in the yard, concrete in the hall, steel on the catwalk.
     ("step-ground1", 1, [("FS Ground Civilian Walk N03", 0.0, 0.7, 1.0)]),
@@ -79,20 +79,32 @@ ONE_SHOTS = [
     ("step-metal1", 1, [("FS Metal Soldier Walk N01", 0.0, 0.7, 1.0)]),
     ("step-metal2", 1, [("FS Metal Soldier Walk N05", 0.0, 0.7, 1.0)]),
 
-    # The building settling.
-    ("creak1", 1, [("Metal_Creak_13", 0.0, 5.4, 1.0)]),
-    ("creak2", 1, [("submarine deformation", 0.0, 8.0, 1.0)]),
-    ("creak3", 1, [("heavy sheet metal low groan", 0.0, 7.7, 1.0)]),
+    # A grenade: the crack and blast of a large charge, with a mine's longer rolling
+    # body under it from after its warning beep; then what it throws about landing.
+    ("blast", 2, [("explosion_large_07", 0.0, 2.6, 1.0),
+                  ("beep-mine-explosion-002", 0.52, 5.4, 0.55)]),
+    ("debris", 2, [("Debris,Stones,Soil", 0.05, 1.0, 1.0),
+                   ("Pile of Scrap Metal", 0.45, 1.8, 0.7)]),
+    ("bounce", 1, [("Rock Hit and Bounce Dirt_RBDII 06", 0.0, 0.5, 1.0, 4)]),
+
+    # The works, now and then somewhere in the hall: a steam blast, a power hammer,
+    # a compressor cycling.
+    ("works1", 1, [("Steam Blast,Tube or Pipe,Distant", 0.0, 4.0, 1.0)]),
+    ("works2", 1, [("Power hammer,Drops,Impacts", 2.0, 6.0, 1.0)]),
+    ("works3", 1, [("Air Compressor_Stress Adjustment", 0.0, 6.0, 1.0)]),
 ]
 
 # Loops: name, channels, target level, crossfade, then layers.
 BEDS = [
+    # A cold winter morning at a working steelworks: wind through the yard, crows,
+    # cranes loading at the docks beyond; inside, the line running and the air
+    # handling; at the furnace, hot gas venting.
     ("bed-yard", 2, -24.0, 3.0, [("Wind,Ext,Alley,Urban,Howl", 4.0, 58.0, 1.0),
-                                 ("Kamchatka, Distant Cargo Port", 20.0, 58.0, 0.55),
-                                 ("Amb,Industry,Ext,Factory,Churn", 10.0, 58.0, 0.35)]),
-    ("bed-hall", 2, -26.0, 3.0, [("Hvac,Ventilation,Exhaust,Industrial", 4.0, 42.0, 0.7),
-                                 ("Amb,Industry,Industrial drone,Metal,Clinking", 1.0, 42.0, 1.0)]),
-    ("furnace", 1, -20.0, 2.0, [("Firedrone 3", 0.6, 10.2, 1.0)]),
+                                 ("Cranes, Chains, Loading, Iron", 20.0, 58.0, 0.5),
+                                 ("WINTER Forest morning crow calls", 2.0, 58.0, 0.45)]),
+    ("bed-hall", 2, -26.0, 3.0, [("Factory drone,Conveyor belt,Clack", 30.0, 42.0, 1.0),
+                                 ("Hvac,Ventilation,Exhaust,Industrial", 4.0, 42.0, 0.5)]),
+    ("furnace", 1, -20.0, 2.0, [("Steam release hot with medium pressure", 1.0, 18.0, 1.0)]),
 ]
 
 # Low and high cuts, from Ashe's method: each sound keeps only the band it's for.
@@ -105,7 +117,8 @@ BANDS = {
     "step-ground1": (60, 12000), "step-ground2": (60, 12000),
     "step-concrete1": (60, 12000), "step-concrete2": (60, 12000),
     "step-metal1": (80, 14000), "step-metal2": (80, 14000),
-    "creak1": (50, 9000), "creak2": (50, 9000), "creak3": (50, 9000),
+    "blast": (25, 14000), "debris": (80, 14000), "bounce": (250, 14000),
+    "works1": (60, 12000), "works2": (40, 10000), "works3": (50, 12000),
     "bed-yard": (30, 11000), "bed-hall": (25, 9000), "furnace": (35, 10000),
 }
 DEFAULT_BAND = (40, 16000)

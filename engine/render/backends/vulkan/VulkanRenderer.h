@@ -142,6 +142,9 @@ public:
     void submitFogVolume(const FogVolume& volume) override {
         if (!skipFrame_) pendingFogVolumes_.push_back(volume);
     }
+    void submitFogDisturbance(const FogDisturbance& disturbance) override {
+        if (!skipFrame_) pendingFogDisturbances_.push_back(disturbance);
+    }
     void submitDecal(const Decal& decal) override {
         if (!skipFrame_) pendingDecals_.push_back(decal);
     }
@@ -353,6 +356,7 @@ private:
     std::vector<Decal>      pendingDecals_;
     VolumetricFog           volumetricFog_;
     std::vector<FogVolume>  pendingFogVolumes_;
+    std::vector<FogDisturbance> pendingFogDisturbances_;
     float                   fogClock_ = 0.0f;
     RenderDebugView    debugView_ = RenderDebugView::None;
     MotionHistory      motionHistory_;
