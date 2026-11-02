@@ -194,7 +194,7 @@ void main() {
     vec3 sunLight = p.sunColor.rgb * sunShadow(w, dist);
     float sunCos = dot(p.sun.xyz, toEye);
     vec3 radiance = sunLight * phase(sunCos, smokeG);
-    vec3 smokeLight = sunLight * phase(sunCos, kSmokeG);
+    vec3 smokeLight = vec3(0.0);  // The sun on smoke is the march's own: per pixel, with its shadows.
     // Lights through the clusters: this cell's tile and slice in their grid.
     vec2 tile = (vec2(id.xy) + 0.5) / p.grid.xy * cl.grid.xy;
     float d = sliceDepth(float(id.z) + 0.5);
@@ -270,6 +270,28 @@ layout(binding = 4) uniform sampler3D uFluid0;
 layout(binding = 5) uniform sampler3D uFluid1;
 layout(binding = 6) uniform sampler3D uFluid2;
 layout(binding = 9) uniform sampler3D uFluid3;
+layout(binding = 10) uniform sampler2D uShadow;
+const float PI = 3.14159265;
+float sunShadow(vec3 w, float dist) {
+    if (p.cascadeInfo.x < 0.5) return 1.0;
+    int c = 0;
+    for (; c < 4; ++c) {
+        if (dist < p.cascadeEnds[c]) break;
+    }
+    if (c >= 4) return 1.0;
+    vec4 lp = p.cascade[c] * vec4(w, 1.0);
+    vec3 pr = lp.xyz / lp.w;
+    if (abs(pr.x) > 1.0 || abs(pr.y) > 1.0 || pr.z > 1.0) return 1.0;
+    vec2 uv = (pr.xy * 0.5 + 0.5) * 0.5 + vec2(float(c % 2), float(c / 2)) * 0.5;
+    return pr.z - 0.002 > textureLod(uShadow, uv, 0.0).r ? 0.0 : 1.0;
+}
+
+// Henyey-Greenstein: how much light turning by this angle scatters towards the eye.
+float phase(float cosTheta, float g) {
+    float g2 = g * g;
+    return (1.0 - g2) / (4.0 * PI * pow(max(1.0 + g2 - 2.0 * g * cosTheta, 1e-4), 1.5));
+}
+
 layout(rgba16f, binding = 7) writeonly uniform image2D uOut;
 layout(r16f, binding = 8) writeonly uniform image2D uShimmer;
 layout(push_constant) uniform Push { vec4 a; vec4 b; } pc;  // a: depthA, depthB, width, height; b: frame
@@ -436,14 +458,22 @@ void main() {
             }
             float sunThrough = exp(-depth * 0.8);
             float skyThrough = exp(-smokeAt(w + vec3(0.0, 0.9, 0.0)) * 0.6);
-            light *= mix(0.22, 1.0, sunThrough) * mix(0.6, 1.0, skyThrough);
+            // The sun, sampled here through the cascades (crisp shadows of the
+            // crane and the walls across the cloud), through the smoke towards it.
+            vec3 sunLight = p.sunColor.rgb * sunShadow(w, t) * phase(dot(p.sun.xyz, -dir), 0.15);
+            light = light * mix(0.6, 1.0, skyThrough) + sunLight * sunThrough;
         }
         float airThrough = textureLod(uAir, g, 0.0).a;   // Fog between the eye and here.
         vec3 s = scatter * p.albedo.rgb * light * airThrough;
         float stepThrough = exp(-sigma * dt);
         gathered += through * (s - s * stepThrough) / sigma;
         through *= stepThrough;
-        if (through < 0.01) break;
+        // Past this the rest of the ray is as good as opaque: call it so. Kept at 1%,
+        // something as bright as a furnace's door would still show through.
+        if (through < 0.01) {
+            through = 0.0;
+            break;
+        }
     }
     imageStore(uOut, px, vec4(gathered, through));
     imageStore(uShimmer, px, vec4(shimmer, 0.0, 0.0, 0.0));
@@ -514,7 +544,8 @@ bool VkFroxelFog::init(VkContext& ctx, VkFormat sceneFormat) {
                            T::VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, T::VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
                            T::VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, T::VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
                            T::VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, T::VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
-                           T::VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, T::VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER},
+                           T::VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, T::VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+                           T::VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER},
                           sizeof(float) * 8) ||
         !integrateStage_.init(ctx, kIntegrate,
                               {T::VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, T::VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
@@ -929,7 +960,8 @@ void VkFroxelFog::marchSmoke(VulkanRenderer& renderer, VkCommandBuffer cb, const
                           VkComputeResource::sampled(fluidAt(1), linear_, VK_IMAGE_LAYOUT_GENERAL),
                           VkComputeResource::sampled(fluidAt(2), linear_, VK_IMAGE_LAYOUT_GENERAL),
                           VkComputeResource::image(smoke_.view()), VkComputeResource::image(shimmer_.view()),
-                          VkComputeResource::sampled(fluidAt(3), linear_, VK_IMAGE_LAYOUT_GENERAL)},
+                          VkComputeResource::sampled(fluidAt(3), linear_, VK_IMAGE_LAYOUT_GENERAL),
+                          VkComputeResource::sampled(f.shadowAtlas, f.shadowSampler)},
                          push, (extent_.width + 7) / 8, (extent_.height + 7) / 8, 1);
     smoke_.transition(cb, VK_IMAGE_LAYOUT_GENERAL, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, VK_ACCESS_SHADER_READ_BIT);
     shimmer_.transition(cb, VK_IMAGE_LAYOUT_GENERAL, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, VK_ACCESS_SHADER_READ_BIT);
