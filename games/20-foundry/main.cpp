@@ -17,6 +17,7 @@
 //   reload   fire a burst, then reload (stays put)
 //   inspect  turn the rifle over to look at it
 //   decals   fire a burst into the floor ahead, to see the holes
+//   nofog    no volumetric fog
 //   overview look down on the stockyard from above, to see culling at work
 //   lod      tint instance groups by level of detail
 //   freeze   freeze culling at the start
@@ -764,6 +765,20 @@ int main(int argc, char** argv) {
         return 1;
     }
     float sprintBlend = 0.0f;
+    // Dusk haze over the yard, drifting in wisps, with the hall full of smoke; lit by
+    // the low sun through the shadows and by every lamp (--scene nofog for none).
+    iron::VolumetricFog volumetric;
+    volumetric.enabled = !sceneHas("nofog");
+    volumetric.density = 0.009f;
+    volumetric.heightFalloff = 0.07f;
+    volumetric.albedo = {0.95f, 0.88f, 0.8f};
+    volumetric.anisotropy = 0.65f;
+    volumetric.ambient = {0.035f, 0.024f, 0.02f};
+    volumetric.distance = 90.0f;
+    volumetric.noise = 0.6f;
+    volumetric.noiseScale = 0.14f;
+    volumetric.wind = {0.6f, 0.05f, 0.25f};
+    renderer.setVolumetricFog(volumetric);
     Holes holes;
     {
         const std::string dir = iron::executableDir() + "/assets/decals/";
@@ -1193,7 +1208,7 @@ int main(int argc, char** argv) {
         sun.ambient = 0.0f;
         iron::Fog fog;
         fog.color = {0.42f, 0.27f, 0.2f};
-        fog.density = 0.0022f;
+        fog.density = volumetric.enabled ? 0.0f : 0.0022f;  // The volumetric fog replaces it.
 
         vulkan->setDebugView(showMotion ? iron::RenderDebugView::MotionVectors
                              : showLods ? iron::RenderDebugView::LevelsOfDetail
@@ -1216,6 +1231,15 @@ int main(int argc, char** argv) {
             renderView = iron::lookAt(from, {0.0f, 0.0f, 20.0f}, {0.0f, 1.0f, 0.0f});
         }
         renderer.beginFrame({0.05f, 0.04f, 0.04f}, sun, lights, fog, renderView, projection);
+        if (volumetric.enabled) {
+            // The hall: thick, still air from the furnace, thinning towards the doors.
+            iron::FogVolume hall;
+            hall.min = {-foundry::layout::kHallHalfWidth, 0.0f, foundry::layout::kHallBack};
+            hall.max = {foundry::layout::kHallHalfWidth, foundry::layout::kHallHeight, foundry::layout::kHallFront};
+            hall.density = 0.045f;
+            hall.edge = 6.0f;
+            renderer.submitFogVolume(hall);
+        }
 
         int draws = 0;
         for (const StaticMesh& s : statics) {

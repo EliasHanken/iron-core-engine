@@ -657,6 +657,7 @@ bool VkPostProcess::init(VkContext& ctx, VkFormat colorFormat, VkFormat depthFor
 
     if (!velocity_.init(ctx, depthFormat))         { destroy(ctx); return false; }
     if (!taa_.init(ctx, hdrFormat_))               { destroy(ctx); return false; }
+    if (!fog_.init(ctx, hdrFormat_))               { destroy(ctx); return false; }
     if (!createTargets(ctx))                       { destroy(ctx); return false; }
     if (!createViewportTarget(ctx))                { destroy(ctx); return false; }
     if (!createCopyPipeline(ctx))                  { destroy(ctx); return false; }
@@ -774,6 +775,7 @@ void VkPostProcess::destroy(VkContext& ctx) {
     destroyTargets(ctx);
     velocity_.destroy(ctx);
     taa_.destroy(ctx);
+    fog_.destroy(ctx);
     if (viewportPass_) { vkDestroyRenderPass(ctx.device(), viewportPass_, nullptr); viewportPass_ = VK_NULL_HANDLE; }
     if (bloomPass_)    { vkDestroyRenderPass(ctx.device(), bloomPass_, nullptr);    bloomPass_ = VK_NULL_HANDLE; }
     if (ssaoPass_)     { vkDestroyRenderPass(ctx.device(), ssaoPass_, nullptr);     ssaoPass_ = VK_NULL_HANDLE; }
@@ -1621,11 +1623,13 @@ bool VkPostProcess::createTargets(VkContext& ctx) {
     if (!taa_.createTargets(ctx, extent_, sceneColor_, sceneColorView_, sceneDepthView_, velocity_.view())) {
         return false;
     }
+    if (!fog_.createTargets(ctx, extent_, sceneColorView_, sceneDepthView_)) return false;
 
     return true;
 }
 
 void VkPostProcess::destroyTargets(VkContext& ctx) {
+    fog_.destroyTargets(ctx);
     taa_.destroyTargets(ctx);
     velocity_.destroyTargets(ctx);
 
