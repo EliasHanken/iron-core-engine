@@ -557,13 +557,33 @@ bool VulkanRenderer::recreateImageSemaphores() {
     return true;
 }
 
+void VulkanRenderer::setAntiAliasing(AntiAliasing mode) {
+    if (mode == antiAliasing_) return;
+    antiAliasing_ = mode;
+    postProcess_.resetTaa();
+}
+
+void VulkanRenderer::resetTemporalHistory() {
+    postProcess_.resetTaa();
+    hasPreviousViewProjection_ = false;
+}
+
 void VulkanRenderer::beginFrame(Vec3 clearColor, const DirectionalLight& light,
                                  std::span<const PointLight> pointLights,
                                  const Fog& fog, const Mat4& view,
                                  const Mat4& projection) {
     pendingClear_      = clearColor;
     pendingView_       = view;
-    pendingProjection_ = projection;
+    // Temporal anti-aliasing moves the image a fraction of a pixel each frame. Every
+    // draw sees the moved projection; motion vectors take it back out (see below).
+    pendingUnjitteredProjection_ = projection;
+    pendingJitter_ = Mat4::identity();
+    if (antiAliasing_ == AntiAliasing::Temporal) {
+        const VkExtent2D e = postProcess_.extent();
+        pendingJitter_ = jitterMatrix(temporalJitter(jitterFrame_++), static_cast<float>(e.width),
+                                      static_cast<float>(e.height));
+    }
+    pendingProjection_ = pendingJitter_ * projection;
     pendingSunDir_     = light.direction;
     pendingSunColor_   = light.color;
     pendingAmbient_    = Vec3{light.ambient * light.color.x,
@@ -1369,13 +1389,17 @@ void VulkanRenderer::endFrame() {
 
         postProcess_.endScenePass(cb);
         profiler_.end(cb);
+        if (antiAliasing_ == AntiAliasing::Temporal) postProcess_.captureOpaqueForTaa(cb);
 
         // Motion vectors: the camera's for every pixel, then each moving object's.
+        // Both ends of each vector carry this frame's jitter, so it cancels and the
+        // vectors are the true motion.
         profiler_.begin(cb, "Motion vectors");
         {
             const Mat4 viewProjection = pendingProjection_ * pendingView_;
-            const Mat4 lastViewProjection = hasPreviousViewProjection_ ? previousViewProjection_
-                                                                       : viewProjection;
+            const Mat4 lastViewProjection = hasPreviousViewProjection_
+                ? pendingJitter_ * previousViewProjection_
+                : viewProjection;
             velocityObjects_.clear();
             for (const DrawCall& call : sceneDraws_) {
                 if (call.motionId == 0 || !meshes_.has(call.mesh)) continue;
@@ -1417,6 +1441,12 @@ void VulkanRenderer::endFrame() {
         deferredScenePass_.clear();
         postProcess_.endTransparentPass(cb);
         profiler_.end(cb);
+
+        if (antiAliasing_ == AntiAliasing::Temporal) {
+            profiler_.begin(cb, "Temporal AA");
+            postProcess_.resolveTaa(cb);
+            profiler_.end(cb);
+        }
     }
 
     // --- M36: derive per-frame active effects from actually-tagged draws ---
@@ -1493,11 +1523,11 @@ void VulkanRenderer::endFrame() {
             // space to last frame's.
             const Mat4 viewProjection = pendingProjection_ * pendingView_;
             const Mat4 reprojection = hasPreviousViewProjection_
-                ? previousViewProjection_ * iron::inverse(viewProjection)
+                ? pendingJitter_ * previousViewProjection_ * iron::inverse(viewProjection)
                 : Mat4::identity();
             postProcess_.setCinematic(cinematic_, reprojection, cinematicFrame_++,
                                       pendingProjection_.at(2, 2), pendingProjection_.at(2, 3));
-            previousViewProjection_ = viewProjection;
+            previousViewProjection_ = pendingUnjitteredProjection_ * pendingView_;
             hasPreviousViewProjection_ = true;
 
             const std::vector<PostPass> passes = planPostChain(activeKindsThisFrame);

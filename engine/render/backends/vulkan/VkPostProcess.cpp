@@ -656,6 +656,7 @@ bool VkPostProcess::init(VkContext& ctx, VkFormat colorFormat, VkFormat depthFor
     }
 
     if (!velocity_.init(ctx, depthFormat))         { destroy(ctx); return false; }
+    if (!taa_.init(ctx, hdrFormat_))               { destroy(ctx); return false; }
     if (!createTargets(ctx))                       { destroy(ctx); return false; }
     if (!createViewportTarget(ctx))                { destroy(ctx); return false; }
     if (!createCopyPipeline(ctx))                  { destroy(ctx); return false; }
@@ -772,6 +773,7 @@ void VkPostProcess::destroy(VkContext& ctx) {
     destroyViewportTarget(ctx);
     destroyTargets(ctx);
     velocity_.destroy(ctx);
+    taa_.destroy(ctx);
     if (viewportPass_) { vkDestroyRenderPass(ctx.device(), viewportPass_, nullptr); viewportPass_ = VK_NULL_HANDLE; }
     if (bloomPass_)    { vkDestroyRenderPass(ctx.device(), bloomPass_, nullptr);    bloomPass_ = VK_NULL_HANDLE; }
     if (ssaoPass_)     { vkDestroyRenderPass(ctx.device(), ssaoPass_, nullptr);     ssaoPass_ = VK_NULL_HANDLE; }
@@ -1154,8 +1156,11 @@ bool VkPostProcess::createTargets(VkContext& ctx) {
         iInfo.arrayLayers   = 1;
         iInfo.samples       = VK_SAMPLE_COUNT_1_BIT;
         iInfo.tiling        = VK_IMAGE_TILING_OPTIMAL;
+        // Transfers: temporal anti-aliasing copies the frame out and its result back.
         iInfo.usage         = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT |
-                              VK_IMAGE_USAGE_SAMPLED_BIT;
+                              VK_IMAGE_USAGE_SAMPLED_BIT |
+                              VK_IMAGE_USAGE_TRANSFER_SRC_BIT |
+                              VK_IMAGE_USAGE_TRANSFER_DST_BIT;
         iInfo.sharingMode   = VK_SHARING_MODE_EXCLUSIVE;
         iInfo.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
 
@@ -1613,11 +1618,15 @@ bool VkPostProcess::createTargets(VkContext& ctx) {
 
     // Motion vectors share the scene's size and depth.
     if (!velocity_.createTargets(ctx, extent_, sceneDepthView_)) return false;
+    if (!taa_.createTargets(ctx, extent_, sceneColor_, sceneColorView_, sceneDepthView_, velocity_.view())) {
+        return false;
+    }
 
     return true;
 }
 
 void VkPostProcess::destroyTargets(VkContext& ctx) {
+    taa_.destroyTargets(ctx);
     velocity_.destroyTargets(ctx);
 
     // M48 SSAO/blur image/views/fbs + per-resize sets (pass persists; freed in destroy()).

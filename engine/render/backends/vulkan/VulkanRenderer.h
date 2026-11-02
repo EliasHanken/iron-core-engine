@@ -133,6 +133,8 @@ public:
     void setInstances(InstanceGroupHandle group, std::span<const Mat4> transforms) override;
     CullStats cullStats() const override { return instanceGroups_.stats(); }
     void setCullingFrozen(bool frozen) override { instanceGroups_.setFrozen(frozen); }
+    void setAntiAliasing(AntiAliasing mode) override;
+    void resetTemporalHistory() override;
 
     // M36 — stores an effect style; looked up each frame via runChain.
     void setEffectStyle(uint8_t effectId, const EffectStyle& style) override;
@@ -334,8 +336,13 @@ private:
     RenderDebugView    debugView_ = RenderDebugView::None;
     MotionHistory      motionHistory_;
     std::vector<VelocityObject> velocityObjects_;
+    // Last frame's view-projection, without its jitter.
     Mat4               previousViewProjection_ = Mat4::identity();
     bool               hasPreviousViewProjection_ = false;
+    AntiAliasing       antiAliasing_ = AntiAliasing::Off;
+    std::uint32_t      jitterFrame_ = 0;
+    Mat4               pendingJitter_ = Mat4::identity();          // This frame's, or identity.
+    Mat4               pendingUnjitteredProjection_ = Mat4::identity();
     std::uint32_t      cinematicFrame_ = 0;
 
     FrameCaptureFn pendingCapture_;

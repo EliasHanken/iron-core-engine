@@ -145,6 +145,7 @@ if (IRON_RENDER_BACKEND STREQUAL "vulkan")
       render/backends/vulkan/VkSceneCapture.cpp
       render/backends/vulkan/VkPostProcess.cpp
       render/backends/vulkan/VkVelocityPass.cpp
+      render/backends/vulkan/VkTemporalAA.cpp
       render/backends/vulkan/VkGpuProfiler.cpp
       render/backends/vulkan/VkInstanceGroups.cpp
     )
