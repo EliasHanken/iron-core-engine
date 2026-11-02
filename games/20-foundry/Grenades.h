@@ -24,7 +24,10 @@ using iron::Vec3;
 
 class Grenades {
 public:
+    enum class Kind : std::uint8_t { Frag, Smoke };
     static constexpr float kFuse = 2.4f;     // Seconds from the throw.
+    static constexpr float kSmokeFuse = 1.6f;
+    static constexpr float kSpentFor = 25.0f; // How long a spent smoke canister lies there.
     static constexpr float kRadius = 0.035f;
     static constexpr float kHalfHeight = 0.012f;  // Of the capsule's straight part: an egg, more or less.
     static constexpr std::size_t kMaxLive = 6;
@@ -36,11 +39,15 @@ public:
         };
         std::vector<Bounce> bounces;
         std::vector<Vec3> blasts;
+        std::vector<Vec3> smokes;  // Canisters that started pouring.
     };
 
-    void throwFrom(iron::PhysicsWorld& world, Vec3 from, Vec3 velocity, std::uint32_t motionId) {
+    void throwFrom(iron::PhysicsWorld& world, Vec3 from, Vec3 velocity, std::uint32_t motionId,
+                   Kind kind = Kind::Frag) {
         if (live_.size() >= kMaxLive) return;
         Live g;
+        g.kind = kind;
+        g.fuse = kind == Kind::Smoke ? kSmokeFuse : kFuse;
         g.body = world.createDynamicCapsule(from, kHalfHeight, kRadius, 0.4f);
         world.setSurface(g.body, 0.7f, 0.35f);
         world.setContinuous(g.body, true);
@@ -72,28 +79,41 @@ public:
                 world.setVelocity(g.body, {v.x * keep, v.y, v.z * keep});
             }
             g.lastVelocity = v;
-            if (g.fuse <= 0.0f) {
-                events.blasts.push_back(world.bodyPosition(g.body));
+            if (g.fuse <= 0.0f && !g.spent) {
+                if (g.kind == Kind::Frag) {
+                    events.blasts.push_back(world.bodyPosition(g.body));
+                } else {
+                    events.smokes.push_back(world.bodyPosition(g.body));
+                }
+                g.spent = true;
+            }
+            // A frag is gone with its blast; a smoke canister lies there a while.
+            if (g.spent && (g.kind == Kind::Frag || g.fuse < -kSpentFor)) {
                 world.destroyBody(g.body);
+                g.gone = true;
             }
         }
-        std::erase_if(live_, [](const Live& g) { return g.fuse <= 0.0f; });
+        std::erase_if(live_, [](const Live& g) { return g.gone; });
         return events;
     }
 
     struct Drawn {
         Mat4 transform;
         std::uint32_t motionId;
+        Kind kind;
     };
     std::vector<Drawn> drawn(const iron::PhysicsWorld& world) const {
         std::vector<Drawn> out;
-        for (const Live& g : live_) out.push_back({world.bodyTransform(g.body), g.motionId});
+        for (const Live& g : live_) out.push_back({world.bodyTransform(g.body), g.motionId, g.kind});
         return out;
     }
 
 private:
     struct Live {
         iron::BodyId body;
+        Kind kind = Kind::Frag;
+        bool spent = false;
+        bool gone = false;
         float fuse = kFuse;
         float sinceBounce = 1.0f;
         Vec3 lastVelocity{};

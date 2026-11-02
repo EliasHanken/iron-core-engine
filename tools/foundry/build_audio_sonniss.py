@@ -103,6 +103,12 @@ ONE_SHOTS = [
     ("debris", 2, [("Debris,Stones,Soil", 0.05, 1.0, 1.0),
                    ("Pile of Scrap Metal", 0.45, 1.8, 0.7)]),
     ("bounce", 1, [("Rock Hit and Bounce Dirt_RBDII 06", 0.0, 0.5, 1.0, 4)]),
+    # A smoke canister igniting, layered: the spoon's click on top, a burst of gas,
+    # the hiss of it pouring, hot steam underneath for weight.
+    ("smoke", 1, [("Metal,Hits,Pipe,Mixed", 0.0, 0.15, 0.5, 5),
+                  ("Steam Blast,Tube or Pipe,Distant", 0.0, 1.6, 1.0),
+                  ("Vent Rattle,Pipe Hiss", 5.0, 8.0, 0.8),
+                  ("Steam release hot with medium pressure", 8.0, 8.0, 0.55)]),
 
     # The works, now and then somewhere in the hall: a steam blast, a power hammer,
     # a compressor cycling.
@@ -134,7 +140,7 @@ BANDS = {
     "step-ground1": (60, 12000), "step-ground2": (60, 12000),
     "step-concrete1": (60, 12000), "step-concrete2": (60, 12000),
     "step-metal1": (80, 14000), "step-metal2": (80, 14000),
-    "blast": (25, 14000), "debris": (80, 14000), "bounce": (250, 14000),
+    "blast": (25, 14000), "debris": (80, 14000), "bounce": (250, 14000), "smoke": (60, 12000),
     "works1": (60, 12000), "works2": (40, 10000), "works3": (50, 12000),
     "bed-yard": (30, 11000), "bed-hall": (25, 9000), "furnace": (35, 10000),
 }

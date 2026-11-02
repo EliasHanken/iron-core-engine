@@ -2,6 +2,7 @@
 
 #include "math/Mat4.h"
 #include "render/ShadowCascades.h"
+#include "render/VolumeBounds.h"
 #include "render/VolumetricFog.h"
 #include "render/backends/vulkan/VkComputeStage.h"
 #include "render/backends/vulkan/VkVolumeImage.h"
@@ -20,8 +21,8 @@ class VulkanRenderer;
 
 // Froxel volumetric fog, as Frostbite and Unreal do it. A grid of cells fitted to
 // the view (160 x 90 tiles by 64 slices spaced logarithmically in depth) is:
-//   1. filled and lit: density from height fog, drifting noise, fog boxes and
-//      disturbances (wakes and blasts pushing it aside, smoke);
+//   1. filled and lit: density from height fog, drifting noise, fog boxes,
+//      fluids' smoke and disturbances (wakes and blasts pushing it aside, smoke);
 //      light from the sun through the cascaded shadows, the clustered point and
 //      spot lights, and ambient; then blended with last frame's grid, reprojected,
 //      over a jittered sample point, so it's smooth without many samples;
@@ -29,6 +30,9 @@ class VulkanRenderer;
 //      light still gets through;
 //   3. applied over the opaque scene by a blend pass: colour * transmittance +
 //      in-scattered light.
+// Fluids' smoke is too fine for the grid: a pass marches it per pixel through
+// the fluids' own density, lit from a second grid the light pass fills (the
+// light there, as smoke scatters it), and the apply pass lays it over the fog.
 class VkFroxelFog {
 public:
     static constexpr std::uint32_t kX = 160;
@@ -48,6 +52,15 @@ public:
         VolumetricFog fog;
         std::span<const FogVolume> volumes;
         std::span<const FogDisturbance> disturbances;
+        // Fluids' smoke: each one's density field (R) in VK_IMAGE_LAYOUT_GENERAL.
+        struct Fluid {
+            VkImageView  density = VK_NULL_HANDLE;
+            VolumeBounds bounds{};
+            float        scale = 1.0f;
+            float        albedo = 0.6f;
+        };
+        std::array<Fluid, 3> fluids{};
+        std::size_t fluidCount = 0;
         Mat4 view;
         Mat4 projection;          // Unjittered.
         Mat4 previousViewProjection;  // Unjittered, for reprojecting last frame's grid.
@@ -74,6 +87,10 @@ public:
     void apply(VkCommandBuffer cb, const Frame& frame);
 
 private:
+    // Marches fluids' smoke per pixel into smoke_, after the grid is integrated.
+    void marchSmoke(VulkanRenderer& renderer, VkCommandBuffer cb, const Frame& f, std::size_t slot, VkImageView spare);
+    bool smokeThisFrame_ = false;
+
     struct Buffer {
         VkBuffer      buffer = VK_NULL_HANDLE;
         VmaAllocation alloc = VK_NULL_HANDLE;
@@ -84,6 +101,10 @@ private:
     VkComputeStage integrateStage_;
     std::array<VkVolumeImage, 2> scattering_;  // Ping-pong: this frame's, and last frame's to reproject.
     VkVolumeImage integrated_;
+    VkVolumeImage smokeLight_;   // The light at each cell, as smoke scatters it.
+    VkComputeStage smokeStage_;
+    VkVolumeImage smoke_;        // Per pixel: smoke's light (rgb) and what it lets through (a).
+    bool smokeReady_ = false;    // In VK_IMAGE_LAYOUT_GENERAL, so the apply set can always read it.
     int current_ = 0;
     bool historyValid_ = false;
     std::array<Buffer, 2> params_;   // Per frame in flight: the uniform block.

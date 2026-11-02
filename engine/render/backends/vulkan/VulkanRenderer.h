@@ -148,6 +148,9 @@ public:
     void submitFogDisturbance(const FogDisturbance& disturbance) override {
         if (!skipFrame_) pendingFogDisturbances_.push_back(disturbance);
     }
+    void submitFogFluid(const FogFluid& fluid) override {
+        if (!skipFrame_ && fluid.fluid) pendingFogFluids_.push_back(fluid);
+    }
     void submitDecal(const Decal& decal) override {
         if (!skipFrame_) pendingDecals_.push_back(decal);
     }
@@ -360,6 +363,7 @@ private:
     VolumetricFog           volumetricFog_;
     std::vector<FogVolume>  pendingFogVolumes_;
     std::vector<FogDisturbance> pendingFogDisturbances_;
+    std::vector<FogFluid> pendingFogFluids_;
     std::optional<CullingCamera> cullingCamera_;  // Culls instead of the drawing camera, when set.
     float                   fogClock_ = 0.0f;
     RenderDebugView    debugView_ = RenderDebugView::None;

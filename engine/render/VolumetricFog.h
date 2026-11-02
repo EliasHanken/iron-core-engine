@@ -4,6 +4,8 @@
 
 namespace iron {
 
+class FluidVolume;
+
 // Volumetric fog that light passes through: the sun's shafts with their shadows,
 // cones under lamps, glows around flashes. The renderer fills a grid of cells
 // fitted to the camera's view (froxels) with fog, lights each cell, and blends
@@ -42,6 +44,18 @@ struct FogDisturbance {
     float clear = 1.0f;     // 0..1: how much of the fog that was there is pushed out.
     float add = 0.0f;       // Density added (smoke), like FogVolume::density.
     float albedo = 1.0f;    // How much light that smoke scatters, against the fog's own (soot: low).
+};
+
+// A fluid's smoke, carried into the volumetric fog: its density field, lit by
+// the sun through the shadows and by every lamp, like the fog around it, and
+// cut by disturbances like the rest. Submitted every frame it should show.
+struct FogFluid {
+    const FluidVolume* fluid = nullptr;
+    float density = 1.0f;  // Extinction per metre for each unit of the fluid's density.
+    float albedo = 0.6f;   // How much light it scatters, against the fog's own.
+    // Where the fluid's own space sits in the world: a fluid built once can be
+    // laid down anywhere (its GLSL works in its own space, given the same offset).
+    Vec3  offset{0.0f, 0.0f, 0.0f};
 };
 
 }  // namespace iron

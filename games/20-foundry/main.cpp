@@ -5,6 +5,7 @@
 //   Shift   run             Space         jump
 //   Click   fire            Right click   aim
 //   R       reload          G             throw a grenade
+//   F       throw a smoke grenade
 //   F1      GPU frame breakdown
 //   F2      motion vectors  Esc           pause (Q then quits)
 //   Tab     engine view: watch from outside what the player's camera draws
@@ -20,6 +21,8 @@
 //   inspect  turn the rifle over to look at it
 //   decals   fire a burst into the floor ahead, to see the holes
 //   grenade  throw a grenade ahead, then fire through its smoke
+//   smoke    throw a smoke grenade, fire through it, then blow it apart with a grenade
+//   steam    watch the hall's steam pipes, then the furnace's heat (with hall)
 //   nofog    no volumetric fog
 //   overview look down on the stockyard from above, to see culling at work
 //   lod      tint instance groups by level of detail
@@ -30,6 +33,7 @@
 #include "common/CaptureLoop.h"
 #include "common/TrackedText.h"
 #include "Grenades.h"
+#include "Smoke.h"
 #include "Gun.h"
 #include "Level.h"
 #include "Stockyard.h"
@@ -681,6 +685,7 @@ int main(int argc, char** argv) {
     iron::PhysicsWorld world;
     if (!world.init()) return 1;
     std::unordered_map<std::uint32_t, Surface> surfaces;
+    std::vector<foundry::SmokeCollider> colliders;  // What smoke flows round.
     // What bullets meet. Resistance is how much of a rifle round a metre takes: it
     // pierces about 1 / resistance metres. Hollow things cost two walls.
     iron::PhysicalMaterials materials;
@@ -724,6 +729,7 @@ int main(int argc, char** argv) {
     {
         std::array<iron::MeshData, static_cast<std::size_t>(Look::Count)> byLook;
         for (const foundry::Block& b : level.blocks) {
+            colliders.push_back({b.center, b.size * 0.5f});
             iron::appendBox(byLook[static_cast<std::size_t>(b.look)], b.center, b.size);
             const iron::BodyId body = world.createStaticBox(b.center, b.size * 0.5f);
             surfaces[body.value] = foundry::surfaceOf(b.look);
@@ -764,6 +770,7 @@ int main(int argc, char** argv) {
         // Loose boxes are crates and drums: hollow.
         const Surface s = foundry::surfaceOf(p.look);
         materials.assign(body, s == Surface::Wood ? kCrate : s == Surface::Metal ? kSheet : solidOf(s));
+        colliders.push_back({p.center, p.size * 0.5f, 0.0f, body});
         dynamics.push_back({body, boxMesh(p.size), p.look, kPropMotionBase + static_cast<std::uint32_t>(i)});
     }
     for (std::size_t i = 0; i < level.plates.size(); ++i) {
@@ -777,6 +784,7 @@ int main(int argc, char** argv) {
         surfaces[plate.value] = Surface::Metal;
         materials.assign(anchor, kSteel);
         materials.assign(plate, kSteel);
+        colliders.push_back({center, p.size * 0.5f, 0.0f, plate});
         // The plate and the bar it hangs from, as one mesh.
         iron::MeshData data;
         iron::appendBox(data, {0.0f, 0.0f, 0.0f}, p.size);
@@ -807,12 +815,14 @@ int main(int argc, char** argv) {
             const iron::BodyId body = world.createDynamicBox(boxCenter, size * 0.5f, p.mass, rotation);
             surfaces[body.value] = p.surface;
             materials.assign(body, propMaterial(p.model, p.surface));
+            colliders.push_back({boxCenter, size * 0.5f, p.yaw, body});
             dynamics.push_back({body, iron::kInvalidHandle, Look::Steel,
                                 kPlacedMotionBase + static_cast<std::uint32_t>(i), model, centred});
         } else {
             const iron::BodyId body = world.createStaticBox(boxCenter, size * 0.5f, rotation);
             surfaces[body.value] = p.surface;
             materials.assign(body, propMaterial(p.model, p.surface));
+            colliders.push_back({boxCenter, size * 0.5f, p.yaw});
             placedStatics.push_back({model, iron::translation(boxCenter) * iron::rotationY(p.yaw) * centred});
         }
     }
@@ -871,6 +881,19 @@ int main(int argc, char** argv) {
     const iron::MeshHandle grenadeMesh = renderer.createMesh(iron::makeUVSphere(1.0f, 14));
     foundry::Grenades grenades;
     foundry::FogStirs stirs;
+    foundry::Smoke smoke;
+    {
+        // The hall's air: the furnace's door at the back, steam pipes along the left wall.
+        using namespace foundry::layout;
+        foundry::Smoke::Hall hall;
+        hall.min = {-kHallHalfWidth, 0.0f, kHallBack};
+        hall.max = {kHallHalfWidth, kHallHeight, kHallFront};
+        hall.furnaceMouth = {0.0f, 1.8f, kHallBack + 6.0f};
+        hall.furnaceHalf = {1.8f, 1.2f, 0.5f};
+        for (float z : {-36.0f, -38.8f, -44.0f, -45.4f}) hall.vents.push_back({-kHallHalfWidth + 1.4f, 1.9f, z});
+        hall.ventDirection = iron::normalize(Vec3{1.0f, 0.25f, 0.0f});
+        if (!smoke.init(renderer, hall)) iron::Log::warn("foundry: no smoke (fluid failed)");
+    }
     std::uint32_t thrown = 0;
     float throwCooldown = 0.0f;
     float trauma = 0.0f;  // Camera shake: 1 right by a blast, fading.
@@ -939,6 +962,7 @@ int main(int argc, char** argv) {
     bool reloadPressed = false;
     bool inspectPressed = false;
     bool grenadePressed = false;
+    bool smokePressed = false;
     bool escapePressed = false;
     bool quitPressed = false;
     bool clicked = false;
@@ -959,6 +983,7 @@ int main(int argc, char** argv) {
         reloadPressed = reloadPressed || input.keyPressed(GLFW_KEY_R);
         inspectPressed = inspectPressed || input.keyPressed(GLFW_KEY_I);
         grenadePressed = grenadePressed || input.keyPressed(GLFW_KEY_G);
+        smokePressed = smokePressed || input.keyPressed(GLFW_KEY_F);
         escapePressed = escapePressed || input.keyPressed(GLFW_KEY_ESCAPE);
         quitPressed = quitPressed || input.keyPressed(GLFW_KEY_Q);
         clicked = clicked || input.mouseButtonPressed(GLFW_MOUSE_BUTTON_LEFT);
@@ -1056,6 +1081,31 @@ int main(int argc, char** argv) {
                 aiming = false;
                 grenadePressed = grenadePressed || (seconds > 0.8f && seconds < 0.85f);
                 trigger = (seconds > 4.6f && seconds < 5.0f) || (seconds > 5.6f && seconds < 6.0f);
+            }
+            // Steam check: stand still and watch the pipes along the hall's left wall,
+            // then the furnace's heat rising.
+            if (sceneHas("steam")) {
+                const Vec3 target = seconds < 12.0f ? Vec3{-13.0f, 2.5f, -40.0f} : Vec3{0.0f, 4.0f, -58.0f};
+                const Vec3 to = target - eye;
+                float dyaw = std::atan2(-to.x, -to.z) - yaw;
+                while (dyaw > kPi) dyaw -= 2.0f * kPi;
+                while (dyaw < -kPi) dyaw += 2.0f * kPi;
+                const float wantPitch = std::atan2(to.y, std::sqrt(to.x * to.x + to.z * to.z));
+                look = {dyaw * std::min(dt * 3.0f, 1.0f), (wantPitch - pitch) * std::min(dt * 3.0f, 1.0f)};
+                forward = 0.0f;
+                strafe = 0.0f;
+                trigger = false;
+                aiming = false;
+            }
+            // Smoke check: lob a smoke ahead, fire bursts through it, then a grenade into it.
+            if (sceneHas("smoke")) {
+                look = {0.0f, ((seconds < 1.2f ? (sceneHas("close") ? -0.55f : -0.3f) : -0.04f) - pitch) * std::min(dt * 4.0f, 1.0f)};
+                forward = 0.0f;
+                strafe = 0.0f;
+                aiming = false;
+                smokePressed = smokePressed || (seconds > 0.8f && seconds < 0.85f);
+                trigger = (seconds > 7.0f && seconds < 7.5f) || (seconds > 8.2f && seconds < 8.7f);
+                grenadePressed = grenadePressed || (seconds > 10.0f && seconds < 10.05f);
             }
         } else if (!paused) {
             look = {-mouseX * kMouseRadiansPerPixel, -mouseY * kMouseRadiansPerPixel};
@@ -1177,15 +1227,21 @@ int main(int argc, char** argv) {
 
         // --- Grenades: a lob from the off hand, and blasts ---
         throwCooldown = std::max(throwCooldown - simDt, 0.0f);
-        if (grenadePressed && !paused && throwCooldown <= 0.0f) {
+        if ((grenadePressed || smokePressed) && !paused && throwCooldown <= 0.0f) {
             const Vec3 up = transformPoint(cameraToWorld, {0.0f, 1.0f, 0.0f}) - eye;
             const Vec3 left = eye - transformPoint(cameraToWorld, {1.0f, 0.0f, 0.0f});
             const Vec3 from = eye + aimDir * 0.5f + left * 0.15f - up * 0.1f;
             grenades.throwFrom(world, from, horizontal + aimDir * 13.0f + Vec3{0.0f, 3.5f, 0.0f},
-                               kGrenadeMotionBase + 2u * (thrown++ % (1u << 20)));
+                               kGrenadeMotionBase + 2u * (thrown++ % (1u << 20)),
+                               grenadePressed ? foundry::Grenades::Kind::Frag : foundry::Grenades::Kind::Smoke);
             throwCooldown = 0.9f;
         }
         grenadePressed = false;
+        smokePressed = false;
+        for (const Vec3& at : grenadeEvents.smokes) {
+            smoke.start(at);
+            sound.smoke(at);
+        }
         for (const Vec3& at : grenadeEvents.blasts) {
             const Vec3 up{0.0f, 1.0f, 0.0f};
             // A scorch on what it lay on, if that stays put.
@@ -1237,6 +1293,7 @@ int main(int argc, char** argv) {
                                           c + offCentre);
             }
             stirs.blast(at);
+            smoke.blast(at);
             const float distance = iron::length(at - eye);
             sound.blast(at, distance);
             trauma = std::min(trauma + 1.1f * std::clamp(1.0f - distance / 28.0f, 0.0f, 1.0f), 1.0f);
@@ -1283,7 +1340,10 @@ int main(int argc, char** argv) {
                 }
             }
             // Each piece pushes the fog and smoke aside for a moment.
-            for (const auto& [from, to] : path) stirs.wake(from, to);
+            for (const auto& [from, to] : path) {
+                stirs.wake(from, to);
+                smoke.wake(from, to);
+            }
             // Every third round glows, so the stream can be seen.
             if (shotCount % 3 == 0) {
                 for (const auto& [from, to] : path) {
@@ -1470,6 +1530,7 @@ int main(int argc, char** argv) {
             hall.edge = 6.0f;
             renderer.submitFogVolume(hall);
             stirs.submit(renderer);
+            smoke.update(renderer, world, colliders, volumetric.wind, simDt);
         }
 
         int draws = 0;
@@ -1517,7 +1578,9 @@ int main(int argc, char** argv) {
             call.shader = lit;
             call.model = g.transform * iron::scaling({kR, kTop, kR});
             call.material.texture = renderer.whiteTexture();
-            call.material.baseColorFactor = {0.17f, 0.19f, 0.11f};
+            // A frag is olive; a smoke canister grey-green.
+            call.material.baseColorFactor = g.kind == foundry::Grenades::Kind::Frag ? Vec3{0.17f, 0.19f, 0.11f}
+                                                                                     : Vec3{0.32f, 0.34f, 0.3f};
             call.material.roughness = 0.55f;
             call.material.metallic = 0.2f;
             call.motionId = g.motionId;
@@ -1628,6 +1691,7 @@ int main(int argc, char** argv) {
     };
 
     capture::runLoop(app, renderer, *vulkan, options, frame, kRecordSeconds);
+    smoke.destroy();
     body.destroy(world);
     return 0;
 }

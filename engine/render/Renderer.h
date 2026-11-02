@@ -229,6 +229,9 @@ public:
     virtual void submitFogVolume(const FogVolume& volume) { (void)volume; }
     // Stirs the volumetric fog this frame. Submit after beginFrame.
     virtual void submitFogDisturbance(const FogDisturbance& disturbance) { (void)disturbance; }
+    // Carries a fluid's smoke into the volumetric fog this frame (at most three).
+    // Submit after beginFrame, and after the frame's fluid steps.
+    virtual void submitFogFluid(const FogFluid& fluid) { (void)fluid; }
     // A decal for this frame, like a draw: submit each frame it should show.
     virtual void submitDecal(const Decal& decal) { (void)decal; }
     // The images decals use, as layers in order: Decal::layer indexes this list.
