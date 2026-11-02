@@ -127,6 +127,31 @@ void main() {
 }
 )GLSL";
 
+// Contrast-adaptive sharpening, after AMD's FidelityFX CAS: each pixel is pushed
+// away from its four neighbours' average, less where the neighbourhood is already
+// near black or white, so edges crisp up without ringing. Works in the same
+// reversible tonemapped space as the resolve, since the scene is HDR.
+const char* const kSharpenFrag = R"GLSL(#version 450
+layout(location = 0) out vec4 outColor;
+layout(set = 0, binding = 0) uniform sampler2D uImage;
+layout(push_constant) uniform Push { vec4 p; } pc;  // x = sharpness 0..1
+vec3 squash(vec3 c) { return c / (1.0 + max(c.r, max(c.g, c.b))); }
+vec3 unsquash(vec3 c) { return c / max(1.0 - max(c.r, max(c.g, c.b)), 1e-4); }
+vec3 at(ivec2 p, ivec2 size) { return squash(max(texelFetch(uImage, clamp(p, ivec2(0), size - 1), 0).rgb, 0.0)); }
+void main() {
+    ivec2 size = textureSize(uImage, 0);
+    ivec2 p = ivec2(gl_FragCoord.xy);
+    vec3 b = at(p + ivec2(0, -1), size), d = at(p + ivec2(-1, 0), size), e = at(p, size);
+    vec3 f = at(p + ivec2(1, 0), size), h = at(p + ivec2(0, 1), size);
+    vec3 lo = min(min(min(b, d), min(e, f)), h);
+    vec3 hi = max(max(max(b, d), max(e, f)), h);
+    vec3 amp = sqrt(clamp(min(lo, 1.0 - hi) / max(hi, vec3(1e-4)), 0.0, 1.0));
+    vec3 w = -amp * mix(0.04, 0.2, clamp(pc.p.x, 0.0, 1.0));
+    vec3 o = (e + (b + d + f + h) * w) / (1.0 + 4.0 * w);
+    outColor = vec4(unsquash(clamp(o, 0.0, 0.999)), 1.0);
+}
+)GLSL";
+
 VkShaderModule moduleFor(VkDevice device, VkShaderStageFlagBits stage, const char* source) {
     const auto spirv = compileGlsl(stage, source);
     if (spirv.empty()) return VK_NULL_HANDLE;
@@ -180,7 +205,7 @@ bool VkTemporalAA::init(VkContext& ctx, VkFormat colorFormat) {
     color.stencilLoadOp  = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
     color.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
     color.initialLayout  = VK_IMAGE_LAYOUT_UNDEFINED;
-    color.finalLayout    = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+    color.finalLayout    = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
     VkAttachmentReference ref{0, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL};
     VkSubpassDescription subpass{};
     subpass.pipelineBindPoint    = VK_PIPELINE_BIND_POINT_GRAPHICS;
@@ -196,13 +221,13 @@ bool VkTemporalAA::init(VkContext& ctx, VkFormat colorFormat) {
     deps[0].dstStageMask  = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
     deps[0].srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_TRANSFER_WRITE_BIT;
     deps[0].dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_SHADER_READ_BIT;
-    // Exit: the copy into the scene image reads it.
+    // Exit: the sharpen pass samples it.
     deps[1].srcSubpass    = 0;
     deps[1].dstSubpass    = VK_SUBPASS_EXTERNAL;
     deps[1].srcStageMask  = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
-    deps[1].dstStageMask  = VK_PIPELINE_STAGE_TRANSFER_BIT;
+    deps[1].dstStageMask  = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
     deps[1].srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
-    deps[1].dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+    deps[1].dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
     VkRenderPassCreateInfo rp{};
     rp.sType           = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO;
     rp.attachmentCount = 1;
@@ -212,6 +237,32 @@ bool VkTemporalAA::init(VkContext& ctx, VkFormat colorFormat) {
     rp.dependencyCount = 2;
     rp.pDependencies   = deps;
     VK_CHECK(vkCreateRenderPass(device, &rp, nullptr, &pass_));
+
+    // The sharpen pass writes the scene image whole. Entry: the resolve has read it
+    // and written the history it samples. Exit: bloom and the composite read it.
+    {
+        VkAttachmentDescription scene = color;
+        scene.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+        scene.finalLayout   = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        VkSubpassDependency sdeps[2]{};
+        sdeps[0].srcSubpass    = VK_SUBPASS_EXTERNAL;
+        sdeps[0].dstSubpass    = 0;
+        sdeps[0].srcStageMask  = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
+        sdeps[0].dstStageMask  = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
+        sdeps[0].srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+        sdeps[0].dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_SHADER_READ_BIT;
+        sdeps[1].srcSubpass    = 0;
+        sdeps[1].dstSubpass    = VK_SUBPASS_EXTERNAL;
+        sdeps[1].srcStageMask  = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+        sdeps[1].dstStageMask  = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT |
+                                 VK_PIPELINE_STAGE_TRANSFER_BIT;
+        sdeps[1].srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+        sdeps[1].dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_TRANSFER_READ_BIT;
+        VkRenderPassCreateInfo srp = rp;
+        srp.pAttachments  = &scene;
+        srp.pDependencies = sdeps;
+        VK_CHECK(vkCreateRenderPass(device, &srp, nullptr, &sharpenPass_));
+    }
 
     VkSamplerCreateInfo si{};
     si.sType        = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
@@ -250,6 +301,30 @@ bool VkTemporalAA::init(VkContext& ctx, VkFormat colorFormat) {
     ai.pSetLayouts        = layouts;
     VK_CHECK(vkAllocateDescriptorSets(device, &ai, sets_.data()));
 
+    {
+        VkDescriptorSetLayoutBinding one{0, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1,
+                                         VK_SHADER_STAGE_FRAGMENT_BIT, nullptr};
+        VkDescriptorSetLayoutCreateInfo sli{};
+        sli.sType        = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+        sli.bindingCount = 1;
+        sli.pBindings    = &one;
+        VK_CHECK(vkCreateDescriptorSetLayout(device, &sli, nullptr, &sharpenSetLayout_));
+        VkDescriptorPoolSize size{VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 2};
+        VkDescriptorPoolCreateInfo spi{};
+        spi.sType         = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
+        spi.maxSets       = 2;
+        spi.poolSizeCount = 1;
+        spi.pPoolSizes    = &size;
+        VK_CHECK(vkCreateDescriptorPool(device, &spi, nullptr, &sharpenPool_));
+        const VkDescriptorSetLayout sl[2] = {sharpenSetLayout_, sharpenSetLayout_};
+        VkDescriptorSetAllocateInfo sai{};
+        sai.sType              = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+        sai.descriptorPool     = sharpenPool_;
+        sai.descriptorSetCount = 2;
+        sai.pSetLayouts        = sl;
+        VK_CHECK(vkAllocateDescriptorSets(device, &sai, sharpenSets_.data()));
+    }
+
     VkPushConstantRange push{VK_SHADER_STAGE_FRAGMENT_BIT, 0, 16};
     VkPipelineLayoutCreateInfo pl{};
     pl.sType                  = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
@@ -258,13 +333,17 @@ bool VkTemporalAA::init(VkContext& ctx, VkFormat colorFormat) {
     pl.pushConstantRangeCount = 1;
     pl.pPushConstantRanges    = &push;
     VK_CHECK(vkCreatePipelineLayout(device, &pl, nullptr, &layout_));
+    pl.pSetLayouts = &sharpenSetLayout_;
+    VK_CHECK(vkCreatePipelineLayout(device, &pl, nullptr, &sharpenLayout_));
 
     const VkShaderModule vert = moduleFor(device, VK_SHADER_STAGE_VERTEX_BIT, kVert);
     const VkShaderModule frag = moduleFor(device, VK_SHADER_STAGE_FRAGMENT_BIT, kFrag);
-    if (!vert || !frag) {
+    const VkShaderModule sharpen = moduleFor(device, VK_SHADER_STAGE_FRAGMENT_BIT, kSharpenFrag);
+    if (!vert || !frag || !sharpen) {
         Log::error("VkTemporalAA: shader compile failed");
-        if (vert) vkDestroyShaderModule(device, vert, nullptr);
-        if (frag) vkDestroyShaderModule(device, frag, nullptr);
+        for (VkShaderModule m : {vert, frag, sharpen}) {
+            if (m) vkDestroyShaderModule(device, m, nullptr);
+        }
         return false;
     }
     VkPipelineShaderStageCreateInfo stages[2]{};
@@ -318,9 +397,12 @@ bool VkTemporalAA::init(VkContext& ctx, VkFormat colorFormat) {
     info.layout              = layout_;
     info.renderPass          = pass_;
     VK_CHECK(vkCreateGraphicsPipelines(device, VK_NULL_HANDLE, 1, &info, nullptr, &pipeline_));
-    vkDestroyShaderModule(device, vert, nullptr);
-    vkDestroyShaderModule(device, frag, nullptr);
-    return pipeline_ != VK_NULL_HANDLE;
+    stages[1].module = sharpen;
+    info.layout      = sharpenLayout_;
+    info.renderPass  = sharpenPass_;
+    VK_CHECK(vkCreateGraphicsPipelines(device, VK_NULL_HANDLE, 1, &info, nullptr, &sharpenPipeline_));
+    for (VkShaderModule m : {vert, frag, sharpen}) vkDestroyShaderModule(device, m, nullptr);
+    return pipeline_ != VK_NULL_HANDLE && sharpenPipeline_ != VK_NULL_HANDLE;
 }
 
 VkTemporalAA::Image VkTemporalAA::makeImage(VkContext& ctx, VkImageUsageFlags usage) const {
@@ -376,6 +458,17 @@ bool VkTemporalAA::createTargets(VkContext& ctx, VkExtent2D extent, VkImage scen
         VK_CHECK(vkCreateFramebuffer(ctx.device(), &fb, nullptr, &framebuffers_[i]));
     }
     opaque_ = makeImage(ctx, VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT);
+    {
+        VkFramebufferCreateInfo fb{};
+        fb.sType           = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO;
+        fb.renderPass      = sharpenPass_;
+        fb.attachmentCount = 1;
+        fb.pAttachments    = &sceneColorView;
+        fb.width           = extent.width;
+        fb.height          = extent.height;
+        fb.layers          = 1;
+        VK_CHECK(vkCreateFramebuffer(ctx.device(), &fb, nullptr, &sceneFramebuffer_));
+    }
 
     // Into the layouts the first frame expects: histories and the copy are sampled.
     {
@@ -433,12 +526,24 @@ bool VkTemporalAA::createTargets(VkContext& ctx, VkExtent2D extent, VkImage scen
             writes[b].pImageInfo      = &images[b];
         }
         vkUpdateDescriptorSets(ctx.device(), 5, writes, 0, nullptr);
+
+        const VkDescriptorImageInfo history{nearest_, history_[i].view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+        VkWriteDescriptorSet sharpenWrite{};
+        sharpenWrite.sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        sharpenWrite.dstSet          = sharpenSets_[i];
+        sharpenWrite.dstBinding      = 0;
+        sharpenWrite.descriptorCount = 1;
+        sharpenWrite.descriptorType  = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        sharpenWrite.pImageInfo      = &history;
+        vkUpdateDescriptorSets(ctx.device(), 1, &sharpenWrite, 0, nullptr);
     }
     reset_ = true;
     return true;
 }
 
 void VkTemporalAA::destroyTargets(VkContext& ctx) {
+    if (sceneFramebuffer_) vkDestroyFramebuffer(ctx.device(), sceneFramebuffer_, nullptr);
+    sceneFramebuffer_ = VK_NULL_HANDLE;
     for (auto& fb : framebuffers_) {
         if (fb) vkDestroyFramebuffer(ctx.device(), fb, nullptr);
         fb = VK_NULL_HANDLE;
@@ -450,6 +555,16 @@ void VkTemporalAA::destroyTargets(VkContext& ctx) {
 void VkTemporalAA::destroy(VkContext& ctx) {
     destroyTargets(ctx);
     const VkDevice device = ctx.device();
+    if (sharpenPipeline_) vkDestroyPipeline(device, sharpenPipeline_, nullptr);
+    if (sharpenLayout_) vkDestroyPipelineLayout(device, sharpenLayout_, nullptr);
+    if (sharpenPool_) vkDestroyDescriptorPool(device, sharpenPool_, nullptr);
+    if (sharpenSetLayout_) vkDestroyDescriptorSetLayout(device, sharpenSetLayout_, nullptr);
+    if (sharpenPass_) vkDestroyRenderPass(device, sharpenPass_, nullptr);
+    sharpenPipeline_ = VK_NULL_HANDLE;
+    sharpenLayout_ = VK_NULL_HANDLE;
+    sharpenPool_ = VK_NULL_HANDLE;
+    sharpenSetLayout_ = VK_NULL_HANDLE;
+    sharpenPass_ = VK_NULL_HANDLE;
     if (pipeline_) vkDestroyPipeline(device, pipeline_, nullptr);
     if (layout_) vkDestroyPipelineLayout(device, layout_, nullptr);
     if (pool_) vkDestroyDescriptorPool(device, pool_, nullptr);
@@ -511,21 +626,18 @@ void VkTemporalAA::resolve(VkCommandBuffer cb) {
     vkCmdEndRenderPass(cb);
     reset_ = false;
 
-    // Back into the scene image, so the rest of the frame reads the result.
-    const VkImageMemoryBarrier toCopy = imageBarrier(
-        sceneColor_, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-        VK_ACCESS_SHADER_READ_BIT, VK_ACCESS_TRANSFER_WRITE_BIT);
-    vkCmdPipelineBarrier(cb, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, nullptr,
-                         0, nullptr, 1, &toCopy);
-    copyImage(cb, history_[i].image, sceneColor_, extent_);
-    VkImageMemoryBarrier done[2] = {
-        imageBarrier(sceneColor_, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-                     VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT),
-        imageBarrier(history_[i].image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-                     VK_ACCESS_TRANSFER_READ_BIT, VK_ACCESS_SHADER_READ_BIT)};
-    vkCmdPipelineBarrier(cb, VK_PIPELINE_STAGE_TRANSFER_BIT,
-                         VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 0, nullptr,
-                         0, nullptr, 2, done);
+    // Back into the scene image, sharpened, so the rest of the frame reads the result.
+    begin.renderPass  = sharpenPass_;
+    begin.framebuffer = sceneFramebuffer_;
+    vkCmdBeginRenderPass(cb, &begin, VK_SUBPASS_CONTENTS_INLINE);
+    vkCmdSetViewport(cb, 0, 1, &viewport);
+    vkCmdSetScissor(cb, 0, 1, &scissor);
+    vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, sharpenPipeline_);
+    vkCmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, sharpenLayout_, 0, 1, &sharpenSets_[i], 0, nullptr);
+    const float sharpen[4] = {sharpness_, 0.0f, 0.0f, 0.0f};
+    vkCmdPushConstants(cb, sharpenLayout_, VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(sharpen), sharpen);
+    vkCmdDraw(cb, 3, 1, 0, 0);
+    vkCmdEndRenderPass(cb);
 }
 
 }  // namespace iron

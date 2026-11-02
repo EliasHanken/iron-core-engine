@@ -134,6 +134,7 @@ public:
     CullStats cullStats() const override { return instanceGroups_.stats(); }
     void setCullingFrozen(bool frozen) override { instanceGroups_.setFrozen(frozen); }
     void setAntiAliasing(AntiAliasing mode) override;
+    void setSharpness(float amount) override { postProcess_.setTaaSharpness(amount); }
     void setViewModelFov(float verticalRadians) override { viewModelFov_ = verticalRadians; }
     void resetTemporalHistory() override;
 
