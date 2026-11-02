@@ -897,6 +897,8 @@ int main(int argc, char** argv) {
     std::uint32_t thrown = 0;
     float throwCooldown = 0.0f;
     float trauma = 0.0f;  // Camera shake: 1 right by a blast, fading.
+    float blastKick = 0.0f;  // The lens jolted by a blast: colour split, a dark rim, washed out; fading.
+    float focus = 30.0f;     // Where the eye is looking, in metres, easing after it.
 
     iron::Material flashLook;
     flashLook.texture = renderer.whiteTexture();
@@ -1297,6 +1299,7 @@ int main(int argc, char** argv) {
             const float distance = iron::length(at - eye);
             sound.blast(at, distance);
             trauma = std::min(trauma + 1.1f * std::clamp(1.0f - distance / 28.0f, 0.0f, 1.0f), 1.0f);
+            blastKick = std::min(blastKick + std::clamp(1.0f - distance / 22.0f, 0.0f, 1.0f), 1.0f);
         }
 
         for (int i = 0; i < shots; ++i) {
@@ -1484,7 +1487,29 @@ int main(int argc, char** argv) {
         renderer.setCullingFrozen(frozen);
         renderer.setAntiAliasing(antiAliased ? iron::AntiAliasing::Temporal : iron::AntiAliasing::Off);
         renderer.setViewModelFov(kViewModelFov);
-        vulkan->setCinematic(lens);
+        // The camera this frame. Aiming, it focuses on what's under the sights and the
+        // rifle and hands soften, nearer than the focus; the front sight and the
+        // target stay sharp. A blast jolts the lens.
+        {
+            const iron::PhysicsWorld::RaycastHit sight = world.raycast(eye, aimDir, 250.0f);
+            const float want = sight.hit ? std::max(sight.t * 250.0f, 1.0f) : 250.0f;
+            focus += (want - focus) * (1.0f - std::exp(-simDt * 8.0f));
+            blastKick = std::max(blastKick - simDt * 1.4f, 0.0f);
+        }
+        iron::CinematicSettings frameLens = lens;
+        if (!engineView) {
+            frameLens.focusDistance = focus;
+            frameLens.focusRange = std::max(2.0f, focus * 0.3f);
+            frameLens.blurRadius = 0.007f * aimBlend;
+            frameLens.subject = {0.5f, 0.5f};
+            frameLens.subjectRadius = 0.07f;
+        }
+        const float lensJolt = blastKick * blastKick;
+        frameLens.chromaticAberration += 0.006f * lensJolt;
+        frameLens.vignette = std::min(frameLens.vignette + 0.35f * lensJolt, 1.0f);
+        frameLens.saturation *= 1.0f - 0.35f * lensJolt;
+        frameLens.motionBlur += 0.4f * lensJolt;
+        vulkan->setCinematic(frameLens);
         // The rig view looks at the player from the side; the player still aims as before.
         Mat4 renderView = view;
         if (sceneHas("rig")) {
