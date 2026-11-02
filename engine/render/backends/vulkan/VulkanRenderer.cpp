@@ -732,6 +732,7 @@ void VulkanRenderer::beginFrame(Vec3 clearColor, const DirectionalLight& light,
 
     sceneDraws_.clear();
     pendingDecals_.clear();
+    pendingFogVolumes_.clear();
     skinnedDraws_.clear();
     skinnedBoneMatricesStash_.clear();
     deferredSceneCompute_.clear();
@@ -1490,6 +1491,39 @@ void VulkanRenderer::endFrame() {
 
         postProcess_.endScenePass(cb);
         profiler_.end(cb);
+
+        // Volumetric fog over the opaque scene, before TAA (which smooths its noise)
+        // and before the transparents, which draw over it.
+        if (volumetricFog_.enabled && clusters_.active()) {
+            profiler_.begin(cb, "Volumetric fog");
+            const int frame = frames_.currentIndex();
+            VkFroxelFog::Frame fog;
+            fog.fog = volumetricFog_;
+            fog.volumes = pendingFogVolumes_;
+            fog.view = pendingView_;
+            fog.projection = pendingUnjitteredProjection_;
+            fog.previousViewProjection = previousViewProjection_;
+            fog.hasPrevious = hasPreviousViewProjection_;
+            fog.cameraPos = pendingCameraPos_;
+            fog.sunDirection = pendingSunDir_;
+            fog.sunColor = pendingSunColor_;
+            fog.cascades = cascadesActive_ ? &renderedCascades_ : nullptr;
+            fog.casterReach = kCascadeCasterReach;
+            fog.shadowAtlas = shadowMap_.depthView();
+            fog.shadowSampler = shadowMap_.sampler();
+            fog.clusterParams = clusters_.paramsBuffer(frame);
+            fog.clusterLights = clusters_.lightsBuffer(frame);
+            fog.clusterCells = clusters_.cellsBuffer(frame);
+            fog.clusterItems = clusters_.itemsBuffer(frame);
+            fogClock_ += 1.0f / 60.0f;
+            fog.time = fogClock_;
+            fog.frameIndex = static_cast<std::uint32_t>(cinematicFrame_);
+            fog.depthA = pendingProjection_.at(2, 2);
+            fog.depthB = pendingProjection_.at(2, 3);
+            postProcess_.froxelFog().record(*this, cb, fog);
+            postProcess_.froxelFog().apply(cb, fog);
+            profiler_.end(cb);
+        }
         if (antiAliasing_ == AntiAliasing::Temporal) postProcess_.captureOpaqueForTaa(cb);
 
         // Motion vectors: the camera's for every pixel, then each moving object's.

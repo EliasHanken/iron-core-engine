@@ -4,6 +4,7 @@
 #include "math/Vec.h"
 #include "render/AntiAliasing.h"
 #include "render/Decal.h"
+#include "render/VolumetricFog.h"
 #include "render/Culling.h"
 #include "render/Fog.h"
 #include "render/GpuTimings.h"
@@ -222,6 +223,10 @@ public:
     // Records one draw call for this frame. Each DrawCall supplies its model
     // matrix; the camera comes from beginFrame.
     virtual void submit(const DrawCall& call) = 0;
+    // Volumetric fog lit by the sun and the lights (see VolumetricFog). Off by default.
+    virtual void setVolumetricFog(const VolumetricFog& fog) { (void)fog; }
+    // A box of extra fog for this frame: submit each frame it should be there.
+    virtual void submitFogVolume(const FogVolume& volume) { (void)volume; }
     // A decal for this frame, like a draw: submit each frame it should show.
     virtual void submitDecal(const Decal& decal) { (void)decal; }
     // The images decals use, as layers in order: Decal::layer indexes this list.

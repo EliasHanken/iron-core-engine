@@ -138,6 +138,10 @@ public:
     void setCullingFrozen(bool frozen) override { instanceGroups_.setFrozen(frozen); }
     void setAntiAliasing(AntiAliasing mode) override;
     void setSharpness(float amount) override { postProcess_.setTaaSharpness(amount); }
+    void setVolumetricFog(const VolumetricFog& fog) override { volumetricFog_ = fog; }
+    void submitFogVolume(const FogVolume& volume) override {
+        if (!skipFrame_) pendingFogVolumes_.push_back(volume);
+    }
     void submitDecal(const Decal& decal) override {
         if (!skipFrame_) pendingDecals_.push_back(decal);
     }
@@ -347,6 +351,9 @@ private:
     VkClusters         clusters_;
     std::vector<PointLight> pendingAllLights_;  // Every light this frame, for the clusters.
     std::vector<Decal>      pendingDecals_;
+    VolumetricFog           volumetricFog_;
+    std::vector<FogVolume>  pendingFogVolumes_;
+    float                   fogClock_ = 0.0f;
     RenderDebugView    debugView_ = RenderDebugView::None;
     MotionHistory      motionHistory_;
     PaletteHistory     paletteHistory_;

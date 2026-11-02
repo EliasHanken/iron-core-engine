@@ -57,6 +57,11 @@ public:
 
     // Set 1 for this frame's lit draws.
     VkDescriptorSet set(int frame) const { return frames_[static_cast<std::size_t>(frame)].set; }
+    // The frame's buffers, for compute passes that walk the lists themselves.
+    VkBuffer paramsBuffer(int frame) const { return frames_[static_cast<std::size_t>(frame)].params.buffer; }
+    VkBuffer lightsBuffer(int frame) const { return frames_[static_cast<std::size_t>(frame)].lights.buffer; }
+    VkBuffer cellsBuffer(int frame) const { return frames_[static_cast<std::size_t>(frame)].cells.buffer; }
+    VkBuffer itemsBuffer(int frame) const { return frames_[static_cast<std::size_t>(frame)].items.buffer; }
     bool active() const { return pipeline_ != VK_NULL_HANDLE; }
 
 private:

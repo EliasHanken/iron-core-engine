@@ -9,6 +9,7 @@
 #include "render/PostChainPlan.h"
 #include "render/PostEffect.h"
 #include "render/backends/vulkan/VkFrameRing.h"  // kFramesInFlight (per-frame SSAO UBO)
+#include "render/backends/vulkan/VkFroxelFog.h"
 #include "render/backends/vulkan/VkTemporalAA.h"
 #include "render/backends/vulkan/VkVelocityPass.h"
 
@@ -85,6 +86,8 @@ public:
     void resolveTaa(VkCommandBuffer cb) { taa_.resolve(cb); }
     void resetTaa() { taa_.reset(); }
     void setTaaSharpness(float amount) { taa_.setSharpness(amount); }
+    // Volumetric fog, made with the scene targets and blended into the scene image.
+    VkFroxelFog& froxelFog() { return fog_; }
 
     // Pass that composite + debug + HUD overlays record into (M43a). Pipelines
     // recorded here must be built against it, not the swapchain pass — their
@@ -277,6 +280,7 @@ private:
     RenderDebugView       debugView_ = RenderDebugView::None;
     VkVelocityPass        velocity_;
     VkTemporalAA          taa_;
+    VkFroxelFog           fog_;
     Mat4                  cinematicReprojection_ = Mat4::identity();
     std::uint32_t         cinematicFrame_ = 0;
     ::VkPipeline          cinematicPipeline_ = VK_NULL_HANDLE;
