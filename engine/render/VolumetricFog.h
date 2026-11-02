@@ -46,6 +46,15 @@ struct FogDisturbance {
     float albedo = 1.0f;    // How much light that smoke scatters, against the fog's own (soot: low).
 };
 
+// Hot air the picture bends through: a gun barrel after a burst, a blast's
+// fireball. Strongest at the centre, gone at the radius. Fluids' own heat
+// (FluidVolume's heat) bends it too, wherever it is.
+struct HeatSource {
+    Vec3  centre{0.0f, 0.0f, 0.0f};
+    float radius = 0.5f;
+    float strength = 1.0f;
+};
+
 // A fluid's smoke, carried into the volumetric fog: its density field, lit by
 // the sun through the shadows and by every lamp, like the fog around it, and
 // cut by disturbances like the rest. Submitted every frame it should show.

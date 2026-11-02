@@ -416,29 +416,62 @@ CompiledLayer compileLayer(const Document& doc, const Layer& layer, std::size_t 
     out.emitsLight = !emission.empty();
     out.blockLight = layer.blockLight;
     out.trail = layer.trail;
+    out.burst = layer.burst;
     out.slots = context.takeSlots();
     out.inputs = context.takeInputs();
     if (out.slots.empty()) out.slots.assign(4, 0.0f);
 
     out.commonGlsl = std::string(R"GLSL(
 layout(set = 0, binding = 2) uniform Params { vec4 slots[)GLSL") + std::to_string(kMaxSlots) +
-                     "]; } params;\n" + kLibrary + kRoofCracks + kCurl + kSpriteHelper + shapeCode;
+                     "]; vec4 events[" + std::to_string(kMaxBurstEvents * 3) + "]; vec4 eventInfo; } params;\n" +
+                     kLibrary + kRoofCracks + kCurl + kSpriteHelper + shapeCode;
 
+    // A burst layer spawns only where this frame's events claimed particles (each
+    // a run of ids in the ring), in the event's frame; the rest stay dead or live on.
+    const std::string burstStart = !layer.burst ? std::string(R"GLSL(
+    if (p.velocity.w <= 0.0 || p.position.w >= p.velocity.w) {
+        uint seed = id * 6971u + frame.frameIndex * 15485863u;
+)GLSL")
+                                                : std::string(R"GLSL(
+    int event = -1;
+    int events = int(params.eventInfo.x);
+    for (int e = 0; e < events; ++e) {
+        uint start = uint(params.events[e * 3].w);
+        uint claimed = uint(params.events[e * 3 + 1].w);
+        if ((id + frame.count - start) % frame.count < claimed) event = e;
+    }
+    if (event < 0 && (p.velocity.w <= 0.0 || p.position.w >= p.velocity.w)) {
+        p.velocity.w = 0.0;
+        p.a.w = 0.0;
+        return;
+    }
+    if (event >= 0) {
+        uint seed = id * 6971u + frame.frameIndex * 15485863u + uint(event) * 7919u;
+)GLSL");
+    const std::string burstEnd = !layer.burst ? std::string()
+                                              : std::string(R"GLSL(
+        {
+            // Into the event's frame: +Y along its direction, scaled by its strength.
+            vec3 up = normalize(params.events[event * 3 + 1].xyz + vec3(0.0, 1e-5, 0.0));
+            vec3 side = normalize(cross(abs(up.y) < 0.99 ? vec3(0.0, 1.0, 0.0) : vec3(1.0, 0.0, 0.0), up));
+            mat3 frameOf = mat3(side, up, cross(side, up));
+            pos = params.events[event * 3].xyz + frameOf * pos;
+            vel = frameOf * vel * params.events[event * 3 + 2].x;
+        }
+)GLSL");
     out.simulateGlsl = R"GLSL(
 void particleSimulate(inout Particle p, uint id) {
     float dt = frame.dt;
     float forgeTime = frame.time;
     p.position.w += dt;
-
-    if (p.velocity.w <= 0.0 || p.position.w >= p.velocity.w) {
-        uint seed = id * 6971u + frame.frameIndex * 15485863u;
+)GLSL" + burstStart + R"GLSL(
         vec3 pos = vec3(0.0);
         vec3 vel = vec3(0.0);
         float life = 2.0;
         bool keep = true;
         // A spawn has no position yet, so nodes vary by particle instead.
         vec3 forgePosition = randomDirection(seed + 23u) * 3.0;
-)GLSL" + spawnCode + R"GLSL(
+)GLSL" + spawnCode + burstEnd + R"GLSL(
         p.position = vec4(pos, 0.0);
         p.velocity = vec4(vel, life);
         p.a = vec4(normalize(pos + vec3(1e-4)), keep ? 1.0 : 0.0);

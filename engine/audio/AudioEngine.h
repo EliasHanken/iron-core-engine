@@ -110,6 +110,11 @@ public:
     // Scales everything, from 0 to 1.
     void setMasterGain(float gain);
 
+    // Cuts every voice's highs at once, on top of its own muffle: 1 untouched,
+    // 0 only the lows. Deafened by a blast, the world goes dull. No-op without
+    // the effects extension.
+    void setMasterMuffle(float highs);
+
     // Update the listener (camera) state. Call once per frame before any
     // playSoundAt calls. `forward` and `up` are unit vectors describing
     // the listener's orientation; match the rendering camera.

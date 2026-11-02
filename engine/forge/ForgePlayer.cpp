@@ -11,18 +11,22 @@ namespace iron::forge {
 
 namespace {
 
-constexpr std::size_t kParamsBytes = static_cast<std::size_t>(kMaxSlots) * 16;
+// The slots, then the burst events (three vec4 each), then how many there are.
+constexpr std::size_t kParamsBytes = (static_cast<std::size_t>(kMaxSlots) + kMaxBurstEvents * 3 + 1) * 16;
 
 bool sameShaders(const CompiledLayer& a, const CompiledLayer& b) {
-    return a.count == b.count && a.blockLight == b.blockLight && a.trail == b.trail &&
+    return a.count == b.count && a.blockLight == b.blockLight && a.trail == b.trail && a.burst == b.burst &&
            a.commonGlsl == b.commonGlsl && a.simulateGlsl == b.simulateGlsl &&
            a.vertexGlsl == b.vertexGlsl && a.fragmentGlsl == b.fragmentGlsl &&
            a.emissionGlsl == b.emissionGlsl;
 }
 
-void uploadSlots(GpuParticles& effect, const std::vector<float>& slots) {
+void uploadSlots(GpuParticles& effect, const std::vector<float>& slots, const std::vector<float>& events = {}) {
     std::vector<float> padded(kParamsBytes / sizeof(float), 0.0f);
     std::copy(slots.begin(), slots.end(), padded.begin());
+    const std::size_t eventsAt = static_cast<std::size_t>(kMaxSlots) * 4;
+    std::copy(events.begin(), events.end(), padded.begin() + static_cast<std::ptrdiff_t>(eventsAt));
+    padded[eventsAt + static_cast<std::size_t>(kMaxBurstEvents) * 12] = static_cast<float>(events.size() / 12);
     effect.setParams(padded.data());
 }
 
@@ -143,8 +147,13 @@ void Player::updateLight() {
 
 void Player::simulate(float dt) {
     for (Running& running : layers_) {
-        uploadSlots(*running.effect, running.layer.slots);
+        uploadSlots(*running.effect, running.layer.slots, running.events);
         running.effect->simulate(dt);
+        // Bursts spawn once. A second step this frame would see none.
+        if (!running.events.empty()) {
+            running.events.clear();
+            uploadSlots(*running.effect, running.layer.slots);
+        }
     }
     if (light_) {
         light_->beginInject();
@@ -166,6 +175,19 @@ void Player::render(const Mat4& view, const Mat4& projection) {
         for (Running& running : layers_) {
             if (running.layer.blockLight == blockLight) running.effect->render(view, projection);
         }
+    }
+}
+
+void Player::emit(const std::string& layer, Vec3 at, Vec3 direction, std::uint32_t count, float strength) {
+    for (Running& running : layers_) {
+        if (!running.layer.burst || running.layer.name != layer || running.layer.count == 0) continue;
+        if (running.events.size() >= static_cast<std::size_t>(kMaxBurstEvents) * 12) continue;
+        const std::uint32_t n = std::min(count, running.layer.count);
+        const float e[12] = {at.x, at.y, at.z, static_cast<float>(running.cursor),
+                             direction.x, direction.y, direction.z, static_cast<float>(n),
+                             strength, 0.0f, 0.0f, 0.0f};
+        running.events.insert(running.events.end(), e, e + 12);
+        running.cursor = (running.cursor + n) % running.layer.count;
     }
 }
 

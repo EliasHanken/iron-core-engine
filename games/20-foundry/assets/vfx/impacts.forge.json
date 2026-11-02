@@ -1,0 +1,558 @@
+{
+  "forge": 1,
+  "target": "particles",
+  "shapes": {
+    "floor": {
+      "type": "Ground",
+      "height": 0.0
+    }
+  },
+  "nodes": {
+    "dustColor": {
+      "type": "InputVector",
+      "value": [
+        1.0,
+        1.0,
+        1.0
+      ]
+    },
+    "chipColor": {
+      "type": "InputVector",
+      "value": [
+        1.0,
+        1.0,
+        1.0
+      ]
+    },
+    "muzzleColor": {
+      "type": "InputVector",
+      "value": [
+        1.0,
+        1.0,
+        1.0
+      ]
+    },
+    "blastColor": {
+      "type": "InputVector",
+      "value": [
+        1.0,
+        1.0,
+        1.0
+      ]
+    }
+  },
+  "wires": [
+    {
+      "from": "dustColor",
+      "to": "layers.3.look.0.color"
+    },
+    {
+      "from": "chipColor",
+      "to": "layers.4.look.0.color"
+    },
+    {
+      "from": "muzzleColor",
+      "to": "layers.5.look.0.color"
+    },
+    {
+      "from": "blastColor",
+      "to": "layers.6.look.0.color"
+    }
+  ],
+  "layers": [
+    {
+      "name": "sparks",
+      "count": 8000,
+      "burst": true,
+      "spawn": [
+        {
+          "block": "Point",
+          "spread": 0.02
+        },
+        {
+          "block": "Spray",
+          "speed": 10.0,
+          "cone": 0.9,
+          "jitter": 0.65
+        },
+        {
+          "block": "Lifetime",
+          "min": 0.12,
+          "max": 0.55
+        }
+      ],
+      "move": [
+        {
+          "block": "Gravity",
+          "force": [
+            0,
+            -9.8,
+            0
+          ]
+        },
+        {
+          "block": "Drag",
+          "amount": 1.2
+        },
+        {
+          "block": "Bounce",
+          "shape": "floor",
+          "bounce": 0.35,
+          "friction": 0.3
+        }
+      ],
+      "look": [
+        {
+          "block": "Color",
+          "color": [
+            1.0,
+            0.55,
+            0.18
+          ]
+        },
+        {
+          "block": "Size",
+          "size": 0.006,
+          "vary": 0.4
+        },
+        {
+          "block": "StretchWithSpeed",
+          "amount": 0.025,
+          "max": 0.22
+        },
+        {
+          "block": "Glow",
+          "intensity": 7.0
+        },
+        {
+          "block": "Fade",
+          "in": 0.0,
+          "out": 0.6
+        }
+      ]
+    },
+    {
+      "name": "embers",
+      "count": 3000,
+      "burst": true,
+      "spawn": [
+        {
+          "block": "Point",
+          "spread": 0.4
+        },
+        {
+          "block": "Spray",
+          "speed": 7.0,
+          "cone": 1.4,
+          "jitter": 0.8
+        },
+        {
+          "block": "Lifetime",
+          "min": 1.0,
+          "max": 2.8
+        }
+      ],
+      "move": [
+        {
+          "block": "Gravity",
+          "force": [
+            0,
+            -2.5,
+            0
+          ]
+        },
+        {
+          "block": "Drag",
+          "amount": 0.7
+        },
+        {
+          "block": "CurlFlow",
+          "strength": 1.4,
+          "scale": 0.6,
+          "speed": 0.3
+        },
+        {
+          "block": "Bounce",
+          "shape": "floor",
+          "bounce": 0.2,
+          "friction": 0.5
+        }
+      ],
+      "look": [
+        {
+          "block": "Color",
+          "color": [
+            1.0,
+            0.42,
+            0.08
+          ]
+        },
+        {
+          "block": "Size",
+          "size": 0.01,
+          "vary": 0.5
+        },
+        {
+          "block": "StretchWithSpeed",
+          "amount": 0.02,
+          "max": 0.08
+        },
+        {
+          "block": "Glow",
+          "intensity": 5.0
+        },
+        {
+          "block": "Fade",
+          "in": 0.0,
+          "out": 0.5
+        }
+      ]
+    },
+    {
+      "name": "fireball",
+      "count": 2000,
+      "burst": true,
+      "spawn": [
+        {
+          "block": "Sphere",
+          "radius": 0.6,
+          "shell": 0.0
+        },
+        {
+          "block": "Launch",
+          "speed": 6.0,
+          "spread": 0.6
+        },
+        {
+          "block": "Lifetime",
+          "min": 0.22,
+          "max": 0.6
+        }
+      ],
+      "move": [
+        {
+          "block": "Drag",
+          "amount": 4.0
+        },
+        {
+          "block": "Gravity",
+          "force": [
+            0,
+            2.5,
+            0
+          ]
+        }
+      ],
+      "look": [
+        {
+          "block": "ColorOverLife",
+          "start": [
+            1.0,
+            0.7,
+            0.3
+          ],
+          "end": [
+            0.9,
+            0.22,
+            0.04
+          ]
+        },
+        {
+          "block": "Size",
+          "size": 0.32,
+          "vary": 0.5
+        },
+        {
+          "block": "SizeOverLife",
+          "start": 0.6,
+          "end": 2.4
+        },
+        {
+          "block": "Glow",
+          "intensity": 3.0
+        },
+        {
+          "block": "Fade",
+          "in": 0.0,
+          "out": 0.8
+        }
+      ]
+    },
+    {
+      "name": "dust",
+      "count": 4000,
+      "blockLight": true,
+      "burst": true,
+      "spawn": [
+        {
+          "block": "Point",
+          "spread": 0.04
+        },
+        {
+          "block": "Spray",
+          "speed": 1.8,
+          "cone": 1.1,
+          "jitter": 0.7
+        },
+        {
+          "block": "Lifetime",
+          "min": 0.8,
+          "max": 2.0
+        }
+      ],
+      "move": [
+        {
+          "block": "Drag",
+          "amount": 2.6
+        },
+        {
+          "block": "CurlFlow",
+          "strength": 0.6,
+          "scale": 0.8,
+          "speed": 0.3
+        },
+        {
+          "block": "Gravity",
+          "force": [
+            0,
+            0.12,
+            0
+          ]
+        }
+      ],
+      "look": [
+        {
+          "block": "Color",
+          "color": [
+            0.55,
+            0.53,
+            0.5
+          ]
+        },
+        {
+          "block": "Size",
+          "size": 0.11,
+          "vary": 0.5
+        },
+        {
+          "block": "SizeOverLife",
+          "start": 0.5,
+          "end": 2.8
+        },
+        {
+          "block": "Fade",
+          "in": 0.05,
+          "out": 0.75
+        },
+        {
+          "block": "Opacity",
+          "amount": 0.5
+        }
+      ]
+    },
+    {
+      "name": "chips",
+      "count": 4000,
+      "blockLight": true,
+      "burst": true,
+      "spawn": [
+        {
+          "block": "Point",
+          "spread": 0.02
+        },
+        {
+          "block": "Spray",
+          "speed": 4.5,
+          "cone": 0.8,
+          "jitter": 0.6
+        },
+        {
+          "block": "Lifetime",
+          "min": 0.6,
+          "max": 1.6
+        }
+      ],
+      "move": [
+        {
+          "block": "Gravity",
+          "force": [
+            0,
+            -9.8,
+            0
+          ]
+        },
+        {
+          "block": "Bounce",
+          "shape": "floor",
+          "bounce": 0.3,
+          "friction": 0.4
+        }
+      ],
+      "look": [
+        {
+          "block": "Color",
+          "color": [
+            0.3,
+            0.29,
+            0.27
+          ]
+        },
+        {
+          "block": "Size",
+          "size": 0.012,
+          "vary": 0.6
+        },
+        {
+          "block": "Fade",
+          "in": 0.0,
+          "out": 0.2
+        }
+      ]
+    },
+    {
+      "name": "muzzle",
+      "count": 3000,
+      "blockLight": true,
+      "burst": true,
+      "spawn": [
+        {
+          "block": "Point",
+          "spread": 0.01
+        },
+        {
+          "block": "Spray",
+          "speed": 1.4,
+          "cone": 0.35,
+          "jitter": 0.6
+        },
+        {
+          "block": "Lifetime",
+          "min": 0.6,
+          "max": 1.5
+        }
+      ],
+      "move": [
+        {
+          "block": "Drag",
+          "amount": 3.0
+        },
+        {
+          "block": "CurlFlow",
+          "strength": 0.9,
+          "scale": 1.2,
+          "speed": 0.4
+        },
+        {
+          "block": "Gravity",
+          "force": [
+            0,
+            0.45,
+            0
+          ]
+        }
+      ],
+      "look": [
+        {
+          "block": "Color",
+          "color": [
+            0.72,
+            0.72,
+            0.72
+          ]
+        },
+        {
+          "block": "Size",
+          "size": 0.02,
+          "vary": 0.4
+        },
+        {
+          "block": "SizeOverLife",
+          "start": 0.5,
+          "end": 2.6
+        },
+        {
+          "block": "Fade",
+          "in": 0.05,
+          "out": 0.85
+        },
+        {
+          "block": "Opacity",
+          "amount": 0.22
+        }
+      ]
+    },
+    {
+      "name": "blastdust",
+      "count": 3000,
+      "blockLight": true,
+      "burst": true,
+      "spawn": [
+        {
+          "block": "Sphere",
+          "radius": 0.5,
+          "shell": 0.0
+        },
+        {
+          "block": "Spray",
+          "speed": 6.5,
+          "cone": 2.0,
+          "jitter": 0.7
+        },
+        {
+          "block": "Lifetime",
+          "min": 1.6,
+          "max": 3.6
+        }
+      ],
+      "move": [
+        {
+          "block": "Drag",
+          "amount": 2.0
+        },
+        {
+          "block": "CurlFlow",
+          "strength": 0.8,
+          "scale": 0.5,
+          "speed": 0.25
+        },
+        {
+          "block": "Gravity",
+          "force": [
+            0,
+            0.3,
+            0
+          ]
+        }
+      ],
+      "look": [
+        {
+          "block": "Color",
+          "color": [
+            0.24,
+            0.22,
+            0.2
+          ]
+        },
+        {
+          "block": "Size",
+          "size": 0.45,
+          "vary": 0.5
+        },
+        {
+          "block": "SizeOverLife",
+          "start": 0.6,
+          "end": 3.0
+        },
+        {
+          "block": "Fade",
+          "in": 0.05,
+          "out": 0.7
+        },
+        {
+          "block": "Opacity",
+          "amount": 0.75
+        }
+      ]
+    }
+  ]
+}

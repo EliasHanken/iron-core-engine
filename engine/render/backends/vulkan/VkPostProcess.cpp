@@ -58,9 +58,11 @@ layout(set = 0, binding = 4) uniform Lens {
     vec4 focus;    // distance, range, blur radius, debug view
     vec4 depth;    // projection a and b, for linear depth; subject radius; heat haze
     vec4 subject;  // uv, aspect, ambient occlusion strength
+    vec4 haze;     // x: shimmer this frame, y: how strongly it bends
 } lens;
 layout(set = 0, binding = 5) uniform sampler2D uVelocity;  // UV moved since last frame.
 layout(set = 0, binding = 6) uniform sampler2D uSsao;
+layout(set = 0, binding = 7) uniform sampler2D uShimmer;   // Hot air each pixel looks through.
 layout(push_constant) uniform Push {
     mat4 reprojection;
     vec4 a;  // exposure, bloom, motion blur, chromatic aberration
@@ -158,6 +160,17 @@ void main() {
         vec2 ripple = vec2(sin(vUV.y * 83.0 + t * 1.7) + 0.6 * sin(vUV.y * 151.0 - t * 2.3 + vUV.x * 40.0),
                            cos(vUV.x * 71.0 - t * 1.3) + 0.6 * cos(vUV.x * 127.0 + t * 2.1 + vUV.y * 37.0));
         uv += ripple * near * lens.depth.w * 0.0012;
+    }
+    // Hot air in the world (a furnace's plume, a hot barrel, a fireball) bends
+    // what's seen through it, rising as it ripples.
+    if (lens.haze.x > 0.5) {
+        float h = min(texture(uShimmer, vUV).r, 3.0) * lens.haze.y;
+        if (h > 1e-3) {
+            float t = pc.b.w * 0.19;
+            vec2 ripple = vec2(sin(vUV.y * 97.0 + t * 2.3 + vUV.x * 23.0) + 0.5 * sin(vUV.y * 173.0 + t * 3.1),
+                               cos(vUV.x * 89.0 + t * 1.9) + 0.5 * cos(vUV.y * 151.0 + t * 3.7 + vUV.x * 31.0));
+            uv += ripple * h * 0.0016;
+        }
     }
 
     if (lens.focus.w == 1.0) {
@@ -1063,9 +1076,10 @@ void VkPostProcess::recordCinematic(VkCommandBuffer cb, float exposure, float bl
     // is never written over.
     const float aspect = static_cast<float>(viewportExtent().width) /
                          static_cast<float>(std::max(viewportExtent().height, 1u));
-    const float lens[12] = {s.focusDistance, s.focusRange, s.blurRadius, static_cast<float>(debugView_),
+    const float lens[16] = {s.focusDistance, s.focusRange, s.blurRadius, static_cast<float>(debugView_),
                             cinematicDepthA_, cinematicDepthB_, s.subjectRadius, s.heatHaze,
-                            s.subject.x, s.subject.y, aspect, aoStrength};
+                            s.subject.x, s.subject.y, aspect, aoStrength,
+                            fog_.shimmer() != VK_NULL_HANDLE ? 1.0f : 0.0f, s.worldHaze, 0.0f, 0.0f};
     const std::uint32_t slot = (cinematicFrame_ % VkFrameRing::kFramesInFlight) * kCinematicLensStride;
     std::memcpy(static_cast<std::uint8_t*>(cinematicLensMapped_) + slot, lens, sizeof(lens));
 
@@ -1624,6 +1638,7 @@ bool VkPostProcess::createTargets(VkContext& ctx) {
         return false;
     }
     if (!fog_.createTargets(ctx, extent_, sceneColorView_, sceneDepthView_)) return false;
+    writeCinematicSet(ctx);  // Again, now the fog's shimmer image exists.
 
     return true;
 }
@@ -2305,11 +2320,17 @@ void VkPostProcess::writeCinematicSet(VkContext& ctx) {
     const VkDescriptorImageInfo velocity{cinematicDepthSampler_, velocity_.view(),
                                          VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
     const VkDescriptorImageInfo ssao{bloomSampler_, ssaoBlurView_, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+    // Without the fog's shimmer image (no fog targets yet), SSAO stands in; unread.
+    const VkImageView shimmerView = fog_.shimmerTarget() != VK_NULL_HANDLE ? fog_.shimmerTarget() : ssaoBlurView_;
+    const VkDescriptorImageInfo shimmer{bloomSampler_, shimmerView,
+                                        fog_.shimmerTarget() != VK_NULL_HANDLE
+                                            ? VK_IMAGE_LAYOUT_GENERAL
+                                            : VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
 
     VkDescriptorBufferInfo lens{cinematicLensBuffer_, 0, kCinematicLensBytes};
 
-    VkWriteDescriptorSet writes[7]{};
-    for (std::uint32_t i = 0; i < 7; ++i) {
+    VkWriteDescriptorSet writes[8]{};
+    for (std::uint32_t i = 0; i < 8; ++i) {
         writes[i].sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
         writes[i].dstSet          = cinematicSet_;
         writes[i].dstBinding      = i;
@@ -2319,9 +2340,10 @@ void VkPostProcess::writeCinematicSet(VkContext& ctx) {
         if (i < 4)       writes[i].pImageInfo = &images[i];
         else if (i == 4) writes[i].pBufferInfo = &lens;
         else if (i == 5) writes[i].pImageInfo = &velocity;
-        else             writes[i].pImageInfo = &ssao;
+        else if (i == 6) writes[i].pImageInfo = &ssao;
+        else             writes[i].pImageInfo = &shimmer;
     }
-    vkUpdateDescriptorSets(ctx.device(), 7, writes, 0, nullptr);
+    vkUpdateDescriptorSets(ctx.device(), 8, writes, 0, nullptr);
 }
 
 bool VkPostProcess::createCinematicPipeline(VkContext& ctx) {
@@ -2348,8 +2370,8 @@ bool VkPostProcess::createCinematicPipeline(VkContext& ctx) {
                              &cinematicLensAlloc_, &lensMapped));
     cinematicLensMapped_ = lensMapped.pMappedData;
 
-    VkDescriptorSetLayoutBinding b[7]{};
-    for (std::uint32_t i = 0; i < 7; ++i) {
+    VkDescriptorSetLayoutBinding b[8]{};
+    for (std::uint32_t i = 0; i < 8; ++i) {
         b[i].binding         = i;
         b[i].descriptorType  = i == 4 ? VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC
                                       : VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
@@ -2358,7 +2380,7 @@ bool VkPostProcess::createCinematicPipeline(VkContext& ctx) {
     }
     VkDescriptorSetLayoutCreateInfo setInfo{};
     setInfo.sType        = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-    setInfo.bindingCount = 7;
+    setInfo.bindingCount = 8;
     setInfo.pBindings    = b;
     VK_CHECK(vkCreateDescriptorSetLayout(ctx.device(), &setInfo, nullptr, &cinematicSetLayout_));
 
@@ -2373,7 +2395,7 @@ bool VkPostProcess::createCinematicPipeline(VkContext& ctx) {
     layoutInfo.pPushConstantRanges    = &push;
     VK_CHECK(vkCreatePipelineLayout(ctx.device(), &layoutInfo, nullptr, &cinematicLayout_));
 
-    VkDescriptorPoolSize poolSizes[2] = {{VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 6},
+    VkDescriptorPoolSize poolSizes[2] = {{VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 7},
                                          {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC, 1}};
     VkDescriptorPoolCreateInfo poolInfo{};
     poolInfo.sType         = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;

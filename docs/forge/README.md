@@ -40,7 +40,9 @@ Any value you leave out uses its default, so a block with only a name works. The
 
 **Ribbons.** Add `"trail": 48` to a layer, and each particle draws as a continuous strip through its last 48 positions. It can be from 2 to 64, and ribbons usually need fewer than 20,000 particles.
 
-**Smoke.** Add `"blockLight": true` to a layer, so that it covers what's behind it rather than adding light. A layer can't be both smoke and ribbons.
+**Smoke.** Add `"blockLight": true` to a layer, so that it covers what's behind it rather than adding light. A layer can't be both smoke and ribbons. `Opacity` thins it.
+
+**Bursts.** Add `"burst": true` to a layer and nothing spawns on its own. The game fires events instead: `player.emit("sparks", point, normal, 30, strength)` starts 30 of that layer's particles at the point, recycling its oldest. The spawn stack runs in the event's frame, where +Y is the direction given (out of a surface that was hit), so `Spray` throws them out of it in a cone, and `strength` scales their speed. Impacts, muzzle smoke and explosions are burst layers; Foundry's `assets/vfx/impacts.forge.json` is an example.
 
 **Light.** Add a `LightTheScene` block, and the layer's glow lights the air around it.
 

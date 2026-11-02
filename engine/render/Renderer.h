@@ -229,6 +229,9 @@ public:
     virtual void submitFogVolume(const FogVolume& volume) { (void)volume; }
     // Stirs the volumetric fog this frame. Submit after beginFrame.
     virtual void submitFogDisturbance(const FogDisturbance& disturbance) { (void)disturbance; }
+    // Hot air for this frame (at most eight): the picture shimmers through it.
+    // Needs the volumetric fog on. Submit after beginFrame.
+    virtual void submitHeat(const HeatSource& heat) { (void)heat; }
     // Carries a fluid's smoke into the volumetric fog this frame (at most three).
     // Submit after beginFrame, and after the frame's fluid steps.
     virtual void submitFogFluid(const FogFluid& fluid) { (void)fluid; }

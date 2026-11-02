@@ -74,13 +74,6 @@ ONE_SHOTS = [
     ("casing3", 1, [("ShotgunShell_Land_Concrete", 0.0, 0.88, 1.0, 3)]),
 
     # What a round hits.
-    ("hit-metal1", 1, [("bullet_impact_metal_heavy", 0.0, 0.82, 1.0)]),
-    ("hit-metal2", 1, [("Metal,Hits,Pipe,Mixed", 0.0, 0.7, 1.0)]),
-    ("hit-concrete1", 1, [("bullet_impact_concrete_brick", 0.0, 0.35, 1.0)]),
-    ("hit-concrete2", 1, [("Bullet Impact 22", 0.0, 0.9, 1.0)]),
-    ("hit-concrete3", 1, [("Concrete_Impact_B02", 0.0, 0.7, 0.9)]),
-    ("hit-wood1", 1, [("Impacts Hard - Short Wobbly", 0.0, 0.63, 1.0)]),
-    ("hit-wood2", 1, [("Impacts Soft - Short, Crack", 0.0, 0.45, 1.0)]),
     ("ricochet", 1, [("bullet_flyby_fast_05", 0.0, 0.51, 1.0)]),
 
     # Steel targets ringing.
@@ -98,8 +91,6 @@ ONE_SHOTS = [
 
     # A grenade: the crack and blast of a large charge, with a mine's longer rolling
     # body under it from after its warning beep; then what it throws about landing.
-    ("blast", 2, [("explosion_large_07", 0.0, 2.6, 1.0),
-                  ("beep-mine-explosion-002", 0.52, 5.4, 0.55)]),
     ("debris", 2, [("Debris,Stones,Soil", 0.05, 1.0, 1.0),
                    ("Pile of Scrap Metal", 0.45, 1.8, 0.7)]),
     ("bounce", 1, [("Rock Hit and Bounce Dirt_RBDII 06", 0.0, 0.5, 1.0, 4)]),
@@ -115,6 +106,45 @@ ONE_SHOTS = [
     ("works1", 1, [("Steam Blast,Tube or Pipe,Distant", 0.0, 4.0, 1.0)]),
     ("works2", 1, [("Power hammer,Drops,Impacts", 2.0, 6.0, 1.0)]),
     ("works3", 1, [("Air Compressor_Stress Adjustment", 0.0, 6.0, 1.0)]),
+]
+
+# Layered one-shots, the way AAA builds them: each layer kept to its own job (a
+# transient on top, a body, low weight, a tail), lined up and balanced on its
+# first 60 ms. A layer: (source, start, length, level dB, band, semitones, delay,
+# snap). `snap` keeps a layer's attack and lets it die in that many seconds;
+# "SUB" as a source is a synthesized low thump (start = from Hz, length = to Hz).
+def impact(crack, body, extra, semis):
+    return [crack[:3] + (crack[3], crack[4], semis, 0.0, crack[5]),
+            body[:3] + (body[3], body[4], semis, 0.0, None),
+            extra[:3] + (extra[3], extra[4], semis, extra[5], None)]
+
+
+LAYERED = [
+    # Concrete and brick: the round's crack, the stone's crunch, grit coming down.
+    *[(f"hit-concrete{i + 1}", 1, impact(
+        ("bullet_impact_concrete_brick", 0.0, 0.25, -15.0, (1500, 14000), 0.02),
+        ("Concrete_Impact_B02", 0.0, 0.5, -15.0, (120, 6000)),
+        ("Debris,Stones,Soil", d, 0.6, -25.0, (300, 9000), 0.04), s))
+      for i, (d, s) in enumerate([(0.08, 0.0), (2.65, -1.0), (5.15, 1.5)])],
+    # Metal: a sharp strike, the pipe's body, a short ring.
+    *[(f"hit-metal{i + 1}", 1, impact(
+        ("bullet_impact_metal_heavy", 0.0, 0.3, -14.0, (1000, 15000), 0.03),
+        ("Metal,Hits,Pipe,Mixed", b, 0.35, -18.0, (150, 8000)),
+        ("Metal_Plate_Hit_02", 0.0, 0.9, -24.0, (400, 12000), 0.0), s))
+      for i, (b, s) in enumerate([(0.0, 0.0), (0.0, -1.5), (0.0, 2.0)])],
+    # Wood: the crack, a hollow knock, splinters.
+    *[(f"hit-wood{i + 1}", 1, impact(
+        ("Impacts Soft - Short, Crack", 0.0, 0.3, -15.0, (800, 14000), 0.03),
+        ("Impacts Hard - Short Wobbly", 0.0, 0.6, -15.0, (100, 6000)),
+        ("Rustles - Pile, Debris 22", 0.0, 0.6, -24.0, (500, 12000), 0.03), s))
+      for i, s in enumerate([0.0, -1.5, 1.0])],
+    # A grenade: a synthesized sub boom, a mine's low body, a large charge's punch,
+    # its crack on top, and a designed sweetener for the bloom after.
+    ("blast", 2, [("SUB", 58.0, 28.0, -13.0, (20, 160), 0.0, 0.0, None),
+                  ("beep-mine-explosion-002", 0.52, 4.5, -14.0, (25, 300), 0.0, 0.0, None),
+                  ("explosion_large_07", 0.0, 2.6, -12.0, (120, 5000), 0.0, 0.0, None),
+                  ("explosion_large_07", 0.0, 0.4, -13.0, (3000, 16000), 0.0, 0.0, 0.05),
+                  ("Explosives - Sweetners_07", 0.0, 3.5, -19.0, (200, 12000), 0.0, 0.0, None)]),
 ]
 
 # Loops: name, channels, target level, crossfade, then layers.
@@ -186,6 +216,49 @@ def thump(length, channels):
     phase = 2.0 * np.pi * np.cumsum(freq) / RATE
     x = np.sin(phase) * np.exp(-t / 0.055) * np.minimum(t / 0.002, 1.0)
     return np.repeat(x[:, None], channels, axis=1).astype(np.float32)
+
+
+_OUT = "."
+
+
+def out_dir_of(name):
+    return _OUT
+
+
+def boom(length, channels, start_hz, end_hz):
+    """A synthesized low boom: a sine falling from start_hz to end_hz, gone in
+    about half a second."""
+    t = np.arange(int(length * RATE)) / RATE
+    freq = end_hz + (start_hz - end_hz) * np.exp(-t / 0.08)
+    x = np.sin(2.0 * np.pi * np.cumsum(freq) / RATE) * np.exp(-t / 0.22) * np.minimum(t / 0.003, 1.0)
+    return np.repeat(x[:, None], channels, axis=1).astype(np.float32)
+
+
+def build_layered(find, name, channels, layers):
+    early = int(0.06 * RATE)
+    parts = []
+    for source, start, length, db, band, semis, delay, snap in layers:
+        if source == "SUB":
+            x = boom(1.2, channels, start, length)
+        else:
+            x = read(find(source), start, length, channels, semis)
+        x = eq(x, f"highpass=f={band[0]},lowpass=f={band[1]}")
+        if snap is not None and snap > 0.0:
+            t = np.arange(x.shape[0]) / RATE
+            x = x * np.exp(-np.maximum(t - 0.004, 0.0) / snap)[:, None]
+        # Balanced on its loudest 60 ms (a delayed layer may open quiet), never
+        # boosted past 24 dB, so a near-silent take can't flood the mix with hiss.
+        loudest = max(level(x[i:i + early]) for i in range(0, max(x.shape[0] - early, 1), early // 2))
+        x = x * min(10 ** ((db - loudest) / 20), 10 ** (24 / 20))
+        parts.append(np.concatenate([np.zeros((int(delay * RATE), channels), np.float32), x]))
+    out = np.zeros((max(p.shape[0] for p in parts), channels), dtype=np.float32)
+    for p in parts:
+        out[: p.shape[0]] += p
+    out = soft_clip(out * 1.1, 1.1)
+    out = fade(trim_tail(out, -50.0), 0.001, min(0.25, out.shape[0] / RATE * 0.3))
+    out *= 0.89 / (np.abs(out).max() + 1e-9)
+    write(os.path.join(out_dir_of(name), name + ".wav"), out)
+    print(f"{name:14} {out.shape[0] / RATE:5.2f}s {channels}ch level {level(out):6.1f} layered x{len(layers)}")
 
 
 def band_limit(x, name):
@@ -314,6 +387,11 @@ def main():
         write(os.path.join(out, name + ".wav"), x)
         print(f"{name:14} {x.shape[0] / RATE:5.2f}s {channels}ch level {level(x):6.1f}")
 
+    global _OUT
+    _OUT = out
+    for name, channels, layers in LAYERED:
+        build_layered(find, name, channels, layers)
+
     for name, channels, target, crossfade, layers in BEDS:
         x = seamless(band_limit(mix_layers(find, layers, channels), name), crossfade)
         x *= 10 ** ((target - level(x)) / 20)
@@ -322,6 +400,14 @@ def main():
             x *= 0.89 / peak
         write(os.path.join(out, name + ".wav"), x)
         print(f"{name:14} {x.shape[0] / RATE:5.2f}s {channels}ch level {level(x):6.1f} loop")
+
+    # Ringing ears after a blast: two close tones near 3.6 kHz beating slowly,
+    # in fast and fading over five seconds (synthesized, not from the kit).
+    t = np.arange(int(5.0 * RATE)) / RATE
+    ring = (np.sin(2 * np.pi * 3580.0 * t) + 0.6 * np.sin(2 * np.pi * 3617.0 * t)) / 1.6
+    ring *= np.minimum(t / 0.08, 1.0) * np.exp(-t / 1.6)
+    write(os.path.join(out, "ring.wav"), (ring * 0.6)[:, None].astype(np.float32))
+    print("ring           5.00s 1ch synthesized")
 
     with open(os.path.join(out, "SOURCES.txt"), "w", encoding="utf-8", newline="\n") as f:
         f.write("\n".join(sorted(used)) + "\n")

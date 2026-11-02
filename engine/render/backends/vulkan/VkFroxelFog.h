@@ -41,6 +41,7 @@ public:
     static constexpr float kNear = 0.4f;
     static constexpr std::uint32_t kMaxVolumes = 32;  // The shader's Shapes block holds this many boxes.
     static constexpr std::uint32_t kMaxDisturbances = 128;
+    static constexpr std::uint32_t kMaxHeat = 8;
 
     bool init(VkContext& ctx, VkFormat sceneFormat);
     void destroy(VkContext& ctx);
@@ -61,6 +62,7 @@ public:
         };
         std::array<Fluid, 3> fluids{};
         std::size_t fluidCount = 0;
+        std::span<const HeatSource> heat;
         Mat4 view;
         Mat4 projection;          // Unjittered.
         Mat4 previousViewProjection;  // Unjittered, for reprojecting last frame's grid.
@@ -86,6 +88,13 @@ public:
     // opaque pass, while the scene image is SHADER_READ_ONLY_OPTIMAL.
     void apply(VkCommandBuffer cb, const Frame& frame);
 
+    // How much hot air each pixel looks through this frame (R, in
+    // VK_IMAGE_LAYOUT_GENERAL), for the composite to bend the picture by; null
+    // when there's none.
+    VkImageView shimmer() const { return shimmerThisFrame_ ? shimmer_.view() : VK_NULL_HANDLE; }
+    // The same image whether or not there's heat this frame, to bind once.
+    VkImageView shimmerTarget() const { return shimmer_.view(); }
+
 private:
     // Marches fluids' smoke per pixel into smoke_, after the grid is integrated.
     void marchSmoke(VulkanRenderer& renderer, VkCommandBuffer cb, const Frame& f, std::size_t slot, VkImageView spare);
@@ -104,6 +113,8 @@ private:
     VkVolumeImage smokeLight_;   // The light at each cell, as smoke scatters it.
     VkComputeStage smokeStage_;
     VkVolumeImage smoke_;        // Per pixel: smoke's light (rgb) and what it lets through (a).
+    VkVolumeImage shimmer_;      // Per pixel: hot air looked through.
+    bool shimmerThisFrame_ = false;
     bool smokeReady_ = false;    // In VK_IMAGE_LAYOUT_GENERAL, so the apply set can always read it.
     int current_ = 0;
     bool historyValid_ = false;

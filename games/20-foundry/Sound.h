@@ -55,11 +55,13 @@ public:
         magIn_ = load("mag-in");
         charge_ = load("charge");
         for (const char* n : {"casing1", "casing2", "casing3"}) casings_.push_back(load(n));
-        hits_[static_cast<int>(Surface::Metal)] = {load("hit-metal1", "hit"), load("hit-metal2", "hit")};
+        hits_[static_cast<int>(Surface::Metal)] = {load("hit-metal1", "hit"), load("hit-metal2", "hit"),
+                                                   load("hit-metal3", "hit")};
         hits_[static_cast<int>(Surface::Concrete)] = {load("hit-concrete1", "hit"), load("hit-concrete2", "hit"),
                                                       load("hit-concrete3", "hit")};
         hits_[static_cast<int>(Surface::Brick)] = hits_[static_cast<int>(Surface::Concrete)];
-        hits_[static_cast<int>(Surface::Wood)] = {load("hit-wood1", "hit"), load("hit-wood2", "hit")};
+        hits_[static_cast<int>(Surface::Wood)] = {load("hit-wood1", "hit"), load("hit-wood2", "hit"),
+                                                  load("hit-wood3", "hit")};
         ricochet_ = load("ricochet");
         for (const char* n : {"plate1", "plate2", "plate3"}) plates_.push_back(load(n, "hit"));
         steps_[static_cast<int>(Floor::Ground)] = {load("step-ground1", "footstep-01"), load("step-ground2", "footstep-02")};
@@ -71,6 +73,7 @@ public:
         debris_ = load("debris");
         bounce_ = load("bounce", "footstep-02");
         smoke_ = load("smoke");
+        ring_ = load("ring");
 
         bedYard_ = audio_.playLooping(load("bed-yard"), Vec3{}, 0.0f);
         bedHall_ = audio_.playLooping(load("bed-hall"), Vec3{}, 0.0f);
@@ -102,9 +105,13 @@ public:
         }
         std::erase_if(later_, [](const Later& l) { return l.in <= 0.0f; });
 
+        // Hearing comes back over a few seconds after a blast.
+        deaf_ = std::max(deaf_ - dt * 0.28f, 0.0f);
+        audio_.setMasterMuffle(1.0f - 0.92f * std::sqrt(deaf_));
+
         // Firing pushes the beds down a little, and they come back.
         duck_ = std::max(duck_ - dt * 1.5f, 0.0f);
-        const float bed = kHeadroom * (1.0f - 0.35f * std::min(duck_, 2.4f));
+        const float bed = kHeadroom * (1.0f - 0.35f * std::min(duck_, 2.4f)) * (1.0f - 0.7f * deaf_);
         audio_.setVoiceGain(bedYard_, bed * 0.9f * (1.0f - indoor));
         audio_.setVoiceGain(bedHall_, bed * (0.25f + 0.75f * indoor));
         audio_.setVoiceGain(furnace_, kHeadroom * 1.6f);
@@ -216,6 +223,14 @@ public:
         duck_ = 3.0f;
     }
 
+    // A blast close by: the world goes dull and quiet, and the ears ring, for a
+    // few seconds. `amount` 0..1 by how close.
+    void deafen(float amount) {
+        if (!aloud_ || amount <= 0.0f) return;
+        if (amount > deaf_ + 0.15f && ring_) audio_.playSoundLocal(ring_, kHeadroom * 0.5f * amount, 1.0f);
+        deaf_ = std::min(std::max(deaf_, amount), 1.0f);
+    }
+
     // A smoke canister igniting and pouring.
     void smoke(Vec3 at) {
         if (aloud_ && smoke_) audio_.playSoundAt(smoke_, at, kHeadroom * 1.3f, 0.95f + random() * 0.1f);
@@ -284,6 +299,8 @@ private:
     iron::SoundHandle debris_ = iron::kInvalidSound;
     iron::SoundHandle bounce_ = iron::kInvalidSound;
     iron::SoundHandle smoke_ = iron::kInvalidSound;
+    iron::SoundHandle ring_ = iron::kInvalidSound;
+    float deaf_ = 0.0f;  // 1 just deafened by a blast, recovering to 0.
     struct Later {
         float in;
         iron::SoundHandle sound;

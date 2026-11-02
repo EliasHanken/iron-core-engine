@@ -103,6 +103,10 @@ struct Layer {
     std::uint64_t count = 100000;
     bool blockLight = false;  // Smoke-like: draws over things instead of adding light.
     int  trail = 0;           // Segments per ribbon; 0 draws sprites.
+    // Bursts only: nothing spawns until the game emits an event (Player::emit),
+    // and then that many particles start at its point, in its frame, where +Y is
+    // the event's direction (out of a surface that was hit, say).
+    bool burst = false;
     std::vector<BlockInstance> spawn;
     std::vector<BlockInstance> move;
     std::vector<BlockInstance> look;
@@ -136,6 +140,8 @@ nlohmann::json issuesToJson(const std::vector<Issue>& issues);
 // --- Compiling -----------------------------------------------------------------
 
 inline constexpr int kMaxSlots = 64;
+// Burst events a layer takes in one frame; more are dropped.
+inline constexpr int kMaxBurstEvents = 32;
 
 // Limits a document can't exceed, so that a bad file fails with a message rather
 // than running the GPU out of memory.
@@ -152,6 +158,7 @@ struct CompiledLayer {
     bool          blockLight = false;
     bool          emitsLight = false;
     int           trail = 0;
+    bool          burst = false;
     std::string   commonGlsl;
     std::string   simulateGlsl;
     std::string   vertexGlsl;
