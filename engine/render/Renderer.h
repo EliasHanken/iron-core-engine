@@ -341,6 +341,9 @@ public:
 
     // How edges are smoothed. Off by default.
     virtual void setAntiAliasing(AntiAliasing mode) { (void)mode; }
+    // How hard temporal anti-aliasing's result is sharpened, 0 (gently) to 1;
+    // 0.25 by default. Blending frames softens texture detail; this brings it back.
+    virtual void setSharpness(float amount) { (void)amount; }
     // Forgets the frames temporal anti-aliasing has gathered, for a camera cut or a
     // teleport, so the old view doesn't smear into the new one.
     virtual void resetTemporalHistory() {}
