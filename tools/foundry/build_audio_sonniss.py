@@ -49,6 +49,28 @@ PUNCH_TAKES = [(0.408, 0.0), (0.513, 0.0), (0.408, -0.6), (0.513, 0.5), (0.408, 
 BASE_TAKES = [0.046, 3.049, 7.044, 15.043, 23.042]
 TAKE_LENGTH = 0.24
 
+# The pistol (an M1911, .45 ACP), the same five layers, smaller and rounder:
+#   base   a lighter synthesized kick: a pistol shoves the hands, not the shoulder;
+#   punch  the body: the Colt M1911 itself, 10 m off in a warehouse, its first
+#          90 ms before the room answers;
+#   body   a 9 mm on the gun (the HK VP70), for the mids right at the hands;
+#   high   a designed pistol crack, snapped short (a .45 is subsonic: less crack);
+#   mech   the slide, from the VP70's on-gun mic.
+COLT_WAREHOUSE = "Large_Warehouse_Colt_M1911"
+VP70_GUN = "HK_VP70_9mm_on_gun"
+PISTOL_CRACK = "gun_revolver_pistol_shot_04"
+PISTOL_VARIANTS = 4
+
+# The sniper (an M700 in .308, scoped), heavier than the rifle in every layer:
+#   base   the .338 Lapua's on-gun low end, with a deep kick under it;
+#   punch  the BAR at 10 cm, pitched down: a full-power round's body;
+#   body   the .338's mids, held longer;
+#   high   a designed sniper crack, snapped;
+#   mech   the .338's on-gun action;
+#   tail   a long roll across open ground (tail-sniper), on top of the space's own.
+SNIPER_CRACK = "gun_rifle_sniper_shot_01"
+SNIPER_VARIANTS = 3
+
 # A short tail with every shot, from rifles in the two spaces: a long corridor and an
 # open field (onsets measured); the direct sound is skipped, the reflections kept.
 SHOT_TAILS = [("tailshot-hall", "AK4_long_corridor", [0.452, 7.713, 31.453]),
@@ -61,6 +83,9 @@ ONE_SHOTS = [
     ("tail-hall", 2, [("Large_Warehouse_Colt_M1911", 6.885 + 0.09, 2.8, 1.0),
                       ("Large_Warehouse_Colt_M1911", 15.710 + 0.09, 2.8, 0.6)]),
     ("tail-yard", 2, [("AK47_big_open_area", 0.835 + 0.07, 1.7, 1.0)]),
+    # A sniper's report rolling away over open ground, lower and longer.
+    ("tail-sniper", 2, [("AK47_big_open_area", 0.835 + 0.05, 3.2, 1.0, -3),
+                        ("AK47_big_open_area", 9.555 + 0.05, 3.2, 0.5, -4)]),
 
     # Handling, from a G36C and a Steyr TMP recorded close.
     ("mag-out", 1, [("G36C_5.56mm_foley", 4.10, 0.45, 1.0)]),
@@ -138,6 +163,31 @@ LAYERED = [
         ("Impacts Hard - Short Wobbly", 0.0, 0.6, -15.0, (100, 6000)),
         ("Rustles - Pile, Debris 22", 0.0, 0.6, -24.0, (500, 12000), 0.03), s))
       for i, s in enumerate([0.0, -1.5, 1.0])],
+    # Handling for the pistol and the bolt-action, layered the same way; a start of
+    # "onset:k" is the source's k-th transient, found by onsets().
+    # The pistol's slide: racked back, and let fly home.
+    ("slide-back", 1, [("Steyr_TMP_9mm_foley", "onset:2", 0.25, -16.0, (300, 12000), 2.0, 0.0, 0.08),
+                       ("gun_semi_auto_rifle_cock", "onset:0", 0.3, -18.0, (200, 12000), 3.0, 0.0, None)]),
+    ("slide-forward", 1, [("gun_semi_auto_rifle_cock", "onset:1", 0.3, -15.0, (200, 14000), 3.0, 0.0, None),
+                          ("Steyr_TMP_9mm_foley", "onset:3", 0.2, -18.0, (500, 14000), 2.0, 0.0, 0.05)]),
+    # The magazine release's click.
+    ("mag-release", 1, [("Steyr_TMP_9mm_foley", "onset:0", 0.15, -16.0, (800, 14000), 4.0, 0.0, 0.03),
+                        ("Smith_&_Wesson_M29", "onset:2", 0.12, -22.0, (1500, 14000), 3.0, 0.0, 0.02)]),
+    # The bolt: lifted (the lugs unlock), drawn back, run home, turned down.
+    ("bolt-up", 1, [("Smith_&_Wesson_M29", "onset:0", 0.2, -16.0, (400, 14000), -2.0, 0.0, 0.05),
+                    ("Metal_Barrel_Bolt_Lock_Loose_Handling_03", "onset:0", 0.35, -19.0, (150, 10000), 0.0, 0.0,
+                     None)]),
+    ("bolt-back", 1, [("Metal_Barrel_Bolt_Lock_Loose_Handling_03", "onset:1", 0.4, -15.0, (150, 12000), -1.0, 0.0,
+                       None),
+                      ("SAIGA-12", "onset:0", 0.3, -18.0, (300, 12000), 0.0, 0.0, 0.08)]),
+    ("bolt-forward", 1, [("SAIGA-12", "onset:1", 0.35, -14.0, (120, 12000), 0.0, 0.0, None),
+                         ("Metal_Barrel_Bolt_Lock_Loose_Handling_03", "onset:2", 0.3, -18.0, (300, 12000), 0.0, 0.0,
+                          0.06)]),
+    ("bolt-down", 1, [("Smith_&_Wesson_M29", "onset:1", 0.25, -15.0, (300, 14000), -3.0, 0.0, 0.06),
+                      ("SUB", 110.0, 70.0, -26.0, (40, 220), 0.0, 0.0, 0.05)]),
+    # A round pressed down into the magazine.
+    ("round-in", 1, [("Shell Load_Round Eject", "onset:0", 0.3, -15.0, (300, 14000), 4.0, 0.0, None),
+                     ("Steyr_TMP_9mm_foley", "onset:1", 0.12, -20.0, (1000, 14000), 5.0, 0.0, 0.02)]),
     # A grenade: a synthesized sub boom, a mine's low body, a large charge's punch,
     # its crack on top, and a designed sweetener for the bloom after.
     ("blast", 2, [("SUB", 58.0, 28.0, -13.0, (20, 160), 0.0, 0.0, None),
@@ -162,7 +212,7 @@ BEDS = [
 
 # Low and high cuts, from Ashe's method: each sound keeps only the band it's for.
 BANDS = {
-    "tail-hall": (90, 9000), "tail-yard": (90, 8000),
+    "tail-hall": (90, 9000), "tail-yard": (90, 8000), "tail-sniper": (60, 6000),
     "mag-out": (150, 14000), "mag-in": (120, 14000), "charge": (120, 14000), "dry": (300, 14000),
     "casing1": (500, 16000), "casing2": (500, 16000), "casing3": (400, 16000),
     "ricochet": (300, 14000),
@@ -234,6 +284,28 @@ def boom(length, channels, start_hz, end_hz):
     return np.repeat(x[:, None], channels, axis=1).astype(np.float32)
 
 
+_ONSETS = {}
+
+
+def onsets(path, threshold=0.35, gap=0.12):
+    """The times (s) a recording's transients start: where its 5 ms envelope jumps
+    past `threshold` of its loudest after quieter, at least `gap` s apart."""
+    key = (path, threshold, gap)
+    if key not in _ONSETS:
+        x = read(path, 0.0, 600.0, 1)[:, 0]
+        win = RATE // 200
+        env = np.array([np.abs(x[i:i + win]).max() for i in range(0, len(x) - win, win)])
+        top = env.max() + 1e-9
+        found, last = [], -1e9
+        for i in range(1, len(env)):
+            t = i * win / RATE
+            if env[i] > threshold * top and env[i - 1] < 0.6 * env[i] and t - last > gap:
+                found.append(t)
+                last = t
+        _ONSETS[key] = found or [0.0]
+    return _ONSETS[key]
+
+
 def build_layered(find, name, channels, layers):
     early = int(0.06 * RATE)
     parts = []
@@ -241,7 +313,12 @@ def build_layered(find, name, channels, layers):
         if source == "SUB":
             x = boom(1.2, channels, start, length)
         else:
-            x = read(find(source), start, length, channels, semis)
+            path = find(source)
+            if isinstance(start, str):
+                # "onset:k": the k-th transient, a few milliseconds early.
+                takes = onsets(path)
+                start = max(takes[min(int(start.split(":")[1]), len(takes) - 1)] - 0.003, 0.0)
+            x = read(path, start, length, channels, semis)
         x = eq(x, f"highpass=f={band[0]},lowpass=f={band[1]}")
         if snap is not None and snap > 0.0:
             t = np.arange(x.shape[0]) / RATE
@@ -367,6 +444,87 @@ def build_shots(find, out):
         print(f"{name:14} x{len(onsets)}")
 
 
+def kick(length, channels, high_hz, low_hz, decay):
+    """A synthesized kick like thump(), tuned: falling from high_hz to low_hz."""
+    t = np.arange(int(length * RATE)) / RATE
+    freq = low_hz + (high_hz - low_hz) * np.exp(-t / 0.03)
+    x = np.sin(2.0 * np.pi * np.cumsum(freq) / RATE) * np.exp(-t / decay) * np.minimum(t / 0.002, 1.0)
+    return np.repeat(x[:, None], channels, axis=1).astype(np.float32)
+
+
+def master(x, threshold_db):
+    """Mastered like a game weapon: compressed so the body holds up behind the
+    crack, then limited, so it's loud and dense rather than peaky."""
+    return eq(soft_clip(x * 1.2, 1.2),
+              f"acompressor=threshold={threshold_db}dB:ratio=6:attack=0.5:release=80:makeup=12dB,"
+              "alimiter=limit=0.89:attack=0.3:release=20")
+
+
+def _norm(x, db):
+    # Balanced by their first 60 ms, where the shot lives.
+    early = int(0.06 * RATE)
+    return x * (10 ** ((db - level(x[:early])) / 20))
+
+
+def _snap(x, decay):
+    # Keeps a layer's transient and lets it die fast after it.
+    t = np.arange(x.shape[0]) / RATE
+    return x * np.exp(-np.maximum(t - 0.004, 0.0) / decay)[:, None]
+
+
+def _fit(x, n):
+    return np.concatenate([x, np.zeros((max(n - x.shape[0], 0), x.shape[1]), np.float32)])[:n]
+
+
+def build_pistol(find, out):
+    length = 0.22
+    n = int(length * RATE)
+    colt, vp70, crack = find(COLT_WAREHOUSE), find(VP70_GUN), find(PISTOL_CRACK)
+    colt_at, vp70_at, crack_at = onsets(colt, 0.5, 1.0), onsets(vp70, 0.4, 0.08), onsets(crack, 0.4, 0.3)
+    for k in range(PISTOL_VARIANTS):
+        semis = [0.0, -0.5, 0.6, -1.0][k]
+
+        def take(path, at, band, keep, pitch=semis):
+            x = eq(read(path, max(at - 0.003, 0.0), keep, 2, pitch), band)
+            return _fit(fade(x, 0.0, min(0.03, keep * 0.4)), n)
+
+        punch = take(colt, colt_at[k % len(colt_at)], "highpass=f=120,lowpass=f=3000", 0.09)
+        body = take(vp70, vp70_at[k % len(vp70_at)], "highpass=f=150,lowpass=f=2500", 0.12)
+        high = _snap(take(crack, crack_at[0], "highpass=f=2000,equalizer=f=3500:t=q:w=2.0:g=-4", 0.2,
+                          semis + 1.0), 0.018)
+        mech = _snap(take(vp70, vp70_at[k % len(vp70_at)], "highpass=f=1200,lowpass=f=9000", 0.15), 0.035)
+        x = (_norm(kick(n / RATE, 2, 85.0, 52.0, 0.04), -24.0) + _norm(punch, -14.0) + _norm(body, -19.0) +
+             _norm(high, -16.0) + _norm(mech, -21.0))
+        x = fade(trim_tail(master(x, -24), -46.0), 0.0015, 0.05)
+        x *= 0.89 / (np.abs(x).max() + 1e-9)
+        write(os.path.join(out, f"pistol{k + 1}.wav"), x)
+        print(f"pistol{k + 1}     {x.shape[0] / RATE:5.2f}s level {level(x):6.1f}")
+
+
+def build_sniper(find, out):
+    length = 0.6
+    n = int(length * RATE)
+    barrett, bar, crack = find(BARRETT_GUN), find(BAR_CLOSE), find(SNIPER_CRACK)
+    crack_at = onsets(crack, 0.4, 0.3)
+    for k in range(SNIPER_VARIANTS):
+        at = BASE_TAKES[[1, 3, 4][k]] - 0.003
+        semis = [0.0, -0.6, 0.5][k]
+        base = _fit(eq(read(barrett, at, length, 2, semis), "highpass=f=25,lowpass=f=150"), n)
+        body = _fit(eq(read(barrett, at, length, 2, semis), "highpass=f=150,lowpass=f=2500"), n)
+        punch_at, _ = PUNCH_TAKES[k]
+        punch = _fit(fade(eq(read(bar, punch_at - 0.003, 0.12, 2, semis - 3.0), "highpass=f=80,lowpass=f=3000"),
+                          0.0, 0.04), n)
+        high = _snap(_fit(eq(read(crack, max(crack_at[0] - 0.003, 0.0), 0.3, 2, semis),
+                             "highpass=f=1800,equalizer=f=3200:t=q:w=2.0:g=-4,highshelf=f=9000:g=-2"), n), 0.03)
+        mech = _snap(_fit(eq(read(barrett, at, 0.3, 2, semis), "highpass=f=1500,lowpass=f=8000"), n), 0.06)
+        x = (_norm(base, -19.0) + _norm(kick(length, 2, 70.0, 38.0, 0.09), -20.0) + _norm(punch, -13.0) +
+             _norm(body, -18.0) + _norm(high, -15.0) + _norm(mech, -23.0))
+        x = fade(trim_tail(master(x, -26), -48.0), 0.0015, 0.12)
+        x *= 0.89 / (np.abs(x).max() + 1e-9)
+        write(os.path.join(out, f"sniper{k + 1}.wav"), x)
+        print(f"sniper{k + 1}     {x.shape[0] / RATE:5.2f}s level {level(x):6.1f}")
+
+
 def main():
     kit, out = sys.argv[1], sys.argv[2]
     os.makedirs(out, exist_ok=True)
@@ -383,6 +541,8 @@ def main():
         raise SystemExit(f"not found: {query}")
 
     build_shots(find, out)
+    build_pistol(find, out)
+    build_sniper(find, out)
 
     for name, channels, layers in ONE_SHOTS:
         x = band_limit(mix_layers(find, layers, channels), name)

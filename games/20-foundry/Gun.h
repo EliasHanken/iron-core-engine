@@ -1,8 +1,9 @@
 #pragma once
 
-// The rifle's feel, kept free of rendering and input so it can be tested: when it
-// fires, how it kicks the view and the weapon, how it sways and bobs, and how
-// wide its shots spread.
+// A gun's feel, kept free of rendering and input so it can be tested: when it
+// fires (full-auto, a shot a pull, or a bolt worked between shots), how it reloads
+// (a magazine, or a round at a time), how it kicks the view and the weapon, how it
+// sways and bobs, and how wide its shots spread.
 
 #include "math/Vec.h"
 
@@ -29,6 +30,10 @@ struct Spring {
 
 struct GunTuning {
     float roundsPerMinute = 660.0f;
+    bool  automatic = true;         // Off: one shot per pull of the trigger.
+    bool  boltAction = false;       // Each shot then needs the bolt worked.
+    float boltSeconds = 0.85f;      // Working it, from the hand leaving the grip to ready again.
+    float boltDelay = 0.16f;        // From the shot to the hand leaving the grip.
     // Each shot lifts the view by this much, plus a little to one side.
     float kickPitch = 0.0085f;      // radians
     float kickYaw = 0.0030f;        // radians, random either way
@@ -44,10 +49,25 @@ struct GunTuning {
     float bloomMax = 0.02f;
     float bloomDecay = 0.035f;      // radians per second
     float aimInRate = 7.5f;         // Aim blend per second.
+    // How hard each shot shoves the weapon back and tips it up (spring velocities).
+    float kickBack = 1.1f;
+    float kickTilt = 2.2f;
     int   magazine = 30;
     float reloadSeconds = 1.9f;
     float reloadEmptySeconds = 2.6f;  // With the bolt to rack.
+    // A round at a time instead (a bolt-action's internal magazine): open, one
+    // round after another until full or the trigger's pulled, close.
+    bool  perRound = false;
+    float reloadStartSeconds = 0.7f;
+    float reloadRoundSeconds = 0.6f;
+    float reloadEndSeconds = 0.7f;
 };
+
+// Which of the player's guns: each sounds and handles its own way.
+enum class Arm : std::uint8_t { Rifle, Pistol, Sniper };
+
+// What the gun's animation should start playing, read once by the game.
+enum class GunCue : std::uint8_t { None, Reload, ReloadEmpty, ReloadStart, ReloadRound, ReloadEnd, Bolt };
 
 // One random stream per gun, so that a recording plays back the same.
 struct Random {
@@ -68,26 +88,40 @@ public:
     // `moving` is speed as a share of a run, 0..1.
     int update(float dt, bool trigger, bool aiming, bool reloadPressed, Vec2 look, float moving,
                bool grounded) {
-        aim_ += ((aiming && !reloading()) ? 1.0f : -1.0f) * tuning_.aimInRate * dt;
+        // Working the bolt takes the eye off the sights, as reloading does.
+        aim_ += ((aiming && !reloading() && !boltCycling()) ? 1.0f : -1.0f) * tuning_.aimInRate * dt;
         aim_ = std::clamp(aim_, 0.0f, 1.0f);
         moving_ = std::clamp(moving, 0.0f, 1.0f);
         grounded_ = grounded;
+        const bool pulled = trigger && !triggerWasDown_;
+        triggerWasDown_ = trigger;
 
         if (reloadPressed && !reloading() && rounds_ < tuning_.magazine) startReload();
-        if (reloading()) {
-            reloadLeft_ = std::max(reloadLeft_ - dt, 0.0f);
-            if (reloadLeft_ == 0.0f) rounds_ = tuning_.magazine;
+        if (reloading()) updateReload(dt, pulled);
+        if (boltDelay_ > 0.0f) {
+            boltDelay_ = std::max(boltDelay_ - dt, 0.0f);
+            if (boltDelay_ == 0.0f) {
+                cue_ = GunCue::Bolt;
+                boltLeft_ = tuning_.boltSeconds;
+            }
+        } else {
+            boltLeft_ = std::max(boltLeft_ - dt, 0.0f);
         }
 
         int shots = 0;
         const float interval = 60.0f / tuning_.roundsPerMinute;
-        if (trigger && !reloading() && rounds_ > 0) {
+        // A semi-automatic or a bolt-action fires once a pull; it waits for a release.
+        const bool free = tuning_.automatic || !shotThisPull_;
+        if (trigger && !reloading() && !boltCycling() && rounds_ > 0 && free) {
             cooldown_ -= dt;
             while (cooldown_ <= 0.0f && rounds_ > 0) {
                 fire();
                 ++shots;
                 cooldown_ += interval;
+                shotThisPull_ = true;
+                if (!tuning_.automatic) break;
             }
+            if (tuning_.boltAction && shots > 0 && rounds_ > 0) boltDelay_ = tuning_.boltDelay;
             held_ = true;
         } else {
             // Ready to fire the moment the trigger is pulled again, but never
@@ -102,6 +136,7 @@ public:
             recoil_.y += (settleTarget_.y - recoil_.y) * std::min(tuning_.recoverRate * dt, 1.0f);
             if (rounds_ == 0 && trigger && !reloading()) startReload();
         }
+        if (!trigger) shotThisPull_ = false;
 
         bloom_ = std::max(bloom_ - tuning_.bloomDecay * dt, 0.0f);
         flash_ = std::max(flash_ - dt, 0.0f);
@@ -141,13 +176,34 @@ public:
     // Seconds of muzzle flash left.
     float flash() const { return flash_; }
     int rounds() const { return rounds_; }
-    bool reloading() const { return reloadLeft_ > 0.0f; }
-    // 0 at the start of a reload, 1 when it's done.
+    bool reloading() const { return reloadLeft_ > 0.0f || phase_ != Phase::None; }
+    // 0 at the start of a reload, 1 when it's done (a round at a time: how full).
     float reloadProgress() const {
+        if (phase_ != Phase::None) return static_cast<float>(rounds_) / static_cast<float>(tuning_.magazine);
         return reloading() ? 1.0f - reloadLeft_ / reloadLength_ : 1.0f;
     }
     // Whether the reload under way started from an empty magazine.
     bool reloadingEmpty() const { return reloading() && reloadEmpty_; }
+    // Whether the bolt's being worked (or is about to be) after a shot.
+    bool boltCycling() const { return boltDelay_ > 0.0f || boltLeft_ > 0.0f; }
+    // What the animation should start now, if anything; reading it clears it.
+    GunCue takeCue() {
+        const GunCue c = cue_;
+        cue_ = GunCue::None;
+        return c;
+    }
+    // Puts the gun away mid-whatever: a reload abandoned (rounds already in stay), a
+    // bolt left to work once it's next drawn and up.
+    void putAway() {
+        reloadLeft_ = 0.0f;
+        phase_ = Phase::None;
+        if (boltCycling()) {
+            boltDelay_ = tuning_.boltDelay + kDrawSeconds;
+            boltLeft_ = 0.0f;
+        }
+        aim_ = 0.0f;
+        cue_ = GunCue::None;
+    }
     const GunTuning& tuning() const { return tuning_; }
 
     // How far the weapon is moved from where its animation holds it, in view space
@@ -173,14 +229,70 @@ public:
         tuning_.reloadSeconds = partial;
         tuning_.reloadEmptySeconds = empty;
     }
+    // A round at a time: opening, each round, closing; and working the bolt.
+    void setRoundReloadSeconds(float start, float round, float end, float bolt) {
+        tuning_.reloadStartSeconds = start;
+        tuning_.reloadRoundSeconds = round;
+        tuning_.reloadEndSeconds = end;
+        tuning_.boltSeconds = bolt;
+    }
 
 private:
     static float smooth(float t) { return t * t * (3.0f - 2.0f * t); }
 
+    enum class Phase : std::uint8_t { None, Start, Round, End };
+    static constexpr float kDrawSeconds = 0.65f;  // About as long as a switch takes.
+
     void startReload() {
         reloadEmpty_ = rounds_ == 0;
+        boltDelay_ = 0.0f;
+        boltLeft_ = 0.0f;
+        if (tuning_.perRound) {
+            phase_ = Phase::Start;
+            phaseLeft_ = tuning_.reloadStartSeconds;
+            stopAfterRound_ = false;
+            cue_ = GunCue::ReloadStart;
+            return;
+        }
         reloadLength_ = reloadEmpty_ ? tuning_.reloadEmptySeconds : tuning_.reloadSeconds;
         reloadLeft_ = reloadLength_;
+        cue_ = reloadEmpty_ ? GunCue::ReloadEmpty : GunCue::Reload;
+    }
+
+    void updateReload(float dt, bool pulled) {
+        if (phase_ == Phase::None) {
+            reloadLeft_ = std::max(reloadLeft_ - dt, 0.0f);
+            if (reloadLeft_ == 0.0f) rounds_ = tuning_.magazine;
+            return;
+        }
+        // A round at a time: a pull of the trigger finishes the round in hand and
+        // closes up, to shoot sooner.
+        if (pulled && rounds_ > 0) stopAfterRound_ = true;
+        phaseLeft_ -= dt;
+        if (phaseLeft_ > 0.0f) return;
+        switch (phase_) {
+            case Phase::Start:
+                phase_ = Phase::Round;
+                phaseLeft_ += tuning_.reloadRoundSeconds;
+                cue_ = GunCue::ReloadRound;
+                break;
+            case Phase::Round:
+                ++rounds_;
+                if (rounds_ >= tuning_.magazine || stopAfterRound_) {
+                    phase_ = Phase::End;
+                    phaseLeft_ += tuning_.reloadEndSeconds;
+                    cue_ = GunCue::ReloadEnd;
+                } else {
+                    phaseLeft_ += tuning_.reloadRoundSeconds;
+                    cue_ = GunCue::ReloadRound;
+                }
+                break;
+            case Phase::End:
+            case Phase::None:
+                phase_ = Phase::None;
+                phaseLeft_ = 0.0f;
+                break;
+        }
     }
 
     void fire() {
@@ -188,8 +300,8 @@ private:
         recoil_.y += tuning_.kickPitch * (1.0f - 0.35f * aim_);
         recoil_.x += random_.signedNext() * tuning_.kickYaw;
         bloom_ = std::min(bloom_ + tuning_.bloomPerShot, tuning_.bloomMax);
-        kick_.velocity += 1.1f * (1.0f - 0.5f * aim_);
-        kickPitch_.velocity += 2.2f * (1.0f - 0.5f * aim_);
+        kick_.velocity += tuning_.kickBack * (1.0f - 0.5f * aim_);
+        kickPitch_.velocity += tuning_.kickTilt * (1.0f - 0.5f * aim_);
         flash_ = 0.05f;
     }
 
@@ -199,8 +311,16 @@ private:
     float     reloadLeft_ = 0.0f;
     float     reloadLength_ = 1.0f;
     bool      reloadEmpty_ = false;
+    Phase     phase_ = Phase::None;
+    float     phaseLeft_ = 0.0f;
+    bool      stopAfterRound_ = false;
+    GunCue    cue_ = GunCue::None;
+    float     boltDelay_ = 0.0f;
+    float     boltLeft_ = 0.0f;
     float     cooldown_ = 0.0f;
     bool      held_ = false;
+    bool      triggerWasDown_ = false;
+    bool      shotThisPull_ = false;
     Vec2      recoil_{0.0f, 0.0f};
     Vec2      settleTarget_{0.0f, 0.0f};
     float     bloom_ = 0.0f;

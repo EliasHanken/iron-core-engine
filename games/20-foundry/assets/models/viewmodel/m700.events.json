@@ -1,0 +1,99 @@
+{
+  "fps": 30,
+  "clips": {
+    "idle": {
+      "loop": true,
+      "events": []
+    },
+    "aim": {
+      "loop": true,
+      "events": []
+    },
+    "fire": {
+      "loop": false,
+      "events": []
+    },
+    "bolt": {
+      "loop": false,
+      "events": [
+        {
+          "time": 0.2,
+          "name": "bolt_up"
+        },
+        {
+          "time": 0.33,
+          "name": "bolt_back"
+        },
+        {
+          "time": 0.48,
+          "name": "bolt_forward"
+        },
+        {
+          "time": 0.58,
+          "name": "bolt_down"
+        }
+      ]
+    },
+    "draw": {
+      "loop": false,
+      "events": [
+        {
+          "time": 0.0,
+          "name": "draw"
+        }
+      ]
+    },
+    "reload_start": {
+      "loop": false,
+      "events": [
+        {
+          "time": 0.27,
+          "name": "bolt_up"
+        },
+        {
+          "time": 0.4,
+          "name": "bolt_back"
+        }
+      ]
+    },
+    "reload_round": {
+      "loop": false,
+      "events": [
+        {
+          "time": 0.32,
+          "name": "round_in"
+        }
+      ]
+    },
+    "reload_end": {
+      "loop": false,
+      "events": [
+        {
+          "time": 0.26,
+          "name": "bolt_forward"
+        },
+        {
+          "time": 0.37,
+          "name": "bolt_down"
+        }
+      ]
+    },
+    "sprint": {
+      "loop": true,
+      "events": []
+    },
+    "inspect": {
+      "loop": false,
+      "events": [
+        {
+          "time": 0.2,
+          "name": "grab"
+        },
+        {
+          "time": 2.0,
+          "name": "grab"
+        }
+      ]
+    }
+  }
+}

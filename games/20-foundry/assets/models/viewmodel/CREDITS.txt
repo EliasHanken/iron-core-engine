@@ -1,13 +1,17 @@
-Foundry's first-person view model: two CC0 assets rigged and animated together.
+Foundry's first-person view models (ak47, m1911, m700): CC0 assets rigged and
+animated together.
 
 WRAD ARMS by wriks
 Source: https://github.com/wwwriks/wrad-arms (arms.blend, with its IK control rig)
 License: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)
 
-AK-47 from "Free Classic Weapons Pack" v1.1 by Stein Games
+AK-47, M1911 and M700 from "Free Classic Weapons Pack" v1.1 by Stein Games
 Source: https://stein-indie.itch.io/classic-weapons-pack
 License: CC0 1.0, per the pack's license.txt
 
-Built by tools/foundry/viewmodel/build_viewmodel.py: the rifle's skeleton merged under
-the arms' rig, poses and clips keyed on the IK controls, sampled into the deforming
-bones and exported as glTF. viewmodel.events.json lists each clip's looping and events.
+The M700's scope is modelled by tools/foundry/viewmodel/scope.py (no third-party asset).
+
+Built by tools/foundry/viewmodel/build_viewmodel.py: each gun's skeleton merged under
+the arms' rig, poses and clips keyed on the IK controls, the hands fitted onto the
+gun's surface, sampled into the deforming bones and exported as glTF. Each
+<gun>.events.json lists that model's clips, their looping and their events.

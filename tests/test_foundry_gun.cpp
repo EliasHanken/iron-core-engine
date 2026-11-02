@@ -113,6 +113,73 @@ void the_same_inputs_give_the_same_shots() {
     CHECK_NEAR(a.shotDeviation().x, b.shotDeviation().x);
 }
 
+GunTuning pistol() {
+    GunTuning t;
+    t.automatic = false;
+    t.roundsPerMinute = 400.0f;
+    t.magazine = 7;
+    return t;
+}
+
+GunTuning boltAction() {
+    GunTuning t;
+    t.automatic = false;
+    t.boltAction = true;
+    t.roundsPerMinute = 60.0f;
+    t.magazine = 5;
+    t.perRound = true;
+    t.boltDelay = 0.15f;
+    t.boltSeconds = 0.85f;
+    t.reloadStartSeconds = 0.7f;
+    t.reloadRoundSeconds = 0.6f;
+    t.reloadEndSeconds = 0.7f;
+    return t;
+}
+
+void a_semi_automatic_fires_once_a_pull() {
+    Gun gun(pistol());
+    CHECK(fireFor(gun, 1.0f) == 1);  // Held down: one shot.
+    int shots = 0;
+    for (int i = 0; i < 60; ++i) {   // Pulled every tenth of a second.
+        shots += gun.update(kStep, i % 6 < 3, false, false, {0.0f, 0.0f}, 0.0f, true);
+    }
+    CHECK(shots >= 5 && shots <= 6);
+}
+
+void a_bolt_action_works_its_bolt_between_shots() {
+    Gun gun(boltAction());
+    CHECK(gun.update(kStep, true, false, false, {0.0f, 0.0f}, 0.0f, true) == 1);
+    idle(gun, 0.05f);
+    CHECK(gun.boltCycling());
+    idle(gun, 0.15f);
+    CHECK(gun.takeCue() == foundry::GunCue::Bolt);
+    CHECK(gun.takeCue() == foundry::GunCue::None);  // Read once.
+    CHECK(fireFor(gun, 0.5f) == 0);                  // Not until the bolt's home.
+    idle(gun, 0.5f);
+    CHECK(!gun.boltCycling());
+    CHECK(fireFor(gun, 0.1f) == 1);
+}
+
+void a_round_at_a_time_reload_fills_and_can_be_cut_short() {
+    Gun gun(boltAction());
+    for (int i = 0; i < 5; ++i) {  // Five single pulls, the bolt worked after each.
+        gun.update(kStep, true, false, false, {0.0f, 0.0f}, 0.0f, true);
+        idle(gun, 1.2f);
+    }
+    CHECK(gun.rounds() == 0);
+    CHECK(!gun.reloading());
+    gun.update(kStep, false, false, true, {0.0f, 0.0f}, 0.0f, true);
+    CHECK(gun.takeCue() == foundry::GunCue::ReloadStart);
+    idle(gun, 0.7f + 0.6f * 2.0f + 0.05f);  // Opened, two rounds in.
+    CHECK(gun.rounds() == 2);
+    // A pull now: the round in hand goes in, then it closes and can fire.
+    gun.update(kStep, true, false, false, {0.0f, 0.0f}, 0.0f, true);
+    idle(gun, 0.6f + 0.7f + 0.05f);
+    CHECK(gun.rounds() == 3);
+    CHECK(!gun.reloading());
+    CHECK(fireFor(gun, 0.1f) == 1);
+}
+
 void the_level_holds_together() {
     const foundry::Level level = foundry::buildLevel();
     CHECK(!level.blocks.empty());
@@ -140,6 +207,9 @@ int main() {
     moving_and_jumping_widen_the_spread();
     shots_stay_inside_the_spread();
     the_same_inputs_give_the_same_shots();
+    a_semi_automatic_fires_once_a_pull();
+    a_bolt_action_works_its_bolt_between_shots();
+    a_round_at_a_time_reload_fills_and_can_be_cut_short();
     the_level_holds_together();
     return iron_test_result();
 }
