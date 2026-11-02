@@ -149,7 +149,7 @@ inline void lampPost(Level& level, Vec3 base, float height) {
         Look::Steel);
     box(level, {base.x - 0.22f, height - 0.22f, base.z + 0.7f}, {base.x + 0.22f, height - 0.1f, base.z + 1.1f},
         Look::Lamp);
-    level.lamps.push_back({{base.x, height - 0.5f, base.z + 0.9f}, {1.0f, 0.72f, 0.45f}, 6.0f, 13.0f});
+    level.lamps.push_back({{base.x, height - 0.5f, base.z + 0.9f}, {1.0f, 0.58f, 0.24f}, 6.0f, 13.0f});
 }
 
 }  // namespace layout
@@ -289,12 +289,12 @@ inline Level buildLevel() {
     for (float x : {-8.0f, 8.0f}) crateStack(level, {x, 0.0f, -40.0f}, 3, 2);
     crateStack(level, {12.5f, 0.0f, -54.0f}, 4, 3);
 
-    // Hall lamps: three rows hung from the trusses, warm, each shade throwing a cone
+    // Hall lamps: three rows hung from the trusses, cold metal-halide white, each shade throwing a cone
     // onto the floor. Fifteen lights, more than a draw could carry before clustering.
     for (float x : {-7.0f, 0.0f, 7.0f}) {
         for (float z : {-27.0f, -34.0f, -41.0f, -48.0f, -55.0f}) {
             level.placed.push_back({"hanging_industrial_lamp", {x, h - 0.8f - 1.36f, z}});
-            level.lamps.push_back({{x, h - 0.8f - 1.3f, z}, {1.0f, 0.78f, 0.55f}, 3.2f, 16.0f, 0.75f});
+            level.lamps.push_back({{x, h - 0.8f - 1.3f, z}, {0.82f, 0.9f, 1.0f}, 3.2f, 16.0f, 0.75f});
         }
     }
 

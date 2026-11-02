@@ -31,4 +31,17 @@ struct FogVolume {
     float edge = 1.0f;
 };
 
+// Fog stirred up along a segment (a sphere when both ends meet): a round's wake
+// that has pushed the fog aside, a blast's shock clearing the air, the smoke left
+// after it. Submitted every frame for as long as it lasts; the game ages it.
+struct FogDisturbance {
+    Vec3  a{0.0f, 0.0f, 0.0f};
+    Vec3  b{0.0f, 0.0f, 0.0f};
+    float radius = 0.3f;
+    float softness = 0.6f;  // The share of the radius over which it fades into the fog around it.
+    float clear = 1.0f;     // 0..1: how much of the fog that was there is pushed out.
+    float add = 0.0f;       // Density added (smoke), like FogVolume::density.
+    float albedo = 1.0f;    // How much light that smoke scatters, against the fog's own (soot: low).
+};
+
 }  // namespace iron

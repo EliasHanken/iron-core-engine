@@ -1,10 +1,11 @@
-// games/20-foundry/main.cpp — Foundry: a steelworks at dusk, built to show what
+// games/20-foundry/main.cpp — Foundry: a steelworks on a cold winter morning, built to show what
 // the engine does. Shoot it, and keys show how each frame is made.
 //
 //   WASD    move            Mouse         look
 //   Shift   run             Space         jump
 //   Click   fire            Right click   aim
-//   R       reload          F1            GPU frame breakdown
+//   R       reload          G             throw a grenade
+//   F1      GPU frame breakdown
 //   F2      motion vectors  Esc           pause (Q then quits)
 //
 // Any capture flag (--shot, --record, --benchmark) plays a scripted walk instead.
@@ -17,6 +18,7 @@
 //   reload   fire a burst, then reload (stays put)
 //   inspect  turn the rifle over to look at it
 //   decals   fire a burst into the floor ahead, to see the holes
+//   grenade  throw a grenade ahead, then fire through its smoke
 //   nofog    no volumetric fog
 //   overview look down on the stockyard from above, to see culling at work
 //   lod      tint instance groups by level of detail
@@ -25,6 +27,7 @@
 
 #include "common/CaptureLoop.h"
 #include "common/TrackedText.h"
+#include "Grenades.h"
 #include "Gun.h"
 #include "Level.h"
 #include "Stockyard.h"
@@ -81,25 +84,28 @@ constexpr std::uint32_t kPlateMotionBase = 400;
 constexpr std::uint32_t kPlacedMotionBase = 600;
 // Bits get ids far above anything else; a model's sections take the low 4 bits.
 constexpr std::uint32_t kBitMotionBase = 1u << 24;
+constexpr std::uint32_t kGrenadeMotionBase = 1u << 22;  // Two each: the body and the fuse.
+constexpr float kBlastRadius = 9.0f;  // How far a grenade shoves things.
 
-// Low and gold, behind the yard: long shadows reach for the hall.
+// Low and white, behind the yard: long winter shadows reach for the hall.
 const Vec3 kTowardSun = iron::normalize(Vec3{0.62f, 0.24f, 0.74f});
 
 const char* const kSkyGlsl = R"GLSL(
 vec3 skyColor(vec3 d) {
     vec3 sun = normalize(vec3(0.62, 0.24, 0.74));
     float h = clamp(d.y, -1.0, 1.0);
-    vec3 zenith = vec3(0.025, 0.065, 0.16);
-    vec3 horizon = vec3(0.62, 0.34, 0.20);
-    vec3 color = mix(horizon, zenith, pow(max(h, 0.0), 0.42));
+    // A pale winter sky: grey-blue overhead, washed out towards a misty horizon.
+    vec3 zenith = vec3(0.09, 0.13, 0.20);
+    vec3 horizon = vec3(0.44, 0.48, 0.54);
+    vec3 color = mix(horizon, zenith, pow(max(h, 0.0), 0.5));
     float s = max(dot(d, sun), 0.0);
-    color += vec3(1.5, 0.82, 0.40) * pow(s, 7.0) * 0.45;
-    color += vec3(1.2, 0.55, 0.25) * pow(s, 60.0) * 2.0;
-    color += vec3(60.0, 38.0, 20.0) * smoothstep(0.99935, 0.99965, s);
-    // A band of cloud just above the horizon, lit from below.
-    float band = exp(-pow((h - 0.06) * 18.0, 2.0)) * (0.55 + 0.45 * sin(d.x * 9.0 + d.z * 5.0));
-    color = mix(color, vec3(0.30, 0.17, 0.14) + vec3(1.2, 0.6, 0.3) * pow(s, 4.0), band * 0.5);
-    if (h < 0.0) color = mix(color, vec3(0.07, 0.055, 0.05), clamp(-h * 5.0, 0.0, 1.0));
+    color += vec3(1.0, 0.97, 0.92) * pow(s, 6.0) * 0.35;
+    color += vec3(1.0, 0.95, 0.88) * pow(s, 80.0) * 1.6;
+    color += vec3(34.0, 33.0, 31.0) * smoothstep(0.99935, 0.99965, s);
+    // A bank of cloud along the horizon, the sun silvering its top.
+    float band = exp(-pow((h - 0.07) * 14.0, 2.0)) * (0.6 + 0.4 * sin(d.x * 9.0 + d.z * 5.0));
+    color = mix(color, vec3(0.30, 0.33, 0.38) + vec3(0.7, 0.7, 0.68) * pow(s, 5.0), band * 0.6);
+    if (h < 0.0) color = mix(color, vec3(0.05, 0.055, 0.06), clamp(-h * 5.0, 0.0, 1.0));
     return color;
 }
 )GLSL";
@@ -174,7 +180,7 @@ std::array<iron::Material, static_cast<std::size_t>(Look::Count)> loadLooks(iron
     iron::Material lamp;
     lamp.texture = renderer.whiteTexture();
     lamp.baseColorFactor = {0.2f, 0.2f, 0.2f};
-    lamp.emissive = {9.0f, 6.0f, 3.6f};
+    lamp.emissive = {9.0f, 5.2f, 2.0f};  // Sodium.
     at(Look::Lamp) = lamp;
     iron::Material furnace = lamp;
     furnace.emissive = {14.0f, 4.2f, 0.9f};
@@ -570,12 +576,33 @@ public:
         }
     }
 
+    // A blast's scorch: wide and black, with embers that die over a few seconds.
+    void scorch(Vec3 at, Vec3 normal, float spin) {
+        add(at, normal, Surface::Concrete, spin);
+        Hole& h = holes_.size() < kMax ? holes_.back() : holes_[(next_ + kMax - 1) % kMax];
+        const float size = 1.5f + spin * 0.4f;
+        for (int c = 0; c < 2; ++c) {
+            const Vec3 axis{h.decal.transform.at(0, c), h.decal.transform.at(1, c), h.decal.transform.at(2, c)};
+            const Vec3 scaled = iron::normalize(axis) * size;
+            h.decal.transform.at(0, c) = scaled.x;
+            h.decal.transform.at(1, c) = scaled.y;
+            h.decal.transform.at(2, c) = scaled.z;
+        }
+        // Deep enough to reach over bumps and steps in the floor.
+        for (int r = 0; r < 3; ++r) h.decal.transform.at(r, 2) *= 4.0f;
+        h.decal.layer = 3;
+        h.decal.roughness = 1.0f;
+        h.hot = true;
+        h.cooling = 4.0f;
+        h.ember = {3.0f, 0.9f, 0.18f};
+    }
+
     void update(float dt) {
         for (Hole& h : holes_) {
             h.age += dt;
-            // Hot metal: orange-white, cooling to a dull red and out over a second and a half.
-            const float heat = h.hot ? std::max(1.0f - h.age / 1.5f, 0.0f) : 0.0f;
-            h.decal.glow = Vec3{6.0f, 2.2f, 0.5f} * (heat * heat);
+            // Hot metal glows orange-white, cooling to a dull red and out.
+            const float heat = h.hot ? std::max(1.0f - h.age / h.cooling, 0.0f) : 0.0f;
+            h.decal.glow = h.ember * (heat * heat);
         }
     }
 
@@ -588,6 +615,8 @@ private:
         iron::Decal decal;
         float age = 0.0f;
         bool  hot = false;
+        float cooling = 1.5f;  // Seconds until it's cold.
+        Vec3  ember{6.0f, 2.2f, 0.5f};
     };
     std::vector<Hole> holes_;
     std::size_t next_ = 0;
@@ -605,6 +634,7 @@ int main(int argc, char** argv) {
 
     iron::Application::Config cfg;
     cfg.title = "Foundry";
+    cfg.hidden = scripted;  // Captures render out of sight, and silently.
     cfg.width = options.width;
     cfg.height = options.height;
     iron::Application app(cfg);
@@ -808,15 +838,15 @@ int main(int argc, char** argv) {
         return 1;
     }
     float sprintBlend = 0.0f;
-    // Dusk haze over the yard, drifting in wisps, with the hall full of smoke; lit by
+    // Winter mist over the yard, drifting in wisps, with the hall full of smoke; lit by
     // the low sun through the shadows and by every lamp (--scene nofog for none).
     iron::VolumetricFog volumetric;
     volumetric.enabled = !sceneHas("nofog");
-    volumetric.density = 0.009f;
+    volumetric.density = 0.012f;
     volumetric.heightFalloff = 0.07f;
-    volumetric.albedo = {0.95f, 0.88f, 0.8f};
+    volumetric.albedo = {0.86f, 0.9f, 0.95f};
     volumetric.anisotropy = 0.65f;
-    volumetric.ambient = {0.035f, 0.024f, 0.02f};
+    volumetric.ambient = {0.03f, 0.036f, 0.046f};
     volumetric.distance = 90.0f;
     volumetric.noise = 0.6f;
     volumetric.noiseScale = 0.14f;
@@ -831,6 +861,12 @@ int main(int argc, char** argv) {
     }
     const iron::MeshHandle flashMesh = renderer.createMesh(buildFlash());
     const iron::MeshHandle bitMesh = renderer.createMesh(iron::makeCube());
+    const iron::MeshHandle grenadeMesh = renderer.createMesh(iron::makeUVSphere(1.0f, 14));
+    foundry::Grenades grenades;
+    foundry::FogStirs stirs;
+    std::uint32_t thrown = 0;
+    float throwCooldown = 0.0f;
+    float trauma = 0.0f;  // Camera shake: 1 right by a blast, fading.
 
     iron::Material flashLook;
     flashLook.texture = renderer.whiteTexture();
@@ -860,7 +896,7 @@ int main(int argc, char** argv) {
 
     // --- Sound ---
     foundry::Sound sound;
-    sound.init(iron::executableDir() + "/assets/", {0.0f, 1.8f, foundry::layout::kHallBack + 6.6f});
+    if (!scripted) sound.init(iron::executableDir() + "/assets/", {0.0f, 1.8f, foundry::layout::kHallBack + 6.6f});
     iron::Log::info("foundry: %s sound set", sound.licensed() ? "licensed" : "free");
     foundry::Random noise;
 
@@ -895,6 +931,7 @@ int main(int argc, char** argv) {
     bool jumpPressed = false;
     bool reloadPressed = false;
     bool inspectPressed = false;
+    bool grenadePressed = false;
     bool escapePressed = false;
     bool quitPressed = false;
     bool clicked = false;
@@ -911,6 +948,7 @@ int main(int argc, char** argv) {
         jumpPressed = jumpPressed || input.keyPressed(GLFW_KEY_SPACE);
         reloadPressed = reloadPressed || input.keyPressed(GLFW_KEY_R);
         inspectPressed = inspectPressed || input.keyPressed(GLFW_KEY_I);
+        grenadePressed = grenadePressed || input.keyPressed(GLFW_KEY_G);
         escapePressed = escapePressed || input.keyPressed(GLFW_KEY_ESCAPE);
         quitPressed = quitPressed || input.keyPressed(GLFW_KEY_Q);
         clicked = clicked || input.mouseButtonPressed(GLFW_MOUSE_BUTTON_LEFT);
@@ -999,6 +1037,15 @@ int main(int argc, char** argv) {
                 strafe = 0.0f;
                 trigger = seconds > 1.0f && seconds < 1.35f;
             }
+            // Grenade check: stand still, lob one ahead, then fire bursts through the smoke.
+            if (sceneHas("grenade")) {
+                look = {0.0f, ((seconds < 1.2f ? -0.1f : -0.06f) - pitch) * std::min(dt * 4.0f, 1.0f)};
+                forward = 0.0f;
+                strafe = 0.0f;
+                aiming = false;
+                grenadePressed = grenadePressed || (seconds > 0.8f && seconds < 0.85f);
+                trigger = (seconds > 4.6f && seconds < 5.0f) || (seconds > 5.6f && seconds < 6.0f);
+            }
         } else if (!paused) {
             look = {-mouseX * kMouseRadiansPerPixel, -mouseY * kMouseRadiansPerPixel};
             const auto down = [&](int k) { return input.keyDown(k) ? 1.0f : 0.0f; };
@@ -1052,6 +1099,8 @@ int main(int argc, char** argv) {
             const Vec3 v = body.velocity();
             horizontal = {v.x, 0.0f, v.z};
         }
+        const foundry::Grenades::Events grenadeEvents = grenades.update(world, simDt);
+        for (const auto& b : grenadeEvents.bounces) sound.bounce(b.at, b.hardness);
         landDipVelocity += (-80.0f * landDip - 12.0f * landDipVelocity) * simDt;
         landDip += landDipVelocity * simDt;
 
@@ -1079,8 +1128,13 @@ int main(int argc, char** argv) {
         sprintBlend += ((running && speed > 0.6f * kRunSpeed ? 1.0f : 0.0f) - sprintBlend) *
                        std::min(simDt * 7.0f, 1.0f);
         const Vec2 kick = gun.viewKick();
-        const float viewYaw = yaw + kick.x;
-        const float viewPitch = pitch + kick.y;
+        // A blast shakes the view: hard at first, settling as the trauma fades.
+        trauma = std::max(trauma - simDt * 0.8f, 0.0f);
+        const float shake = trauma * trauma;
+        const Vec2 jolt{shake * 0.04f * (0.6f * std::sin(seconds * 37.0f) + 0.4f * std::sin(seconds * 23.0f + 1.3f)),
+                        shake * 0.035f * (0.6f * std::sin(seconds * 31.0f + 0.7f) + 0.4f * std::sin(seconds * 19.0f))};
+        const float viewYaw = yaw + kick.x + jolt.x;
+        const float viewPitch = pitch + kick.y + jolt.y;
         const Vec3 eye = feet + Vec3{0.0f, kEyeHeight + landDip, 0.0f};
         const Vec3 aimDir = lookDirection(viewYaw, viewPitch);
         const Mat4 view = iron::lookAt(eye, eye + aimDir, {0.0f, 1.0f, 0.0f});
@@ -1110,6 +1164,73 @@ int main(int argc, char** argv) {
         for (int i = 0; i < shots; ++i) viewModel.fire();
         const Vec3 muzzle = apparent(viewModel.muzzle());
 
+        // --- Grenades: a lob from the off hand, and blasts ---
+        throwCooldown = std::max(throwCooldown - simDt, 0.0f);
+        if (grenadePressed && !paused && throwCooldown <= 0.0f) {
+            const Vec3 up = transformPoint(cameraToWorld, {0.0f, 1.0f, 0.0f}) - eye;
+            const Vec3 left = eye - transformPoint(cameraToWorld, {1.0f, 0.0f, 0.0f});
+            const Vec3 from = eye + aimDir * 0.5f + left * 0.15f - up * 0.1f;
+            grenades.throwFrom(world, from, horizontal + aimDir * 13.0f + Vec3{0.0f, 3.5f, 0.0f},
+                               kGrenadeMotionBase + 2u * (thrown++ % (1u << 20)));
+            throwCooldown = 0.9f;
+        }
+        grenadePressed = false;
+        for (const Vec3& at : grenadeEvents.blasts) {
+            const Vec3 up{0.0f, 1.0f, 0.0f};
+            // A scorch on what it lay on, if that stays put.
+            const iron::PhysicsWorld::RaycastHit under = world.raycast(at + up * 0.2f, up * -1.0f, 1.2f);
+            if (under.hit) {
+                bool moves = false;
+                for (const Dynamic& d : dynamics) moves = moves || d.body.value == under.body.value;
+                if (!moves) holes.scorch(under.point, under.normal, noise.next());
+            }
+            flashes.push_back({at + up * 0.7f, {1.0f, 0.6f, 0.28f}, 0.3f, 0.3f, 26.0f, 14.0f});
+            // The fireball's sparks, and grit thrown out low.
+            for (int k = 0; k < 48; ++k) {
+                Bit spark;
+                spark.position = at + up * 0.1f;
+                const Vec3 jitter{noise.signedNext(), noise.next() * 1.2f, noise.signedNext()};
+                spark.velocity = iron::normalize(jitter + up * 0.3f) * (6.0f + noise.next() * 16.0f);
+                spark.size = {0.07f, 0.008f, 0.008f};
+                spark.emissive = Vec3{22.0f, 9.0f, 2.6f} * (0.5f + noise.next());
+                spark.maxLife = 0.3f + noise.next() * 0.8f;
+                spark.life = spark.maxLife;
+                spark.bounce = 0.35f;
+                spawnBit(spark);
+            }
+            for (int k = 0; k < 20; ++k) {
+                Bit grit;
+                grit.position = at + up * 0.1f;
+                const Vec3 jitter{noise.signedNext(), noise.next() * 0.8f, noise.signedNext()};
+                grit.velocity = iron::normalize(jitter + up * 0.2f) * (3.0f + noise.next() * 9.0f);
+                const float size = 0.02f + noise.next() * 0.04f;
+                grit.size = {size, size, size};
+                grit.color = Vec3{0.12f, 0.11f, 0.1f} * (0.7f + noise.next() * 0.6f);
+                grit.maxLife = 1.5f + noise.next() * 1.5f;
+                grit.life = grit.maxLife;
+                grit.bounce = 0.25f;
+                spawnBit(grit);
+            }
+            // Everything loose nearby is shoved away, less so from behind cover.
+            for (const Dynamic& d : dynamics) {
+                const Vec3 c = world.bodyPosition(d.body);
+                const Vec3 to = c - at;
+                const float dist = iron::length(to);
+                if (dist > kBlastRadius || dist < 1e-3f) continue;
+                const Vec3 origin = at + up * 0.15f;
+                const iron::PhysicsWorld::RaycastHit seen = world.raycast(origin, iron::normalize(c - origin), dist);
+                const float cover = seen.hit && seen.body.value != d.body.value ? 0.25f : 1.0f;
+                const float f = 1.0f - dist / kBlastRadius;
+                const Vec3 offCentre{noise.signedNext() * 0.1f, noise.signedNext() * 0.1f, noise.signedNext() * 0.1f};
+                world.applyImpulseAtPoint(d.body, iron::normalize(to + up * 0.6f) * (240.0f * f * f * cover),
+                                          c + offCentre);
+            }
+            stirs.blast(at);
+            const float distance = iron::length(at - eye);
+            sound.blast(at, distance);
+            trauma = std::min(trauma + 1.1f * std::clamp(1.0f - distance / 28.0f, 0.0f, 1.0f), 1.0f);
+        }
+
         for (int i = 0; i < shots; ++i) {
             ++shotCount;
             flashRoll = noise.next() * kPi;
@@ -1134,10 +1255,29 @@ int main(int argc, char** argv) {
             casing.brass = true;
             spawnBit(casing);
 
-            // Every third round glows, so the stream can be seen: from the muzzle to
-            // where it first lands, and on from wherever it comes out or glances off.
+            // The round's path in straight pieces: from the muzzle to where it first
+            // lands, on from wherever it comes out or glances off, and away out of
+            // range if nothing stops it.
+            std::vector<std::pair<Vec3, Vec3>> path;
+            {
+                Vec3 from = muzzle;
+                Vec3 way = dir;
+                for (const iron::BulletImpact& imp : impacts) {
+                    if (imp.kind != iron::BulletImpact::Kind::Exit) path.emplace_back(from, imp.point);
+                    from = imp.point;
+                    way = imp.direction;
+                }
+                if (impacts.empty() || impacts.back().kind != iron::BulletImpact::Kind::Stop) {
+                    path.emplace_back(from, from + way * 120.0f);
+                }
+            }
+            // Each piece pushes the fog and smoke aside for a moment.
+            for (const auto& [from, to] : path) stirs.wake(from, to);
+            // Every third round glows, so the stream can be seen.
             if (shotCount % 3 == 0) {
-                const auto streak = [&](Vec3 from, Vec3 way, float length) {
+                for (const auto& [from, to] : path) {
+                    const float length = iron::length(to - from);
+                    const Vec3 way = (to - from) * (1.0f / std::max(length, 1e-4f));
                     Bit tracer;
                     tracer.position = from + way * 1.5f;
                     tracer.velocity = way * 260.0f;
@@ -1147,79 +1287,66 @@ int main(int argc, char** argv) {
                     tracer.life = tracer.maxLife;
                     tracer.gravity = 0.0f;
                     if (tracer.maxLife > 0.0f) spawnBit(tracer);
-                };
-                Vec3 from = muzzle;
-                Vec3 way = dir;
-                for (const iron::BulletImpact& imp : impacts) {
-                    if (imp.kind == iron::BulletImpact::Kind::Exit) {
-                        from = imp.point;
-                        continue;
-                    }
-                    streak(from, way, iron::length(imp.point - from));
-                    from = imp.point;
-                    way = imp.direction;
                 }
-                const bool flying = impacts.empty() || impacts.back().kind != iron::BulletImpact::Kind::Stop;
-                if (flying) streak(from, way, 120.0f);
             }
 
             for (const iron::BulletImpact& imp : impacts) {
-            const bool exit = imp.kind == iron::BulletImpact::Kind::Exit;
-            iron::PhysicsWorld::RaycastHit hit;
-            hit.hit = true;
-            hit.body = imp.body;
-            hit.point = imp.point;
-            hit.normal = imp.normal;
-            const Vec3 way = imp.direction;
-            const auto found = surfaces.find(hit.body.value);
-            const Surface surface = found != surfaces.end() ? found->second : Surface::Concrete;
-            const ImpactStyle style = impactStyle(surface);
+                const bool exit = imp.kind == iron::BulletImpact::Kind::Exit;
+                iron::PhysicsWorld::RaycastHit hit;
+                hit.hit = true;
+                hit.body = imp.body;
+                hit.point = imp.point;
+                hit.normal = imp.normal;
+                const Vec3 way = imp.direction;
+                const auto found = surfaces.find(hit.body.value);
+                const Surface surface = found != surfaces.end() ? found->second : Surface::Concrete;
+                const ImpactStyle style = impactStyle(surface);
 
-            // Push what can move, as hard as the round still hits; mark the hit when
-            // it's a target.
-            world.applyImpulseAtPoint(hit.body, way * (9.0f * imp.energy), hit.point);
-            bool plate = false;
-            for (const Dynamic& d : dynamics) {
-                if (d.body.value != hit.body.value) continue;
-                hitMarker = 0.18f;
-                plate = d.motionId >= kPlateMotionBase;
-            }
-            if (!exit) sound.impact(surface, plate, hit.point);
+                // Push what can move, as hard as the round still hits; mark the hit when
+                // it's a target.
+                world.applyImpulseAtPoint(hit.body, way * (9.0f * imp.energy), hit.point);
+                bool plate = false;
+                for (const Dynamic& d : dynamics) {
+                    if (d.body.value != hit.body.value) continue;
+                    hitMarker = 0.18f;
+                    plate = d.motionId >= kPlateMotionBase;
+                }
+                if (!exit) sound.impact(surface, plate, hit.point);
 
-            const Vec3 n = hit.normal;
-            const Vec3 reflect = way - n * (2.0f * iron::dot(way, n));
-            // A hole in what stands still (things that move would slide out from under it).
-            bool moves = false;
-            for (const Dynamic& d : dynamics) moves = moves || d.body.value == hit.body.value;
-            if (!moves) holes.add(hit.point, n, surface, noise.next());
-            for (int k = 0; k < style.sparks; ++k) {
-                Bit spark;
-                spark.position = hit.point + n * 0.02f;
-                const Vec3 jitter{noise.signedNext(), noise.signedNext(), noise.signedNext()};
-                spark.velocity = iron::normalize(reflect * 0.6f + n * 0.7f + jitter * 0.7f) * (4.0f + noise.next() * 7.0f);
-                spark.size = {0.05f, 0.006f, 0.006f};
-                spark.emissive = style.spark * (0.6f + noise.next() * 0.8f);
-                spark.maxLife = 0.18f + noise.next() * 0.35f;
-                spark.life = spark.maxLife;
-                spark.bounce = 0.3f;
-                spawnBit(spark);
-            }
-            for (int k = 0; k < style.chips; ++k) {
-                Bit chip;
-                chip.position = hit.point + n * 0.03f;
-                const Vec3 jitter{noise.signedNext(), noise.signedNext(), noise.signedNext()};
-                chip.velocity = iron::normalize(n + jitter * 0.8f) * (1.5f + noise.next() * 3.0f);
-                const float s = 0.012f + noise.next() * 0.02f;
-                chip.size = {s, s, s};
-                chip.color = style.chip * (0.8f + noise.next() * 0.4f);
-                chip.maxLife = 0.6f + noise.next() * 0.8f;
-                chip.life = chip.maxLife;
-                chip.bounce = 0.2f;
-                spawnBit(chip);
-            }
-            if (style.sparks > 0 && !exit) {
-                flashes.push_back({hit.point + n * 0.25f, {1.0f, 0.6f, 0.3f}, 0.07f, 0.07f, 2.5f, 3.5f});
-            }
+                const Vec3 n = hit.normal;
+                const Vec3 reflect = way - n * (2.0f * iron::dot(way, n));
+                // A hole in what stands still (things that move would slide out from under it).
+                bool moves = false;
+                for (const Dynamic& d : dynamics) moves = moves || d.body.value == hit.body.value;
+                if (!moves) holes.add(hit.point, n, surface, noise.next());
+                for (int k = 0; k < style.sparks; ++k) {
+                    Bit spark;
+                    spark.position = hit.point + n * 0.02f;
+                    const Vec3 jitter{noise.signedNext(), noise.signedNext(), noise.signedNext()};
+                    spark.velocity = iron::normalize(reflect * 0.6f + n * 0.7f + jitter * 0.7f) * (4.0f + noise.next() * 7.0f);
+                    spark.size = {0.05f, 0.006f, 0.006f};
+                    spark.emissive = style.spark * (0.6f + noise.next() * 0.8f);
+                    spark.maxLife = 0.18f + noise.next() * 0.35f;
+                    spark.life = spark.maxLife;
+                    spark.bounce = 0.3f;
+                    spawnBit(spark);
+                }
+                for (int k = 0; k < style.chips; ++k) {
+                    Bit chip;
+                    chip.position = hit.point + n * 0.03f;
+                    const Vec3 jitter{noise.signedNext(), noise.signedNext(), noise.signedNext()};
+                    chip.velocity = iron::normalize(n + jitter * 0.8f) * (1.5f + noise.next() * 3.0f);
+                    const float s = 0.012f + noise.next() * 0.02f;
+                    chip.size = {s, s, s};
+                    chip.color = style.chip * (0.8f + noise.next() * 0.4f);
+                    chip.maxLife = 0.6f + noise.next() * 0.8f;
+                    chip.life = chip.maxLife;
+                    chip.bounce = 0.2f;
+                    spawnBit(chip);
+                }
+                if (style.sparks > 0 && !exit) {
+                    flashes.push_back({hit.point + n * 0.25f, {1.0f, 0.6f, 0.3f}, 0.07f, 0.07f, 2.5f, 3.5f});
+                }
             }
         }
         if (gun.flash() > 0.0f && shots > 0) {
@@ -1228,6 +1355,7 @@ int main(int argc, char** argv) {
         hitMarker = std::max(hitMarker - simDt, 0.0f);
 
         holes.update(simDt);
+        stirs.update(simDt, volumetric.wind);
 
         // --- Bits and flashes age ---
         for (Bit& b : bits) {
@@ -1273,10 +1401,10 @@ int main(int argc, char** argv) {
 
         iron::DirectionalLight sun;
         sun.direction = kTowardSun * -1.0f;
-        sun.color = {4.6f, 2.9f, 1.65f};
+        sun.color = {3.3f, 3.2f, 3.0f};
         sun.ambient = 0.0f;
         iron::Fog fog;
-        fog.color = {0.42f, 0.27f, 0.2f};
+        fog.color = {0.36f, 0.4f, 0.46f};
         fog.density = volumetric.enabled ? 0.0f : 0.0022f;  // The volumetric fog replaces it.
 
         vulkan->setDebugView(showMotion ? iron::RenderDebugView::MotionVectors
@@ -1308,6 +1436,7 @@ int main(int argc, char** argv) {
             hall.density = 0.045f;
             hall.edge = 6.0f;
             renderer.submitFogVolume(hall);
+            stirs.submit(renderer);
         }
 
         int draws = 0;
@@ -1346,6 +1475,29 @@ int main(int argc, char** argv) {
             call.motionId = d.motionId;
             renderer.submit(call);
             ++draws;
+        }
+        for (const foundry::Grenades::Drawn& g : grenades.drawn(world)) {
+            constexpr float kR = foundry::Grenades::kRadius;
+            constexpr float kTop = kR + foundry::Grenades::kHalfHeight;
+            iron::DrawCall call;
+            call.mesh = grenadeMesh;
+            call.shader = lit;
+            call.model = g.transform * iron::scaling({kR, kTop, kR});
+            call.material.texture = renderer.whiteTexture();
+            call.material.baseColorFactor = {0.17f, 0.19f, 0.11f};
+            call.material.roughness = 0.55f;
+            call.material.metallic = 0.2f;
+            call.motionId = g.motionId;
+            renderer.submit(call);
+            // The fuse and lever on top.
+            call.mesh = bitMesh;
+            call.model = g.transform * iron::translation({0.0f, kTop + 0.008f, 0.0f}) * iron::scaling({0.02f, 0.026f, 0.02f});
+            call.material.baseColorFactor = {0.45f, 0.45f, 0.43f};
+            call.material.metallic = 1.0f;
+            call.material.roughness = 0.35f;
+            call.motionId = g.motionId + 1u;
+            renderer.submit(call);
+            draws += 2;
         }
         for (const Bit& b : bits) {
             const float t = std::clamp(b.life / b.maxLife, 0.0f, 1.0f);

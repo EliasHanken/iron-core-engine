@@ -29,7 +29,7 @@ void framebufferSizeCallback(GLFWwindow* w, int width, int height) {
 #endif
 }
 
-Window::Window(int width, int height, const std::string& title)
+Window::Window(int width, int height, const std::string& title, bool hidden)
     : width_(width), height_(height) {
     if (!g_glfwInitialized) {
         if (!glfwInit()) {
@@ -39,6 +39,10 @@ Window::Window(int width, int height, const std::string& title)
         g_glfwInitialized = true;
     }
 
+    glfwDefaultWindowHints();
+    glfwWindowHint(GLFW_VISIBLE, hidden ? GLFW_FALSE : GLFW_TRUE);
+    glfwWindowHint(GLFW_FOCUS_ON_SHOW, hidden ? GLFW_FALSE : GLFW_TRUE);
+    glfwWindowHint(GLFW_FOCUSED, hidden ? GLFW_FALSE : GLFW_TRUE);
 #ifdef IRON_RENDER_BACKEND_VULKAN
     glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
 #else

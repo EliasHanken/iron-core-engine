@@ -61,7 +61,10 @@ public:
         steps_[static_cast<int>(Floor::Concrete)] = {load("step-concrete1", "footstep-03"),
                                                      load("step-concrete2", "footstep-04")};
         steps_[static_cast<int>(Floor::Metal)] = {load("step-metal1", "footstep-01"), load("step-metal2", "footstep-03")};
-        for (const char* n : {"creak1", "creak2", "creak3"}) creaks_.push_back(load(n));
+        for (const char* n : {"works1", "works2", "works3"}) works_.push_back(load(n));
+        blast_ = load("blast", "rocket-explode");
+        debris_ = load("debris");
+        bounce_ = load("bounce", "footstep-02");
 
         bedYard_ = audio_.playLooping(load("bed-yard"), Vec3{}, 0.0f);
         bedHall_ = audio_.playLooping(load("bed-hall"), Vec3{}, 0.0f);
@@ -86,19 +89,26 @@ public:
             burst_ = 0;
         }
 
+        // What was waiting to be heard: debris coming down after a blast.
+        for (Later& l : later_) l.in -= dt;
+        for (const Later& l : later_) {
+            if (l.in <= 0.0f && l.sound) audio_.playSoundAt(l.sound, l.at, l.gain, l.pitch);
+        }
+        std::erase_if(later_, [](const Later& l) { return l.in <= 0.0f; });
+
         // Firing pushes the beds down a little, and they come back.
         duck_ = std::max(duck_ - dt * 1.5f, 0.0f);
-        const float bed = kHeadroom * (1.0f - 0.35f * duck_);
+        const float bed = kHeadroom * (1.0f - 0.35f * std::min(duck_, 2.4f));
         audio_.setVoiceGain(bedYard_, bed * 0.9f * (1.0f - indoor));
         audio_.setVoiceGain(bedHall_, bed * (0.25f + 0.75f * indoor));
         audio_.setVoiceGain(furnace_, kHeadroom * 1.6f);
 
-        // The hall settles now and then, somewhere above.
-        creakIn_ -= dt;
-        if (creakIn_ <= 0.0f && !creaks_.empty()) {
-            creakIn_ = 9.0f + random() * 14.0f;
-            const Vec3 at{random() * 28.0f - 14.0f, 11.0f, -24.0f - random() * 38.0f};
-            const auto h = creaks_[static_cast<std::size_t>(random() * 2.99f)];
+        // The works, now and then, somewhere down the hall.
+        worksIn_ -= dt;
+        if (worksIn_ <= 0.0f && !works_.empty()) {
+            worksIn_ = 7.0f + random() * 12.0f;
+            const Vec3 at{random() * 28.0f - 14.0f, 3.0f, -24.0f - random() * 38.0f};
+            const auto h = works_[static_cast<std::size_t>(random() * 2.99f)];
             if (h) audio_.playSoundAt(h, at, kHeadroom * 0.8f * (0.3f + 0.7f * indoor), 0.85f + random() * 0.3f);
         }
 
@@ -177,6 +187,28 @@ public:
         }
     }
 
+    // A grenade going off `distance` metres away: the blast, the beds pushed right
+    // down, the space's tail, then what it threw coming back down.
+    void blast(Vec3 at, float distance) {
+        if (!aloud_) return;
+        const float pitch = 0.94f + random() * 0.1f;
+        if (blast_) audio_.playSoundAt(blast_, at, kHeadroom * 2.4f, pitch);
+        const float near = std::clamp(1.0f - distance / 40.0f, 0.0f, 1.0f);
+        if (tailHall_ && indoor_ > 0.05f) audio_.playSoundLocal(tailHall_, kHeadroom * 1.2f * indoor_ * near, 0.7f);
+        if (tailYard_ && indoor_ < 0.95f) {
+            audio_.playSoundLocal(tailYard_, kHeadroom * 1.4f * (1.0f - indoor_) * near, 0.72f);
+        }
+        if (debris_) later_.push_back({0.35f + random() * 0.2f, debris_, at, kHeadroom * 1.3f, 0.9f + random() * 0.2f});
+        duck_ = 3.0f;
+    }
+
+    // A grenade landing, hard (1) or softly.
+    void bounce(Vec3 at, float hardness) {
+        if (!aloud_ || !bounce_) return;
+        audio_.playSoundAt(bounce_, at, kHeadroom * (0.3f + 0.7f * std::clamp(hardness, 0.0f, 1.0f)),
+                           0.9f + random() * 0.25f);
+    }
+
     void casing(Vec3 at) {
         if (!aloud_ || casings_.empty()) return;
         const auto h = casings_[static_cast<std::size_t>(random() * (static_cast<float>(casings_.size()) - 0.01f))];
@@ -229,9 +261,20 @@ private:
     iron::SoundHandle magIn_ = iron::kInvalidSound;
     iron::SoundHandle charge_ = iron::kInvalidSound;
     iron::SoundHandle ricochet_ = iron::kInvalidSound;
+    iron::SoundHandle blast_ = iron::kInvalidSound;
+    iron::SoundHandle debris_ = iron::kInvalidSound;
+    iron::SoundHandle bounce_ = iron::kInvalidSound;
+    struct Later {
+        float in;
+        iron::SoundHandle sound;
+        Vec3 at;
+        float gain;
+        float pitch;
+    };
+    std::vector<Later> later_;
     std::vector<iron::SoundHandle> casings_;
     std::vector<iron::SoundHandle> plates_;
-    std::vector<iron::SoundHandle> creaks_;
+    std::vector<iron::SoundHandle> works_;
     std::array<std::vector<iron::SoundHandle>, static_cast<int>(Surface::Count)> hits_;
     std::array<std::vector<iron::SoundHandle>, 3> steps_;
     iron::VoiceId bedYard_{};
@@ -244,7 +287,7 @@ private:
     float sinceShot_ = 10.0f;
     float duck_ = 0.0f;
     float indoor_ = 0.0f;
-    float creakIn_ = 6.0f;
+    float worksIn_ = 6.0f;
     iron::ReverbSettings reverb_;
     float reverbIn_ = 0.0f;
 };

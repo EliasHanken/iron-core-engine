@@ -80,6 +80,12 @@ public:
     void applyImpulseAtPoint(BodyId, Vec3 impulse, Vec3 worldPoint);
     void setVelocity      (BodyId, Vec3 vel);
     Vec3 velocityOf(BodyId) const;
+    // How it meets other things: friction (0 ice .. 1 rubber) and how much of its
+    // speed it keeps bouncing off (0 dead .. 1 elastic). Bodies start at 0.2 and 0.
+    void setSurface(BodyId, float friction, float restitution);
+    // Swept collision each step, for small fast things (a thrown grenade) that would
+    // otherwise pass through a thin wall between two steps.
+    void setContinuous(BodyId, bool on);
 
     // --- Queries ---
     struct RaycastHit {

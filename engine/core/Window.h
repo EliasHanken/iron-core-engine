@@ -11,7 +11,9 @@ namespace iron {
 // object.
 class Window {
 public:
-    Window(int width, int height, const std::string& title);
+    // Hidden: never shown and never takes focus (offline captures, tests). Vulkan
+    // still renders to its swapchain.
+    Window(int width, int height, const std::string& title, bool hidden = false);
     ~Window();
 
     Window(const Window&) = delete;

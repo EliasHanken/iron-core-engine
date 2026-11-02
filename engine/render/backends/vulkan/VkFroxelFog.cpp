@@ -22,7 +22,7 @@ struct GpuParams {
     Mat4  cascade[4];
     float cascadeEnds[4];
     float cascadeRadii[4];
-    float cascadeInfo[4];  // x on, y caster reach
+    float cascadeInfo[4];  // x on, y caster reach, z disturbances
     float grid[4];         // x, y, z froxels; w = log(far / near)
     float range[4];        // x near, y far, z tan of half the horizontal field, w vertical
     float fog[4];          // x density, y height falloff, z base height, w anisotropy
@@ -37,6 +37,12 @@ struct GpuParams {
 struct GpuBox {
     float min[4];  // w = density
     float max[4];  // w = edge
+};
+
+struct GpuDisturbance {
+    float a[4];  // w = radius
+    float b[4];  // w = 1 / (softness * radius)
+    float k[4];  // x clear, y add, z albedo
 };
 
 #define FOG_COMMON R"GLSL(
@@ -68,7 +74,8 @@ layout(std430, binding = 3) readonly buffer Lights { Light lights[]; };
 layout(std430, binding = 4) readonly buffer Cells { uvec4 cells[]; };
 layout(std430, binding = 5) readonly buffer Items { uint items[]; };
 struct Box { vec4 lo; vec4 hi; };
-layout(std430, binding = 6) readonly buffer Boxes { Box boxes[]; };
+struct Disturbance { vec4 a; vec4 b; vec4 k; };
+layout(std430, binding = 6) readonly buffer Shapes { Box boxes[32]; Disturbance disturbances[]; };
 layout(binding = 7) uniform sampler3D uHistory;
 layout(rgba16f, binding = 8) writeonly uniform image3D uOut;
 
@@ -97,7 +104,9 @@ float valueNoise(vec3 x) {
 }
 float fbm(vec3 x) { return 0.55 * valueNoise(x) + 0.3 * valueNoise(x * 2.03) + 0.15 * valueNoise(x * 4.07); }
 
-float density(vec3 w) {
+// How much light a metre of air here stops (x), and how much of that it
+// scatters rather than absorbs (y, before the fog's albedo).
+vec2 density(vec3 w) {
     float d = p.fog.x * exp(-max(w.y - p.fog.z, 0.0) * p.fog.y);
     int boxCount = int(p.sunColor.w);
     for (int i = 0; i < boxCount; ++i) {
@@ -105,11 +114,29 @@ float density(vec3 w) {
         float e = min(min(inside.x, inside.y), inside.z);
         if (e > 0.0) d += boxes[i].lo.w * clamp(e / max(boxes[i].hi.w, 1e-3), 0.0, 1.0);
     }
+    // Disturbances: smoke added before the wisps (so it's patchy too), what's
+    // pushed aside taken out after (so a wake through smoke clears it as well).
+    float keep = 1.0;
+    float scatter = d;
+    int disturbanceCount = int(p.cascadeInfo.z);
+    for (int i = 0; i < disturbanceCount; ++i) {
+        vec3 a = disturbances[i].a.xyz;
+        vec3 ab = disturbances[i].b.xyz - a;
+        float t = clamp(dot(w - a, ab) / max(dot(ab, ab), 1e-6), 0.0, 1.0);
+        float r = length(w - a - ab * t);
+        float k = clamp((disturbances[i].a.w - r) * disturbances[i].b.w, 0.0, 1.0);
+        k = k * k * (3.0 - 2.0 * k);
+        d += k * disturbances[i].k.y;
+        scatter += k * disturbances[i].k.y * disturbances[i].k.z;
+        keep *= 1.0 - k * disturbances[i].k.x;
+    }
     if (p.albedo.w > 0.0) {
         float n = fbm(w * p.ambient.w - p.wind.xyz * p.wind.w * p.ambient.w);
-        d *= mix(1.0, clamp(n * 2.2 - 0.4, 0.0, 2.0), p.albedo.w);
+        float wisps = mix(1.0, clamp(n * 2.2 - 0.4, 0.0, 2.0), p.albedo.w);
+        d *= wisps;
+        scatter *= wisps;
     }
-    return d;
+    return vec2(d, scatter) * keep;
 }
 
 float sunShadow(vec3 w, float dist) {
@@ -136,7 +163,8 @@ void main() {
     uvec3 id = gl_GlobalInvocationID;
     if (id.x >= uint(p.grid.x) || id.y >= uint(p.grid.y) || id.z >= uint(p.grid.z)) return;
     vec3 w = froxelWorld(vec3(id) + vec3(0.5, 0.5, p.camera.w));
-    float sigmaT = density(w);
+    vec2 sigma = density(w);
+    float sigmaT = sigma.x;
     vec3 toEye = p.camera.xyz - w;
     float dist = length(toEye);
     toEye /= max(dist, 1e-4);
@@ -161,7 +189,7 @@ void main() {
         radiance += l.colorIntensity.rgb * l.colorIntensity.w * falloff * phase(dot(fromLight, toEye), p.fog.w);
     }
     radiance += p.ambient.rgb;
-    vec4 current = vec4(sigmaT * p.albedo.rgb * radiance, sigmaT);
+    vec4 current = vec4(sigma.y * p.albedo.rgb * radiance, sigmaT);
 
     // Last frame's grid at this cell's centre, where it was then.
     if (p.sun.w > 0.5) {
@@ -273,7 +301,8 @@ bool VkFroxelFog::init(VkContext& ctx, VkFormat sceneFormat) {
     for (std::size_t i = 0; i < params_.size(); ++i) {
         for (auto [buffer, bytes, use] : {std::tuple{&params_[i], VkDeviceSize{sizeof(GpuParams)},
                                                      VkBufferUsageFlags{VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT}},
-                                          std::tuple{&volumes_[i], VkDeviceSize{sizeof(GpuBox) * kMaxVolumes},
+                                          std::tuple{&volumes_[i], VkDeviceSize{sizeof(GpuBox) * kMaxVolumes +
+                                                                              sizeof(GpuDisturbance) * kMaxDisturbances},
                                                      VkBufferUsageFlags{VK_BUFFER_USAGE_STORAGE_BUFFER_BIT}}}) {
             VkBufferCreateInfo bi{};
             bi.sType       = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
@@ -527,6 +556,8 @@ void VkFroxelFog::record(VulkanRenderer& renderer, VkCommandBuffer cb, const Fra
     p.sunColor[2] = f.sunColor.z;
     const std::size_t boxes = std::min<std::size_t>(f.volumes.size(), kMaxVolumes);
     p.sunColor[3] = static_cast<float>(boxes);
+    const std::size_t disturbances = std::min<std::size_t>(f.disturbances.size(), kMaxDisturbances);
+    p.cascadeInfo[2] = static_cast<float>(disturbances);
     p.camera[0] = f.cameraPos.x;
     p.camera[1] = f.cameraPos.y;
     p.camera[2] = f.cameraPos.z;
@@ -545,6 +576,14 @@ void VkFroxelFog::record(VulkanRenderer& renderer, VkCommandBuffer cb, const Fra
     for (std::size_t i = 0; i < boxes; ++i) {
         const FogVolume& v = f.volumes[i];
         box[i] = GpuBox{{v.min.x, v.min.y, v.min.z, v.density}, {v.max.x, v.max.y, v.max.z, v.edge}};
+    }
+    auto* disturbance = reinterpret_cast<GpuDisturbance*>(box + kMaxVolumes);
+    for (std::size_t i = 0; i < disturbances; ++i) {
+        const FogDisturbance& d = f.disturbances[i];
+        const float r = std::max(d.radius, 1e-3f);
+        disturbance[i] = GpuDisturbance{{d.a.x, d.a.y, d.a.z, r},
+                                        {d.b.x, d.b.y, d.b.z, 1.0f / (std::clamp(d.softness, 0.02f, 1.0f) * r)},
+                                        {std::clamp(d.clear, 0.0f, 1.0f), std::max(d.add, 0.0f), std::clamp(d.albedo, 0.0f, 1.0f), 0.0f}};
     }
 
     VkVolumeImage& out = scattering_[static_cast<std::size_t>(current_)];

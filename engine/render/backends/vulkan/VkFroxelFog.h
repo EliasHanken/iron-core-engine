@@ -20,7 +20,8 @@ class VulkanRenderer;
 
 // Froxel volumetric fog, as Frostbite and Unreal do it. A grid of cells fitted to
 // the view (160 x 90 tiles by 64 slices spaced logarithmically in depth) is:
-//   1. filled and lit: density from height fog, drifting noise and fog boxes;
+//   1. filled and lit: density from height fog, drifting noise, fog boxes and
+//      disturbances (wakes and blasts pushing it aside, smoke);
 //      light from the sun through the cascaded shadows, the clustered point and
 //      spot lights, and ambient; then blended with last frame's grid, reprojected,
 //      over a jittered sample point, so it's smooth without many samples;
@@ -34,7 +35,8 @@ public:
     static constexpr std::uint32_t kY = 90;
     static constexpr std::uint32_t kZ = 64;
     static constexpr float kNear = 0.4f;
-    static constexpr std::uint32_t kMaxVolumes = 32;
+    static constexpr std::uint32_t kMaxVolumes = 32;  // The shader's Shapes block holds this many boxes.
+    static constexpr std::uint32_t kMaxDisturbances = 128;
 
     bool init(VkContext& ctx, VkFormat sceneFormat);
     void destroy(VkContext& ctx);
@@ -45,6 +47,7 @@ public:
     struct Frame {
         VolumetricFog fog;
         std::span<const FogVolume> volumes;
+        std::span<const FogDisturbance> disturbances;
         Mat4 view;
         Mat4 projection;          // Unjittered.
         Mat4 previousViewProjection;  // Unjittered, for reprojecting last frame's grid.
@@ -84,7 +87,7 @@ private:
     int current_ = 0;
     bool historyValid_ = false;
     std::array<Buffer, 2> params_;   // Per frame in flight: the uniform block.
-    std::array<Buffer, 2> volumes_;  // Per frame in flight: the fog boxes.
+    std::array<Buffer, 2> volumes_;  // Per frame in flight: the fog boxes, then the disturbances.
     VkSampler linear_ = VK_NULL_HANDLE;
     VkSampler nearest_ = VK_NULL_HANDLE;
 
