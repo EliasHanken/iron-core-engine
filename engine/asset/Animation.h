@@ -50,6 +50,14 @@ struct AnimationChannel {
     int           samplerIndex = -1;
 };
 
+// A named moment in a clip, for the game to hang a sound or an effect on: an
+// animation notify, in Unreal's terms. glTF has no place for these, so they come
+// from a sidecar file (see loadAnimationEvents).
+struct AnimationEvent {
+    float       time = 0.0f;
+    std::string name;
+};
+
 // One named animation clip. `duration` is max(sampler.inputs.back()) across
 // every sampler, computed by the loader. Playback wraps at this duration.
 struct AnimationClip {
@@ -61,6 +69,14 @@ struct AnimationClip {
     // preserves channel.samplerIndex alignment with the source file.
     std::vector<AnimationSampler> samplers;
     std::vector<AnimationChannel> channels;
+    std::vector<AnimationEvent>   events;   // In time order.
+    bool                          looping = true;
 };
+
+// Reads a clip sidecar written next to a glTF by the content pipeline:
+//   {"clips": {"<clip name>": {"loop": false, "events": [{"time": 0.85, "name": "mag_out"}]}}}
+// and fills in the named clips' `looping` and `events`. Clips the file doesn't
+// name are left alone. Returns false if the file can't be read.
+bool loadAnimationEvents(const std::string& path, std::vector<AnimationClip>& clips);
 
 }  // namespace iron

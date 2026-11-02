@@ -185,6 +185,25 @@ int main() {
         }
     }
 
+    // --- The whole skinned model: Fox's mesh as a section, the same skeleton and
+    //     clips as the single-mesh path, and bones findable by name. A static mesh
+    //     isn't a skinned model.
+    {
+        auto single = loadGltfModel(base + "/Fox.glb");
+        auto model = loadGltfSkinnedModel(base + "/Fox.glb");
+        CHECK(model.has_value());
+        if (model.has_value() && single.has_value() && single->skinnedMesh.has_value()) {
+            CHECK(model->sections.size() == 1);
+            CHECK(model->skeleton.bones.size() == single->skinnedMesh->skeleton.bones.size());
+            CHECK(model->sections[0].mesh.vertices.size() == single->skinnedMesh->vertices.size());
+            CHECK(model->sections[0].mesh.indices.size() == single->skinnedMesh->indices.size());
+            CHECK(model->findClip("Walk") != nullptr);
+            CHECK(model->findBone(model->skeleton.bones[0].name) == 0);
+            CHECK(model->findBone("no such bone") == -1);
+        }
+        CHECK(!loadGltfSkinnedModel(base + "/Box.gltf").has_value());
+    }
+
     // --- Invalid path returns nullopt (parse failure path).
     {
         auto data = loadGltfMesh("/this/path/does/not/exist.gltf");

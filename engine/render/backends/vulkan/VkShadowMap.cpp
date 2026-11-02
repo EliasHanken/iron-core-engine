@@ -350,6 +350,7 @@ void VkShadowMap::record(VkCommandBuffer cb, VkDevice device, VkFrameRing& frame
     vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_);
 
     for (const DrawCall& call : draws) {
+        if (call.viewModel) continue;  // The player's own arms and weapon cast nothing.
         if (!meshes.has(call.mesh)) continue;
 
         // lightModelViewProj = lightViewProj * model.

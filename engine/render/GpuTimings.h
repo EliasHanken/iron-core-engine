@@ -73,4 +73,20 @@ private:
     std::unordered_map<std::uint32_t, Mat4> current_;
 };
 
+// The same, for a skinned object's bone palette: last frame's, so the skinned
+// motion vectors see the bones move as well as the object.
+class PaletteHistory {
+public:
+    // Last frame's palette for `id`, or `palette` itself if it's new. Records
+    // `palette` for the next frame. Valid until endFrame.
+    std::span<const Mat4> previous(std::uint32_t id, std::span<const Mat4> palette);
+    void endFrame();
+
+    std::size_t tracked() const { return last_.size(); }
+
+private:
+    std::unordered_map<std::uint32_t, std::vector<Mat4>> last_;
+    std::unordered_map<std::uint32_t, std::vector<Mat4>> current_;
+};
+
 }  // namespace iron

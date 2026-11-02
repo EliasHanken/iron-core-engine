@@ -44,6 +44,8 @@ add_library(ironcore STATIC
   asset/Ik.cpp
   asset/CharacterAnimator.cpp
   asset/AnimationStateMachine.cpp
+  asset/AnimationEvents.cpp
+  asset/SkeletalAnimator.cpp
   nodes/NodeGraph.cpp
   nodes/NodeRegistry.cpp
   nodes/BuiltinNodes.cpp

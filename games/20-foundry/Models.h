@@ -102,8 +102,8 @@ public:
         return slot.get();
     }
 
-private:
-    iron::Material materialFor(const iron::GltfSection& s) {
+    // A glTF material as the engine's, with its textures loaded once and shared.
+    iron::Material materialFor(const iron::GltfSurface& s) {
         iron::Material m;
         m.texture = texture(s.materialPaths.albedo, true);
         m.normalMap = texture(s.materialPaths.normal, false);
@@ -119,6 +119,7 @@ private:
         return m;
     }
 
+private:
     iron::TextureHandle texture(const std::string& path, bool srgb) {
         if (path.empty()) return iron::kInvalidHandle;
         const std::string key = path + (srgb ? "|s" : "|l");

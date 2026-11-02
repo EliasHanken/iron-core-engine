@@ -46,6 +46,9 @@ struct DrawCall {
     // the renderer can remember where it was last frame and give its pixels true
     // motion vectors. Leave 0 for anything that stands still.
     std::uint32_t motionId = 0;
+    // Part of the first-person view model: drawn with the view model's own field of
+    // view (setViewModelFov), always in front of the world, casting no shadow.
+    bool viewModel = false;
 };
 
 // M23 — maximum bone matrices uploaded per skinned draw call. The
@@ -65,6 +68,11 @@ struct SkinnedDrawCall {
     Mat4              model       = Mat4::identity();
     Material          material{};
     std::span<const Mat4> boneMatrices;  // size <= kMaxBonesPerSkinnedMesh
+    // Non-zero to write motion vectors (for temporal AA and motion blur): the same
+    // id every frame for the same thing. Unique per draw, so one model's sections
+    // each need their own.
+    std::uint32_t     motionId = 0;
+    bool              viewModel = false;  // See DrawCall::viewModel.
 };
 
 // Render Hardware Interface: a graphics-API-agnostic renderer. Game code talks
@@ -313,6 +321,13 @@ public:
     virtual CullStats cullStats() const { return {}; }
     // Keeps culling to the camera of the moment it was frozen, to see what it skips.
     virtual void setCullingFrozen(bool frozen) { (void)frozen; }
+
+    // The vertical field of view, in radians, for draws marked viewModel: the
+    // player's arms and weapon. Shooters draw them narrower than the world so the
+    // weapon doesn't stretch towards the screen's corner, and squeeze their depth
+    // in front of everything so it never pokes into a wall. 0 (the default) draws
+    // them with the world's projection.
+    virtual void setViewModelFov(float verticalRadians) { (void)verticalRadians; }
 
     // How edges are smoothed. Off by default.
     virtual void setAntiAliasing(AntiAliasing mode) { (void)mode; }

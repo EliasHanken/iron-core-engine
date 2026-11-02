@@ -5,6 +5,7 @@
 #include <vulkan/vulkan.h>
 #include <vk_mem_alloc.h>
 
+#include <array>
 #include <span>
 
 namespace iron {
@@ -19,6 +20,9 @@ struct VelocityObject {
     std::uint32_t indexCount = 0;
     Mat4          current = Mat4::identity();
     Mat4          previous = Mat4::identity();
+    // A skinned object's bones, staged with stageBones; -1 for a rigid one. Its
+    // vertex buffer holds SkinnedVertex.
+    int           boneSlot = -1;
 };
 
 // The motion vector of every scene pixel: how far it moved on screen since the
@@ -40,10 +44,15 @@ public:
     bool createTargets(VkContext& ctx, VkExtent2D extent, VkImageView depthView);
     void destroyTargets(VkContext& ctx);
 
+    // Copies a skinned object's bone palettes, this frame's and last frame's, for
+    // `frame` of the frame ring. Returns the slot to put in its VelocityObject, or
+    // -1 when this frame has no room left (it then moves with the camera only).
+    int stageBones(int frame, std::span<const Mat4> current, std::span<const Mat4> previous);
+
     // `reprojection` maps this frame's clip space to last frame's for the camera
     // (previous view-projection times the inverse of this one).
-    void record(VkCommandBuffer cb, const Mat4& reprojection,
-                std::span<const VelocityObject> objects) const;
+    void record(VkCommandBuffer cb, int frame, const Mat4& reprojection,
+                std::span<const VelocityObject> objects);
 
     VkImageView view() const { return view_; }
 
@@ -65,6 +74,22 @@ private:
     ::VkPipeline          cameraPipeline_ = VK_NULL_HANDLE;
     VkPipelineLayout      objectLayout_ = VK_NULL_HANDLE;
     ::VkPipeline          objectPipeline_ = VK_NULL_HANDLE;
+
+    // Skinned objects: both palettes per slot, in a mapped buffer per frame.
+    static constexpr int kBoneSlots = 16;
+    static constexpr int kBonesPerPalette = 128;
+    struct BoneBuffer {
+        VkBuffer      buffer = VK_NULL_HANDLE;
+        VmaAllocation alloc = VK_NULL_HANDLE;
+        void*         mapped = nullptr;
+        int           used = 0;
+    };
+    std::array<BoneBuffer, 2>      boneBuffers_{};
+    std::array<VkDescriptorSet, 2> boneSets_{};
+    VkDescriptorSetLayout boneSetLayout_ = VK_NULL_HANDLE;
+    VkDescriptorPool      bonePool_ = VK_NULL_HANDLE;
+    VkPipelineLayout      skinnedLayout_ = VK_NULL_HANDLE;
+    ::VkPipeline          skinnedPipeline_ = VK_NULL_HANDLE;
 };
 
 }  // namespace iron

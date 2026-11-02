@@ -69,9 +69,13 @@ public:
 
     // Motion vectors for this frame. Record after the opaque pass and before
     // anything that samples them.
-    void recordVelocity(VkCommandBuffer cb, const Mat4& reprojection,
-                        std::span<const VelocityObject> objects) const {
-        velocity_.record(cb, reprojection, objects);
+    void recordVelocity(VkCommandBuffer cb, int frame, const Mat4& reprojection,
+                        std::span<const VelocityObject> objects) {
+        velocity_.record(cb, frame, reprojection, objects);
+    }
+    // A skinned object's palettes for this frame's motion vectors; see VkVelocityPass.
+    int stageVelocityBones(int frame, std::span<const Mat4> current, std::span<const Mat4> previous) {
+        return velocity_.stageBones(frame, current, previous);
     }
     VkImageView velocityView() const { return velocity_.view(); }
 

@@ -4,8 +4,10 @@
 #include "render/backends/vulkan/VkShader.h"
 #include "render/backends/vulkan/VkUtils.h"
 #include "scene/Mesh.h"
+#include "scene/SkinnedMesh.h"
 
 #include <cstddef>
+#include <cstring>
 
 namespace iron {
 
@@ -44,6 +46,27 @@ layout(location = 1) out vec4 vPrevious;
 void main() {
     vCurrent = pc.current * vec4(aPos, 1.0);
     vPrevious = pc.previous * vec4(aPos, 1.0);
+    gl_Position = vCurrent;
+}
+)";
+
+// The skinned lit shader's transform: four weighted bones, then the model's mvp.
+// Slot `boneBase` holds this frame's palette, then last frame's.
+const char* const kSkinnedVert = R"(#version 450
+layout(location = 0) in vec3 aPos;
+layout(location = 4) in uvec4 aJoints;
+layout(location = 5) in vec4 aWeights;
+layout(std430, set = 0, binding = 0) readonly buffer Bones { mat4 bones[256]; };
+layout(push_constant) uniform Push { mat4 current; mat4 previous; } pc;
+layout(location = 0) out vec4 vCurrent;
+layout(location = 1) out vec4 vPrevious;
+mat4 skin(int base) {
+    return aWeights.x * bones[base + int(aJoints.x)] + aWeights.y * bones[base + int(aJoints.y)] +
+           aWeights.z * bones[base + int(aJoints.z)] + aWeights.w * bones[base + int(aJoints.w)];
+}
+void main() {
+    vCurrent = pc.current * (skin(0) * vec4(aPos, 1.0));
+    vPrevious = pc.previous * (skin(128) * vec4(aPos, 1.0));
     gl_Position = vCurrent;
 }
 )";
@@ -197,11 +220,65 @@ bool VkVelocityPass::createPipelines(VkContext& ctx) {
     layoutInfo.pPushConstantRanges = &objectPush;
     VK_CHECK(vkCreatePipelineLayout(device, &layoutInfo, nullptr, &objectLayout_));
 
+    {
+        VkDescriptorSetLayoutBinding bones{};
+        bones.binding         = 0;
+        bones.descriptorType  = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC;
+        bones.descriptorCount = 1;
+        bones.stageFlags      = VK_SHADER_STAGE_VERTEX_BIT;
+        VkDescriptorSetLayoutCreateInfo setInfo{};
+        setInfo.sType        = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+        setInfo.bindingCount = 1;
+        setInfo.pBindings    = &bones;
+        VK_CHECK(vkCreateDescriptorSetLayout(device, &setInfo, nullptr, &boneSetLayout_));
+        VkDescriptorPoolSize size{VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC, 2};
+        VkDescriptorPoolCreateInfo poolInfo{};
+        poolInfo.sType         = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
+        poolInfo.maxSets       = 2;
+        poolInfo.poolSizeCount = 1;
+        poolInfo.pPoolSizes    = &size;
+        VK_CHECK(vkCreateDescriptorPool(device, &poolInfo, nullptr, &bonePool_));
+        const VkDeviceSize block = sizeof(Mat4) * kBonesPerPalette * 2;
+        for (std::size_t i = 0; i < boneBuffers_.size(); ++i) {
+            BoneBuffer& b = boneBuffers_[i];
+            VkBufferCreateInfo bi{};
+            bi.sType       = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+            bi.size        = block * kBoneSlots;
+            bi.usage       = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
+            bi.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+            VmaAllocationCreateInfo ai{};
+            ai.usage = VMA_MEMORY_USAGE_AUTO;
+            ai.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT | VMA_ALLOCATION_CREATE_MAPPED_BIT;
+            VmaAllocationInfo info{};
+            VK_CHECK(vmaCreateBuffer(ctx.allocator(), &bi, &ai, &b.buffer, &b.alloc, &info));
+            b.mapped = info.pMappedData;
+            VkDescriptorSetAllocateInfo alloc{};
+            alloc.sType              = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+            alloc.descriptorPool     = bonePool_;
+            alloc.descriptorSetCount = 1;
+            alloc.pSetLayouts        = &boneSetLayout_;
+            VK_CHECK(vkAllocateDescriptorSets(device, &alloc, &boneSets_[i]));
+            VkDescriptorBufferInfo bufferInfo{b.buffer, 0, block};
+            VkWriteDescriptorSet write{};
+            write.sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+            write.dstSet          = boneSets_[i];
+            write.dstBinding      = 0;
+            write.descriptorCount = 1;
+            write.descriptorType  = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC;
+            write.pBufferInfo     = &bufferInfo;
+            vkUpdateDescriptorSets(device, 1, &write, 0, nullptr);
+        }
+        layoutInfo.setLayoutCount = 1;
+        layoutInfo.pSetLayouts    = &boneSetLayout_;
+        VK_CHECK(vkCreatePipelineLayout(device, &layoutInfo, nullptr, &skinnedLayout_));
+    }
+
     const VkShaderModule fullscreen = makeModule(device, VK_SHADER_STAGE_VERTEX_BIT, kFullscreenVert);
     const VkShaderModule camera     = makeModule(device, VK_SHADER_STAGE_FRAGMENT_BIT, kCameraFrag);
     const VkShaderModule objectVert = makeModule(device, VK_SHADER_STAGE_VERTEX_BIT, kObjectVert);
     const VkShaderModule objectFrag = makeModule(device, VK_SHADER_STAGE_FRAGMENT_BIT, kObjectFrag);
-    const bool compiled = fullscreen && camera && objectVert && objectFrag;
+    const VkShaderModule skinnedVert = makeModule(device, VK_SHADER_STAGE_VERTEX_BIT, kSkinnedVert);
+    const bool compiled = fullscreen && camera && objectVert && objectFrag && skinnedVert;
 
     if (compiled) {
         VkPipelineShaderStageCreateInfo stages[2]{};
@@ -283,11 +360,28 @@ bool VkVelocityPass::createPipelines(VkContext& ctx) {
         info.pDepthStencilState = &depthEqual;
         info.layout             = objectLayout_;
         VK_CHECK(vkCreateGraphicsPipelines(device, VK_NULL_HANDLE, 1, &info, nullptr, &objectPipeline_));
+
+        const VkVertexInputBindingDescription skinnedBinding{0, sizeof(SkinnedVertex), VK_VERTEX_INPUT_RATE_VERTEX};
+        const VkVertexInputAttributeDescription skinnedAttributes[3] = {
+            {0, 0, VK_FORMAT_R32G32B32_SFLOAT, static_cast<std::uint32_t>(offsetof(SkinnedVertex, position))},
+            {4, 0, VK_FORMAT_R32G32B32A32_UINT, static_cast<std::uint32_t>(offsetof(SkinnedVertex, joints))},
+            {5, 0, VK_FORMAT_R32G32B32A32_SFLOAT, static_cast<std::uint32_t>(offsetof(SkinnedVertex, weights))},
+        };
+        VkPipelineVertexInputStateCreateInfo skinnedInput{};
+        skinnedInput.sType                           = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
+        skinnedInput.vertexBindingDescriptionCount   = 1;
+        skinnedInput.pVertexBindingDescriptions      = &skinnedBinding;
+        skinnedInput.vertexAttributeDescriptionCount = 3;
+        skinnedInput.pVertexAttributeDescriptions    = skinnedAttributes;
+        stages[0].module       = skinnedVert;
+        info.pVertexInputState = &skinnedInput;
+        info.layout            = skinnedLayout_;
+        VK_CHECK(vkCreateGraphicsPipelines(device, VK_NULL_HANDLE, 1, &info, nullptr, &skinnedPipeline_));
     } else {
         Log::error("VkVelocityPass: shader compile failed");
     }
 
-    for (VkShaderModule module : {fullscreen, camera, objectVert, objectFrag}) {
+    for (VkShaderModule module : {fullscreen, camera, objectVert, objectFrag, skinnedVert}) {
         if (module) vkDestroyShaderModule(device, module, nullptr);
     }
     return compiled;
@@ -358,6 +452,18 @@ void VkVelocityPass::destroyTargets(VkContext& ctx) {
 void VkVelocityPass::destroy(VkContext& ctx) {
     destroyTargets(ctx);
     const VkDevice device = ctx.device();
+    if (skinnedPipeline_) vkDestroyPipeline(device, skinnedPipeline_, nullptr);
+    if (skinnedLayout_) vkDestroyPipelineLayout(device, skinnedLayout_, nullptr);
+    if (bonePool_) vkDestroyDescriptorPool(device, bonePool_, nullptr);
+    if (boneSetLayout_) vkDestroyDescriptorSetLayout(device, boneSetLayout_, nullptr);
+    for (BoneBuffer& b : boneBuffers_) {
+        if (b.buffer) vmaDestroyBuffer(ctx.allocator(), b.buffer, b.alloc);
+        b = BoneBuffer{};
+    }
+    skinnedPipeline_ = VK_NULL_HANDLE;
+    skinnedLayout_ = VK_NULL_HANDLE;
+    bonePool_ = VK_NULL_HANDLE;
+    boneSetLayout_ = VK_NULL_HANDLE;
     if (objectPipeline_) vkDestroyPipeline(device, objectPipeline_, nullptr);
     if (cameraPipeline_) vkDestroyPipeline(device, cameraPipeline_, nullptr);
     if (objectLayout_) vkDestroyPipelineLayout(device, objectLayout_, nullptr);
@@ -375,8 +481,28 @@ void VkVelocityPass::destroy(VkContext& ctx) {
     pass_ = VK_NULL_HANDLE;
 }
 
-void VkVelocityPass::record(VkCommandBuffer cb, const Mat4& reprojection,
-                            std::span<const VelocityObject> objects) const {
+int VkVelocityPass::stageBones(int frame, std::span<const Mat4> current, std::span<const Mat4> previous) {
+    BoneBuffer& b = boneBuffers_[static_cast<std::size_t>(frame) % boneBuffers_.size()];
+    if (!b.mapped || b.used >= kBoneSlots) return -1;
+    const int slot = b.used++;
+    auto* out = static_cast<Mat4*>(b.mapped) + static_cast<std::size_t>(slot) * kBonesPerPalette * 2;
+    const std::size_t nc = std::min<std::size_t>(current.size(), kBonesPerPalette);
+    const std::size_t np = std::min<std::size_t>(previous.size(), kBonesPerPalette);
+    std::memcpy(out, current.data(), nc * sizeof(Mat4));
+    std::memcpy(out + kBonesPerPalette, previous.data(), np * sizeof(Mat4));
+    return slot;
+}
+
+void VkVelocityPass::record(VkCommandBuffer cb, int frame, const Mat4& reprojection,
+                            std::span<const VelocityObject> objects) {
+    // This frame's bone slots are spent once recorded; the next use of this
+    // frame's buffer starts empty (the frame ring has waited for it by then).
+    BoneBuffer& bones = boneBuffers_[static_cast<std::size_t>(frame) % boneBuffers_.size()];
+    const VkDescriptorSet boneSet = boneSets_[static_cast<std::size_t>(frame) % boneSets_.size()];
+    struct Reset {
+        BoneBuffer& b;
+        ~Reset() { b.used = 0; }
+    } reset{bones};
     if (!cameraPipeline_ || !objectPipeline_ || !framebuffer_) return;
 
     VkRenderPassBeginInfo begin{};
@@ -404,10 +530,23 @@ void VkVelocityPass::record(VkCommandBuffer cb, const Mat4& reprojection,
         viewport.y      = static_cast<float>(extent_.height);
         viewport.height = -static_cast<float>(extent_.height);
         vkCmdSetViewport(cb, 0, 1, &viewport);
-        vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, objectPipeline_);
+        ::VkPipeline bound = VK_NULL_HANDLE;
         for (const VelocityObject& object : objects) {
+            const bool skinned = object.boneSlot >= 0 && skinnedPipeline_;
+            const ::VkPipeline want = skinned ? skinnedPipeline_ : objectPipeline_;
+            const VkPipelineLayout layout = skinned ? skinnedLayout_ : objectLayout_;
+            if (want != bound) {
+                vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, want);
+                bound = want;
+            }
+            if (skinned) {
+                const auto offset = static_cast<std::uint32_t>(sizeof(Mat4) * kBonesPerPalette * 2 *
+                                                               static_cast<std::size_t>(object.boneSlot));
+                vkCmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, skinnedLayout_, 0, 1, &boneSet, 1,
+                                        &offset);
+            }
             const Mat4 matrices[2] = {object.current, object.previous};
-            vkCmdPushConstants(cb, objectLayout_, VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(matrices), matrices);
+            vkCmdPushConstants(cb, layout, VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(matrices), matrices);
             const VkDeviceSize offset = 0;
             vkCmdBindVertexBuffers(cb, 0, 1, &object.vertexBuffer, &offset);
             vkCmdBindIndexBuffer(cb, object.indexBuffer, 0, VK_INDEX_TYPE_UINT32);

@@ -14,6 +14,8 @@
 //   motion   show motion vectors
 //   rig      watch the player's arms and rifle from the side, to tune the grip
 //   aim      hold the rifle up to the eye throughout
+//   reload   fire a burst, then reload (stays put)
+//   inspect  turn the rifle over to look at it
 //   overview look down on the stockyard from above, to see culling at work
 //   lod      tint instance groups by level of detail
 //   freeze   freeze culling at the start
@@ -22,10 +24,10 @@
 #include "common/CaptureLoop.h"
 #include "common/TrackedText.h"
 #include "Gun.h"
-#include "Arms.h"
 #include "Level.h"
 #include "Stockyard.h"
 #include "Models.h"
+#include "ViewModel.h"
 #include "Sound.h"
 
 #include "audio/AudioEngine.h"
@@ -70,8 +72,7 @@ constexpr float kAimWalkSpeed = 2.4f;
 constexpr float kMouseRadiansPerPixel = 0.0022f;
 constexpr float kPhysicsStep = 1.0f / 60.0f;
 constexpr float kRecordSeconds = 34.0f;
-constexpr std::uint32_t kGunMotionId = 1;
-constexpr std::uint32_t kArmsMotionId = 2;
+constexpr std::uint32_t kGunMotionId = 1;  // And the next few, one per section.
 constexpr std::uint32_t kPropMotionBase = 100;
 constexpr std::uint32_t kPlateMotionBase = 400;
 constexpr std::uint32_t kPlacedMotionBase = 600;
@@ -180,28 +181,11 @@ std::array<iron::Material, static_cast<std::size_t>(Look::Count)> loadLooks(iron
 
 // --- The rifle -------------------------------------------------------------------
 
-// The AK-47 model (assets/models/ak47, exported by tools/foundry/export_ak.py) has its
-// origin at the bottom of the pistol grip and looks down -z. The ejection port is on
-// the right of the receiver, above the magazine.
-constexpr Vec3 kMuzzleLocal{0.0f, 0.139f, -0.618f};
-constexpr Vec3 kEjectLocal{0.024f, 0.159f, -0.17f};
-
-// The arms' shoulders, below and just behind the eye. The rig's arms are short for a
-// grown man (47 cm shoulder to wrist), so they're drawn a little larger.
-constexpr Vec3 kShoulders{0.0f, -0.26f, 0.0f};  // Low and back: the cut shoulders stay off screen.
-constexpr float kArmScale = 1.3f;
-
-// How each hand holds the rifle, in the rifle's space (+y up, -z out of the muzzle).
-// The rig's hand socket marks the middle of what the hand holds, a little off the
-// palm, so each target is near the middle of the part held, nudged towards the palm.
-// The right hand's palm wraps the pistol grip from the right and behind, fingers
-// forward round it (the grip leans back, so they point a little down); the left
-// cradles the lower handguard from below, palm up, fingers across under it and up
-// its right side. Poles point the elbows down and out, in the arms' space.
-const foundry::Arms::Grip kRightGrip{{0.004f, 0.05f, 0.0f}, {-1.0f, 0.0f, -0.4f}, {-0.3f, -0.35f, -0.9f},
-                                     {0.7f, -1.0f, 0.5f}, 1.0f};
-const foundry::Arms::Grip kLeftGrip{{-0.007f, 0.118f, -0.30f}, {0.4f, 1.0f, 0.0f}, {1.0f, 0.3f, -0.3f},
-                                    {-0.8f, -1.0f, 0.3f}, 1.0f};
+// The view model's motion pivots near the grip at the hip, in the eye's space.
+constexpr Vec3 kViewPivot{0.09f, -0.24f, -0.2f};
+// The view model's own vertical field of view: narrower than the world's, as
+// shooters draw their weapons, so the rifle doesn't stretch to the screen's corner.
+constexpr float kViewModelFov = 42.0f * kPi / 180.0f;
 
 // Three crossed planes, both faces, for a flash seen from any angle.
 iron::MeshData buildFlash() {
@@ -395,7 +379,7 @@ public:
             const float y = h - 112.0f * unit;
             rect(bars, 0.0f, y, w, 46.0f * unit, {0.0f, 0.0f, 0.0f, 0.45f * hint});
             text::appendCentered(smallText, small_,
-                                 "WASD  MOVE     CLICK  FIRE     RIGHT CLICK  AIM     R  RELOAD     "
+                                 "WASD  MOVE     CLICK  FIRE     RIGHT CLICK  AIM     R  RELOAD     I  INSPECT     "
                                  "F1  FRAME     F2  MOTION     F3  FREEZE CULLING     F4  LODS     F5  AA",
                                  cx, y + 29.0f * unit, 1.0f, 0.24f, {1.0f, 0.93f, 0.84f, hint});
         }
@@ -705,10 +689,11 @@ int main(int argc, char** argv) {
         }
         iron::Log::info("foundry: stockyard of %zu instances", instances);
     }
-    const foundry::Model* rifle = models.get("ak47");
-    if (!rifle) return 1;
-    foundry::Arms arms;
-    const bool hasArms = arms.load(renderer, iron::executableDir() + "/assets/models/arms/arms.gltf");
+    foundry::ViewModel viewModel;
+    if (!viewModel.load(renderer, models, iron::executableDir() + "/assets/models/viewmodel/viewmodel.gltf")) {
+        return 1;
+    }
+    float sprintBlend = 0.0f;
     const iron::MeshHandle flashMesh = renderer.createMesh(buildFlash());
     const iron::MeshHandle bitMesh = renderer.createMesh(iron::makeCube());
 
@@ -736,6 +721,7 @@ int main(int argc, char** argv) {
     float stepDistance = 0.0f;
     Vec3 horizontal{0.0f, 0.0f, 0.0f};
     foundry::Gun gun;
+    gun.setReloadSeconds(viewModel.reloadSeconds(false, 1.9f), viewModel.reloadSeconds(true, 2.6f));
 
     // --- Sound ---
     foundry::Sound sound;
@@ -773,6 +759,7 @@ int main(int argc, char** argv) {
     float mouseY = 0.0f;
     bool jumpPressed = false;
     bool reloadPressed = false;
+    bool inspectPressed = false;
     bool escapePressed = false;
     bool quitPressed = false;
     bool clicked = false;
@@ -788,6 +775,7 @@ int main(int argc, char** argv) {
         mouseY += static_cast<float>(input.mouseDeltaY());
         jumpPressed = jumpPressed || input.keyPressed(GLFW_KEY_SPACE);
         reloadPressed = reloadPressed || input.keyPressed(GLFW_KEY_R);
+        inspectPressed = inspectPressed || input.keyPressed(GLFW_KEY_I);
         escapePressed = escapePressed || input.keyPressed(GLFW_KEY_ESCAPE);
         quitPressed = quitPressed || input.keyPressed(GLFW_KEY_Q);
         clicked = clicked || input.mouseButtonPressed(GLFW_MOUSE_BUTTON_LEFT);
@@ -863,6 +851,12 @@ int main(int argc, char** argv) {
             }
             trigger = wp.fire;
             aiming = wp.aim || sceneHas("aim");
+            // Clip checks: a short burst then a reload, or a look at the rifle.
+            if (sceneHas("reload")) {
+                trigger = seconds > 0.9f && seconds < 1.2f;
+                reloadPressed = reloadPressed || (seconds > 1.4f && seconds < 1.45f);
+            }
+            inspectPressed = inspectPressed || (sceneHas("inspect") && seconds > 0.9f && seconds < 0.95f);
         } else if (!paused) {
             look = {-mouseX * kMouseRadiansPerPixel, -mouseY * kMouseRadiansPerPixel};
             const auto down = [&](int k) { return input.keyDown(k) ? 1.0f : 0.0f; };
@@ -931,9 +925,17 @@ int main(int argc, char** argv) {
         }
 
         // --- The gun ---
+        const bool wasReloading = gun.reloading();
         const int shots = gun.update(simDt, trigger && !paused, aiming, reloadPressed, look,
                                      speed / kRunSpeed, grounded);
         reloadPressed = false;
+        if (!wasReloading && gun.reloading()) viewModel.reload(gun.reloadingEmpty());
+        if (trigger || aiming) viewModel.interrupt();
+        if (inspectPressed && !gun.reloading() && !aiming) viewModel.inspect();
+        inspectPressed = false;
+        // Running swings the rifle down across the chest; it eases in and out.
+        sprintBlend += ((running && speed > 0.6f * kRunSpeed ? 1.0f : 0.0f) - sprintBlend) *
+                       std::min(simDt * 7.0f, 1.0f);
         const Vec2 kick = gun.viewKick();
         const float viewYaw = yaw + kick.x;
         const float viewPitch = pitch + kick.y;
@@ -946,12 +948,25 @@ int main(int argc, char** argv) {
         const float aspect = static_cast<float>(width) / static_cast<float>(std::max(height, 1));
         const Mat4 projection = iron::perspective(fov, aspect, 0.05f, 400.0f);
 
-        // The weapon in the world, from where it sits in view.
+        // The arms and rifle hang off the camera; the gun's kick, sway and bob move
+        // them as one, about a point near the grip.
         const Vec3 off = gun.viewOffset();
         const Vec3 tilt = gun.viewTilt();
-        const Mat4 rifleModel = cameraToWorld * iron::translation(off) * iron::rotationY(tilt.y) *
-                                iron::rotationX(tilt.x) * iron::rotationZ(tilt.z);
-        const Vec3 muzzle = transformPoint(rifleModel, kMuzzleLocal);
+        const Mat4 viewModelInView = iron::translation(off + kViewPivot) * iron::rotationY(tilt.y) *
+                                     iron::rotationX(tilt.x) * iron::rotationZ(tilt.z) *
+                                     iron::translation(kViewPivot * -1.0f);
+        const Mat4 viewModelToWorld = cameraToWorld * viewModelInView;
+        // Where a point on the view model appears to be in the world. It's drawn
+        // with its own field of view, so world things that leave it (tracers,
+        // casings) start where the eye sees it, not where it is.
+        const float fovStretch = std::tan(fov * 0.5f) / std::tan(kViewModelFov * 0.5f);
+        const auto apparent = [&](Vec3 onModel) {
+            const Vec3 v = transformPoint(viewModelInView, onModel);
+            return transformPoint(cameraToWorld, Vec3{v.x * fovStretch, v.y * fovStretch, v.z});
+        };
+        for (const auto& fired : viewModel.update(simDt, aimBlend, sprintBlend)) sound.foley(fired.name);
+        for (int i = 0; i < shots; ++i) viewModel.fire();
+        const Vec3 muzzle = apparent(viewModel.muzzle());
 
         for (int i = 0; i < shots; ++i) {
             ++shotCount;
@@ -965,7 +980,7 @@ int main(int argc, char** argv) {
             const Vec3 right = transformPoint(cameraToWorld, {1.0f, 0.0f, 0.0f}) - eye;
             const Vec3 up = transformPoint(cameraToWorld, {0.0f, 1.0f, 0.0f}) - eye;
             Bit casing;
-            casing.position = transformPoint(rifleModel, kEjectLocal);
+            casing.position = apparent(viewModel.ejectionPort());
             casing.velocity = horizontal + right * (2.4f + noise.next()) + up * (1.6f + noise.next()) +
                               aimDir * (noise.next() - 0.5f);
             casing.size = {0.022f, 0.009f, 0.009f};
@@ -1093,6 +1108,7 @@ int main(int argc, char** argv) {
                                         : iron::RenderDebugView::None);
         renderer.setCullingFrozen(frozen);
         renderer.setAntiAliasing(antiAliased ? iron::AntiAliasing::Temporal : iron::AntiAliasing::Off);
+        renderer.setViewModelFov(kViewModelFov);
         vulkan->setCinematic(lens);
         // The rig view looks at the player from the side; the player still aims as before.
         Mat4 renderView = view;
@@ -1166,41 +1182,22 @@ int main(int argc, char** argv) {
             ++draws;
         }
         {
-            drawModel(*rifle, rifleModel, kGunMotionId);
-            if (hasArms) {
-                const Mat4 armsToWorld = cameraToWorld * iron::translation(kShoulders) *
-                                         iron::scaling({kArmScale, kArmScale, kArmScale});
-                arms.pose(iron::inverse(rifleModel) * armsToWorld, kRightGrip, kLeftGrip, !sceneHas("bindpose"));
-                if (sceneHas("rig") && static_cast<int>(seconds * 60.0f) == 30) {
-                    iron::Log::info("foundry: palms miss their grips by %.3f (right) and %.3f (left)",
-                                    arms.reachError()[0] * kArmScale, arms.reachError()[1] * kArmScale);
-                    iron::Log::info("foundry: palms face their grips %.2f (right) and %.2f (left), last roll %.2f %.2f",
-                                    arms.facing()[0], arms.facing()[1], arms.roll()[0], arms.roll()[1]);
-                }
-                iron::DrawCall call;
-                call.mesh = arms.upload(renderer);
-                call.shader = lit;
-                call.model = armsToWorld;
-                call.material = arms.material();
-                call.motionId = kArmsMotionId;
-                renderer.submit(call);
-                ++draws;
-            }
+            draws += viewModel.draw(renderer, viewModelToWorld, kGunMotionId);
             if (gun.flash() > 0.0f) {
                 iron::DrawCall flash;
                 flash.mesh = flashMesh;
                 flash.shader = lit;
                 const float size = 0.8f + 0.5f * (gun.flash() / 0.05f);
-                flash.model = rifleModel * iron::translation(kMuzzleLocal) * iron::rotationZ(flashRoll) *
+                flash.model = viewModelToWorld * iron::translation(viewModel.muzzle()) * iron::rotationZ(flashRoll) *
                               iron::scaling({size, size, size * 1.3f});
                 flash.material = flashLook;
                 flash.material.emissive = Vec3{40.0f, 22.0f, 9.0f} * (gun.flash() / 0.05f);
+                flash.viewModel = true;
                 renderer.submit(flash);
                 ++draws;
             }
         }
 
-        sound.reload(gun.reloadProgress(), gun.reloading());
         sound.update(simDt, eye, aimDir, indoorAt(eye), seconds);
 
         Interface::State state;

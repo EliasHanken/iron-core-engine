@@ -1,0 +1,85 @@
+{
+  "fps": 30,
+  "clips": {
+    "idle": {
+      "loop": true,
+      "events": []
+    },
+    "aim": {
+      "loop": true,
+      "events": []
+    },
+    "fire": {
+      "loop": false,
+      "events": []
+    },
+    "draw": {
+      "loop": false,
+      "events": [
+        {
+          "time": 0.0,
+          "name": "draw"
+        }
+      ]
+    },
+    "reload": {
+      "loop": false,
+      "events": [
+        {
+          "time": 0.4,
+          "name": "grab"
+        },
+        {
+          "time": 0.66,
+          "name": "mag_out"
+        },
+        {
+          "time": 1.7,
+          "name": "mag_in"
+        }
+      ]
+    },
+    "reload_empty": {
+      "loop": false,
+      "events": [
+        {
+          "time": 0.4,
+          "name": "grab"
+        },
+        {
+          "time": 0.66,
+          "name": "mag_out"
+        },
+        {
+          "time": 1.7,
+          "name": "mag_in"
+        },
+        {
+          "time": 2.24,
+          "name": "bolt_back"
+        },
+        {
+          "time": 2.33,
+          "name": "bolt_forward"
+        }
+      ]
+    },
+    "sprint": {
+      "loop": true,
+      "events": []
+    },
+    "inspect": {
+      "loop": false,
+      "events": [
+        {
+          "time": 0.2,
+          "name": "grab"
+        },
+        {
+          "time": 2.0,
+          "name": "grab"
+        }
+      ]
+    }
+  }
+}
