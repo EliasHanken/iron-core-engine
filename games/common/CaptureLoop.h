@@ -41,6 +41,7 @@ namespace capture {
 inline constexpr float kOfflineStep = 1.0f / 60.0f;
 inline constexpr int kFramesPerTimingReport = 240;
 inline constexpr int kLiveFpsCap = 60;
+inline constexpr int kMaxLiveFpsCap = 240;
 inline constexpr int kOfflineFpsCap = 30;
 
 struct StillRequest {
@@ -209,9 +210,15 @@ inline void runLoop(iron::Application& app, iron::Renderer& renderer, iron::Vulk
     float worstMs = 0.0f;
     float worstAt = 0.0f;
     double workMs = 0.0;
+    std::vector<std::pair<std::string, double>> gpuSums;  // Each GPU pass's time over the report.
 
-    const int fpsCap = options.maxFps > 0 ? options.maxFps
-                                          : (options.offline() ? kOfflineFpsCap : kLiveFpsCap);
+    // Live, the cap follows the display (60 to 240 Hz): frames it can't show are
+    // power for nothing, and fewer than it shows feel like lag.
+    int liveCap = kLiveFpsCap;
+    if (const GLFWvidmode* mode = glfwGetVideoMode(glfwGetPrimaryMonitor())) {
+        liveCap = std::clamp(mode->refreshRate, kLiveFpsCap, kMaxLiveFpsCap);
+    }
+    const int fpsCap = options.maxFps > 0 ? options.maxFps : (options.offline() ? kOfflineFpsCap : liveCap);
     const double frameBudget = 1.0 / static_cast<double>(fpsCap);
 
     app.setUpdate([&](const iron::FrameTime&) {
@@ -272,9 +279,26 @@ inline void runLoop(iron::Application& app, iron::Renderer& renderer, iron::Vulk
             glfwSetWindowShouldClose(app.window().handle(), GLFW_TRUE);
         }
 
+        for (const iron::GpuTiming& t : renderer.gpuTimings()) {
+            auto found = std::find_if(gpuSums.begin(), gpuSums.end(), [&](const auto& s) { return s.first == t.name; });
+            if (found == gpuSums.end()) {
+                gpuSums.emplace_back(t.name, 0.0);
+                found = gpuSums.end() - 1;
+            }
+            found->second += t.milliseconds;
+        }
         if (++framesSinceReport == kFramesPerTimingReport) {
             iron::Log::info("%.2f ms CPU per frame, worst %.2f ms at %.1f s",
                             workMs / framesSinceReport, worstMs, worstAt);
+            // The GPU's frame, pass by pass, averaged: what a performance change moved.
+            std::string line;
+            for (const auto& [name, sum] : gpuSums) {
+                char part[64];
+                std::snprintf(part, sizeof(part), "%s %.2f  ", name.c_str(), sum / framesSinceReport);
+                line += part;
+            }
+            if (!line.empty()) iron::Log::info("GPU ms: %s", line.c_str());
+            gpuSums.clear();
             worstMs = 0.0f;
             workMs = 0.0;
             framesSinceReport = 0;

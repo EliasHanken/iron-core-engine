@@ -78,7 +78,12 @@ void main() {
         return;
     }
 
-    // The neighbourhood's colour spread, and its nearest surface.
+    // The neighbourhood's colour spread, and its nearest surface. The view model
+    // (hands and gun, depth squeezed below 0.1) moves on its own: a pixel only
+    // borrows motion from neighbours on its own side of it, or the world along
+    // the hands' edge would follow them and smear.
+    const float kHeld = 0.1;
+    bool held = texelFetch(uDepth, pixel, 0).r < kHeld;
     vec3 sum = vec3(0.0), sumSq = vec3(0.0), lo = vec3(1e9), hi = vec3(-1e9);
     float nearest = 2.0;
     ivec2 nearestPixel = pixel;
@@ -91,7 +96,7 @@ void main() {
             lo = min(lo, c);
             hi = max(hi, c);
             float d = texelFetch(uDepth, q, 0).r;
-            if (d < nearest) {
+            if ((d < kHeld) == held && d < nearest) {
                 nearest = d;
                 nearestPixel = q;
             }
@@ -121,6 +126,8 @@ void main() {
     float feedback = pc.p.x;
     feedback = mix(feedback, 0.55, reactive);
     feedback *= mix(1.0, 0.85, clamp(speed / 40.0, 0.0, 1.0));
+    // The gun sways and kicks against the view: keep less of its past.
+    if (held) feedback = min(feedback, 0.7);
 
     vec3 blended = mix(squash(current), fromYCoCg(h), feedback);
     outColor = vec4(max(unsquash(blended), vec3(0.0)), 1.0);

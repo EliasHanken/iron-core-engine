@@ -82,7 +82,7 @@ constexpr float kEyeHeight = 1.62f;
 constexpr float kWalkSpeed = 4.2f;
 constexpr float kRunSpeed = 6.8f;
 constexpr float kAimWalkSpeed = 2.4f;
-constexpr float kMouseRadiansPerPixel = 0.0022f;
+constexpr float kMouseRadiansPerPixel = 0.0011f;  // Raw counts: about 0.063 degrees each.
 constexpr float kPhysicsStep = 1.0f / 60.0f;
 constexpr float kRecordSeconds = 34.0f;
 constexpr std::uint32_t kGunMotionId = 1;  // And the next few, one per section.
@@ -958,6 +958,7 @@ int main(int argc, char** argv) {
     float pitch = startInHall ? 0.0f : -0.02f;
     bool grounded = true;
     float physicsClock = 0.0f;
+    Vec3 feetBeforeStep = spawn;  // Where the body was before the last physics step, to draw between.
     float landDip = 0.0f;
     float landDipVelocity = 0.0f;
     float lastFallSpeed = 0.0f;
@@ -1189,6 +1190,7 @@ int main(int argc, char** argv) {
             horizontal = dlen <= reach ? wish : horizontal + delta * (reach / dlen);
             const bool jumping = wantJump && grounded;
             if (jumping) sound.step(floorAt(body.footPosition()), body.footPosition(), 0.6f);
+            feetBeforeStep = body.footPosition();
             body.update(kPhysicsStep, horizontal, wantJump, grounded);
             wantJump = false;
             world.step(kPhysicsStep);
@@ -1238,7 +1240,11 @@ int main(int argc, char** argv) {
                         shake * 0.035f * (0.6f * std::sin(seconds * 31.0f + 0.7f) + 0.4f * std::sin(seconds * 19.0f))};
         const float viewYaw = yaw + kick.x + jolt.x;
         const float viewPitch = pitch + kick.y + jolt.y;
-        const Vec3 eye = feet + Vec3{0.0f, kEyeHeight + landDip, 0.0f};
+        // The camera rides between the last two physics steps rather than jumping
+        // sixty times a second: smooth at any frame rate.
+        const float between = std::clamp(physicsClock / kPhysicsStep, 0.0f, 1.0f);
+        const Vec3 drawnFeet = feetBeforeStep + (feet - feetBeforeStep) * between;
+        const Vec3 eye = drawnFeet + Vec3{0.0f, kEyeHeight + landDip, 0.0f};
         const Vec3 aimDir = lookDirection(viewYaw, viewPitch);
         const Mat4 view = iron::lookAt(eye, eye + aimDir, {0.0f, 1.0f, 0.0f});
         const Mat4 cameraToWorld = iron::inverse(view);

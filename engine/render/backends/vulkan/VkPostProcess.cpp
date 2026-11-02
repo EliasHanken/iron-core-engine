@@ -81,7 +81,12 @@ float noise(vec2 p) {
 }
 
 // Motion blur follows each pixel's own motion: the camera's, or a moving object's.
+// The view model (depth squeezed below 0.1) rides with the camera: no smear on it,
+// and none of it smeared into the world behind.
+bool heldAt(vec2 uv) { return texelFetch(uDepth, ivec2(uv * vec2(textureSize(uDepth, 0))), 0).r < 0.1; }
+
 vec2 shutterVelocity(vec2 uv) {
+    if (heldAt(uv)) return vec2(0.0);
     return texelFetch(uVelocity, ivec2(uv * vec2(textureSize(uVelocity, 0))), 0).rg * pc.a.z;
 }
 
@@ -109,9 +114,11 @@ vec3 shutter(vec2 uv, vec2 velocity, float jitter) {
     float speed = length(velocity * vec2(textureSize(uScene, 0)));
     if (speed < 0.5) return sampleHdr(uv);
     vec3 sum = vec3(0.0);
+    vec3 here = sampleHdr(uv);
     for (int i = 0; i < STEPS; ++i) {
         float t = (float(i) + jitter) / float(STEPS) - 0.5;
-        sum += sampleHdr(uv + velocity * t);
+        vec2 at = uv + velocity * t;
+        sum += heldAt(at) ? here : sampleHdr(at);
     }
     return sum / float(STEPS);
 }
