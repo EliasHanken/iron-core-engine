@@ -42,6 +42,7 @@
 #include "Sound.h"
 
 #include "audio/AudioEngine.h"
+#include "forge/ForgePlayer.h"
 #include "core/Application.h"
 #include "core/Platform.h"
 #include "math/Transform.h"
@@ -881,6 +882,18 @@ int main(int argc, char** argv) {
     const iron::MeshHandle grenadeMesh = renderer.createMesh(iron::makeUVSphere(1.0f, 14));
     foundry::Grenades grenades;
     foundry::FogStirs stirs;
+    // Sparks, dust, chips, smoke and fire, authored in Forge (assets/vfx) and fired
+    // as bursts where things happen.
+    iron::forge::Player vfx(renderer);
+    {
+        std::vector<iron::forge::Issue> issues;
+        const iron::forge::Document doc =
+            iron::forge::loadDocument(iron::executableDir() + "/assets/vfx/impacts.forge.json", issues);
+        const iron::forge::Compiled compiled = iron::forge::compile(doc);
+        for (const iron::forge::Issue& i : issues.empty() ? vfx.apply(compiled) : issues) {
+            iron::Log::warn("foundry vfx: %s: %s", i.where.c_str(), i.message.c_str());
+        }
+    }
     foundry::Smoke smoke;
     {
         // The hall's air: the furnace's door at the back, steam pipes along the left wall.
@@ -1095,11 +1108,11 @@ int main(int argc, char** argv) {
             if (sceneHas("steam")) {
                 const Vec3 target = seconds < 12.0f ? Vec3{-13.0f, 2.5f, -40.0f} : Vec3{0.0f, 4.0f, -58.0f};
                 const Vec3 to = target - eye;
-                float dyaw = std::atan2(-to.x, -to.z) - yaw;
-                while (dyaw > kPi) dyaw -= 2.0f * kPi;
-                while (dyaw < -kPi) dyaw += 2.0f * kPi;
-                const float wantPitch = std::atan2(to.y, std::sqrt(to.x * to.x + to.z * to.z));
-                look = {dyaw * std::min(dt * 3.0f, 1.0f), (wantPitch - pitch) * std::min(dt * 3.0f, 1.0f)};
+                float steerYaw = std::atan2(-to.x, -to.z) - yaw;
+                while (steerYaw > kPi) steerYaw -= 2.0f * kPi;
+                while (steerYaw < -kPi) steerYaw += 2.0f * kPi;
+                const float steerPitch = std::atan2(to.y, std::sqrt(to.x * to.x + to.z * to.z));
+                look = {steerYaw * std::min(dt * 3.0f, 1.0f), (steerPitch - pitch) * std::min(dt * 3.0f, 1.0f)};
                 forward = 0.0f;
                 strafe = 0.0f;
                 trigger = false;
@@ -1260,32 +1273,12 @@ int main(int argc, char** argv) {
                 if (!moves) holes.scorch(under.point, under.normal, noise.next());
             }
             flashes.push_back({at + up * 0.7f, {1.0f, 0.6f, 0.28f}, 0.3f, 0.3f, 26.0f, 14.0f});
-            // The fireball's sparks, and grit thrown out low.
-            for (int k = 0; k < 48; ++k) {
-                Bit spark;
-                spark.position = at + up * 0.1f;
-                const Vec3 jitter{noise.signedNext(), noise.next() * 1.2f, noise.signedNext()};
-                spark.velocity = iron::normalize(jitter + up * 0.3f) * (6.0f + noise.next() * 16.0f);
-                spark.size = {0.07f, 0.008f, 0.008f};
-                spark.emissive = Vec3{22.0f, 9.0f, 2.6f} * (0.5f + noise.next());
-                spark.maxLife = 0.3f + noise.next() * 0.8f;
-                spark.life = spark.maxLife;
-                spark.bounce = 0.35f;
-                spawnBit(spark);
-            }
-            for (int k = 0; k < 20; ++k) {
-                Bit grit;
-                grit.position = at + up * 0.1f;
-                const Vec3 jitter{noise.signedNext(), noise.next() * 0.8f, noise.signedNext()};
-                grit.velocity = iron::normalize(jitter + up * 0.2f) * (3.0f + noise.next() * 9.0f);
-                const float size = 0.02f + noise.next() * 0.04f;
-                grit.size = {size, size, size};
-                grit.color = Vec3{0.12f, 0.11f, 0.1f} * (0.7f + noise.next() * 0.6f);
-                grit.maxLife = 1.5f + noise.next() * 1.5f;
-                grit.life = grit.maxLife;
-                grit.bounce = 0.25f;
-                spawnBit(grit);
-            }
+            // The fireball, its sparks and embers, and dust and chips thrown out low.
+            vfx.emit("fireball", at + up * 0.3f, up, 220u);
+            vfx.emit("sparks", at + up * 0.1f, up, 140u, 1.6f);
+            vfx.emit("embers", at + up * 0.2f, up, 90u);
+            vfx.emit("blastdust", at + up * 0.2f, up, 260u);
+            vfx.emit("chips", at + up * 0.1f, up, 80u, 1.8f);
             // Everything loose nearby is shoved away, less so from behind cover.
             for (const Dynamic& d : dynamics) {
                 const Vec3 c = world.bodyPosition(d.body);
@@ -1316,6 +1309,7 @@ int main(int argc, char** argv) {
             ++shotCount;
             flashRoll = noise.next() * kPi;
             sound.shot();
+            vfx.emit("muzzle", muzzle, aimDir, 4u);
             const Vec2 dev = gun.shotDeviation();
             const Vec3 dir = lookDirection(viewYaw + dev.x, viewPitch + dev.y);
             // The round: into what it meets, through what it can pierce, off what it grazes.
@@ -1403,31 +1397,14 @@ int main(int argc, char** argv) {
                 bool moves = false;
                 for (const Dynamic& d : dynamics) moves = moves || d.body.value == hit.body.value;
                 if (!moves) holes.add(hit.point, n, surface, noise.next());
-                for (int k = 0; k < style.sparks; ++k) {
-                    Bit spark;
-                    spark.position = hit.point + n * 0.02f;
-                    const Vec3 jitter{noise.signedNext(), noise.signedNext(), noise.signedNext()};
-                    spark.velocity = iron::normalize(reflect * 0.6f + n * 0.7f + jitter * 0.7f) * (4.0f + noise.next() * 7.0f);
-                    spark.size = {0.05f, 0.006f, 0.006f};
-                    spark.emissive = style.spark * (0.6f + noise.next() * 0.8f);
-                    spark.maxLife = 0.18f + noise.next() * 0.35f;
-                    spark.life = spark.maxLife;
-                    spark.bounce = 0.3f;
-                    spawnBit(spark);
-                }
-                for (int k = 0; k < style.chips; ++k) {
-                    Bit chip;
-                    chip.position = hit.point + n * 0.03f;
-                    const Vec3 jitter{noise.signedNext(), noise.signedNext(), noise.signedNext()};
-                    chip.velocity = iron::normalize(n + jitter * 0.8f) * (1.5f + noise.next() * 3.0f);
-                    const float s = 0.012f + noise.next() * 0.02f;
-                    chip.size = {s, s, s};
-                    chip.color = style.chip * (0.8f + noise.next() * 0.4f);
-                    chip.maxLife = 0.6f + noise.next() * 0.8f;
-                    chip.life = chip.maxLife;
-                    chip.bounce = 0.2f;
-                    spawnBit(chip);
-                }
+                // What it throws back, as Forge bursts: sparks off metal and stone, a puff
+                // of the surface's dust, chips of it; harder the more the round still had.
+                const float hitPower = 0.5f + 0.5f * imp.energy;
+                if (style.sparks > 0) vfx.emit("sparks", hit.point + n * 0.01f, iron::normalize(reflect + n),
+                                               static_cast<std::uint32_t>(style.sparks * 3), hitPower);
+                vfx.emit("dust", hit.point + n * 0.03f, n, surface == Surface::Metal ? 3u : 12u, hitPower);
+                if (style.chips > 0) vfx.emit("chips", hit.point + n * 0.02f, n,
+                                              static_cast<std::uint32_t>(style.chips * 2), hitPower);
                 if (style.sparks > 0 && !exit) {
                     flashes.push_back({hit.point + n * 0.25f, {1.0f, 0.6f, 0.3f}, 0.07f, 0.07f, 2.5f, 3.5f});
                 }
@@ -1641,6 +1618,16 @@ int main(int argc, char** argv) {
             call.motionId = g.motionId + 1u;
             renderer.submit(call);
             draws += 2;
+        }
+        // The effects, lit by roughly where the player is: open daylight or the hall.
+        {
+            const float lit = 1.0f - 0.55f * indoorAt(eye);
+            vfx.setInput("dustColor", Vec3{0.42f, 0.4f, 0.37f} * lit);
+            vfx.setInput("chipColor", Vec3{0.3f, 0.29f, 0.27f} * lit);
+            vfx.setInput("muzzleColor", Vec3{0.5f, 0.5f, 0.5f} * lit);
+            vfx.setInput("blastColor", Vec3{0.24f, 0.22f, 0.2f} * lit);
+            vfx.simulate(simDt);
+            vfx.render(renderView, renderProjection);
         }
         for (const Bit& b : bits) {
             const float t = std::clamp(b.life / b.maxLife, 0.0f, 1.0f);

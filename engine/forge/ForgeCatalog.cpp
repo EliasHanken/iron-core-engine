@@ -43,6 +43,15 @@ std::vector<BlockDesc> makeBlocks() {
     for (int i = 0; i < 6; ++i) q -= shapeNormal(q) * shapeDistance(q);
     pos = q;
 })", true});
+    list.push_back({"Spray", Stack::Spawn,
+        "Start moving out along +Y in a cone: in a burst layer, out of the surface an event hit.",
+        {num("speed", 6.0f, 0.0f, 80.0f, "Metres per second."),
+         num("cone", 0.5f, 0.0f, 2.0f, "0 straight out; 1 out at 45 degrees; more fans out flat."),
+         num("jitter", 0.5f, 0.0f, 1.0f, "How much of the speed is random.")},
+        R"({
+    vec3 r = randomDirection(seed + 29u) * $cone;
+    vel = normalize(vec3(r.x, 1.0, r.z)) * $speed * (1.0 - $jitter * rnd(seed + 31u));
+})"});
     list.push_back({"Lifetime", Stack::Spawn, "How long each particle lives.",
         {num("min", 1.0f, 0.05f, 20.0f, "Shortest life in seconds."),
          num("max", 3.0f, 0.05f, 20.0f, "Longest life in seconds.")},
@@ -144,6 +153,9 @@ std::vector<BlockDesc> makeBlocks() {
         {num("start", 1.0f, 0.0f, 10.0f, "Multiplier when born."),
          num("end", 0.0f, 0.0f, 10.0f, "Multiplier when dying.")},
         R"(size *= mix($start, $end, life01);)"});
+    list.push_back({"Opacity", Stack::Look, "How much a smoke-like particle hides what's behind it.",
+        {num("amount", 1.0f, 0.0f, 1.0f, "1 solid, lower is thinner.")},
+        R"(alpha *= $amount;)"});
     list.push_back({"Fade", Stack::Look, "Fade in and out over a life.",
         {num("in", 0.1f, 0.0f, 1.0f, "Share of life spent fading in."),
          num("out", 0.3f, 0.0f, 1.0f, "Share of life spent fading out.")},

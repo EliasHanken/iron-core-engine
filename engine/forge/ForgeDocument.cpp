@@ -177,6 +177,7 @@ Layer readLayer(const json& j, const std::string& where, std::vector<Issue>& iss
     }
     layer.blockLight = j.value("blockLight", false);
     layer.trail = j.value("trail", 0);
+    layer.burst = j.value("burst", false);
     if (j.contains("spawn")) layer.spawn = readStack(j["spawn"], Stack::Spawn, where + ".spawn", issues);
     if (j.contains("move")) layer.move = readStack(j["move"], Stack::Move, where + ".move", issues);
     if (j.contains("look")) layer.look = readStack(j["look"], Stack::Look, where + ".look", issues);
@@ -366,6 +367,7 @@ json documentToJson(const Document& doc) {
             j["count"] = layer.count;
             if (layer.blockLight) j["blockLight"] = true;
             if (layer.trail > 0) j["trail"] = layer.trail;
+            if (layer.burst) j["burst"] = true;
             j["spawn"] = stackToJson(layer.spawn);
             j["move"] = stackToJson(layer.move);
             j["look"] = stackToJson(layer.look);

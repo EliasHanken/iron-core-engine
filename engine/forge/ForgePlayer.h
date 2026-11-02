@@ -57,6 +57,12 @@ public:
     // At 0 the player doesn't draw air, for a game that runs its own VolumeRenderer.
     void setAirDensity(float density) { airDensity_ = density; }
 
+    // Fires a burst on every burst layer called `layer`: `count` particles start at
+    // `at`, in a frame whose +Y is `direction`, their spawn speed scaled by
+    // `strength`. They're the oldest of the layer's, recycled. Takes effect on the
+    // next simulate.
+    void emit(const std::string& layer, Vec3 at, Vec3 direction, std::uint32_t count, float strength = 1.0f);
+
     // Restarts the effect from nothing.
     void restart();
 
@@ -69,6 +75,8 @@ private:
     struct Running {
         CompiledLayer layer;
         std::unique_ptr<GpuParticles> effect;
+        std::vector<float> events;   // This frame's bursts, 12 floats each.
+        std::uint32_t cursor = 0;    // Where the next burst starts in the ring.
     };
 
     void updateLight();
