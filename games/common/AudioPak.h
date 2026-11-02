@@ -1,9 +1,9 @@
 #pragma once
 
-// The licensed sounds travel inside one scrambled file rather than as loose WAVs. The
-// licence forbids handing them out as sound effects, so they shouldn't sit in a game
-// folder for anyone to copy. This deters casual copying. It isn't encryption.
-// Written by tools/kindle/package.py.
+// A game's licensed sounds travel inside one scrambled file rather than as loose WAVs.
+// The licence forbids handing them out as sound effects, so they shouldn't sit in a
+// game folder for anyone to copy. This deters casual copying. It isn't encryption.
+// Written by each game's package.py (tools/kindle, tools/foundry).
 
 #include <cstdint>
 #include <cstdio>
@@ -12,7 +12,7 @@
 #include <string>
 #include <vector>
 
-namespace kindle {
+namespace audiopak {
 
 inline void scramble(std::uint8_t* data, std::size_t size) {
     for (std::size_t i = 0; i < size; ++i) {
@@ -61,4 +61,4 @@ inline std::map<std::string, std::vector<std::uint8_t>> readAudioPak(const std::
     return out;
 }
 
-}  // namespace kindle
+}  // namespace audiopak

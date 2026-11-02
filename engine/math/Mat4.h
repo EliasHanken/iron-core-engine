@@ -51,6 +51,14 @@ constexpr Vec4 operator*(const Mat4& a, const Vec4& v) {
     };
 }
 
+inline constexpr Mat4 transpose(const Mat4& a) {
+    Mat4 t;
+    for (int r = 0; r < 4; ++r) {
+        for (int c = 0; c < 4; ++c) t.at(r, c) = a.at(c, r);
+    }
+    return t;
+}
+
 // General 4x4 inverse (cofactor method; MESA gluInvertMatrix adapted to our
 // column-major `m`). Returns identity for a singular matrix. Used by
 // screenPointToRay to unproject screen pixels to world-space rays.
