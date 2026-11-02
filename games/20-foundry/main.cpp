@@ -17,6 +17,7 @@
 //   overview look down on the stockyard from above, to see culling at work
 //   lod      tint instance groups by level of detail
 //   freeze   freeze culling at the start
+//   noaa     start with anti-aliasing off
 
 #include "common/CaptureLoop.h"
 #include "common/TrackedText.h"
@@ -315,6 +316,7 @@ public:
         bool  showMotion = false;
         bool  showLods = false;
         bool  frozen = false;
+        bool  antiAliased = true;
         float cpuMs = 0.0f;
         int   draws = 0;
         iron::CullStats cull;
@@ -394,7 +396,7 @@ public:
             rect(bars, 0.0f, y, w, 46.0f * unit, {0.0f, 0.0f, 0.0f, 0.45f * hint});
             text::appendCentered(smallText, small_,
                                  "WASD  MOVE     CLICK  FIRE     RIGHT CLICK  AIM     R  RELOAD     "
-                                 "F1  FRAME     F2  MOTION     F3  FREEZE CULLING     F4  LODS",
+                                 "F1  FRAME     F2  MOTION     F3  FREEZE CULLING     F4  LODS     F5  AA",
                                  cx, y + 29.0f * unit, 1.0f, 0.24f, {1.0f, 0.93f, 0.84f, hint});
         }
 
@@ -402,6 +404,7 @@ public:
         const char* banner = s.showMotion ? "MOTION VECTORS   /   HUE IS DIRECTION, BRIGHTNESS IS SPEED"
                            : s.frozen     ? "CULLING FROZEN   /   WALK AWAY TO SEE WHAT IT SKIPPED"
                            : s.showLods   ? "LEVELS OF DETAIL   /   WHITE, GREEN, YELLOW, RED AS THEY SIMPLIFY"
+                           : !s.antiAliased ? "ANTI-ALIASING OFF   /   EDGES AS THE RASTERISER DRAWS THEM"
                                           : nullptr;
         if (banner) {
             rect(bars, 0.0f, 18.0f * unit, w, 52.0f * unit, {0.0f, 0.0f, 0.0f, 0.55f});
@@ -777,6 +780,7 @@ int main(int argc, char** argv) {
     bool showMotion = sceneHas("motion");
     bool showLods = sceneHas("lod");
     bool frozen = sceneHas("freeze");
+    bool antiAliased = !sceneHas("noaa");
     bool paused = false;
     options.onInput = [&]() {
         iron::Input& input = app.input();
@@ -791,6 +795,7 @@ int main(int argc, char** argv) {
         if (input.keyPressed(GLFW_KEY_F2)) showMotion = !showMotion;
         if (input.keyPressed(GLFW_KEY_F3)) frozen = !frozen;
         if (input.keyPressed(GLFW_KEY_F4)) showLods = !showLods;
+        if (input.keyPressed(GLFW_KEY_F5)) antiAliased = !antiAliased;
     };
     if (!scripted) app.window().setCursorCaptured(true);
 
@@ -1087,6 +1092,7 @@ int main(int argc, char** argv) {
                              : showLods ? iron::RenderDebugView::LevelsOfDetail
                                         : iron::RenderDebugView::None);
         renderer.setCullingFrozen(frozen);
+        renderer.setAntiAliasing(antiAliased ? iron::AntiAliasing::Temporal : iron::AntiAliasing::Off);
         vulkan->setCinematic(lens);
         // The rig view looks at the player from the side; the player still aims as before.
         Mat4 renderView = view;
@@ -1211,6 +1217,7 @@ int main(int argc, char** argv) {
         state.showMotion = showMotion;
         state.showLods = showLods;
         state.frozen = frozen;
+        state.antiAliased = antiAliased;
         state.cull = renderer.cullStats();
         state.cpuMs = static_cast<float>((glfwGetTime() - cpuStart) * 1000.0);
         state.draws = draws;

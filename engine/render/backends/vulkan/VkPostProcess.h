@@ -9,6 +9,7 @@
 #include "render/PostChainPlan.h"
 #include "render/PostEffect.h"
 #include "render/backends/vulkan/VkFrameRing.h"  // kFramesInFlight (per-frame SSAO UBO)
+#include "render/backends/vulkan/VkTemporalAA.h"
 #include "render/backends/vulkan/VkVelocityPass.h"
 
 #include <vulkan/vulkan.h>
@@ -73,6 +74,12 @@ public:
         velocity_.record(cb, reprojection, objects);
     }
     VkImageView velocityView() const { return velocity_.view(); }
+
+    // Temporal anti-aliasing: keep a copy of the frame once the opaque pass ends,
+    // then, after the transparent pass, blend the frame with its history in place.
+    void captureOpaqueForTaa(VkCommandBuffer cb) const { taa_.captureOpaque(cb); }
+    void resolveTaa(VkCommandBuffer cb) { taa_.resolve(cb); }
+    void resetTaa() { taa_.reset(); }
 
     // Pass that composite + debug + HUD overlays record into (M43a). Pipelines
     // recorded here must be built against it, not the swapchain pass — their
@@ -264,6 +271,7 @@ private:
     CinematicSettings     cinematic_;
     RenderDebugView       debugView_ = RenderDebugView::None;
     VkVelocityPass        velocity_;
+    VkTemporalAA          taa_;
     Mat4                  cinematicReprojection_ = Mat4::identity();
     std::uint32_t         cinematicFrame_ = 0;
     ::VkPipeline          cinematicPipeline_ = VK_NULL_HANDLE;

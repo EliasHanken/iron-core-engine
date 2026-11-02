@@ -2,6 +2,7 @@
 
 #include "math/Mat4.h"
 #include "math/Vec.h"
+#include "render/AntiAliasing.h"
 #include "render/Culling.h"
 #include "render/Fog.h"
 #include "render/GpuTimings.h"
@@ -312,6 +313,12 @@ public:
     virtual CullStats cullStats() const { return {}; }
     // Keeps culling to the camera of the moment it was frozen, to see what it skips.
     virtual void setCullingFrozen(bool frozen) { (void)frozen; }
+
+    // How edges are smoothed. Off by default.
+    virtual void setAntiAliasing(AntiAliasing mode) { (void)mode; }
+    // Forgets the frames temporal anti-aliasing has gathered, for a camera cut or a
+    // teleport, so the old view doesn't smear into the new one.
+    virtual void resetTemporalHistory() {}
 };
 
 } // namespace iron
