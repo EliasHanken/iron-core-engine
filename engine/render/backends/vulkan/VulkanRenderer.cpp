@@ -1340,9 +1340,15 @@ void VulkanRenderer::endFrame() {
     // --- Pass 0: culling, before anything draws instance groups ---
     if (!instanceGroups_.empty()) {
         profiler_.begin(cb, "Culling");
-        const float pixelsPerUnit = pendingProjection_.at(1, 1) * 0.5f * static_cast<float>(postProcess_.extent().height);
-        instanceGroups_.cull(cb, frames_.currentIndex(), pendingProjection_ * pendingView_, shadowViewsThisFrame(),
-                             pendingCameraPos_, pixelsPerUnit, postProcess_.extent(), shadowRedraw_);
+        // The culling camera, when one is set, decides what's drawn; the shadow views
+        // still follow the drawing camera's cascades.
+        const Mat4& cullProjection = cullingCamera_ ? cullingCamera_->projection : pendingProjection_;
+        const Mat4 cullViewProjection = cullingCamera_ ? cullingCamera_->projection * cullingCamera_->view
+                                                       : pendingProjection_ * pendingView_;
+        const Vec3 cullEye = cullingCamera_ ? cullingCamera_->eye : pendingCameraPos_;
+        const float pixelsPerUnit = cullProjection.at(1, 1) * 0.5f * static_cast<float>(postProcess_.extent().height);
+        instanceGroups_.cull(cb, frames_.currentIndex(), cullViewProjection, shadowViewsThisFrame(), cullEye,
+                             pixelsPerUnit, postProcess_.extent(), shadowRedraw_, !cullingCamera_.has_value());
         profiler_.end(cb);
     }
     if (clusters_.active()) {

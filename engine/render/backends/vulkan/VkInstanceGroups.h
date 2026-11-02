@@ -50,8 +50,11 @@ public:
     // `lightViews` are the sun's shadow views, one per cascade (up to kShadowViews);
     // each culls its own list, so a cascade draws only what falls in it.
     // Shadow views whose bit is clear in `shadowMask` keep last frame's lists.
+    // Without `occlusion` nothing is tested against the depth pyramid, and the
+    // pyramid isn't rebuilt (its depth would be another camera's).
     void cull(VkCommandBuffer cb, int frame, const Mat4& viewProjection, std::span<const Mat4> lightViews,
-              Vec3 eye, float pixelsPerUnit, VkExtent2D sceneExtent, std::uint32_t shadowMask = ~0u);
+              Vec3 eye, float pixelsPerUnit, VkExtent2D sceneExtent, std::uint32_t shadowMask = ~0u,
+              bool occlusion = true);
 
     // Builds the depth pyramid from this frame's scene depth, for next frame's
     // occlusion test. Record after the opaque pass, outside any render pass.
@@ -142,6 +145,7 @@ private:
 
     // The camera the pyramid was built from, and the one culling uses.
     Mat4 lastViewProjection_ = Mat4::identity();
+    bool occlusion_ = true;  // This frame's culling tests occlusion.
     bool frozenRequest_ = false;
     bool frozen_ = false;
     Mat4 frozenViewProjection_ = Mat4::identity();

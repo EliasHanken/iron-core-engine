@@ -379,7 +379,7 @@ void VkInstanceGroups::setInstances(VkContext& ctx, InstanceGroupHandle handle, 
 
 void VkInstanceGroups::cull(VkCommandBuffer cb, int frame, const Mat4& viewProjection,
                             std::span<const Mat4> lightViews, Vec3 eye, float pixelsPerUnit,
-                            VkExtent2D sceneExtent, std::uint32_t shadowMask) {
+                            VkExtent2D sceneExtent, std::uint32_t shadowMask, bool occlusion) {
     ++frameCount_;
     // Free what no frame in flight can still be reading.
     std::erase_if(retired_, [&](Retired& r) {
@@ -470,6 +470,8 @@ void VkInstanceGroups::cull(VkCommandBuffer cb, int frame, const Mat4& viewProje
     ubo.pyramid[0] = static_cast<float>(pyramidExtent_.width);
     ubo.pyramid[1] = static_cast<float>(pyramidExtent_.height);
     ubo.pyramid[2] = static_cast<float>(pyramidLevels_.size());
+    occlusion_ = occlusion;
+    if (!occlusion) pyramidValid_ = false;  // Not reused when occlusion comes back: it would be stale.
     ubo.pyramid[3] = pyramidValid_ ? 1.0f : 0.0f;
     // One copy per view, each with that shadow view's planes. A light's matrix gives
     // depth in 0..1 already, so its near plane is clip z = 0 too.
@@ -609,7 +611,7 @@ void VkInstanceGroups::destroyPyramid(VkContext& ctx) {
 
 void VkInstanceGroups::buildDepthPyramid(VkContext& ctx, VkCommandBuffer cb, VkImageView sceneDepth) {
     // Culling made the pyramid at the scene's size; without that, there's nothing to fill.
-    if (groups_.empty() || !pyramidPipeline_ || frozen_ || pyramid_ == VK_NULL_HANDLE) return;
+    if (groups_.empty() || !pyramidPipeline_ || frozen_ || !occlusion_ || pyramid_ == VK_NULL_HANDLE) return;
     const VkExtent2D extent = pyramidSource_;
 
     // Culling earlier this frame read the pyramid; wait for that before writing.

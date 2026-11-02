@@ -338,6 +338,12 @@ public:
     virtual CullStats cullStats() const { return {}; }
     // Keeps culling to the camera of the moment it was frozen, to see what it skips.
     virtual void setCullingFrozen(bool frozen) { (void)frozen; }
+    // Culls from another camera than the one drawing (null: the drawing camera's
+    // own), live: frustum, levels of detail and small-object rejection all follow
+    // it, so a second camera can watch from outside what the first keeps and drops.
+    // Occlusion culling pauses while it's set, since its depth is the drawing
+    // camera's. Set every frame it should hold.
+    virtual void setCullingCamera(const CullingCamera* camera) { (void)camera; }
 
     // The vertical field of view, in radians, for draws marked viewModel: the
     // player's arms and weapon. Shooters draw them narrower than the world so the

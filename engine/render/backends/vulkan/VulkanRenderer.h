@@ -136,6 +136,9 @@ public:
     void setInstances(InstanceGroupHandle group, std::span<const Mat4> transforms) override;
     CullStats cullStats() const override { return instanceGroups_.stats(); }
     void setCullingFrozen(bool frozen) override { instanceGroups_.setFrozen(frozen); }
+    void setCullingCamera(const CullingCamera* camera) override {
+        cullingCamera_ = camera ? std::optional<CullingCamera>(*camera) : std::nullopt;
+    }
     void setAntiAliasing(AntiAliasing mode) override;
     void setSharpness(float amount) override { postProcess_.setTaaSharpness(amount); }
     void setVolumetricFog(const VolumetricFog& fog) override { volumetricFog_ = fog; }
@@ -357,6 +360,7 @@ private:
     VolumetricFog           volumetricFog_;
     std::vector<FogVolume>  pendingFogVolumes_;
     std::vector<FogDisturbance> pendingFogDisturbances_;
+    std::optional<CullingCamera> cullingCamera_;  // Culls instead of the drawing camera, when set.
     float                   fogClock_ = 0.0f;
     RenderDebugView    debugView_ = RenderDebugView::None;
     MotionHistory      motionHistory_;
