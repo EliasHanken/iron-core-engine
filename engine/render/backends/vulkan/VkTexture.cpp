@@ -264,6 +264,9 @@ TextureHandle VkTextureStore::createFromRgba(VkContext& ctx,
 TextureHandle VkTextureStore::loadFromFile(VkContext& ctx, const std::string& path,
                                            bool srgb) {
     int w = 0, h = 0, ch = 0;
+    // Rows top-first, as Vulkan samples them and glTF's UVs expect. stb's flip setting
+    // is global to the process, so it's set here rather than trusted.
+    stbi_set_flip_vertically_on_load(0);
     unsigned char* pixels = stbi_load(path.c_str(), &w, &h, &ch, STBI_rgb_alpha);
     if (!pixels) {
         Log::error("VkTextureStore: stbi_load failed for %s", path.c_str());

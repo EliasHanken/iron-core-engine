@@ -23,11 +23,13 @@ void invertRGBChannels(std::vector<unsigned char>& pixels) {
 
 TextureHandle loadMetallicRoughness(Renderer& r, const std::string& roughnessPath,
                                     float metallicConstant) {
-    // stbi_set_flip_vertically_on_load is a sticky process-wide flag. Set to 1
-    // to match the convention used by renderer.loadTexture (top-left origin).
-    stbi_set_flip_vertically_on_load(1);
+    // The rows must come out the way this backend's own loadTexture lays them, or
+    // roughness ends up mirrored against the albedo. stb's flip setting is global to
+    // the process, so it's set for this load and put back to top-first after.
+    stbi_set_flip_vertically_on_load(r.texturesBottomUp() ? 1 : 0);
     int w = 0, h = 0, channels = 0;
     unsigned char* raw = stbi_load(roughnessPath.c_str(), &w, &h, &channels, 4);
+    stbi_set_flip_vertically_on_load(0);
     if (!raw) {
         Log::error("loadMetallicRoughness: failed to load '%s'", roughnessPath.c_str());
         return kInvalidHandle;

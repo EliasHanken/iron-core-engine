@@ -13,6 +13,7 @@
 //   frame    open the frame breakdown
 //   motion   show motion vectors
 //   rig      watch the player's arms and rifle from the side, to tune the grip
+//   aim      hold the rifle up to the eye throughout
 //   overview look down on the stockyard from above, to see culling at work
 //   lod      tint instance groups by level of detail
 //   freeze   freeze culling at the start
@@ -178,23 +179,27 @@ std::array<iron::Material, static_cast<std::size_t>(Look::Count)> loadLooks(iron
 
 // --- The rifle -------------------------------------------------------------------
 
-// The L85A1 model (assets/models/l85a1, exported by tools/foundry/export_rifle.py) has
-// its origin at the bottom of the pistol grip, looks down -z, and is a bullpup: the
-// magazine and the action sit behind the grip, near the cheek.
-constexpr Vec3 kMuzzleLocal{0.0f, 0.157f, -0.43f};
-constexpr Vec3 kEjectLocal{0.034f, 0.175f, 0.10f};
+// The AK-47 model (assets/models/ak47, exported by tools/foundry/export_ak.py) has its
+// origin at the bottom of the pistol grip and looks down -z. The ejection port is on
+// the right of the receiver, above the magazine.
+constexpr Vec3 kMuzzleLocal{0.0f, 0.139f, -0.618f};
+constexpr Vec3 kEjectLocal{0.024f, 0.159f, -0.17f};
 
 // The arms' shoulders, below and just behind the eye. The rig's arms are short for a
 // grown man (47 cm shoulder to wrist), so they're drawn a little larger.
-constexpr Vec3 kShoulders{0.0f, -0.21f, -0.02f};
-constexpr float kArmScale = 1.22f;
+constexpr Vec3 kShoulders{0.0f, -0.26f, 0.0f};  // Low and back: the cut shoulders stay off screen.
+constexpr float kArmScale = 1.3f;
 
 // How each hand holds the rifle, in the rifle's space (+y up, -z out of the muzzle).
-// The right hand wraps the pistol grip, knuckles stacked up it; the left cups the
-// handguard from below. Poles point the elbows down and out, in the arms' space.
-const foundry::Arms::Grip kRightGrip{{0.012f, 0.075f, 0.018f}, {-0.15f, 0.25f, -0.95f}, {0.0f, 1.0f, -0.3f},
+// The rig's hand socket marks the middle of what the hand holds, a little off the
+// palm, so each target is near the middle of the part held, nudged towards the palm.
+// The right hand's palm wraps the pistol grip from the right and behind, fingers
+// forward round it (the grip leans back, so they point a little down); the left
+// cradles the lower handguard from below, palm up, fingers across under it and up
+// its right side. Poles point the elbows down and out, in the arms' space.
+const foundry::Arms::Grip kRightGrip{{0.004f, 0.05f, 0.0f}, {-1.0f, 0.0f, -0.4f}, {-0.3f, -0.35f, -0.9f},
                                      {0.7f, -1.0f, 0.5f}, 1.0f};
-const foundry::Arms::Grip kLeftGrip{{-0.045f, 0.105f, -0.22f}, {0.75f, 0.45f, -0.5f}, {0.0f, 0.1f, -1.0f},
+const foundry::Arms::Grip kLeftGrip{{-0.007f, 0.118f, -0.30f}, {0.4f, 1.0f, 0.0f}, {1.0f, 0.3f, -0.3f},
                                     {-0.8f, -1.0f, 0.3f}, 1.0f};
 
 // Three crossed planes, both faces, for a flash seen from any angle.
@@ -371,7 +376,7 @@ public:
             std::snprintf(count, sizeof(count), "%02d", s.rounds);
             const Vec4 color = s.rounds <= 5 ? Vec4{1.0f, 0.45f, 0.25f, 0.95f} : warm;
             text::appendCentered(bigText, big_, count, right - 40.0f * unit, base, 1.0f, 0.08f, color);
-            text::appendCentered(smallText, small_, s.reloading ? "RELOADING" : "CARBINE", right - 40.0f * unit,
+            text::appendCentered(smallText, small_, s.reloading ? "RELOADING" : "AK-47", right - 40.0f * unit,
                                  base + 26.0f * unit, 1.0f, 0.3f, {0.8f, 0.84f, 0.9f, 0.8f});
             if (s.reloading) {
                 const float bw = 110.0f * unit;
@@ -697,7 +702,7 @@ int main(int argc, char** argv) {
         }
         iron::Log::info("foundry: stockyard of %zu instances", instances);
     }
-    const foundry::Model* rifle = models.get("l85a1");
+    const foundry::Model* rifle = models.get("ak47");
     if (!rifle) return 1;
     foundry::Arms arms;
     const bool hasArms = arms.load(renderer, iron::executableDir() + "/assets/models/arms/arms.gltf");
@@ -852,7 +857,7 @@ int main(int argc, char** argv) {
                 strafe = std::clamp(iron::dot(dir, right) * std::min(away, 1.0f), -1.0f, 1.0f);
             }
             trigger = wp.fire;
-            aiming = wp.aim;
+            aiming = wp.aim || sceneHas("aim");
         } else if (!paused) {
             look = {-mouseX * kMouseRadiansPerPixel, -mouseY * kMouseRadiansPerPixel};
             const auto down = [&](int k) { return input.keyDown(k) ? 1.0f : 0.0f; };
@@ -1086,7 +1091,8 @@ int main(int argc, char** argv) {
         // The rig view looks at the player from the side; the player still aims as before.
         Mat4 renderView = view;
         if (sceneHas("rig")) {
-            const Vec3 side = transformPoint(cameraToWorld, {0.55f, 0.0f, -0.2f});
+            // From the right, or with "left" from the left.
+            const Vec3 side = transformPoint(cameraToWorld, {sceneHas("left") ? -0.5f : 0.55f, 0.0f, -0.2f});
             const Vec3 at = transformPoint(cameraToWorld, {0.05f, -0.2f, -0.3f});
             renderView = iron::lookAt(side, at, {0.0f, 1.0f, 0.0f});
         } else if (sceneHas("overview")) {
@@ -1158,7 +1164,13 @@ int main(int argc, char** argv) {
             if (hasArms) {
                 const Mat4 armsToWorld = cameraToWorld * iron::translation(kShoulders) *
                                          iron::scaling({kArmScale, kArmScale, kArmScale});
-                arms.pose(iron::inverse(rifleModel) * armsToWorld, kRightGrip, kLeftGrip);
+                arms.pose(iron::inverse(rifleModel) * armsToWorld, kRightGrip, kLeftGrip, !sceneHas("bindpose"));
+                if (sceneHas("rig") && static_cast<int>(seconds * 60.0f) == 30) {
+                    iron::Log::info("foundry: palms miss their grips by %.3f (right) and %.3f (left)",
+                                    arms.reachError()[0] * kArmScale, arms.reachError()[1] * kArmScale);
+                    iron::Log::info("foundry: palms face their grips %.2f (right) and %.2f (left), last roll %.2f %.2f",
+                                    arms.facing()[0], arms.facing()[1], arms.roll()[0], arms.roll()[1]);
+                }
                 iron::DrawCall call;
                 call.mesh = arms.upload(renderer);
                 call.shader = lit;
