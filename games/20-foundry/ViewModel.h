@@ -48,6 +48,7 @@ public:
         muzzleBone_ = model_.findBone("FX_FIRE");
         casingBone_ = model_.findBone("FX_CASING");
         weaponBone_ = model_.findBone("weapon");
+        leftHandBone_ = model_.findBone("socket.l");
         if (!idle_ || muzzleBone_ < 0 || weaponBone_ < 0) {
             iron::Log::error("foundry: %s lacks the idle clip or the weapon's bones", path.c_str());
             return false;
@@ -69,6 +70,8 @@ public:
     void play(std::string_view name, float blendIn = 0.08f, float blendOut = 0.15f) {
         if (const iron::AnimationClip* clip = model_.findClip(name)) animator_.playOneShot(clip, blendIn, blendOut);
     }
+    // Whether the model has a clip by this name.
+    bool has(std::string_view name) const { return model_.findClip(name) != nullptr; }
     // A clip's length in seconds, or `fallback` if the model has none.
     float seconds(std::string_view name, float fallback) const {
         const iron::AnimationClip* clip = model_.findClip(name);
@@ -111,6 +114,8 @@ public:
     iron::Vec3 muzzle() const { return origin(muzzleBone_); }
     iron::Vec3 ejectionPort() const { return casingBone_ >= 0 ? origin(casingBone_) : muzzle(); }
     iron::Vec3 grip() const { return origin(weaponBone_); }
+    // The middle of the left hand's grip (what it holds: a grenade, thrown).
+    iron::Vec3 leftHand() const { return leftHandBone_ >= 0 ? origin(leftHandBone_) : grip(); }
 
     // Submits the model. `motionId` and the next few ids mark its sections.
     int draw(iron::Renderer& renderer, const iron::Mat4& modelToWorld, std::uint32_t motionId) const {
@@ -156,6 +161,7 @@ private:
     int muzzleBone_ = -1;
     int casingBone_ = -1;
     int weaponBone_ = -1;
+    int leftHandBone_ = -1;
 };
 
 }  // namespace foundry
