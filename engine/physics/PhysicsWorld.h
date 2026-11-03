@@ -86,6 +86,9 @@ public:
     // Swept collision each step, for small fast things (a thrown grenade) that would
     // otherwise pass through a thin wall between two steps.
     void setContinuous(BodyId, bool on);
+    // Bodies sharing a group (non-zero) never collide with each other: the parts
+    // of one ragdoll, jointed where they overlap.
+    void setCollisionGroup(BodyId, std::uint32_t group);
 
     // --- Queries ---
     struct RaycastHit {

@@ -33,6 +33,9 @@
 //   navmesh  show the AI view (F6)
 //   ailog    log each change in what each soldier's doing
 //   followN  watch soldier N (0-4) over his shoulder
+//   kill     soldier 0 is shot dead at two seconds
+//   god      the player takes no damage
+//   duel     aim at the nearest soldier in view and fire bursts
 
 #include "common/CaptureLoop.h"
 #include "common/TrackedText.h"
@@ -181,6 +184,29 @@ float ramp(float from, float to, float t) {
 Vec3 lerp(Vec3 a, Vec3 b, float t) { return a + (b - a) * t; }
 
 // Yaw 0 looks down -z; positive yaw turns left; positive pitch looks up.
+// Where a ray (unit direction) first meets a capsule from a to b of radius r, or -1.
+float rayCapsule(Vec3 ro, Vec3 rd, Vec3 a, Vec3 b, float r) {
+    const Vec3 ba = b - a, oa = ro - a;
+    const float baba = iron::dot(ba, ba), bard = iron::dot(ba, rd), baoa = iron::dot(ba, oa);
+    const float rdoa = iron::dot(rd, oa), oaoa = iron::dot(oa, oa);
+    const float qa = baba - bard * bard;
+    const float qb = baba * rdoa - baoa * bard;
+    const float qc = baba * oaoa - baoa * baoa - r * r * baba;
+    const float h = qb * qb - qa * qc;
+    if (h >= 0.0f && qa > 1e-8f) {
+        const float t = (-qb - std::sqrt(h)) / qa;
+        const float y = baoa + t * bard;
+        if (t >= 0.0f && y > 0.0f && y < baba) return t;
+    }
+    for (const Vec3 c : {a, b}) {
+        const Vec3 oc = ro - c;
+        const float cb = iron::dot(oc, rd), cc = iron::dot(oc, oc) - r * r;
+        const float hh = cb * cb - cc;
+        if (hh >= 0.0f && -cb - std::sqrt(hh) >= 0.0f) return -cb - std::sqrt(hh);
+    }
+    return -1.0f;
+}
+
 Vec3 lookDirection(float yaw, float pitch) {
     return {-std::sin(yaw) * std::cos(pitch), std::sin(pitch), -std::cos(yaw) * std::cos(pitch)};
 }
@@ -385,6 +411,10 @@ public:
         float scope = 0.0f;     // 0 none .. 1 looking through a scope.
         const char* prompt = nullptr;  // What E does here, if anything.
         float hitMarker = 0.0f;
+        bool  kill = false;        // The last hit killed.
+        float hurt = 0.0f;         // Just hit: 1, fading.
+        float hurtAngle = 0.0f;    // Where from, round the crosshair (0 ahead, right positive).
+        float down = 0.0f;         // Killed: how far into it.
         bool  paused = false;
         bool  showFrame = false;
         bool  showMotion = false;
@@ -474,13 +504,29 @@ public:
         // A hit lands: a quick diagonal mark.
         if (s.hitMarker > 0.0f) {
             const float a = s.hitMarker / 0.18f;
-            const float r0 = 7.0f * unit;
-            const float r1 = 15.0f * unit;
+            // A kill's marker is bigger, and red.
+            const float r0 = (s.kill ? 9.0f : 7.0f) * unit;
+            const float r1 = (s.kill ? 21.0f : 15.0f) * unit;
+            const Vec4 colour = s.kill ? Vec4{1.0f, 0.22f, 0.15f, a} : Vec4{1.0f, 0.95f, 0.85f, a};
             for (int i = 0; i < 4; ++i) {
                 const float ang = kPi * 0.25f + static_cast<float>(i) * kPi * 0.5f;
                 line(bars, {cx + std::cos(ang) * r0, cy + std::sin(ang) * r0},
-                     {cx + std::cos(ang) * r1, cy + std::sin(ang) * r1}, 2.0f * unit, {1.0f, 0.95f, 0.85f, a});
+                     {cx + std::cos(ang) * r1, cy + std::sin(ang) * r1}, (s.kill ? 3.0f : 2.0f) * unit, colour);
             }
+        }
+        // Hit: an arc round the crosshair on the side it came from.
+        if (s.hurt > 0.0f && !s.paused) {
+            const float r = 150.0f * unit;
+            for (int k = -6; k < 6; ++k) {
+                const float a0 = s.hurtAngle + static_cast<float>(k) * 0.05f, a1 = a0 + 0.05f;
+                const float fade = s.hurt * (1.0f - std::abs(static_cast<float>(k) + 0.5f) / 6.5f);
+                line(bars, {cx + std::sin(a0) * r, cy - std::cos(a0) * r}, {cx + std::sin(a1) * r, cy - std::cos(a1) * r},
+                     6.0f * unit, {0.8f, 0.06f, 0.04f, 0.85f * fade});
+            }
+        }
+        if (s.down > 0.0f) {
+            const float a = std::clamp((s.down - 1.2f) / 1.0f, 0.0f, 1.0f) * (1.0f - std::clamp(s.down - 3.6f, 0.0f, 1.0f));
+            text::appendCentered(bigText, big_, "KILLED IN ACTION", cx, h * 0.47f, 1.0f, 0.35f, {0.85f, 0.8f, 0.75f, a});
         }
 
         // What E does here.
@@ -1033,8 +1079,10 @@ int main(int argc, char** argv) {
     foundry::SoldierLook soldierLook;
     if (!soldierLook.load(renderer, models, iron::executableDir() + "/assets/models/npc/soldier.gltf")) return 1;
     foundry::Interaction* const acts[] = {&door, &hatch, &rope, &mantleLow, &mantleHigh, &vault};
+    bool downed = false;  // Killed: no control till the respawn.
     const auto acting = [&]() {
-        return std::any_of(std::begin(acts), std::end(acts), [](const foundry::Interaction* a) { return a->busy(); });
+        return downed ||
+               std::any_of(std::begin(acts), std::end(acts), [](const foundry::Interaction* a) { return a->busy(); });
     };
     Mat4 lastCamera = Mat4::identity();  // Last frame's camera, for an interaction to start from.
     // The leaf's collider, swapped for one along the wall once it stands open.
@@ -1271,6 +1319,32 @@ int main(int argc, char** argv) {
     std::uint32_t nextBitId = 0;
     int shotCount = 0;
     float hitMarker = 0.0f;
+    bool killMarker = false;
+    // The player's health: rounds take it, and it comes back after a few quiet
+    // seconds; no bar, the screen says it (darker, greyer, redder the worse).
+    float health = 100.0f;
+    float sinceHurt = 100.0f;
+    float hurtFlash = 0.0f;
+    Vec3  hurtFrom{};
+    float downTime = 0.0f;
+    float suppression = 0.0f;  // Rounds cracking past: the edges close in for a moment.
+    int enemyRounds = 0;
+    const auto hurtPlayer = [&](float amount, Vec3 from) {
+        if (downed || sceneHas("god")) return;
+        health -= amount;
+        if (squad.log) iron::Log::info("player hit for %.0f, health %.0f", amount, health);
+        sinceHurt = 0.0f;
+        hurtFlash = 1.0f;
+        hurtFrom = from;
+        trauma = std::min(trauma + 0.15f + amount * 0.005f, 1.0f);
+        sound.hurt();
+        if (health <= 0.0f) {
+            health = 0.0f;
+            downed = true;
+            downTime = 0.0f;
+            squad.playerDown();
+        }
+    };
     float flashRoll = 0.0f;
 
     // --- Input: mouse and key edges only exist in the input callback ---
@@ -1407,6 +1481,34 @@ int main(int argc, char** argv) {
                 reloadPressed = reloadPressed || (seconds > 1.4f && seconds < 1.45f);
             }
             inspectPressed = inspectPressed || (sceneHas("inspect") && seconds > 0.9f && seconds < 0.95f);
+            // Duel check: down the sights at the nearest soldier in view, in bursts.
+            if (sceneHas("duel") && seconds > 2.0f) {
+                const foundry::Enemy* mark = nullptr;
+                Vec3 chest{};
+                float nearest = 1.0e9f;
+                for (const auto& e : squad.enemies()) {
+                    if (e->dead) continue;
+                    const Vec3 c = e->soldier.centre() + Vec3{0.0f, 0.4f - 0.45f * e->crouch, 0.0f};
+                    const float d = iron::length(c - eye);
+                    if (d < nearest && senses.visibility(eye, c + Vec3{0.0f, 0.5f, 0.0f}) > 0.4f) {
+                        nearest = d;
+                        mark = e.get();
+                        chest = c;
+                    }
+                }
+                forward = 0.0f;
+                strafe = 0.0f;
+                if (mark) {
+                    const Vec3 to = chest - eye;
+                    float turn = std::atan2(-to.x, -to.z) - yaw;
+                    while (turn > kPi) turn -= 2.0f * kPi;
+                    while (turn < -kPi) turn += 2.0f * kPi;
+                    const float tilt = std::atan2(to.y, std::sqrt(to.x * to.x + to.z * to.z)) - pitch;
+                    look = Vec2{turn, tilt} * std::min(dt * 9.0f, 1.0f);
+                    aiming = true;
+                    trigger = std::fmod(seconds, 0.9f) < 0.3f && std::abs(turn) < 0.05f;
+                }
+            }
             // Decal check: stand still, look down at the floor ahead and fire a burst into it.
             if (sceneHas("decals")) {
                 look = {0.0f, (-0.6f - pitch) * std::min(dt * 4.0f, 1.0f)};
@@ -1426,7 +1528,7 @@ int main(int argc, char** argv) {
             // Steam check: stand still and watch the pipes along the hall's left wall,
             // then the furnace's heat rising.
             // Door and mantle checks: stand still in front of it; E or Space is pressed below.
-            if (atDoor || atBarrier || atHatch || inBunker || atRope || watching) {
+            if (atDoor || atBarrier || atHatch || inBunker || atRope || (watching && !sceneHas("duel"))) {
                 look = {0.0f, 0.0f};
                 forward = runUp ? 1.0f : 0.0f;
                 running = runUp;
@@ -1663,13 +1765,14 @@ int main(int argc, char** argv) {
         const float gait = grounded ? std::clamp(speed / kRunSpeed, 0.0f, 1.0f) : 0.0f;
         const float run = sprintBlend * gait;
         const float sway = std::sin(strides * kPi) * (0.0035f * run + 0.001f * gait);
-        const float roll = lean + sway + punch.y + jolt.x * 0.4f;
+        const float roll = lean + sway + punch.y + jolt.x * 0.4f + (downed ? std::min(downTime * 1.2f, 1.0f) * 0.9f : 0.0f);
         const float bob = -std::abs(std::sin(strides * kPi)) * (0.014f * run + 0.004f * gait * (1.0f - run));
         // The camera rides between the last two physics steps rather than jumping
         // sixty times a second: smooth at any frame rate.
         const float between = std::clamp(physicsClock / kPhysicsStep, 0.0f, 1.0f);
         const Vec3 drawnFeet = feetBeforeStep + (feet - feetBeforeStep) * between;
-        Vec3 eye = drawnFeet + Vec3{0.0f, kEyeHeight + landDip + bob, 0.0f};
+        const float downDrop = downed ? std::min(downTime * downTime * 2.4f, 1.3f) : 0.0f;
+        Vec3 eye = drawnFeet + Vec3{0.0f, kEyeHeight + landDip + bob - downDrop, 0.0f};
         Vec3 aimDir = lookDirection(viewYaw, viewPitch);
         // Rolled about the line of sight (Rodrigues' rotation of the world's up).
         const Vec3 worldUp{0.0f, 1.0f, 0.0f};
@@ -1838,6 +1941,11 @@ int main(int argc, char** argv) {
                                           c + offCentre);
             }
             stirs.blast(at);
+            squad.blast(at, kBlastRadius, world);
+            {
+                const float near = 1.0f - iron::length(at - (eye - Vec3{0.0f, 0.8f, 0.0f})) / 7.0f;
+                if (near > 0.0f) hurtPlayer(160.0f * near * near, at);
+            }
             smoke.blast(at);
             smoke.start(at, foundry::Smoke::Kind::Soot);
             const float distance = iron::length(at - eye);
@@ -1855,21 +1963,11 @@ int main(int argc, char** argv) {
             hots.push_back({at + up * 1.2f, 1.6f, 1.6f});
         }
 
-        barrelHeat = std::max(barrelHeat - simDt * 0.12f, 0.0f);
-        for (int i = 0; i < shots; ++i) {
-            barrelHeat = std::min(barrelHeat + 0.04f, 1.0f);
-            ++shotCount;
-            flashRoll = noise.next() * kPi;
-            sound.shot(weapon.arm);
-            squad.noise(eye, 90.0f, true, true);
-            vfx.emit("muzzle", muzzle, aimDir, weapon.arm == foundry::Arm::Sniper ? 14u : 4u);
-            const Vec2 dev = gun.shotDeviation();
-            const Vec3 dir = lookDirection(viewYaw + dev.x, viewPitch + dev.y);
-            // The round: into what it meets, through what it can pierce, off what it grazes.
-            const std::vector<iron::BulletImpact> impacts = iron::traceBullet(world, materials, eye, dir);
-
-            if (!gun.tuning().boltAction) ejectCasing();
-
+        // One round's flight from `muzzle` along `dir`: its path in pieces through what
+        // it pierces (ending at `stopAt` if a body took it), the fog and smoke pushed
+        // aside along it, a tracer if it `glow`s, and what it does where it hits.
+        const auto landRound = [&](Vec3 muzzle, Vec3 dir, const std::vector<iron::BulletImpact>& impacts, bool glow,
+                                   const Vec3* stopAt, bool fromPlayer) {
             // The round's path in straight pieces: from the muzzle to where it first
             // lands, on from wherever it comes out or glances off, and away out of
             // range if nothing stops it.
@@ -1882,7 +1980,9 @@ int main(int argc, char** argv) {
                     from = imp.point;
                     way = imp.direction;
                 }
-                if (impacts.empty() || impacts.back().kind != iron::BulletImpact::Kind::Stop) {
+                if (stopAt) {
+                    path.emplace_back(from, *stopAt);
+                } else if (impacts.empty() || impacts.back().kind != iron::BulletImpact::Kind::Stop) {
                     path.emplace_back(from, from + way * 120.0f);
                 }
             }
@@ -1892,7 +1992,7 @@ int main(int argc, char** argv) {
                 smoke.wake(from, to);
             }
             // Every third round glows, so the stream can be seen.
-            if (shotCount % 3 == 0) {
+            if (glow) {
                 for (const auto& [from, to] : path) {
                     const float length = iron::length(to - from);
                     const Vec3 way = (to - from) * (1.0f / std::max(length, 1e-4f));
@@ -1926,7 +2026,10 @@ int main(int argc, char** argv) {
                 bool plate = false;
                 for (const Dynamic& d : dynamics) {
                     if (d.body.value != hit.body.value) continue;
-                    hitMarker = 0.18f;
+                    if (fromPlayer) {
+                        hitMarker = 0.18f;
+                        killMarker = false;
+                    }
                     plate = d.motionId >= kPlateMotionBase;
                 }
                 if (!exit) sound.impact(surface, plate, hit.point);
@@ -1949,6 +2052,60 @@ int main(int argc, char** argv) {
                     flashes.push_back({hit.point + n * 0.25f, {1.0f, 0.6f, 0.3f}, 0.07f, 0.07f, 2.5f, 3.5f});
                 }
             }
+        };
+        // A round into a soldier: a spray of blood off him, the strike, the marker.
+        const auto bleed = [&](Vec3 at, Vec3 way, int count) {
+            for (int k = 0; k < count; ++k) {
+                Bit drop;
+                drop.position = at;
+                drop.velocity = (way * (1.5f + 2.5f * noise.next()) +
+                                 Vec3{noise.signedNext(), noise.signedNext() + 0.6f, noise.signedNext()} * 1.4f);
+                drop.size = Vec3{0.025f, 0.025f, 0.025f} * (0.6f + noise.next());
+                drop.color = {0.22f, 0.015f, 0.01f};
+                drop.maxLife = 0.35f + 0.4f * noise.next();
+                drop.life = drop.maxLife;
+                drop.gravity = 9.8f;
+                spawnBit(drop);
+            }
+        };
+
+        barrelHeat = std::max(barrelHeat - simDt * 0.12f, 0.0f);
+        for (int i = 0; i < shots; ++i) {
+            barrelHeat = std::min(barrelHeat + 0.04f, 1.0f);
+            ++shotCount;
+            flashRoll = noise.next() * kPi;
+            sound.shot(weapon.arm);
+            squad.noise(eye, 90.0f, true, true);
+            vfx.emit("muzzle", muzzle, aimDir, weapon.arm == foundry::Arm::Sniper ? 14u : 4u);
+            const Vec2 dev = gun.shotDeviation();
+            const Vec3 dir = lookDirection(viewYaw + dev.x, viewPitch + dev.y);
+            // The round: into what it meets, through what it can pierce, off what it grazes.
+            std::vector<iron::BulletImpact> impacts = iron::traceBullet(world, materials, eye, dir);
+
+            if (!gun.tuning().boltAction) ejectCasing();
+
+            // A soldier in its way before the first thing it'd strike takes the round.
+            const float wall = impacts.empty() ? 250.0f : iron::length(impacts.front().point - eye);
+            const foundry::Squad::Target target = squad.shoot(eye, dir, wall);
+            if (target.enemy >= 0) {
+                impacts.clear();
+                const float power = weapon.arm == foundry::Arm::Sniper ? 130.0f : weapon.arm == foundry::Arm::Pistol ? 30.0f
+                                                                                                                   : 38.0f;
+                const bool headshot = squad.part(target.enemy, target.hit.part).damage >= 4.0f;
+                const bool armed = squad.part(target.enemy, target.hit.part).damage > 0.0f;
+                const bool killed = squad.damage(target.enemy, target.hit.part, power, dir, target.hit.point, eye, world,
+                                                 weapon.arm == foundry::Arm::Sniper ? 110.0f : 55.0f);
+                if (armed) {
+                    sound.bodyHit(target.hit.point);
+                    bleed(target.hit.point, dir, headshot ? 18 : 9);
+                    hitMarker = 0.18f;
+                    killMarker = killed;
+                } else {
+                    sound.impact(Surface::Metal, false, target.hit.point);  // His rifle.
+                    vfx.emit("sparks", target.hit.point, dir * -1.0f, 6u, 0.6f);
+                }
+            }
+            landRound(muzzle, dir, impacts, shotCount % 3 == 0, target.enemy >= 0 ? &target.hit.point : nullptr, true);
         }
         if (gun.flash() > 0.0f && shots > 0) {
             flashes.push_back({muzzle, {1.0f, 0.68f, 0.38f}, 0.05f, 0.05f, 7.0f, 8.0f});
@@ -2045,6 +2202,43 @@ int main(int argc, char** argv) {
                                    0.007f * std::sin(seconds * 1.1f + 0.5f)} * dazed;
         frameLens.vignette = std::min(frameLens.vignette + 0.3f * dazed, 1.0f);
         frameLens.saturation *= 1.0f - 0.25f * dazed;
+        // Hurt: darker, greyer and redder at the edges the worse it is; healing after
+        // a few quiet seconds. Down: the world fades out, then the player's back at
+        // the start and the squad's back on its rounds.
+        sinceHurt += simDt;
+        if (!downed && sinceHurt > 4.5f) health = std::min(health + 20.0f * simDt, 100.0f);
+        hurtFlash = std::max(hurtFlash - simDt * 1.3f, 0.0f);
+        suppression = std::max(suppression - simDt * 0.6f, 0.0f);
+        {
+            const float wounded = 1.0f - health / 100.0f;
+            const float hurtNow = wounded * wounded * 0.7f + 0.3f * hurtFlash;
+            frameLens.vignette = std::min(frameLens.vignette + 0.6f * hurtNow + 0.25f * suppression, 1.0f);
+            frameLens.saturation *= 1.0f - 0.75f * wounded * wounded;
+            frameLens.shadowTint = {frameLens.shadowTint.x * (1.0f + 0.25f * hurtNow),
+                                    frameLens.shadowTint.y * (1.0f - 0.55f * hurtNow),
+                                    frameLens.shadowTint.z * (1.0f - 0.55f * hurtNow)};
+            frameLens.chromaticAberration += 0.004f * hurtFlash + 0.003f * suppression;
+            frameLens.motionBlur += 0.3f * suppression;
+            if (downed) {
+                downTime += simDt;
+                const float out = std::clamp((downTime - 1.2f) / 1.6f, 0.0f, 1.0f);
+                frameLens.saturation *= 1.0f - 0.8f * std::min(downTime, 1.0f);
+                frameLens.shadowTint = frameLens.shadowTint * (1.0f - out);
+                frameLens.highlightTint = frameLens.highlightTint * (1.0f - out);
+                if (downTime > 4.6f) {
+                    downed = false;
+                    health = 100.0f;
+                    sinceHurt = 100.0f;
+                    hurtFlash = 0.0f;
+                    body.setFootPosition(level.spawn);
+                    body.setVelocity({0.0f, 0.0f, 0.0f});
+                    feetBeforeStep = level.spawn;
+                    horizontal = {0.0f, 0.0f, 0.0f};
+                    yaw = level.spawnYaw;
+                    pitch = 0.0f;
+                }
+            }
+        }
         vulkan->setCinematic(frameLens);
         // The rig view looks at the player from the side; the player still aims as before.
         Mat4 renderView = view;
@@ -2183,9 +2377,48 @@ int main(int argc, char** argv) {
             draws += acts[i]->draw(renderer, kDoorMotionId + 10u * static_cast<std::uint32_t>(i));
         }
         // The squad: sees, hears, thinks, moves.
+        // --scene kill: soldier 0 takes a round through the chest at two seconds, to watch him fall.
+        if (sceneHas("kill") && seconds >= 2.0f && seconds - simDt < 2.0f && !squad.enemies().empty()) {
+            const Vec3 c = squad.enemies()[0]->soldier.centre() + Vec3{0.0f, 0.35f, 0.0f};
+            squad.damage(0, 1, 500.0f, iron::normalize(c - eye), c, eye, world, 70.0f);
+        }
         senses.playerEye = eye;
+        senses.playerVelocity = horizontal;
         squad.update(simDt, senses);
         draws += squad.draw(renderer, kSoldierMotionBase);
+        // Their rounds: heard from the shooter, flown like the player's, into the player
+        // (a capsule from the knees to the crown) or past his head with a crack.
+        for (const foundry::Squad::Shot& shot : squad.shots()) {
+            sound.enemyShot(shot.from, iron::length(shot.from - eye));
+            vfx.emit("muzzle", shot.from, shot.direction, 3u);
+            flashes.push_back({shot.from, {1.0f, 0.68f, 0.38f}, 0.05f, 0.05f, 5.0f, 6.0f});
+            std::vector<iron::BulletImpact> impacts = iron::traceBullet(world, materials, shot.from, shot.direction);
+            const float wall = impacts.empty() ? 250.0f : iron::length(impacts.front().point - shot.from);
+            const Vec3 feetNow = body.footPosition();
+            const float t = downed ? -1.0f
+                                   : rayCapsule(shot.from, shot.direction, feetNow + Vec3{0.0f, 0.55f, 0.0f},
+                                                eye + Vec3{0.0f, 0.05f, 0.0f}, 0.3f);
+            ++enemyRounds;
+            if (t >= 0.0f && t < wall) {
+                const Vec3 at = shot.from + shot.direction * t;
+                const bool head = at.y > eye.y - 0.2f;
+                hurtPlayer(head ? 34.0f : 13.0f + 7.0f * noise.next(), shot.from);
+                impacts.clear();
+                landRound(shot.from, shot.direction, impacts, enemyRounds % 3 == 0, &at, false);
+                continue;
+            }
+            const float along = iron::dot(eye - shot.from, shot.direction);
+            if (along > 0.0f && along < wall) {
+                const Vec3 closest = shot.from + shot.direction * along;
+                const float miss = iron::length(eye - closest);
+                if (miss < 2.5f) {
+                    sound.flyby(closest);
+                    suppression = std::min(suppression + 0.4f * (1.0f - miss / 2.5f), 1.0f);
+                }
+            }
+            landRound(shot.from, shot.direction, impacts, enemyRounds % 3 == 0, nullptr, false);
+        }
+        for (const Vec3& at : squad.falls()) sound.bodyfall(at);
         // The effects, lit by roughly where the player is: open daylight or the hall.
         {
             const float lightLevel = 1.0f - 0.55f * indoorAt(eye);
@@ -2312,6 +2545,15 @@ int main(int argc, char** argv) {
         state.scope = scopeView;
         state.prompt = prompt;
         state.hitMarker = hitMarker;
+        state.kill = killMarker;
+        state.hurt = hurtFlash;
+        {
+            const Vec3 to = hurtFrom - eye;
+            const Vec3 fwd{-std::sin(yaw), 0.0f, -std::cos(yaw)};
+            const Vec3 right{std::cos(yaw), 0.0f, -std::sin(yaw)};
+            state.hurtAngle = std::atan2(iron::dot(to, right), iron::dot(to, fwd));
+        }
+        state.down = downed ? downTime : 0.0f;
         state.paused = paused;
         state.showFrame = showFrame;
         state.showMotion = showMotion;

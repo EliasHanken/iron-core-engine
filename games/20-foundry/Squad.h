@@ -91,6 +91,7 @@ inline std::vector<CoverPoint> findCover(std::span<const SmokeCollider> boxes, c
 // What the game tells the squad each frame.
 struct Senses {
     Vec3 playerEye{};
+    Vec3 playerVelocity{};
     // How much of a sight line gets through walls and smoke (0..1), from, to.
     std::function<float(Vec3, Vec3)> visibility;
 };
@@ -141,6 +142,13 @@ public:
     bool  flanked = false;
     bool  reacted = false;
     bool  wasAlerted = false;
+    // Fighting.
+    float health = 100.0f;
+    bool  dead = false;
+    bool  mayFire = false;   // The running task has him up and aiming.
+    int   burstLeft = 0;
+    float shotIn = 0.0f;
+    float focus = 0.0f;      // Zeroing in: 0 just got sight of the player, 1 settled on him.
     std::vector<std::pair<int, float>> shunned;  // Cover that failed him, and when.
 
     Vec3 eye() const { return at + Vec3{0.0f, crouch > 0.5f ? 1.05f : 1.6f, 0.0f}; }
@@ -166,16 +174,127 @@ public:
 
     // A sound: heard by everyone within `range`.
     void noise(Vec3 at, float range, bool alarming, bool fromPlayer) {
-        for (auto& e : enemies_) e->perception.hear(e->eye(), at, range, alarming, fromPlayer);
+        for (auto& e : enemies_) {
+            if (!e->dead) e->perception.hear(e->eye(), at, range, alarming, fromPlayer);
+        }
+    }
+
+    // --- Fighting ---
+    // A round each soldier fired this frame, for the game to fly.
+    struct Shot {
+        Vec3 from;
+        Vec3 direction;
+        int  shooter;
+    };
+    const std::vector<Shot>& shots() const { return shots_; }
+    // Where bodies hit the ground this frame.
+    const std::vector<Vec3>& falls() const { return landed_; }
+
+    // The soldier, and the part of him, a round along this ray meets first.
+    struct Target {
+        int              enemy = -1;
+        iron::RagdollHit hit;
+    };
+    Target shoot(Vec3 from, Vec3 direction, float maxDistance) const {
+        Target best;
+        best.hit.distance = maxDistance;
+        for (std::size_t i = 0; i < enemies_.size(); ++i) {
+            const Enemy& e = *enemies_[i];
+            if (e.dead) continue;
+            // Nowhere near the line: not worth the parts.
+            const Vec3 c = e.at + Vec3{0.0f, 1.0f, 0.0f} - from;
+            const float along = iron::dot(c, direction);
+            if (along < -1.5f || along > best.hit.distance + 1.5f || iron::length(c - direction * along) > 1.6f) continue;
+            const iron::RagdollHit h = e.soldier.hit(from, direction, best.hit.distance);
+            if (h.part >= 0 && h.distance < best.hit.distance) {
+                best.enemy = static_cast<int>(i);
+                best.hit = h;
+            }
+        }
+        return best;
+    }
+    const iron::RagdollPartSpec& part(int enemy, int part) const {
+        return enemies_[static_cast<std::size_t>(enemy)]->soldier.part(part);
+    }
+
+    // A round (or a blast) into soldier `enemy`'s `part`: `amount` before the part's
+    // own multiplier, travelling `direction`, from `shooter`. True if it killed him.
+    bool damage(int enemy, int part, float amount, Vec3 direction, Vec3 at, Vec3 shooter, iron::PhysicsWorld& world,
+                float shove = 60.0f) {
+        Enemy& e = *enemies_[static_cast<std::size_t>(enemy)];
+        if (e.dead) {
+            e.soldier.push(part, direction * shove * 0.5f, at);
+            return false;
+        }
+        const iron::RagdollPartSpec& spec = e.soldier.part(part);
+        if (spec.damage <= 0.0f) return false;  // Into his rifle.
+        e.health -= amount * spec.damage;
+        // He knows where that came from.
+        e.perception.hear(e.eye(), shooter, 1.0e9f, true, true);
+        if (e.health > 0.0f) {
+            const Vec3 side{std::cos(e.yaw), 0.0f, -std::sin(e.yaw)};
+            e.soldier.flinch({-0.35f * iron::dot(direction, side), 0.25f});
+            return false;
+        }
+        e.dead = true;
+        e.health = 0.0f;
+        const Vec3 velocity = e.agent >= 0 ? nav_.agentVelocity(e.agent) : Vec3{};
+        release(e);
+        if (e.agent >= 0) nav_.removeAgent(e.agent);
+        e.agent = -1;
+        e.soldier.die(world, velocity, part, direction * shove * (spec.damage >= 4.0f ? 1.4f : 1.0f), at,
+                      1000u + static_cast<std::uint32_t>(enemy));
+        falling_.push_back({e.soldier.centre(), 0.55f + 0.2f * random()});
+        // Those near see or hear him go down.
+        for (auto& o : enemies_) {
+            if (!o->dead && o.get() != &e) o->perception.hear(o->eye(), e.at, 25.0f, true, false);
+        }
+        return true;
+    }
+
+    // A grenade: everyone near is hurt by how close, and thrown.
+    void blast(Vec3 at, float radius, iron::PhysicsWorld& world) {
+        for (std::size_t i = 0; i < enemies_.size(); ++i) {
+            Enemy& e = *enemies_[i];
+            const Vec3 c = e.soldier.centre();
+            const float d = iron::length(c - at);
+            if (d > radius) continue;
+            const float f = 1.0f - d / radius;
+            const Vec3 away = iron::normalize(c - at + Vec3{0.0f, 0.6f, 0.0f});
+            damage(static_cast<int>(i), 1, 220.0f * f * f, away, c, at, world, 260.0f * f);
+        }
+    }
+
+    // The player's down: they stand down and go back to their rounds.
+    void playerDown() {
+        for (auto& e : enemies_) {
+            if (e->dead) continue;
+            e->perception.calmDown();
+            e->board.clear("look_into");
+            e->burstLeft = 0;
+        }
+        sinceSeen_ = 1.0e9f;
+        radioIn_ = -1.0f;
+    }
+    int alive() const {
+        return static_cast<int>(std::count_if(enemies_.begin(), enemies_.end(), [](const auto& e) { return !e->dead; }));
     }
 
     void update(float dt, const Senses& senses) {
         senses_ = &senses;
+        shots_.clear();
+        landed_.clear();
         if (dt <= 0.0f) return;
         clock_ += dt;
+        for (auto& f : falling_) f.second -= dt;
+        for (const auto& f : falling_) {
+            if (f.second <= 0.0f) landed_.push_back(f.first);
+        }
+        std::erase_if(falling_, [](const auto& f) { return f.second <= 0.0f; });
         // --- Looking ---
         bool anyoneSees = false;
         for (auto& e : enemies_) {
+            if (e->dead) continue;
             const Vec3 forward{-std::sin(e->headYaw), 0.0f, -std::cos(e->headYaw)};
             const Vec3 eye = e->eye();
             const Vec3 to = senses.playerEye - eye;
@@ -190,12 +309,13 @@ public:
         sinceSeen_ = anyoneSees ? 0.0f : sinceSeen_ + dt;
         // --- Telling each other ---
         for (auto& e : enemies_) {
+            if (e->dead) continue;
             const bool alerted = e->perception.state().alerted;
             if (alerted && !e->wasAlerted) {
                 // A shout to those near; the radio to everyone else shortly.
                 const Vec3 where = e->perception.state().lastKnown;
                 for (auto& o : enemies_) {
-                    if (o.get() != e.get() && iron::length(o->at - e->at) < 30.0f) o->perception.share(where);
+                    if (!o->dead && o.get() != e.get() && iron::length(o->at - e->at) < 30.0f) o->perception.share(where);
                 }
                 if (radioIn_ < 0.0f) {
                     radioIn_ = 3.0f;
@@ -205,17 +325,22 @@ public:
             e->wasAlerted = alerted;
         }
         if (radioIn_ >= 0.0f && (radioIn_ -= dt) < 0.0f) {
-            for (auto& o : enemies_) o->perception.share(radioAt_);
+            for (auto& o : enemies_) {
+                if (!o->dead) o->perception.share(radioAt_);
+            }
         }
         // Who can see him keeps the others posted.
         if (anyoneSees) {
             for (auto& e : enemies_) {
-                if (e->perception.state().alerted && !e->perception.state().seesTarget) e->perception.share(known_);
+                if (!e->dead && e->perception.state().alerted && !e->perception.state().seesTarget) {
+                    e->perception.share(known_);
+                }
             }
         }
         assignFlanker();
         // --- Thinking ---
         for (auto& e : enemies_) {
+            if (e->dead) continue;
             brief(*e);
             iron::BtContext ctx{e->board, dt};
             // A tree that's finished starts over at once, not a frame later.
@@ -230,7 +355,14 @@ public:
         }
         // --- Moving ---
         nav_.updateCrowd(dt);
-        for (auto& e : enemies_) move(*e, dt);
+        for (auto& e : enemies_) {
+            if (e->dead) {
+                e->soldier.update(dt, {});
+                continue;
+            }
+            move(*e, dt);
+            fire(*e, dt);
+        }
     }
 
     int draw(iron::Renderer& renderer, std::uint32_t motionBase) const {
@@ -250,6 +382,7 @@ public:
             renderer.drawLineOverlay(c.at + up * 0.05f, c.at + up * 0.05f + c.out * 0.35f, colour);
         }
         for (const auto& e : enemies_) {
+            if (e->dead) continue;
             const iron::Awareness& a = e->perception.state();
             const Vec3 head = e->at + up * 2.05f;
             const Vec3 colour = a.alerted ? Vec3{1.0f, 0.15f, 0.1f}
@@ -274,6 +407,7 @@ public:
     };
     void labels(std::vector<Label>& out) const {
         for (const auto& e : enemies_) {
+            if (e->dead) continue;
             const iron::Awareness& a = e->perception.state();
             const char* mood = a.alerted ? "ALERT" : e->perception.suspicious() ? "SUSPICIOUS" : "CALM";
             char head[64];
@@ -362,6 +496,7 @@ private:
                 e.wantLook = 0.0f;
                 e.facing = false;
                 e.aiming = false;
+                e.mayFire = false;
             },
             [this, &e](iron::BtContext&) { nav_.stop(e.agent); });
     }
@@ -381,6 +516,7 @@ private:
                 e.facing = false;
                 e.aiming = false;
                 e.wantLook = 0.0f;
+                e.mayFire = false;
                 setup(e);
             });
     }
@@ -421,6 +557,7 @@ private:
                 e.faceAt = threat;
                 e.facing = true;
                 e.aiming = true;
+                e.mayFire = st->up && e.speed < 0.4f;
                 if (!st->up) {
                     e.wantCrouch = c.low() ? 1.0f : 0.0f;
                     e.wantAim = c.low() ? 1.0f : 0.45f;
@@ -507,8 +644,9 @@ private:
                      bt::sequence("Hunt", moveTo(e, "Advance", lastKnown, [] { return 1.5f; }, 0.8f, 2.0f),
                                   hold(e, "Sweep", 5.0f,
                                        [](Enemy& me) {
-                                           me.wantAim = 0.7f;
-                                           me.wantLook = 1.0f;
+                                           me.wantAim = 1.0f;
+                                           me.wantLook = 0.5f;
+                                           me.mayFire = true;
                                        }))),
             // The flanker swings wide while the rest hold him.
             bt::when("Flank",
@@ -531,6 +669,7 @@ private:
                 me.faceAt = lastKnown();
                 me.facing = me.aiming = true;
                 me.wantAim = 1.0f;
+                me.mayFire = true;
             }));
 
         BtPtr investigate = bt::sequence(
@@ -619,6 +758,38 @@ private:
         e.soldier.update(dt, pose);
     }
 
+    // --- Firing ---
+    // Bursts of three to six at the AK's 600 a minute while he's up, aiming and can
+    // see the player; the first rounds go wide and he settles in over a second or
+    // two, worse the further off and the faster the player's moving.
+    void fire(Enemy& e, float dt) {
+        const iron::Awareness& a = e.perception.state();
+        const bool can = e.mayFire && a.seesTarget && e.aim > 0.85f;
+        e.focus = can ? std::min(e.focus + dt / 1.6f, 1.0f) : std::max(e.focus - dt * 0.5f, 0.0f);
+        e.shotIn -= dt;
+        if (!can) {
+            e.burstLeft = 0;
+            return;
+        }
+        if (e.shotIn > 0.0f) return;
+        if (e.burstLeft <= 0) e.burstLeft = 3 + static_cast<int>(random() * 3.99f);
+        const Vec3 from = e.soldier.muzzle();
+        const Vec3 target = senses_->playerEye - Vec3{0.0f, 0.4f, 0.0f};
+        const float distance = iron::length(target - from);
+        const Vec3 v = senses_->playerVelocity;
+        const float moving = std::min(std::sqrt(v.x * v.x + v.z * v.z) / 5.0f, 1.0f);
+        const float spread = 0.012f + 0.0009f * distance + 0.03f * moving + 0.055f * (1.0f - e.focus);
+        const Vec3 way = iron::normalize(target - from);
+        const Vec3 right = iron::normalize(iron::cross(way, Vec3{0.0f, 1.0f, 0.0f}));
+        const Vec3 up = iron::cross(right, way);
+        const auto gauss = [this] { return (random() + random() + random() - 1.5f) * 1.2f; };
+        const Vec3 aimed = target + (right * gauss() + up * gauss()) * (spread * distance);
+        shots_.push_back({from, iron::normalize(aimed - from), index(e)});
+        e.soldier.flinch({0.0f, 0.03f});  // The rifle's kick.
+        --e.burstLeft;
+        e.shotIn = e.burstLeft > 0 ? 0.1f + 0.03f * random() : 0.55f + 0.9f * random();
+    }
+
     // --- Cover ---
     int bestCover(const Enemy& e, Vec3 threat, bool flank) const {
         const Vec3 threatEye = threat + Vec3{0.0f, 1.5f, 0.0f};
@@ -626,7 +797,7 @@ private:
         Vec3 squad{0.0f, 0.0f, 0.0f};
         int others = 0;
         for (const auto& o : enemies_) {
-            if (o.get() != &e && o->perception.state().alerted) {
+            if (!o->dead && o.get() != &e && o->perception.state().alerted) {
                 squad = squad + o->at;
                 ++others;
             }
@@ -708,7 +879,7 @@ private:
         int alerted = 0;
         Enemy* flanker = nullptr;
         for (auto& e : enemies_) {
-            if (!e->perception.state().alerted) {
+            if (e->dead || !e->perception.state().alerted) {
                 e->flanker = e->flanked = false;
                 continue;
             }
@@ -719,7 +890,7 @@ private:
         // The one furthest from where the player was, who has the most room to go round.
         float best = -1.0f;
         for (auto& e : enemies_) {
-            if (!e->perception.state().alerted || e->guard()) continue;
+            if (e->dead || !e->perception.state().alerted || e->guard()) continue;
             const float d = iron::length(e->at - known_);
             if (d > best) {
                 best = d;
@@ -759,6 +930,9 @@ private:
     float                                radioIn_ = -1.0f;
     Vec3                                 radioAt_{};
     std::uint32_t                        seed_ = 12345u;
+    std::vector<Shot>                    shots_;
+    std::vector<std::pair<Vec3, float>>  falling_;  // Bodies on their way down, and how long till they land.
+    std::vector<Vec3>                    landed_;
     float                                clock_ = 0.0f;
 };
 

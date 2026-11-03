@@ -23,6 +23,7 @@
 #include <Jolt/Physics/Constraints/HingeConstraint.h>
 #include <Jolt/Physics/Collision/ContactListener.h>
 #include <Jolt/Physics/Body/BodyLockInterface.h>
+#include <Jolt/Physics/Collision/GroupFilter.h>
 #include <Jolt/RegisterTypes.h>
 
 #include <functional>
@@ -139,7 +140,20 @@ private:
 
 }  // namespace
 
+namespace {
+
+// One ragdoll's parts share a group and pass through each other.
+class SameGroupApart final : public JPH::GroupFilter {
+public:
+    bool CanCollide(const JPH::CollisionGroup& a, const JPH::CollisionGroup& b) const override {
+        return a.GetGroupID() == JPH::CollisionGroup::cInvalidGroup || a.GetGroupID() != b.GetGroupID();
+    }
+};
+
+}  // namespace
+
 struct PhysicsWorld::Impl {
+    JPH::Ref<JPH::GroupFilter> sameGroupApart;  // Made on first use, after Jolt's allocator is up.
     JPH::TempAllocatorImpl*     temp       = nullptr;
     JPH::JobSystemThreadPool*   jobs       = nullptr;
     JPH::PhysicsSystem*         system     = nullptr;
@@ -316,6 +330,12 @@ void PhysicsWorld::setContinuous(BodyId b, bool on) {
     if (!b.isValid()) return;
     impl_->system->GetBodyInterface().SetMotionQuality(
         toJoltBodyId(b), on ? JPH::EMotionQuality::LinearCast : JPH::EMotionQuality::Discrete);
+}
+void PhysicsWorld::setCollisionGroup(BodyId b, std::uint32_t group) {
+    if (!b.isValid()) return;
+    if (!impl_->sameGroupApart) impl_->sameGroupApart = new SameGroupApart();
+    impl_->system->GetBodyInterface().SetCollisionGroup(
+        toJoltBodyId(b), JPH::CollisionGroup(impl_->sameGroupApart, group == 0 ? JPH::CollisionGroup::cInvalidGroup : group, 0));
 }
 Vec3 PhysicsWorld::velocityOf(BodyId b) const {
     if (!b.isValid()) return {};
