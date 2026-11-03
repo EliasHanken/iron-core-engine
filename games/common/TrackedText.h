@@ -67,4 +67,12 @@ inline void appendCentered(iron::HudDrawGroup& group, const iron::FontAtlas& atl
     }
 }
 
+// The same, starting at `left`.
+inline void appendLeft(iron::HudDrawGroup& group, const iron::FontAtlas& atlas, const std::string& text, float left,
+                       float baseline, float scale, float tracking, iron::Vec4 color) {
+    const float gap = atlas.pixelHeight() * tracking;
+    const float width = atlas.textWidth(text) + gap * static_cast<float>(text.size() - 1);
+    appendCentered(group, atlas, text, left + width * scale * 0.5f, baseline, scale, tracking, color);
+}
+
 }  // namespace text

@@ -35,6 +35,9 @@
 //   followN  watch soldier N (0-4) over his shoulder
 //   kill     soldier 0 is shot dead at two seconds
 //   god      the player takes no damage
+//   mission  play the demo's story (a normal launch always does); with intro its
+//            opening, with stage2..stage7 from that stage on (2 the schematics,
+//            3 the breach, 4 the hall, 5 the charge, 6 the escape, 7 the outro)
 //   duel     aim at the nearest soldier in view and fire bursts
 
 #include "common/CaptureLoop.h"
@@ -47,6 +50,7 @@
 #include "Models.h"
 #include "Arsenal.h"
 #include "Interaction.h"
+#include "Mission.h"
 #include "Soldier.h"
 #include "Squad.h"
 #include "Sound.h"
@@ -100,7 +104,9 @@ constexpr float kMouseRadiansPerPixel = 0.0011f;  // Raw counts: about 0.063 deg
 constexpr float kPhysicsStep = 1.0f / 60.0f;
 constexpr float kRecordSeconds = 34.0f;
 constexpr std::uint32_t kGunMotionId = 1;  // And the next few, one per section.
-constexpr std::uint32_t kSoldierMotionBase = 200;  // Ten ids each (their sections).
+constexpr std::uint32_t kSoldierMotionBase = 200;
+constexpr std::uint32_t kIntelMotionId = 395;
+const Vec3 kMissionStart{-26.0f, 0.0f, 33.0f};  // The south wall, where the raid comes in.  // Ten ids each (their sections).
 constexpr std::uint32_t kDoorMotionId = 30;  // Interactions (the door, the mantles), ten ids each.
 
 // A ledge the player can climb onto: where its top edge is, which way is over it
@@ -184,6 +190,25 @@ float ramp(float from, float to, float t) {
 Vec3 lerp(Vec3 a, Vec3 b, float t) { return a + (b - a) * t; }
 
 // Yaw 0 looks down -z; positive yaw turns left; positive pitch looks up.
+// Starts this game again as a new process (no console), to play the raid over.
+void relaunch() {
+#ifdef _WIN32
+    char path[MAX_PATH];
+    if (GetModuleFileNameA(nullptr, path, MAX_PATH) == 0) return;
+    std::string line = std::string("\"") + path + "\"";
+    std::vector<char> command(line.begin(), line.end());
+    command.push_back(char{0});  // CreateProcess wants a writable, terminated line.
+    STARTUPINFOA startup{};
+    startup.cb = sizeof(startup);
+    PROCESS_INFORMATION process{};
+    if (CreateProcessA(nullptr, command.data(), nullptr, nullptr, FALSE, CREATE_NO_WINDOW, nullptr, nullptr, &startup,
+                       &process)) {
+        CloseHandle(process.hThread);
+        CloseHandle(process.hProcess);
+    }
+#endif
+}
+
 // Where a ray (unit direction) first meets a capsule from a to b of radius r, or -1.
 float rayCapsule(Vec3 ro, Vec3 rd, Vec3 a, Vec3 b, float r) {
     const Vec3 ba = b - a, oa = ro - a;
@@ -415,6 +440,18 @@ public:
         float hurt = 0.0f;         // Just hit: 1, fading.
         float hurtAngle = 0.0f;    // Where from, round the crosshair (0 ahead, right positive).
         float down = 0.0f;         // Killed: how far into it.
+        float hintClock = 0.0f;    // Seconds into play, for the controls hint.
+        // The story.
+        const char* objective = nullptr;
+        float objectiveFlash = 0.0f;
+        bool  marker = false;
+        float markerX = 0.0f, markerY = 0.0f, markerDistance = 0.0f;
+        bool  markerAhead = true;
+        float timer = -1.0f;
+        float letterbox = 0.0f;
+        std::string captionBig, captionSmall, captionHint;
+        float captionAlpha = 0.0f;
+        bool  story = false;       // Title or cutscene: no crosshair, no ammo.
         bool  paused = false;
         bool  showFrame = false;
         bool  showMotion = false;
@@ -489,7 +526,7 @@ public:
 
         // Crosshair: four ticks that open with the spread, and fade when aiming.
         const float crossAlpha =
-            (1.0f - ramp(0.2f, 0.7f, s.aim)) * (s.paused || s.engineView ? 0.0f : 0.9f);
+            (1.0f - ramp(0.2f, 0.7f, s.aim)) * (s.paused || s.engineView || s.story ? 0.0f : 0.9f);
         if (crossAlpha > 0.0f) {
             const float gap = std::tan(s.spread) / std::tan(s.fov * 0.5f) * cy + 5.0f * unit;
             const float len = 9.0f * unit;
@@ -514,6 +551,54 @@ public:
                      {cx + std::cos(ang) * r1, cy + std::sin(ang) * r1}, (s.kill ? 3.0f : 2.0f) * unit, colour);
             }
         }
+        // The story: bars top and bottom in a cutscene, its captions, the objective,
+        // where to go, and the charge's clock.
+        if (s.letterbox > 0.0f) {
+            const float bar = h * 0.11f * s.letterbox;
+            rect(bars, 0.0f, 0.0f, w, bar, {0.0f, 0.0f, 0.0f, 1.0f});
+            rect(bars, 0.0f, h - bar, w, bar, {0.0f, 0.0f, 0.0f, 1.0f});
+        }
+        if (s.captionAlpha > 0.0f) {
+            const bool title = s.captionBig == "FOUNDRY";
+            text::appendCentered(bigText, big_, s.captionBig, cx, h * (title ? 0.44f : 0.78f), title ? 2.4f : 1.0f,
+                                 title ? 0.6f : 0.4f, {1.0f, 0.95f, 0.88f, s.captionAlpha});
+            text::appendCentered(smallText, small_, s.captionSmall, cx, h * (title ? 0.52f : 0.83f), 1.3f, 0.35f,
+                                 {0.85f, 0.82f, 0.76f, s.captionAlpha * 0.9f});
+            if (!s.captionHint.empty()) {
+                text::appendCentered(smallText, small_, s.captionHint, cx, h * 0.87f, 1.0f, 0.35f,
+                                     {1.0f, 0.82f, 0.5f, s.captionAlpha * (0.6f + 0.3f * std::sin(s.seconds * 3.0f))});
+            }
+        }
+        if (s.objective && !s.paused && !s.story) {
+            const float x = 44.0f * unit, y = 70.0f * unit;
+            const float pulse = s.objectiveFlash > 0.0f ? 0.5f + 0.5f * std::sin(s.objectiveFlash * 9.0f) : 0.0f;
+            text::appendLeft(smallText, small_, s.objectiveFlash > 0.0f ? "NEW OBJECTIVE" : "OBJECTIVE", x, y, 1.0f,
+                             0.3f, {1.0f, 0.78f + 0.2f * pulse, 0.45f, s.objectiveFlash > 0.0f ? 0.95f : 0.6f});
+            text::appendLeft(smallText, small_, s.objective, x, y + 26.0f * unit, 1.25f, 0.25f, {1.0f, 0.96f, 0.9f, 0.95f});
+        }
+        if (s.marker && !s.paused && !s.story) {
+            // A diamond over where to go (on the edge of the screen when it's off it), and how far.
+            const float r = 9.0f * unit;
+            const Vec4 c{1.0f, 0.82f, 0.45f, 0.9f};
+            const Vec2 m{s.markerX, s.markerY};
+            line(bars, {m.x, m.y - r}, {m.x + r, m.y}, 2.0f * unit, c);
+            line(bars, {m.x + r, m.y}, {m.x, m.y + r}, 2.0f * unit, c);
+            line(bars, {m.x, m.y + r}, {m.x - r, m.y}, 2.0f * unit, c);
+            line(bars, {m.x - r, m.y}, {m.x, m.y - r}, 2.0f * unit, c);
+            char metres[16];
+            std::snprintf(metres, sizeof(metres), "%d M", static_cast<int>(s.markerDistance));
+            text::appendCentered(smallText, small_, metres, m.x, m.y + r + 18.0f * unit, 1.0f, 0.3f, c);
+        }
+        if (s.timer >= 0.0f && !s.paused) {
+            char clock[16];
+            const int t = static_cast<int>(std::ceil(s.timer));
+            std::snprintf(clock, sizeof(clock), "%d:%02d", t / 60, t % 60);
+            const bool late = s.timer < 15.0f;
+            const float beat = late ? 0.6f + 0.4f * std::abs(std::sin(s.timer * kPi)) : 1.0f;
+            text::appendCentered(bigText, big_, clock, cx, 92.0f * unit, 1.0f, 0.1f,
+                                 late ? Vec4{1.0f, 0.3f, 0.2f, beat} : Vec4{1.0f, 0.93f, 0.84f, 0.95f});
+        }
+
         // Hit: an arc round the crosshair on the side it came from.
         if (s.hurt > 0.0f && !s.paused) {
             const float r = 150.0f * unit;
@@ -535,7 +620,7 @@ public:
         }
 
         // Ammo, low in the corner.
-        {
+        if (!s.story) {
             const float right = w - 70.0f * unit;
             const float base = h - 64.0f * unit;
             char count[16];
@@ -554,7 +639,7 @@ public:
         }
 
         // How to play, for the first few seconds.
-        const float hint = ramp(1.0f, 2.0f, s.seconds) * (1.0f - ramp(11.0f, 13.0f, s.seconds));
+        const float hint = ramp(1.0f, 2.0f, s.hintClock) * (1.0f - ramp(11.0f, 13.0f, s.hintClock)) * (s.story ? 0.0f : 1.0f);
         if (hint > 0.0f && !s.paused) {
             const float y = h - 112.0f * unit;
             rect(bars, 0.0f, y, w, 46.0f * unit, {0.0f, 0.0f, 0.0f, 0.45f * hint});
@@ -1079,9 +1164,10 @@ int main(int argc, char** argv) {
     foundry::SoldierLook soldierLook;
     if (!soldierLook.load(renderer, models, iron::executableDir() + "/assets/models/npc/soldier.gltf")) return 1;
     foundry::Interaction* const acts[] = {&door, &hatch, &rope, &mantleLow, &mantleHigh, &vault};
-    bool downed = false;  // Killed: no control till the respawn.
+    bool downed = false;       // Killed: no control till the respawn.
+    bool storyLocked = false;  // A title or cutscene has the camera.
     const auto acting = [&]() {
-        return downed ||
+        return downed || storyLocked ||
                std::any_of(std::begin(acts), std::end(acts), [](const foundry::Interaction* a) { return a->busy(); });
     };
     Mat4 lastCamera = Mat4::identity();  // Last frame's camera, for an interaction to start from.
@@ -1263,6 +1349,8 @@ int main(int argc, char** argv) {
     const bool atRope = sceneHas("rope");
     // --scene soldiers stands by the crates to watch a patrol go round.
     const bool watching = sceneHas("soldiers");
+    // The story runs in a normal launch, or a capture asking for it.
+    const bool missionOn = !scripted || sceneHas("mission");
     const bool runUp = sceneHas("vault");
     const bool atBarrier = sceneHas("mantle") || runUp;
     bool vaultTried = false;
@@ -1274,6 +1362,7 @@ int main(int argc, char** argv) {
                      : watching    ? Vec3{1.0f, 0.0f, 16.5f}
                      : runUp       ? Vec3{-10.8f, 0.0f, 21.0f}
                      : atBarrier   ? Vec3{-10.8f, 0.0f, 17.25f}
+                     : missionOn   ? kMissionStart
                                    : level.spawn;
     if (!body.create(world, bodyConfig, spawn)) return 1;
     float yaw = atDoor ? kPi : atRope ? kPi * 0.5f : 0.0f;
@@ -1320,6 +1409,7 @@ int main(int argc, char** argv) {
     int shotCount = 0;
     float hitMarker = 0.0f;
     bool killMarker = false;
+    float storyStart = 0.0f;  // When play began after the intro, for the controls hint.
     // The player's health: rounds take it, and it comes back after a few quiet
     // seconds; no bar, the screen says it (darker, greyer, redder the worse).
     float health = 100.0f;
@@ -1345,6 +1435,68 @@ int main(int argc, char** argv) {
             squad.playerDown();
         }
     };
+    // --- The story (Mission.h) ---
+    // The hall's defenders, waiting: one on the catwalk.
+    if (missionOn) {
+        using namespace foundry::layout;
+        squad.add(soldierLook, "FOX", {{-7.0f, 0.0f, -33.0f}}, 0.0f, kPi, "hall");
+        squad.add(soldierLook, "GRAY", {{8.0f, 0.0f, -41.0f}}, 0.0f, kPi * 0.85f, "hall");
+        squad.add(soldierLook, "HALE", {{3.0f, 0.0f, -54.0f}}, 0.0f, kPi, "hall");
+        squad.add(soldierLook, "IVES", {{-14.0f, 5.2f, -44.0f}}, 0.0f, kPi * 0.8f, "hall");
+    }
+    std::vector<std::pair<float, Vec3>> pendingBlasts;  // The hall's charge going off, in a ripple.
+    const Vec3 hatchTop = foundry::layout::kBunkerHatch;
+    foundry::Mission::Places places;
+    places.start = kMissionStart;
+    places.startYaw = 0.0f;
+    places.hatch = hatchTop;
+    places.bunkerFloor = foundry::layout::kBunkerFloor;
+    places.intel = hatchTop + Vec3{1.7f, foundry::layout::kBunkerFloor + 0.66f, 4.8f};
+    places.hallDoor = {0.0f, 0.0f, foundry::layout::kHallFront};
+    places.hallFront = foundry::layout::kHallFront;
+    places.hallHalfWidth = foundry::layout::kHallHalfWidth;
+    places.furnace = {0.0f, 1.3f, foundry::layout::kHallBack + 6.2f};
+    places.extraction = {8.0f, 0.0f, 33.0f};
+    foundry::Mission::Hooks hooks;
+    hooks.alarm = [&]() {
+        // They know someone's in the bunker; a team comes out of the hall for him.
+        squad.alertAll(hatchTop);
+        squad.addAlerted(soldierLook, "JONES", {-2.0f, 0.0f, -24.0f}, "wave", hatchTop);
+        squad.addAlerted(soldierLook, "KOHL", {0.5f, 0.0f, -25.0f}, "wave", hatchTop);
+        squad.addAlerted(soldierLook, "LANE", {3.0f, 0.0f, -24.0f}, "wave", hatchTop);
+        sound.foley("grab");
+    };
+    hooks.hallLeft = [&]() { return squad.alive("hall"); };
+    hooks.chargeSet = [&]() {
+        sound.foley("mag_in");
+        // Reinforcements in the yard, between the hall and the way out.
+        const Vec3 door{0.0f, 0.0f, foundry::layout::kHallFront};
+        squad.addAlerted(soldierLook, "MOSS", {-4.0f, 0.0f, 22.0f}, "reinforcements", door);
+        squad.addAlerted(soldierLook, "NASH", {6.0f, 0.0f, 20.0f}, "reinforcements", door);
+        squad.addAlerted(soldierLook, "OAKES", {12.0f, 0.0f, 26.0f}, "reinforcements", door);
+    };
+    hooks.hallBlows = [&]() {
+        using namespace foundry::layout;
+        const float back = kHallBack;
+        const Vec3 at[] = {{0.0f, 1.0f, back + 6.0f}, {0.0f, 2.0f, -46.0f}, {-9.0f, 1.0f, -36.0f},
+                           {9.0f, 1.0f, -30.0f},      {0.0f, 3.0f, -24.0f}, {-6.0f, 2.0f, -56.0f}};
+        for (std::size_t i = 0; i < std::size(at); ++i) pendingBlasts.push_back({0.25f * static_cast<float>(i), at[i]});
+        // Anyone still inside goes with it.
+        const Vec3 f = body.footPosition();
+        if (f.z < kHallFront && std::abs(f.x) < kHallHalfWidth) hurtPlayer(1000.0f, {0.0f, 1.0f, back + 6.0f});
+    };
+    hooks.extractionSmoke = [&](Vec3 at) { smoke.start(at); };
+    foundry::Mission mission(places, std::move(hooks));
+    if (sceneHas("mission")) {
+        for (int n = 2; n <= 7; ++n) {
+            if (sceneHas(("stage" + std::to_string(n)).c_str())) {
+                mission.startAt(static_cast<foundry::Mission::Stage>(n + 1));
+                body.setFootPosition(mission.checkpoint().feet);
+                feetBeforeStep = mission.checkpoint().feet;
+                yaw = mission.checkpoint().yaw;
+            }
+        }
+    }
     float flashRoll = 0.0f;
 
     // --- Input: mouse and key edges only exist in the input callback ---
@@ -1357,6 +1509,7 @@ int main(int argc, char** argv) {
     bool smokePressed = false;
     int  selectPressed = -1;  // A weapon picked by its number.
     bool usePressed = false;  // E: open what's in front.
+    bool confirmPressed = false;  // Enter, Space or a click: on past a title or a cutscene.
     int  cycleSteps = 0;      // Weapons stepped through on the wheel.
     bool escapePressed = false;
     bool quitPressed = false;
@@ -1380,6 +1533,8 @@ int main(int argc, char** argv) {
         grenadePressed = grenadePressed || input.keyPressed(GLFW_KEY_G);
         smokePressed = smokePressed || input.keyPressed(GLFW_KEY_F);
         usePressed = usePressed || input.keyPressed(GLFW_KEY_E);
+        confirmPressed = confirmPressed || input.keyPressed(GLFW_KEY_ENTER) || input.keyPressed(GLFW_KEY_SPACE) ||
+                         input.mouseButtonPressed(GLFW_MOUSE_BUTTON_LEFT);
         for (int i = 0; i < foundry::Arsenal::kCount; ++i) {
             if (input.keyPressed(GLFW_KEY_1 + i)) selectPressed = i;
         }
@@ -1528,7 +1683,7 @@ int main(int argc, char** argv) {
             // Steam check: stand still and watch the pipes along the hall's left wall,
             // then the furnace's heat rising.
             // Door and mantle checks: stand still in front of it; E or Space is pressed below.
-            if (atDoor || atBarrier || atHatch || inBunker || atRope || (watching && !sceneHas("duel"))) {
+            if (atDoor || atBarrier || atHatch || inBunker || atRope || ((watching || sceneHas("mission")) && !sceneHas("duel"))) {
                 look = {0.0f, 0.0f};
                 forward = runUp ? 1.0f : 0.0f;
                 running = runUp;
@@ -1700,7 +1855,12 @@ int main(int argc, char** argv) {
             const Vec3 v = body.velocity();
             horizontal = {v.x, 0.0f, v.z};
         }
-        const foundry::Grenades::Events grenadeEvents = grenades.update(world, simDt);
+        foundry::Grenades::Events grenadeEvents = grenades.update(world, simDt);
+        for (auto& [wait, at] : pendingBlasts) {
+            wait -= simDt;
+            if (wait <= 0.0f) grenadeEvents.blasts.push_back(at);
+        }
+        std::erase_if(pendingBlasts, [](const auto& b) { return b.first <= 0.0f; });
         for (const auto& b : grenadeEvents.bounces) sound.bounce(b.at, b.hardness);
         landDipVelocity += (-80.0f * landDip - 12.0f * landDipVelocity) * simDt;
         landDip += landDipVelocity * simDt;
@@ -1808,6 +1968,20 @@ int main(int argc, char** argv) {
                 if (usePressed) hatch.begin(cameraToWorld, "ladder_up", "opened");
             }
         }
+        if (missionOn) {
+            // A capture with intro gets past the title by itself.
+            const bool go = confirmPressed || (sceneHas("intro") && mission.stage() == foundry::Mission::Stage::Title &&
+                                               seconds > 2.0f);
+            mission.update(simDt, body.footPosition(), eye, aimDir, usePressed && !prompt, go, downed);
+            if (!prompt && mission.prompt()) prompt = mission.prompt();
+        }
+        storyLocked = missionOn && mission.controlsLocked();
+        // Done: Enter starts the raid over in a fresh run of the game.
+        if (missionOn && mission.stage() == foundry::Mission::Stage::Done && confirmPressed && !scripted) {
+            relaunch();
+            glfwSetWindowShouldClose(app.window().handle(), GLFW_TRUE);
+        }
+        confirmPressed = false;
         usePressed = false;
         lastCamera = cameraToWorld;
         for (const foundry::Interaction* act : acts) {
@@ -2076,6 +2250,7 @@ int main(int argc, char** argv) {
             flashRoll = noise.next() * kPi;
             sound.shot(weapon.arm);
             squad.noise(eye, 90.0f, true, true);
+            ++mission.shots;
             vfx.emit("muzzle", muzzle, aimDir, weapon.arm == foundry::Arm::Sniper ? 14u : 4u);
             const Vec2 dev = gun.shotDeviation();
             const Vec3 dir = lookDirection(viewYaw + dev.x, viewPitch + dev.y);
@@ -2096,6 +2271,8 @@ int main(int argc, char** argv) {
                 const bool killed = squad.damage(target.enemy, target.hit.part, power, dir, target.hit.point, eye, world,
                                                  weapon.arm == foundry::Arm::Sniper ? 110.0f : 55.0f);
                 if (armed) {
+                    ++mission.hits;
+                    if (killed) ++mission.kills;
                     sound.bodyHit(target.hit.point);
                     bleed(target.hit.point, dir, headshot ? 18 : 9);
                     hitMarker = 0.18f;
@@ -2230,11 +2407,13 @@ int main(int argc, char** argv) {
                     health = 100.0f;
                     sinceHurt = 100.0f;
                     hurtFlash = 0.0f;
-                    body.setFootPosition(level.spawn);
+                    const foundry::Mission::Checkpoint back =
+                        missionOn ? mission.respawn() : foundry::Mission::Checkpoint{level.spawn, level.spawnYaw};
+                    body.setFootPosition(back.feet);
                     body.setVelocity({0.0f, 0.0f, 0.0f});
-                    feetBeforeStep = level.spawn;
+                    feetBeforeStep = back.feet;
                     horizontal = {0.0f, 0.0f, 0.0f};
-                    yaw = level.spawnYaw;
+                    yaw = back.yaw;
                     pitch = 0.0f;
                 }
             }
@@ -2258,6 +2437,8 @@ int main(int argc, char** argv) {
             const Vec3 right{std::cos(e.yaw), 0.0f, -std::sin(e.yaw)};
             renderView = iron::lookAt(e.at + back * 3.2f + right * 1.6f + Vec3{0.0f, 1.9f, 0.0f},
                                       e.at + Vec3{0.0f, 1.1f, 0.0f}, {0.0f, 1.0f, 0.0f});
+        } else if (Vec3 storyEye, storyTarget; missionOn && mission.camera(storyEye, storyTarget)) {
+            renderView = iron::lookAt(storyEye, storyTarget, {0.0f, 1.0f, 0.0f});
         } else if (sceneHas("overview")) {
             // High over the yard's back wall, turning slowly to take in the stockyard.
             const float a = 0.6f + seconds * 0.05f;
@@ -2384,8 +2565,21 @@ int main(int argc, char** argv) {
         }
         senses.playerEye = eye;
         senses.playerVelocity = horizontal;
+        if (missionOn && mission.stage() < foundry::Mission::Stage::Infiltrate) senses.playerEye = {0.0f, -1000.0f, 0.0f};
         squad.update(simDt, senses);
         draws += squad.draw(renderer, kSoldierMotionBase);
+        if (missionOn && !mission.intelTaken()) {
+            iron::DrawCall folder;
+            folder.mesh = boxMesh({0.31f, 0.035f, 0.23f});
+            folder.shader = lit;
+            folder.model = iron::translation(places.intel) * iron::rotationY(0.3f);
+            folder.material.texture = renderer.whiteTexture();
+            folder.material.baseColorFactor = {0.5f, 0.42f, 0.22f};
+            folder.material.roughness = 0.8f;
+            folder.motionId = kIntelMotionId;
+            renderer.submit(folder);
+            ++draws;
+        }
         // Their rounds: heard from the shooter, flown like the player's, into the player
         // (a capsule from the knees to the crown) or past his head with a crack.
         for (const foundry::Squad::Shot& shot : squad.shots()) {
@@ -2554,6 +2748,34 @@ int main(int argc, char** argv) {
             state.hurtAngle = std::atan2(iron::dot(to, right), iron::dot(to, fwd));
         }
         state.down = downed ? downTime : 0.0f;
+        state.hintClock = seconds;
+        if (missionOn) {
+            const foundry::Mission::Stage stage = mission.stage();
+            state.story = mission.controlsLocked() || stage == foundry::Mission::Stage::Done;
+            state.hintClock = stage >= foundry::Mission::Stage::Infiltrate ? seconds - storyStart : 0.0f;
+            if (stage < foundry::Mission::Stage::Infiltrate) storyStart = seconds;
+            state.objective = mission.objective();
+            state.objectiveFlash = mission.objectiveFlash();
+            state.timer = mission.timer();
+            state.letterbox = mission.letterbox();
+            const foundry::Mission::Caption caption = mission.caption();
+            state.captionBig = caption.big;
+            state.captionSmall = caption.small;
+            state.captionHint = caption.hint;
+            state.captionAlpha = caption.alpha;
+            if (const std::optional<Vec3> at = mission.marker()) {
+                const iron::Vec4 clip = renderProjection * renderView * iron::Vec4{at->x, at->y, at->z, 1.0f};
+                Vec2 ndc{0.0f, -1.0f};
+                if (clip.w > 0.05f) ndc = {clip.x / clip.w, clip.y / clip.w};
+                else ndc = {clip.x < 0.0f ? 1.0f : -1.0f, -1.0f};  // Behind: along the bottom, on its side.
+                ndc.x = std::clamp(ndc.x, -0.95f, 0.95f);
+                ndc.y = std::clamp(ndc.y, -0.9f, 0.9f);
+                state.marker = true;
+                state.markerX = (ndc.x * 0.5f + 0.5f) * static_cast<float>(width);
+                state.markerY = (0.5f - ndc.y * 0.5f) * static_cast<float>(height);
+                state.markerDistance = iron::length(*at - eye);
+            }
+        }
         state.paused = paused;
         state.showFrame = showFrame;
         state.showMotion = showMotion;
