@@ -9,7 +9,8 @@
 //   cornell   the Cornell box: a white room, a red wall and a green, light from
 //             above; the red and green should bleed onto the white
 //   sponza    Crytek Sponza (the standard GI test; its licence keeps it out of the
-//             repo: set IRON_SPONZA to its Sponza.gltf), the sun through its roof
+//             repo): from assets-local/Sponza next to the exe, or IRON_SPONZA. The
+//             sun through its roof. Without it, the Cornell box.
 //   gioff / gionly  start with GI off, or showing only the bounced light
 
 #include "common/CaptureLoop.h"
@@ -17,6 +18,7 @@
 #include "asset/GltfLoader.h"
 #include "core/Application.h"
 #include "core/Log.h"
+#include "core/Platform.h"
 #include "math/Transform.h"
 #include "render/Fog.h"
 #include "render/Light.h"
@@ -30,6 +32,7 @@
 #include <cmath>
 #include <cstdlib>
 #include <map>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -98,10 +101,21 @@ int main(int argc, char** argv) {
     if (!vulkan) return 1;
     iron::Renderer& renderer = *rendererPtr;
     renderer.setViewport(app.window().width(), app.window().height());
-    vulkan->setExposure(sceneHas("sponza") ? 1.5f : 1.0f);
-    const bool sponza = sceneHas("sponza");
+    vulkan->setExposure(1.0f);
+    // Sponza if asked for and there; IRON_SPONZA, else the copy next to the exe.
+    std::string sponzaPath;
+    if (sceneHas("sponza")) {
+        const char* env = std::getenv("IRON_SPONZA");
+        sponzaPath = env && *env ? env : iron::executableDir() + "/assets-local/Sponza/Sponza.gltf";
+    }
+    const auto sponzaModel = sponzaPath.empty() ? std::nullopt : iron::loadGltfStaticModel(sponzaPath);
+    if (!sponzaPath.empty() && !sponzaModel) {
+        iron::Log::error("radiance: no Sponza at %s; showing the Cornell box", sponzaPath.c_str());
+    }
+    const bool sponza = sponzaModel.has_value();
     renderer.setSkybox(vulkan->bakeSky(sponza ? kDaySky : kDarkSky, sponza ? 256 : 64));
     renderer.setShadowBounds({0.0f, 2.75f, 0.0f}, 6.0f);
+    if (sponza) vulkan->setExposure(1.5f);
     if (!renderer.rayTracing()) iron::Log::warn("radiance: no hardware ray tracing; GI is off");
 
     // --- The scene ---
@@ -113,12 +127,7 @@ int main(int argc, char** argv) {
     std::vector<Drawn> drawn;
     iron::Aabb bounds{{-3.0f, -0.3f, -3.0f}, {3.0f, 5.8f, 3.6f}};
     if (sponza) {
-        const char* path = std::getenv("IRON_SPONZA");
-        const auto model = iron::loadGltfStaticModel(path ? path : "");
-        if (!model) {
-            iron::Log::error("radiance: set IRON_SPONZA to Crytek Sponza's Sponza.gltf");
-            return 1;
-        }
+        const auto& model = sponzaModel;
         std::map<std::string, iron::TextureHandle> textures;
         const auto texture = [&](const std::string& p, bool srgb) {
             if (p.empty()) return iron::kInvalidHandle;
