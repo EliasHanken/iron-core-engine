@@ -52,6 +52,11 @@ struct GunTuning {
     // How hard each shot shoves the weapon back and tips it up (spring velocities).
     float kickBack = 1.1f;
     float kickTilt = 2.2f;
+    // The camera's punch on each shot, springing back: a nod up and a roll either
+    // way (peak radians), and the view widening a touch (radians of field of view).
+    float punchPitch = 0.004f;
+    float punchRoll = 0.004f;
+    float punchFov = 0.0f;
     int   magazine = 30;
     float reloadSeconds = 1.9f;
     float reloadEmptySeconds = 2.6f;  // With the bolt to rack.
@@ -148,6 +153,9 @@ public:
         swayY_.step(dt, 140.0f, 16.0f);
         kick_.step(dt, 320.0f, 22.0f);
         kickPitch_.step(dt, 260.0f, 18.0f);
+        punchPitch_.step(dt, 420.0f, 26.0f);
+        punchRoll_.step(dt, 300.0f, 20.0f);
+        punchFov_.step(dt, 260.0f, 24.0f);
 
         // A walking rhythm, faster and wider when running.
         if (grounded && moving > 0.05f) bobPhase_ += dt * (7.0f + 3.5f * moving_);
@@ -218,6 +226,9 @@ public:
         at.z += kick_.value;
         return at;
     }
+    // The camera's punch from the last shots: pitch up, roll, and wider field of view.
+    Vec3 viewPunch() const { return {punchPitch_.value, punchRoll_.value, punchFov_.value}; }
+
     Vec3 viewTilt() const {
         const float roll = swayX_.value * 0.8f;
         return {kickPitch_.value + swayY_.value * 0.4f, swayX_.value * 0.4f, roll};
@@ -302,6 +313,11 @@ private:
         bloom_ = std::min(bloom_ + tuning_.bloomPerShot, tuning_.bloomMax);
         kick_.velocity += tuning_.kickBack * (1.0f - 0.5f * aim_);
         kickPitch_.velocity += tuning_.kickTilt * (1.0f - 0.5f * aim_);
+        // Each spring peaks at its tuned value: velocity per radian of peak, for
+        // its stiffness and damping, stepped at 60 Hz.
+        punchPitch_.velocity += tuning_.punchPitch * 69.0f;
+        punchRoll_.velocity += tuning_.punchRoll * 48.0f * random_.signedNext();
+        punchFov_.velocity += tuning_.punchFov * 58.0f;
         flash_ = 0.05f;
     }
 
@@ -332,6 +348,9 @@ private:
     Spring    swayY_;
     Spring    kick_;
     Spring    kickPitch_;
+    Spring    punchPitch_;
+    Spring    punchRoll_;
+    Spring    punchFov_;
     float     bobPhase_ = 0.0f;
     float     bobAmount_ = 0.0f;
 };

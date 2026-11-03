@@ -61,6 +61,8 @@ public:
         pistol.bloomPerShot = 0.005f;
         pistol.bloomDecay = 0.05f;
         pistol.aimInRate = 10.0f;
+        pistol.punchPitch = 0.009f;       // A sharp snap up at the wrists.
+        pistol.punchRoll = 0.006f;
 
         GunTuning sniper;
         sniper.automatic = false;
@@ -79,6 +81,9 @@ public:
         sniper.movingSpread = 0.03f;
         sniper.bloomPerShot = 0.0f;
         sniper.aimInRate = 4.5f;          // A heavy rifle comes up slowly.
+        sniper.punchPitch = 0.022f;       // The whole body rocked back.
+        sniper.punchRoll = 0.012f;
+        sniper.punchFov = 0.05f;
 
         const Spec specs[kCount] = {
             {Arm::Rifle, "AK-47", "ak47.gltf", 44.0f, false, 1.0f, rifle},

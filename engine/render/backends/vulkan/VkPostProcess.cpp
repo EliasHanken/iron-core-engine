@@ -59,6 +59,7 @@ layout(set = 0, binding = 4) uniform Lens {
     vec4 depth;    // projection a and b, for linear depth; subject radius; heat haze
     vec4 subject;  // uv, aspect, ambient occlusion strength
     vec4 haze;     // x: shimmer this frame, y: how strongly it bends, z: smoke this frame
+    vec4 daze;     // x: how dazed, yz: the second image's offset (uv)
 } lens;
 layout(set = 0, binding = 5) uniform sampler2D uVelocity;  // UV moved since last frame.
 layout(set = 0, binding = 6) uniform sampler2D uSsao;
@@ -202,6 +203,21 @@ void main() {
     if (lens.focus.z > 0.0) {
         float radius = confusion(uv);
         if (radius * float(textureSize(uScene, 0).y) > 1.0) hdr = defocus(uv, radius, jitter);
+    }
+
+    // Dazed: everything soft, and a fainter second image drifting off the first,
+    // the way the eyes fail to agree after a blast.
+    if (lens.daze.x > 0.0) {
+        const int SAMPLES = 12;
+        float radius = 0.012 * lens.daze.x;
+        vec3 soft = vec3(0.0);
+        for (int i = 0; i < SAMPLES; ++i) {
+            float r = sqrt((float(i) + 0.5) / float(SAMPLES)) * radius;
+            float angle = (float(i) + jitter) * 2.39996323;
+            soft += sampleHdr(uv + vec2(cos(angle) / lens.subject.z, sin(angle)) * r);
+        }
+        hdr = mix(hdr, soft / float(SAMPLES), clamp(lens.daze.x * 1.3, 0.0, 1.0));
+        hdr = mix(hdr, sampleHdr(uv + lens.daze.yz), 0.42 * lens.daze.x);
     }
 
     // Anamorphic streak: bright light smeared sideways, tinted cool.
@@ -1088,11 +1104,13 @@ void VkPostProcess::recordCinematic(VkCommandBuffer cb, float exposure, float bl
     // is never written over.
     const float aspect = static_cast<float>(viewportExtent().width) /
                          static_cast<float>(std::max(viewportExtent().height, 1u));
-    const float lens[16] = {s.focusDistance, s.focusRange, s.blurRadius, static_cast<float>(debugView_),
+    const float lens[20] = {s.focusDistance, s.focusRange, s.blurRadius, static_cast<float>(debugView_),
                             cinematicDepthA_, cinematicDepthB_, s.subjectRadius, s.heatHaze,
                             s.subject.x, s.subject.y, aspect, aoStrength,
                             fog_.shimmer() != VK_NULL_HANDLE ? 1.0f : 0.0f, s.worldHaze,
-                            fog_.smokeThisFrame() ? 1.0f : 0.0f, 0.0f};
+                            fog_.smokeThisFrame() ? 1.0f : 0.0f, 0.0f,
+                            std::clamp(s.daze, 0.0f, 1.0f), s.dazeDrift.x, s.dazeDrift.y, 0.0f};
+    static_assert(sizeof(lens) == kCinematicLensBytes, "the Lens block's size");
     const std::uint32_t slot = (cinematicFrame_ % VkFrameRing::kFramesInFlight) * kCinematicLensStride;
     std::memcpy(static_cast<std::uint8_t*>(cinematicLensMapped_) + slot, lens, sizeof(lens));
 

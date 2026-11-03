@@ -75,6 +75,21 @@ void recoil_climbs_then_returns() {
     CHECK(gun.viewKick().y < climbed * 0.02f);
 }
 
+void a_shot_punches_the_camera_and_it_settles() {
+    GunTuning t;
+    t.punchPitch = 0.02f;
+    Gun gun(t);
+    gun.update(kStep, true, false, false, {0.0f, 0.0f}, 0.0f, true);
+    float peak = 0.0f;
+    for (int i = 0; i < 10; ++i) {
+        gun.update(kStep, false, false, false, {0.0f, 0.0f}, 0.0f, true);
+        peak = std::max(peak, gun.viewPunch().x);
+    }
+    CHECK(peak > 0.016f && peak < 0.024f);  // About the tuned peak.
+    idle(gun, 1.0f);
+    CHECK(std::abs(gun.viewPunch().x) < 0.001f);
+}
+
 void aiming_tightens_the_spread() {
     Gun hip;
     Gun aimed;
@@ -203,6 +218,7 @@ int main() {
     an_empty_magazine_stops_and_reloads();
     reload_only_when_it_needs_one();
     recoil_climbs_then_returns();
+    a_shot_punches_the_camera_and_it_settles();
     aiming_tightens_the_spread();
     moving_and_jumping_widen_the_spread();
     shots_stay_inside_the_spread();

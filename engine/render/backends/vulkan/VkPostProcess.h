@@ -291,7 +291,7 @@ private:
     VkSampler             cinematicDepthSampler_ = VK_NULL_HANDLE;
     // Push constants are full, so lens settings live in a small per-frame buffer.
     // 256 is the largest minUniformBufferOffsetAlignment Vulkan allows.
-    static constexpr std::uint32_t kCinematicLensBytes = 64;
+    static constexpr std::uint32_t kCinematicLensBytes = 80;
     static constexpr std::uint32_t kCinematicLensStride = 256;
     VkBuffer              cinematicLensBuffer_ = VK_NULL_HANDLE;
     VmaAllocation         cinematicLensAlloc_ = VK_NULL_HANDLE;
