@@ -1,0 +1,45 @@
+{
+  "fps": 30,
+  "clips": {
+    "idle": {
+      "loop": true,
+      "speed": 0.0,
+      "events": []
+    },
+    "look": {
+      "loop": true,
+      "speed": 0.0,
+      "events": []
+    },
+    "walk": {
+      "loop": true,
+      "speed": 1.012,
+      "events": []
+    },
+    "walk_fast": {
+      "loop": true,
+      "speed": 1.495,
+      "events": []
+    },
+    "run": {
+      "loop": true,
+      "speed": 2.88,
+      "events": []
+    },
+    "aim": {
+      "loop": true,
+      "speed": 0.0,
+      "events": []
+    },
+    "aim_walk": {
+      "loop": true,
+      "speed": 1.012,
+      "events": []
+    },
+    "crouch_aim": {
+      "loop": true,
+      "speed": 0.0,
+      "events": []
+    }
+  }
+}

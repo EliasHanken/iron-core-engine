@@ -46,6 +46,20 @@ void SkeletalAnimator::setBaseWeight(const AnimationClip* clip, float weight) {
     }
 }
 
+void SkeletalAnimator::setBaseRate(const AnimationClip* clip, float rate) {
+    for (Base& b : base_) {
+        if (b.clip == clip) b.rate = std::max(rate, 0.0f);
+    }
+}
+
+void SkeletalAnimator::setBoneTurn(int bone, const Quat& rotation) {
+    turns_.erase(std::remove_if(turns_.begin(), turns_.end(), [&](const Turn& t) { return t.bone == bone; }),
+                 turns_.end());
+    if (std::abs(rotation.w) < 0.999999f) turns_.push_back({bone, rotation});
+    // Parents before children, so each turn lands on the one above it.
+    std::sort(turns_.begin(), turns_.end(), [](const Turn& a, const Turn& b) { return a.bone < b.bone; });
+}
+
 float SkeletalAnimator::OneShot::weight() const {
     float w = 1.0f;
     if (blendIn > 0.0f) w = std::min(w, time / blendIn);
@@ -106,10 +120,26 @@ void SkeletalAnimator::collect(const AnimationClip* clip, float from, float to, 
 
 const std::vector<SkeletalAnimator::Fired>& SkeletalAnimator::update(float dt) {
     fired_.clear();
-    for (Base& b : base_) {
-        const float from = b.time;
-        b.time = wrap(b.time + dt, b.clip->duration);
-        if (dt > 0.0f) collect(b.clip, from, b.time, true);
+    if (synced_ && !base_.empty()) {
+        // One phase for all: it moves at the weighted average of their laps a second.
+        float weights = 0.0f;
+        float laps = 0.0f;
+        for (const Base& b : base_) {
+            weights += b.weight;
+            laps += b.weight * b.rate / std::max(b.clip->duration, 1e-4f);
+        }
+        phase_ = wrap(phase_ + dt * laps / std::max(weights, 1e-6f), 1.0f);
+        for (Base& b : base_) {
+            const float from = b.time;
+            b.time = phase_ * b.clip->duration;
+            if (dt > 0.0f) collect(b.clip, from, b.time, true);
+        }
+    } else {
+        for (Base& b : base_) {
+            const float from = b.time;
+            b.time = wrap(b.time + dt * b.rate, b.clip->duration);
+            if (dt > 0.0f) collect(b.clip, from, b.time, true);
+        }
     }
     for (OneShot& s : oneShots_) {
         const float from = s.time;
@@ -173,6 +203,19 @@ void SkeletalAnimator::evaluate() {
     }
 
     composeGlobals(sk, pose_, globals_);
+    if (!turns_.empty()) {
+        // Each turn in the skeleton's space: through its parent's frame (as the
+        // clips left it), so turns down a chain add up.
+        for (const Turn& t : turns_) {
+            if (t.bone < 0 || static_cast<std::size_t>(t.bone) >= pose_.bones.size()) continue;
+            const int parent = sk.bones[static_cast<std::size_t>(t.bone)].parentIndex;
+            const Quat p = parent >= 0 ? decomposeTRS(globals_[static_cast<std::size_t>(parent)]).rotation
+                                       : Quat::identity();
+            BoneLocal& local = pose_.bones[static_cast<std::size_t>(t.bone)];
+            local.rotation = (conjugate(p) * t.rotation * p * local.rotation).normalized();
+        }
+        composeGlobals(sk, pose_, globals_);
+    }
     globalsToPalette(sk, globals_, palette_);
 }
 

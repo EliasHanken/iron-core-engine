@@ -40,6 +40,7 @@
 #include "Models.h"
 #include "Arsenal.h"
 #include "Interaction.h"
+#include "Soldier.h"
 #include "Sound.h"
 
 #include "audio/AudioEngine.h"
@@ -89,6 +90,7 @@ constexpr float kMouseRadiansPerPixel = 0.0011f;  // Raw counts: about 0.063 deg
 constexpr float kPhysicsStep = 1.0f / 60.0f;
 constexpr float kRecordSeconds = 34.0f;
 constexpr std::uint32_t kGunMotionId = 1;  // And the next few, one per section.
+constexpr std::uint32_t kSoldierMotionBase = 200;  // Ten ids each (their sections).
 constexpr std::uint32_t kDoorMotionId = 30;  // Interactions (the door, the mantles), ten ids each.
 
 // A ledge the player can climb onto: where its top edge is, which way is over it
@@ -1008,6 +1010,36 @@ int main(int argc, char** argv) {
         act->showProp(false);
     }
     float vaultSpeed = 0.0f;  // The run going into a vault, carried on after it.
+    // Soldiers (Rocketbox, mocap'd; tools/foundry/npc). For now they walk patrol
+    // loops round the yard, and the guard by the hall door raises his rifle at the
+    // player when he's close: the AI comes next.
+    foundry::SoldierLook soldierLook;
+    if (!soldierLook.load(renderer, models, iron::executableDir() + "/assets/models/npc/soldier.gltf")) return 1;
+    struct Patrol {
+        foundry::Soldier  soldier;
+        std::vector<Vec3> route;   // Walked round in order; one point stands guard.
+        float             pace;    // m/s.
+        std::size_t       next = 1;
+        Vec3              at{};
+        float             yaw = 0.0f;
+        float             speed = 0.0f;
+        float             aim = 0.0f;
+    };
+    std::vector<Patrol> patrols;
+    const auto patrol = [&](std::vector<Vec3> route, float pace) {
+        Patrol p{foundry::Soldier(soldierLook), std::move(route), pace};
+        p.at = p.route.front();
+        if (p.route.size() > 1) {
+            const Vec3 d = p.route[1] - p.at;
+            p.yaw = std::atan2(-d.x, -d.z);
+        }
+        patrols.push_back(std::move(p));
+    };
+    patrol({{-4.0f, 0.0f, 12.0f}, {6.5f, 0.0f, 12.0f}, {6.5f, 0.0f, 3.0f}, {-4.0f, 0.0f, 3.0f}}, 1.0f);
+    patrol({{6.5f, 0.0f, 3.5f}, {-4.0f, 0.0f, 3.5f}, {-4.0f, 0.0f, 12.5f}, {6.5f, 0.0f, 12.5f}}, 1.0f);
+    patrol({{13.0f, 0.0f, 22.0f}, {13.0f, 0.0f, -8.0f}}, 1.5f);
+    patrol({{-26.0f, 0.0f, -9.0f}, {26.0f, 0.0f, -9.0f}}, 2.9f);
+    patrol({{3.0f, 0.0f, -16.5f}}, 0.0f);
     foundry::Interaction* const acts[] = {&door, &hatch, &rope, &mantleLow, &mantleHigh, &vault};
     const auto acting = [&]() {
         return std::any_of(std::begin(acts), std::end(acts), [](const foundry::Interaction* a) { return a->busy(); });
@@ -1120,6 +1152,8 @@ int main(int argc, char** argv) {
     const bool inBunker = sceneHas("bunker");
     // --scene rope starts at the rope in the hall and climbs it.
     const bool atRope = sceneHas("rope");
+    // --scene soldiers stands by the crates to watch a patrol go round.
+    const bool watching = sceneHas("soldiers");
     const bool runUp = sceneHas("vault");
     const bool atBarrier = sceneHas("mantle") || runUp;
     bool vaultTried = false;
@@ -1128,6 +1162,7 @@ int main(int argc, char** argv) {
                      : atHatch     ? foundry::layout::kBunkerHatch + Vec3{0.0f, 0.0f, 1.25f}
                      : inBunker    ? foundry::layout::kBunkerHatch + Vec3{0.0f, foundry::layout::kBunkerFloor, 0.9f}
                      : atRope      ? foundry::layout::kRope + Vec3{0.5f, 0.0f, 0.0f}
+                     : watching    ? Vec3{1.0f, 0.0f, 16.5f}
                      : runUp       ? Vec3{-10.8f, 0.0f, 21.0f}
                      : atBarrier   ? Vec3{-10.8f, 0.0f, 17.25f}
                                    : level.spawn;
@@ -1329,7 +1364,7 @@ int main(int argc, char** argv) {
             // Steam check: stand still and watch the pipes along the hall's left wall,
             // then the furnace's heat rising.
             // Door and mantle checks: stand still in front of it; E or Space is pressed below.
-            if (atDoor || atBarrier || atHatch || inBunker || atRope) {
+            if (atDoor || atBarrier || atHatch || inBunker || atRope || watching) {
                 look = {0.0f, 0.0f};
                 forward = runUp ? 1.0f : 0.0f;
                 running = runUp;
@@ -2048,6 +2083,45 @@ int main(int argc, char** argv) {
         }
         for (std::size_t i = 0; i < std::size(acts); ++i) {
             draws += acts[i]->draw(renderer, kDoorMotionId + 10u * static_cast<std::uint32_t>(i));
+        }
+        // The soldiers: along their routes, turning into each leg; the guard (a
+        // route of one point) watches the player and shoulders his rifle when he's near.
+        for (std::size_t i = 0; i < patrols.size(); ++i) {
+            Patrol& p = patrols[i];
+            float wantSpeed = 0.0f;
+            float wantYaw = p.yaw;
+            Vec2 aimOffset{0.0f, 0.0f};
+            if (p.route.size() > 1) {
+                Vec3 to = p.route[p.next] - p.at;
+                to.y = 0.0f;
+                if (iron::length(to) < 0.35f) {
+                    p.next = (p.next + 1) % p.route.size();
+                    to = p.route[p.next] - p.at;
+                    to.y = 0.0f;
+                }
+                wantYaw = std::atan2(-to.x, -to.z);
+                // Slows into each turn.
+                float turn = wantYaw - p.yaw;
+                while (turn > kPi) turn -= 2.0f * kPi;
+                while (turn < -kPi) turn += 2.0f * kPi;
+                wantSpeed = p.pace * std::clamp(1.0f - std::abs(turn) / 1.6f, 0.15f, 1.0f);
+                p.aim += (0.0f - p.aim) * std::min(simDt * 3.0f, 1.0f);
+            } else {
+                const Vec3 toPlayer = eye - (p.at + Vec3{0.0f, 1.5f, 0.0f});
+                const float away = iron::length(toPlayer);
+                const bool alert = away < 15.0f;
+                if (alert) wantYaw = std::atan2(-toPlayer.x, -toPlayer.z);
+                p.aim += ((alert ? 1.0f : 0.0f) - p.aim) * std::min(simDt * 3.0f, 1.0f);
+                aimOffset.y = std::asin(std::clamp(toPlayer.y / std::max(away, 1e-3f), -1.0f, 1.0f));
+            }
+            float turn = wantYaw - p.yaw;
+            while (turn > kPi) turn -= 2.0f * kPi;
+            while (turn < -kPi) turn += 2.0f * kPi;
+            p.yaw += std::clamp(turn, -2.6f * simDt, 2.6f * simDt);
+            p.speed += (wantSpeed - p.speed) * std::min(simDt * 2.5f, 1.0f);
+            p.at = p.at + Vec3{-std::sin(p.yaw), 0.0f, -std::cos(p.yaw)} * (p.speed * simDt);
+            p.soldier.update(simDt, p.at, p.yaw, p.speed, p.aim, aimOffset);
+            draws += p.soldier.draw(renderer, kSoldierMotionBase + 10u * static_cast<std::uint32_t>(i));
         }
         // The effects, lit by roughly where the player is: open daylight or the hall.
         {

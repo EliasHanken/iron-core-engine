@@ -23,6 +23,7 @@ bool loadAnimationEvents(const std::string& path, std::vector<AnimationClip>& cl
         const auto found = doc["clips"].find(clip.name);
         if (found == doc["clips"].end() || !found->is_object()) continue;
         clip.looping = found->value("loop", clip.looping);
+        clip.speed = found->value("speed", clip.speed);
         clip.events.clear();
         if (const auto events = found->find("events"); events != found->end() && events->is_array()) {
             for (const auto& e : *events) {
