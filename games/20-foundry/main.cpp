@@ -981,6 +981,8 @@ int main(int argc, char** argv) {
     float throwCooldown = 0.0f;
     float trauma = 0.0f;  // Camera shake: 1 right by a blast, fading.
     float blastKick = 0.0f;  // The lens jolted by a blast: colour split, a dark rim, washed out; fading.
+    float daze = 0.0f;       // Dazed by a blast close by: vision soft and doubled, clearing over seconds.
+    float lean = 0.0f;       // The camera's roll into a strafe, eased.
     float focus = 30.0f;     // Where the eye is looking, in metres, easing after it.
     float barrelHeat = 0.0f; // 0 cold .. 1 a long burst: the air over the barrel shimmers.
     struct Hot {             // Hot air left by a blast.
@@ -1322,20 +1324,37 @@ int main(int argc, char** argv) {
         const float scopeHold = weapon.scoped ? std::pow(gun.aim(), 4.0f) : 0.0f;
         const Vec2 breath{scopeHold * 0.0016f * std::sin(seconds * 0.9f),
                           scopeHold * 0.0012f * std::sin(seconds * 1.7f + 0.6f)};
+        // Each shot punches the camera: a nod up and a roll, springing back.
+        const Vec3 punch = gun.viewPunch();
+        // Landing, the head nods down with the dip.
         const float viewYaw = yaw + kick.x + jolt.x + breath.x;
-        const float viewPitch = pitch + kick.y + jolt.y + breath.y;
+        const float viewPitch = pitch + kick.y + jolt.y + breath.y + punch.x + landDip * 0.35f;
+        // The body leans into a strafe, and a run sways the head with the stride.
+        const Vec3 rightFlat{std::cos(yaw), 0.0f, -std::sin(yaw)};
+        const float lateral = iron::dot(horizontal, rightFlat) / kRunSpeed;
+        lean += (-0.014f * lateral - lean) * std::min(simDt * 6.0f, 1.0f);
+        const float strides = stepDistance / (running ? 2.4f : 1.9f);  // 0..1 through a stride.
+        const float gait = grounded ? std::clamp(speed / kRunSpeed, 0.0f, 1.0f) : 0.0f;
+        const float run = sprintBlend * gait;
+        const float sway = std::sin(strides * kPi) * (0.0035f * run + 0.001f * gait);
+        const float roll = lean + sway + punch.y + jolt.x * 0.4f;
+        const float bob = -std::abs(std::sin(strides * kPi)) * (0.014f * run + 0.004f * gait * (1.0f - run));
         // The camera rides between the last two physics steps rather than jumping
         // sixty times a second: smooth at any frame rate.
         const float between = std::clamp(physicsClock / kPhysicsStep, 0.0f, 1.0f);
         const Vec3 drawnFeet = feetBeforeStep + (feet - feetBeforeStep) * between;
-        const Vec3 eye = drawnFeet + Vec3{0.0f, kEyeHeight + landDip, 0.0f};
+        const Vec3 eye = drawnFeet + Vec3{0.0f, kEyeHeight + landDip + bob, 0.0f};
         const Vec3 aimDir = lookDirection(viewYaw, viewPitch);
-        const Mat4 view = iron::lookAt(eye, eye + aimDir, {0.0f, 1.0f, 0.0f});
+        // Rolled about the line of sight (Rodrigues' rotation of the world's up).
+        const Vec3 worldUp{0.0f, 1.0f, 0.0f};
+        const Vec3 rolledUp = worldUp * std::cos(roll) + iron::cross(aimDir, worldUp) * std::sin(roll) +
+                              aimDir * (iron::dot(aimDir, worldUp) * (1.0f - std::cos(roll)));
+        const Mat4 view = iron::lookAt(eye, eye + aimDir, rolledUp);
         const Mat4 cameraToWorld = iron::inverse(view);
         const float aimBlend = gun.aim() * gun.aim() * (3.0f - 2.0f * gun.aim());
         // A scope zooms in late, as the eye meets it; iron sights narrow the view a little.
         const float zoomIn = weapon.scoped ? aimBlend * aimBlend * aimBlend : aimBlend;
-        const float fov = kHipFov + (weapon.aimFov - kHipFov) * zoomIn;
+        const float fov = kHipFov + (weapon.aimFov - kHipFov) * zoomIn + punch.z * (1.0f - 0.8f * zoomIn);
         lastFov = fov;
         const float scopeView = weapon.scoped ? std::clamp((aimBlend - 0.82f) / 0.14f, 0.0f, 1.0f) : 0.0f;
         const float aspect = static_cast<float>(width) / static_cast<float>(std::max(height, 1));
@@ -1390,7 +1409,9 @@ int main(int argc, char** argv) {
             const Vec3 up = transformPoint(cameraToWorld, {0.0f, 1.0f, 0.0f}) - eye;
             const Vec3 left = eye - transformPoint(cameraToWorld, {1.0f, 0.0f, 0.0f});
             const Vec3 from = eye + aimDir * 0.5f + left * 0.15f - up * 0.1f;
-            grenades.throwFrom(world, from, horizontal + aimDir * 13.0f + Vec3{0.0f, 3.5f, 0.0f},
+            // --scene grenade+near lobs it a few metres off, to feel a blast up close.
+            const float throwSpeed = sceneHas("near") ? 3.5f : 13.0f;
+            grenades.throwFrom(world, from, horizontal + aimDir * throwSpeed + Vec3{0.0f, 3.5f, 0.0f},
                                kGrenadeMotionBase + 2u * (thrown++ % (1u << 20)),
                                grenadePressed ? foundry::Grenades::Kind::Frag : foundry::Grenades::Kind::Smoke);
             throwCooldown = 0.9f;
@@ -1439,6 +1460,12 @@ int main(int argc, char** argv) {
             sound.deafen(std::clamp(1.0f - distance / 16.0f, 0.0f, 1.0f));
             trauma = std::min(trauma + 1.1f * std::clamp(1.0f - distance / 28.0f, 0.0f, 1.0f), 1.0f);
             blastKick = std::min(blastKick + std::clamp(1.0f - distance / 22.0f, 0.0f, 1.0f), 1.0f);
+            daze = std::min(daze + 1.15f * std::clamp(1.0f - distance / 14.0f, 0.0f, 1.0f), 1.0f);
+            // Close by, the blast wave shoves the player: a stumble away from it.
+            const float shove = std::clamp(1.0f - distance / 9.0f, 0.0f, 1.0f);
+            Vec3 away{eye.x - at.x, 0.0f, eye.z - at.z};
+            const float awayLength = iron::length(away);
+            if (shove > 0.0f && awayLength > 1e-3f) horizontal = horizontal + away * (7.0f * shove / awayLength);
             hots.push_back({at + up * 1.2f, 1.6f, 1.6f});
         }
 
@@ -1622,6 +1649,15 @@ int main(int argc, char** argv) {
         frameLens.vignette = std::min(frameLens.vignette + 0.35f * lensJolt, 1.0f);
         frameLens.saturation *= 1.0f - 0.35f * lensJolt;
         frameLens.motionBlur += 0.4f * lensJolt;
+        // Dazed: soft and doubled, the second image swimming slowly off the first,
+        // the edges closing in; it clears over a few seconds.
+        daze = std::max(daze - simDt * 0.22f, 0.0f);
+        const float dazed = daze * daze * (3.0f - 2.0f * daze);
+        frameLens.daze = dazed;
+        frameLens.dazeDrift = Vec2{0.016f * std::sin(seconds * 1.6f) + 0.006f * std::sin(seconds * 3.7f),
+                                   0.007f * std::sin(seconds * 1.1f + 0.5f)} * dazed;
+        frameLens.vignette = std::min(frameLens.vignette + 0.3f * dazed, 1.0f);
+        frameLens.saturation *= 1.0f - 0.25f * dazed;
         vulkan->setCinematic(frameLens);
         // The rig view looks at the player from the side; the player still aims as before.
         Mat4 renderView = view;

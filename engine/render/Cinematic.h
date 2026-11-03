@@ -40,6 +40,12 @@ struct CinematicSettings {
     // How strongly heat in the world bends the picture: fluids' heat in the fog
     // and Renderer::submitHeat sources. 0 for none.
     float worldHaze = 1.0f;
+
+    // A dazed eye, as after a blast close by: the picture goes soft and a fainter
+    // second image drifts off the first. `daze` 0..1; `dazeDrift` is where the
+    // second image sits, as a fraction of the screen (the game moves it).
+    float daze = 0.0f;
+    Vec2  dazeDrift{0.0f, 0.0f};
 };
 
 }  // namespace iron
