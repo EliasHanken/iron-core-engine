@@ -346,11 +346,11 @@ InstanceGroupHandle VkInstanceGroups::create(VkContext& ctx, const InstanceGroup
     return static_cast<InstanceGroupHandle>(groups_.size());
 }
 
-void VkInstanceGroups::forEachOccluder(const std::function<void(MeshHandle, const Mat4&)>& visit) const {
+void VkInstanceGroups::forEachOccluder(const std::function<void(MeshHandle, const Mat4&, const Material&)>& visit) const {
     for (const Group& g : groups_) {
         if (!g.desc.castShadows || g.count == 0 || !g.instances.mapped || g.desc.lods.empty()) continue;
         const auto* in = static_cast<const GpuInstance*>(g.instances.mapped);
-        for (std::uint32_t i = 0; i < g.count; ++i) visit(g.desc.lods.front(), in[i].model);
+        for (std::uint32_t i = 0; i < g.count; ++i) visit(g.desc.lods.front(), in[i].model, g.desc.material);
     }
 }
 

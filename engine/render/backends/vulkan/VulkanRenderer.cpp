@@ -44,8 +44,10 @@ void main() {
 VulkanRenderer::VulkanRenderer() = default;
 
 VulkanRenderer::~VulkanRenderer() {
+    std::fprintf(stderr, "[exit] renderer destructor\n");
     if (initOk_) {
         vkDeviceWaitIdle(context_.device());
+        std::fprintf(stderr, "[exit] device idle\n");
         destroyCaptureBuffer();
         blackVolume_.destroy(context_);
         if (volumeSampler_) vkDestroySampler(context_.device(), volumeSampler_, nullptr);
@@ -63,7 +65,10 @@ VulkanRenderer::~VulkanRenderer() {
         debugLines_.destroy(context_);
         profiler_.destroy(context_);
         instanceGroups_.destroy(context_);
+        std::fprintf(stderr, "[exit] destroying ray tracing\n");
         rayTracing_.destroy(context_);
+        ddgi_.destroy(context_);
+        std::fprintf(stderr, "[exit] ray tracing gone\n");
         rtDebugStage_.destroy(context_);
         for (std::uint32_t i = 0; i < VkFrameRing::kFramesInFlight; ++i) {
             if (rtDebugOut_[i]) vmaDestroyBuffer(context_.allocator(), rtDebugOut_[i], rtDebugAlloc_[i]);
@@ -83,7 +88,9 @@ VulkanRenderer::~VulkanRenderer() {
         imageRenderFinished_.clear();
         swapchain_.destroy(context_);
     }
+    std::fprintf(stderr, "[exit] context shutdown\n");
     context_.shutdown();
+    std::fprintf(stderr, "[exit] renderer gone\n");
 }
 
 bool VulkanRenderer::init(Window& window) {
@@ -220,6 +227,9 @@ bool VulkanRenderer::init(Window& window) {
     // Clustered lights and decals: every lit pipeline takes their set as set 1.
     if (clusters_.init(context_, VkFrameRing::kFramesInFlight)) {
         shaders_.setFrameSetLayout(clusters_.setLayout());
+        // GI's atlases live in the same set, so they're bound from the start (empty
+        // until a volume is set).
+        if (ddgi_.init(context_)) bindGi();
     } else {
         Log::error("VulkanRenderer: clustered lighting failed to initialise; lights fall back to 16 per draw");
     }
@@ -1375,8 +1385,9 @@ void VulkanRenderer::endFrame() {
         if (rtStaticsGeneration_ != instanceGroups_.generation()) {
             rtStatics_.clear();
             std::uint32_t staticId = 0;
-            instanceGroups_.forEachOccluder(
-                [&](MeshHandle mesh, const Mat4& m) { rtStatics_.push_back({mesh, m, staticId++}); });
+            instanceGroups_.forEachOccluder([&](MeshHandle mesh, const Mat4& m, const Material& material) {
+                rtStatics_.push_back({mesh, m, staticId++, albedoOf(material), {}});
+            });
             rtStaticsGeneration_ = instanceGroups_.generation();
         }
         rtPlacements_.clear();
@@ -1386,7 +1397,7 @@ void VulkanRenderer::endFrame() {
             if (d.mesh == kInvalidHandle || d.material.emissive.x + d.material.emissive.y + d.material.emissive.z > 0.0f) {
                 continue;
             }
-            rtPlacements_.push_back({d.mesh, d.model, id++});
+            rtPlacements_.push_back({d.mesh, d.model, id++, albedoOf(d.material), {}});
         }
         rayTracing_.build(context_, cb, frames_.currentIndex(), meshes_, rtStatics_, rtStaticsGeneration_,
                           rtPlacements_);
@@ -1453,6 +1464,26 @@ void VulkanRenderer::endFrame() {
                          pendingUnjitteredProjection_, postProcess_.extent());
         clusters_.record(cb, frames_.currentIndex());
         profiler_.end(cb);
+    }
+    // --- Pass 0b: GI's probes, after the lights and the ray-traced scene are ready ---
+    {
+        const std::uint32_t slot = frames_.currentIndex();
+        VkDdgi::Lighting lighting;
+        lighting.towardSun = pendingSunDir_ * -1.0f;
+        lighting.sunColor = pendingSunColor_;
+        if (clusters_.active()) {
+            lighting.lights = clusters_.lightsBuffer(static_cast<int>(slot));
+            lighting.lightCount = static_cast<std::uint32_t>(pendingAllLights_.size());
+        }
+        if (cubemaps_.has(pendingSkybox_)) {
+            lighting.sky = cubemaps_.get(pendingSkybox_).view;
+            lighting.skySampler = cubemaps_.get(pendingSkybox_).sampler;
+        }
+        const bool tracing = context_.rayTracing() && ddgi_.live();
+        if (tracing) profiler_.begin(cb, "GI probes");
+        ddgi_.update(*this, cb, slot, context_.rayTracing() ? rayTracing_.scene(slot) : VK_NULL_HANDLE,
+                     context_.rayTracing() ? rayTracing_.instanceInfo(slot) : VK_NULL_HANDLE, lighting);
+        if (tracing) profiler_.end(cb);
     }
 
     // --- Pass 1: shadow ---

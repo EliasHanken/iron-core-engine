@@ -162,6 +162,7 @@ if (IRON_RENDER_BACKEND STREQUAL "vulkan")
       render/backends/vulkan/VkGpuProfiler.cpp
       render/backends/vulkan/VkInstanceGroups.cpp
       render/backends/vulkan/VkRayTracing.cpp
+      render/backends/vulkan/VkDdgi.cpp
       render/backends/vulkan/VkClusters.cpp
       render/backends/vulkan/VkFroxelFog.cpp
     )

@@ -1637,6 +1637,7 @@ int main(int argc, char** argv) {
     Vec3 engineEye{};          // The engine view's camera, easing after the player.
     bool engineEyeSet = false;
     bool antiAliased = !sceneHas("noaa");
+    int giView = sceneHas("gioff") ? 1 : sceneHas("gionly") ? 2 : 0;  // F7: GI on, off, bounced light only.
     bool paused = false;
     options.onInput = [&]() {
         iron::Input& input = app.input();
@@ -1670,9 +1671,24 @@ int main(int argc, char** argv) {
         if (input.keyPressed(GLFW_KEY_F4)) showLods = !showLods;
         if (input.keyPressed(GLFW_KEY_F5)) antiAliased = !antiAliased;
         if (input.keyPressed(GLFW_KEY_F6)) showNav = !showNav;
+        if (input.keyPressed(GLFW_KEY_F7)) {
+            giView = (giView + 1) % 3;
+            renderer.setGiView(static_cast<iron::GiView>(giView));
+        }
         if (input.keyPressed(GLFW_KEY_TAB)) engineView = !engineView;
     };
     if (!scripted) app.window().setCursorCaptured(true);
+
+    // --- Dynamic GI over the yard and the hall (render/GlobalIllumination.h) ---
+    if (renderer.rayTracing() && !sceneHas("nogi")) {
+        iron::GiVolume gi;
+        gi.min = {-34.0f, -3.6f, -66.0f};  // Down to the bunker.
+        gi.max = {34.0f, 14.0f, 36.0f};
+        gi.spacing = 3.0f;
+        gi.raysPerProbe = 128;
+        renderer.setGiVolume(gi);
+        renderer.setGiView(static_cast<iron::GiView>(giView));
+    }
 
     // --- Settings (Settings.h), and the pause menu over them ---
     float hipFov = settings.fovDegrees * kPi / 180.0f;
@@ -3001,7 +3017,9 @@ int main(int argc, char** argv) {
     };
 
     capture::runLoop(app, renderer, *vulkan, options, frame, kRecordSeconds);
+    std::fprintf(stderr, "[exit] loop done\n");
     smoke.destroy();
     body.destroy(world);
+    std::fprintf(stderr, "[exit] main returning\n");
     return 0;
 }

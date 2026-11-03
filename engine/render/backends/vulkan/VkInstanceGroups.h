@@ -41,7 +41,7 @@ public:
     void setInstances(VkContext& ctx, InstanceGroupHandle group, std::span<const Mat4> transforms);
     // Every instance of every group that casts shadows, with its finest mesh: what
     // blocks light, for ray tracing.
-    void forEachOccluder(const std::function<void(MeshHandle, const Mat4&)>& visit) const;
+    void forEachOccluder(const std::function<void(MeshHandle, const Mat4&, const Material&)>& visit) const;
     // Changes whenever any group's instances do (to rebuild what's cached from them).
     std::uint64_t generation() const { return generation_; }
     bool empty() const { return groups_.empty(); }

@@ -13,6 +13,7 @@
 #include "render/Handles.h"
 #include "render/backends/vulkan/VkFrameRing.h"
 #include "math/Mat4.h"
+#include "math/Vec.h"
 
 #include <vulkan/vulkan.h>
 #include <vk_mem_alloc.h>
@@ -38,6 +39,8 @@ public:
         MeshHandle    mesh;
         Mat4          transform;
         std::uint32_t id = 0;
+        Vec3          albedo{0.5f, 0.5f, 0.5f};  // Linear, the surface's average.
+        Vec3          emissive{0.0f, 0.0f, 0.0f};
     };
 
     bool init(VkContext& ctx);
@@ -53,6 +56,9 @@ public:
     // The TLAS built for this frame, or null if nothing has been.
     VkAccelerationStructureKHR scene(std::uint32_t frameIndex) const { return tlas_[frameIndex].as; }
     std::uint32_t instances(std::uint32_t frameIndex) const { return tlas_[frameIndex].count; }
+    // What each instance is made of, by its id: where its vertices and indices
+    // are, its albedo and emissive (std430: uvec2, uvec2, vec4, vec4).
+    VkBuffer instanceInfo(std::uint32_t frameIndex) const { return tlas_[frameIndex].info.buffer; }
     std::size_t blasCount() const { return blas_.size(); }
 
 private:
@@ -68,11 +74,14 @@ private:
         Buffer                     storage;
         VkDeviceAddress            address = 0;
         VkBuffer                   source = VK_NULL_HANDLE;  // The vertex buffer it was built from.
+        VkDeviceAddress            vertices = 0;
+        VkDeviceAddress            indices = 0;
     };
     struct Tlas {
         VkAccelerationStructureKHR as = VK_NULL_HANDLE;
         Buffer                     storage;
         Buffer                     instances;  // Host-written VkAccelerationStructureInstanceKHR.
+        Buffer                     info;       // Host-written, an entry per instance id.
         Buffer                     scratch;
         std::uint32_t              capacity = 0;
         std::uint32_t              count = 0;

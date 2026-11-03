@@ -25,6 +25,7 @@
 #include "render/backends/vulkan/VkClusters.h"
 #include "render/backends/vulkan/VkInstanceGroups.h"
 #include "render/backends/vulkan/VkRayTracing.h"
+#include "render/backends/vulkan/VkDdgi.h"
 #include "render/ReflectionPlane.h"
 #include "render/ReflectionProbe.h"
 
@@ -136,6 +137,15 @@ public:
         debugRayPending_ = true;
     }
     float debugRayHit() const override { return debugRayHit_; }
+    void setGiVolume(const GiVolume& volume) override {
+        ddgi_.setVolume(context_, volume);
+        bindGi();
+    }
+    void clearGiVolume() override {
+        ddgi_.clearVolume(context_);
+        bindGi();
+    }
+    void setGiView(GiView view) override { ddgi_.setView(view); }
 
     std::span<const GpuTiming> gpuTimings() const override { return profiler_.latest(); }
 
@@ -370,9 +380,26 @@ private:
     VkInstanceGroups   instanceGroups_;
     // The scene for ray queries (GI), when the GPU traces rays; rebuilt each frame.
     VkRayTracing       rayTracing_;
+    // Dynamic GI's probes; their atlases sit in set 1 for every lit draw.
+    VkDdgi             ddgi_;
+    void bindGi() {
+        std::array<VkBuffer, VkFrameRing::kFramesInFlight> params{};
+        for (std::uint32_t i = 0; i < params.size(); ++i) params[i] = ddgi_.params(i);
+        clusters_.setGi(context_, params, ddgi_.paramsBytes(), ddgi_.irradianceView(), ddgi_.distanceView(),
+                        ddgi_.sampler(), ddgi_.offsets());
+    }
     std::vector<VkRayTracing::Placement> rtPlacements_;  // This frame's draws.
     std::vector<VkRayTracing::Placement> rtStatics_;     // The instance groups', as of rtStaticsGeneration_.
     std::uint64_t rtStaticsGeneration_ = 0;
+    // A material's colour as GI sees it: its tint times its texture's average.
+    Vec3 albedoOf(const Material& material) const {
+        Vec3 c = material.baseColorFactor;
+        if (textures_.has(material.texture)) {
+            const auto& t = textures_.get(material.texture);
+            c = {c.x * t.average[0], c.y * t.average[1], c.z * t.average[2]};
+        }
+        return c;
+    }
     // traceDebugRay: one ray-query thread, its answer read back frames later.
     VkComputeStage rtDebugStage_;
     std::array<VkBuffer, VkFrameRing::kFramesInFlight>      rtDebugOut_{};

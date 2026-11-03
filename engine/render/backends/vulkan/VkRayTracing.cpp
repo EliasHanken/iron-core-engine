@@ -15,6 +15,14 @@ namespace {
 
 VkDeviceSize alignUp(VkDeviceSize v, VkDeviceSize a) { return (v + a - 1) / a * a; }
 
+struct GpuInstanceInfo {
+    std::uint64_t vertices;
+    std::uint64_t indices;
+    float         albedo[4];
+    float         emissive[4];
+};
+static_assert(sizeof(GpuInstanceInfo) == 48, "std430 Info in the GI trace");
+
 }  // namespace
 
 bool VkRayTracing::init(VkContext& ctx) { return ctx.rayTracing(); }
@@ -77,6 +85,7 @@ void VkRayTracing::destroy(VkContext& ctx) {
         if (t.as) ctx.rt().destroy(ctx.device(), t.as, nullptr);
         free(ctx, t.storage);
         free(ctx, t.instances);
+        free(ctx, t.info);
         free(ctx, t.scratch);
         t = {};
     }
@@ -157,6 +166,8 @@ void VkRayTracing::build(VkContext& ctx, VkCommandBuffer cb, std::uint32_t frame
                       &sizes);
         Blas b;
         b.source = meshes.get(q.mesh).vertexBuffer;
+        b.vertices = q.geometry.geometry.triangles.vertexData.deviceAddress;
+        b.indices = q.geometry.geometry.triangles.indexData.deviceAddress;
         b.storage = makeBuffer(ctx, sizes.accelerationStructureSize,
                                VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_STORAGE_BIT_KHR, false);
         VkAccelerationStructureCreateInfoKHR create{VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_CREATE_INFO_KHR};
@@ -203,12 +214,15 @@ void VkRayTracing::build(VkContext& ctx, VkCommandBuffer cb, std::uint32_t frame
     if (count > t.capacity) {
         rewriteStatics = true;
         retire(ctx, t.instances);
+        retire(ctx, t.info);
         retire(ctx, t.storage);
         retire(ctx, t.scratch);
         retire(ctx, t.as);
         t.capacity = std::max(count + count / 2, 64u);
         t.instances = makeBuffer(ctx, sizeof(VkAccelerationStructureInstanceKHR) * t.capacity,
                                  VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR, true);
+        // Ids run over statics then dynamics, so the info's as long as both.
+        t.info = makeBuffer(ctx, sizeof(GpuInstanceInfo) * t.capacity, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, true);
     }
     auto* out = static_cast<VkAccelerationStructureInstanceKHR*>(t.instances.mapped);
     const auto write = [&](const Placement& p, std::uint32_t& written) {
@@ -223,6 +237,19 @@ void VkRayTracing::build(VkContext& ctx, VkCommandBuffer cb, std::uint32_t frame
         inst.instanceShaderBindingTableRecordOffset = 0;
         inst.flags = VK_GEOMETRY_INSTANCE_TRIANGLE_FACING_CULL_DISABLE_BIT_KHR;
         inst.accelerationStructureReference = found->second.address;
+        if (p.id < t.capacity) {
+            GpuInstanceInfo& in = static_cast<GpuInstanceInfo*>(t.info.mapped)[p.id];
+            in.vertices = found->second.vertices;
+            in.indices = found->second.indices;
+            in.albedo[0] = p.albedo.x;
+            in.albedo[1] = p.albedo.y;
+            in.albedo[2] = p.albedo.z;
+            in.albedo[3] = 1.0f;
+            in.emissive[0] = p.emissive.x;
+            in.emissive[1] = p.emissive.y;
+            in.emissive[2] = p.emissive.z;
+            in.emissive[3] = 0.0f;
+        }
     };
     if (rewriteStatics) {
         t.staticCount = 0;
@@ -232,6 +259,7 @@ void VkRayTracing::build(VkContext& ctx, VkCommandBuffer cb, std::uint32_t frame
     std::uint32_t written = t.staticCount;
     for (const Placement& p : dynamics) write(p, written);
     vmaFlushAllocation(ctx.allocator(), t.instances.alloc, 0, VK_WHOLE_SIZE);
+    vmaFlushAllocation(ctx.allocator(), t.info.alloc, 0, VK_WHOLE_SIZE);
     t.count = written;
     if (frameCount_ % 300 == 1) Log::info("VkRayTracing: %u instances in the scene", written);
 

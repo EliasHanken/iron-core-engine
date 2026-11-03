@@ -8,6 +8,7 @@
 #include <stb_image.h>
 
 #include <algorithm>
+#include <cmath>
 #include <cstring>
 
 namespace iron {
@@ -163,6 +164,22 @@ void VkTextureStore::uploadRgba(VkContext& ctx, VkTextureResource& tex,
     void* stagingMap = nullptr;
     VkBuffer staging = createStagingBuffer(ctx, size, stagingAlloc, stagingMap);
     std::memcpy(stagingMap, rgba, size);
+    {
+        // Its average colour (every few texels), linear, weighted by coverage.
+        const std::size_t texels = static_cast<std::size_t>(width) * static_cast<std::size_t>(height);
+        const std::size_t step = std::max<std::size_t>(texels / 4096, 1);
+        double sum[3] = {0.0, 0.0, 0.0}, weight = 0.0;
+        for (std::size_t i = 0; i < texels; i += step) {
+            const unsigned char* t = rgba + i * 4;
+            const double a = t[3] / 255.0;
+            for (int c = 0; c < 3; ++c) {
+                const double v = t[c] / 255.0;
+                sum[c] += (srgb ? std::pow(v, 2.2) : v) * a;
+            }
+            weight += a;
+        }
+        for (int c = 0; c < 3; ++c) tex.average[c] = weight > 0.0 ? static_cast<float>(sum[c] / weight) : 1.0f;
+    }
 
     VkImageCreateInfo imgInfo{};
     imgInfo.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;

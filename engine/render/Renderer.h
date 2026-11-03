@@ -8,6 +8,7 @@
 #include "render/Culling.h"
 #include "render/Fog.h"
 #include "render/GpuTimings.h"
+#include "render/GlobalIllumination.h"
 #include "render/InstanceGroup.h"
 #include "render/Handles.h"
 #include "render/HudBatch.h"
@@ -331,6 +332,11 @@ public:
     // hit distance (or -1 for a miss) comes back from debugRayHit a frame or two later.
     virtual void traceDebugRay(Vec3 origin, Vec3 direction) { (void)origin; (void)direction; }
     virtual float debugRayHit() const { return -1.0f; }
+    // Dynamic GI (render/GlobalIllumination.h): a volume of probes lighting what's
+    // in it with bounced light. Needs rayTracing(); ignored without it.
+    virtual void setGiVolume(const GiVolume& volume) { (void)volume; }
+    virtual void clearGiVolume() {}
+    virtual void setGiView(GiView view) { (void)view; }
 
     // --- Instance groups: GPU-driven drawing (see InstanceGroup.h) ---
     // A shader for instance groups: its vertex stage reads each instance's transform
