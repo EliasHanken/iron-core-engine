@@ -23,8 +23,8 @@ struct SightSettings {
     float fieldOfView = 1.05f;     // Half-angle (radians) of the clear cone.
     float peripheral = 1.75f;      // Half-angle (radians) beyond which nothing is seen.
     float peripheralRate = 0.3f;   // How fast at the edge of the peripheral cone, of the clear rate.
-    float noticeSeconds = 0.45f;   // From nothing to spotted, close in front and fully visible.
-    float farRate = 0.12f;         // How fast at `range`, of the near rate.
+    float noticeSeconds = 0.8f;    // From nothing to spotted, close in front and fully visible.
+    float farRate = 0.07f;         // How fast at `range`, of the near rate.
     float suspicious = 0.3f;       // Awareness from which the agent has seen something.
     float decayPerSecond = 0.25f;  // Unseen, before alert.
     float alertDecayPerSecond = 0.02f;

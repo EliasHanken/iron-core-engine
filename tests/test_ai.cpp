@@ -133,7 +133,7 @@ static void close_in_front_is_spotted_fast_far_and_aside_slowly() {
     const float tClose = secondsToSpot(close, eye, ahead, {0.0f, 1.6f, -3.0f}, 1.0f);
     const float tFar = secondsToSpot(far, eye, ahead, {0.0f, 1.6f, -35.0f}, 1.0f);
     const float tAside = secondsToSpot(aside, eye, ahead, {-5.0f, 1.6f, -0.5f}, 1.0f);
-    CHECK(tClose < 0.6f);
+    CHECK(tClose < 1.0f);
     CHECK(tFar > 2.0f && tFar < 30.0f);
     CHECK(tAside > tClose * 1.5f);
     CHECK(secondsToSpot(behind, eye, ahead, {0.0f, 1.6f, 5.0f}, 1.0f) >= 30.0f);

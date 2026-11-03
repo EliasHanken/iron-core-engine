@@ -112,6 +112,7 @@ public:
     }
 
     std::string        name;
+    std::string        group;    // Which lot he's with ("yard", "hall"...), for the story.
     std::vector<Vec3>  route;    // Walked round in order; one point is a post.
     float              pace;     // Patrol walking speed, m/s.
     float              postYaw;  // A guard's way of facing.
@@ -159,8 +160,10 @@ class Squad {
 public:
     Squad(iron::NavMesh& nav, std::vector<CoverPoint> cover) : nav_(nav), cover_(std::move(cover)) {}
 
-    void add(const SoldierLook& look, std::string name, std::vector<Vec3> route, float pace, float postYaw = 0.0f) {
+    void add(const SoldierLook& look, std::string name, std::vector<Vec3> route, float pace, float postYaw = 0.0f,
+             std::string group = "yard") {
         auto e = std::make_unique<Enemy>(look, std::move(name), std::move(route), pace, postYaw);
+        e->group = std::move(group);
         // A route that crosses between islands (into a shut room, onto a container) can't be walked.
         for (const Vec3& p : e->route) {
             if (nav_.island(p) != nav_.island(e->route.front())) {
@@ -276,6 +279,21 @@ public:
         sinceSeen_ = 1.0e9f;
         radioIn_ = -1.0f;
     }
+    // An alarm: everyone knows there's someone at `at`.
+    void alertAll(Vec3 at) {
+        for (auto& e : enemies_) {
+            if (!e->dead) e->perception.share(at);
+        }
+    }
+    // Brings in a soldier who already knows where the player was.
+    void addAlerted(const SoldierLook& look, std::string name, Vec3 at, std::string group, Vec3 threat) {
+        add(look, std::move(name), {at}, 0.0f, 0.0f, std::move(group));
+        enemies_.back()->perception.share(threat);
+    }
+    int alive(const std::string& group) const {
+        return static_cast<int>(std::count_if(enemies_.begin(), enemies_.end(),
+                                              [&](const auto& e) { return !e->dead && e->group == group; }));
+    }
     int alive() const {
         return static_cast<int>(std::count_if(enemies_.begin(), enemies_.end(), [](const auto& e) { return !e->dead; }));
     }
@@ -300,7 +318,10 @@ public:
             const Vec3 to = senses.playerEye - eye;
             const float vis = iron::length(to) < e->perception.settings().range ? senses.visibility(eye, senses.playerEye)
                                                                                 : 0.0f;
-            e->perception.look(eye, forward, senses.playerEye, vis, dt);
+            // Still, he's harder to pick out than on the move.
+            const Vec3 v = senses.playerVelocity;
+            const float moving = std::min(std::sqrt(v.x * v.x + v.z * v.z) / 4.0f, 1.0f);
+            e->perception.look(eye, forward, senses.playerEye, vis * (0.55f + 0.45f * moving), dt);
             if (e->perception.state().seesTarget && e->perception.state().alerted) {
                 anyoneSees = true;
                 known_ = e->perception.state().lastKnown;
