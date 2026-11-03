@@ -80,6 +80,23 @@
           "name": "grab"
         }
       ]
+    },
+    "throw": {
+      "loop": false,
+      "events": [
+        {
+          "time": 0.06,
+          "name": "grab"
+        },
+        {
+          "time": 0.2,
+          "name": "pin"
+        },
+        {
+          "time": 0.5,
+          "name": "release"
+        }
+      ]
     }
   }
 }

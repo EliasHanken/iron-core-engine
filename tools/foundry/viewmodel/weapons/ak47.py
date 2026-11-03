@@ -251,3 +251,10 @@ _MAG_AT = RELOAD_TILT.matrix() @ Vector((0.0, 0.2, 0.0))
 EXTRA_SHOTS = {"reload@0.6": (0.6, {
     "magclose_near": (tuple(RELOAD_TILT.matrix() @ Vector((-0.25, 0.25, 0.05))), tuple(_MAG_AT), 30.0),
     "magclose_far": (tuple(RELOAD_TILT.matrix() @ Vector((0.25, 0.2, -0.05))), tuple(_MAG_AT), 30.0)})}
+
+
+# The grenade thrown with the left hand (throwing.py).
+from weapons.throwing import make_throw  # noqa: E402
+
+CLIPS.append(make_throw(HIP, GRIP, SUPPORT, lambda place, right, left, **kw: Pose(place, right, left, **kw)))
+PREVIEW["throw"] = (0.15, 0.3, 0.4, 0.5, 0.7)
