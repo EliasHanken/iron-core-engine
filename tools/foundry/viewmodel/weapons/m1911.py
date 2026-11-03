@@ -243,3 +243,10 @@ CLIPS = [
 PREVIEW = {"draw": (0.15, 0.35), "reload": (0.27, 0.45, 0.6, 1.2, 1.36), "reload_empty": (1.8, 1.9),
            "sprint": (0.15,), "inspect": (1.0, 2.6)}
 GRAB_TIME = 0.48
+
+
+# The grenade thrown with the left hand (throwing.py).
+from weapons.throwing import make_throw  # noqa: E402
+
+CLIPS.append(make_throw(HIP, GRIP, SUPPORT, lambda place, right, left, **kw: Pose(place, right, left, **kw)))
+PREVIEW["throw"] = (0.15, 0.3, 0.4, 0.5, 0.7)

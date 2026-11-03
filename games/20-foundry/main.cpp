@@ -1118,6 +1118,12 @@ int main(int argc, char** argv) {
     }
     std::uint32_t thrown = 0;
     float throwCooldown = 0.0f;
+    // A grenade being thrown: from the press until the hand lets it go, the kind,
+    // and whether it's in the hand yet (to draw it there).
+    bool throwing = false;
+    bool grenadeInHand = false;
+    bool releaseNow = false;
+    auto throwKind = foundry::Grenades::Kind::Frag;
     float trauma = 0.0f;  // Camera shake: 1 right by a blast, fading.
     float blastKick = 0.0f;  // The lens jolted by a blast: colour split, a dark rim, washed out; fading.
     float daze = 0.0f;       // Dazed by a blast close by: vision soft and doubled, clearing over seconds.
@@ -1557,7 +1563,7 @@ int main(int argc, char** argv) {
         // Out of a sprint, the gun has to come up from across the chest before it
         // fires or aims.
         const bool raised = sprintBlend < 0.2f;
-        const int shots = gun.update(simDt, trigger && !paused && !switching && raised,
+        const int shots = gun.update(simDt, trigger && !paused && !switching && raised && !throwing,
                                      aiming && !switching && sprintBlend < 0.5f, reloadPressed && !switching, look,
                                      speed / kRunSpeed, grounded);
         reloadPressed = false;
@@ -1697,7 +1703,10 @@ int main(int argc, char** argv) {
             spawnBit(casing);
         };
         for (const auto& fired : viewModel.update(simDt, aimBlend, sprintBlend)) {
-            sound.foley(fired.name, weapon.arm);
+            if (fired.name == "grab" && throwing) grenadeInHand = true;
+            if (fired.name == "release" && throwing) releaseNow = true;
+            sound.foley(fired.name == "pin" ? std::string_view{"mag_release"} : std::string_view{fired.name},
+                        weapon.arm);
             if (weapon.gun.tuning().boltAction && fired.name == "bolt_back") ejectCasing();
         }
         for (int i = 0; i < shots; ++i) viewModel.fire();
@@ -1705,16 +1714,34 @@ int main(int argc, char** argv) {
 
         // --- Grenades: a lob from the off hand, and blasts ---
         throwCooldown = std::max(throwCooldown - simDt, 0.0f);
-        if ((grenadePressed || smokePressed) && !paused && throwCooldown <= 0.0f) {
+        // The left hand takes a grenade off the chest and throws it overhand; it
+        // leaves the hand at the clip's release (straight away for a model without one).
+        if ((grenadePressed || smokePressed) && !paused && throwCooldown <= 0.0f && !throwing && !acting() &&
+            !arsenal.busy() && !gun.reloading()) {
+            throwKind = grenadePressed ? foundry::Grenades::Kind::Frag : foundry::Grenades::Kind::Smoke;
+            throwing = true;
+            if (viewModel.has("throw")) {
+                viewModel.play("throw", 0.08f, 0.15f);
+            } else {
+                releaseNow = true;
+            }
+            throwCooldown = 1.1f;
+        }
+        if (releaseNow) {
             const Vec3 up = transformPoint(cameraToWorld, {0.0f, 1.0f, 0.0f}) - eye;
             const Vec3 left = eye - transformPoint(cameraToWorld, {1.0f, 0.0f, 0.0f});
-            const Vec3 from = eye + aimDir * 0.5f + left * 0.15f - up * 0.1f;
+            const Vec3 from = grenadeInHand ? apparent(viewModel.leftHand()) : eye + aimDir * 0.5f + left * 0.15f - up * 0.1f;
             // --scene grenade+near lobs it a few metres off, to feel a blast up close.
             const float throwSpeed = sceneHas("near") ? 3.5f : 13.0f;
             grenades.throwFrom(world, from, horizontal + aimDir * throwSpeed + Vec3{0.0f, 3.5f, 0.0f},
-                               kGrenadeMotionBase + 2u * (thrown++ % (1u << 20)),
-                               grenadePressed ? foundry::Grenades::Kind::Frag : foundry::Grenades::Kind::Smoke);
-            throwCooldown = 0.9f;
+                               kGrenadeMotionBase + 2u * (thrown++ % (1u << 20)), throwKind);
+            throwing = false;
+            grenadeInHand = false;
+            releaseNow = false;
+        }
+        if (acting() || arsenal.busy()) {  // Interrupted: the throw's off.
+            throwing = false;
+            grenadeInHand = false;
         }
         grenadePressed = false;
         smokePressed = false;
@@ -2192,6 +2219,24 @@ int main(int argc, char** argv) {
             // Looking through the scope, or with the hands busy opening something,
             // the gun isn't drawn.
             if (scopeView < 0.5f && !acting()) draws += viewModel.draw(renderer, viewModelToWorld, kGunMotionId);
+            // The grenade in the throwing hand, drawn with the arms.
+            if (grenadeInHand && !acting()) {
+                constexpr float kR = foundry::Grenades::kRadius;
+                constexpr float kTop = kR + foundry::Grenades::kHalfHeight;
+                iron::DrawCall call;
+                call.mesh = grenadeMesh;
+                call.shader = lit;
+                call.model = viewModelToWorld * iron::translation(viewModel.leftHand()) * iron::scaling({kR, kTop, kR});
+                call.material.texture = renderer.whiteTexture();
+                call.material.baseColorFactor = throwKind == foundry::Grenades::Kind::Frag ? Vec3{0.17f, 0.19f, 0.11f}
+                                                                                           : Vec3{0.32f, 0.34f, 0.3f};
+                call.material.roughness = 0.55f;
+                call.material.metallic = 0.2f;
+                call.motionId = kGunMotionId + 20u;
+                call.viewModel = true;
+                renderer.submit(call);
+                ++draws;
+            }
             if (gun.flash() > 0.0f && scopeView < 0.5f) {
                 iron::DrawCall flash;
                 flash.mesh = flashMesh;
