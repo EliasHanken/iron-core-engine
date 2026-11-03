@@ -2,7 +2,8 @@
 // shown off. Light bouncing round a room in real time, from every light, as it
 // moves.
 //
-//   WASD / mouse  fly            F7  GI on / off / bounced light only
+//   WASD / right-drag  fly       F7  GI on / off / bounced light only
+//   V             the wipe: GI on left of the mouse, off right (V again to drop it)
 //   Esc           quit
 //
 // --scene picks what's shown (captures: --shot <seconds> <file>):
@@ -13,6 +14,9 @@
 //             sun through its roof. Without it, the Cornell box.
 //   gioff / gionly  start with GI off, or showing only the bounced light
 //   floor     look down at the courtyard floor's shadow edge (with sponza)
+//   wipe      start with the wipe at the middle, sweeping slowly back and forth
+//   night     (with sponza) no sun: two glowing panels and a lantern circling the
+//             courtyard light it, all through GI
 
 #include "common/CaptureLoop.h"
 
@@ -114,14 +118,20 @@ int main(int argc, char** argv) {
         iron::Log::error("radiance: no Sponza at %s; showing the Cornell box", sponzaPath.c_str());
     }
     const bool sponza = sponzaModel.has_value();
-    renderer.setSkybox(vulkan->bakeSky(sponza ? kDaySky : kDarkSky, sponza ? 256 : 64));
+    const bool night = sponza && sceneHas("night");
+    renderer.setSkybox(vulkan->bakeSky(sponza && !night ? kDaySky : kDarkSky, sponza ? 256 : 64));
     renderer.setShadowBounds({0.0f, 2.75f, 0.0f}, 6.0f);
-    if (sponza) vulkan->setExposure(1.5f);
+    if (sponza) vulkan->setExposure(night ? 2.2f : 1.5f);
     renderer.setAntiAliasing(iron::AntiAliasing::Temporal);
     if (!renderer.rayTracing()) iron::Log::warn("radiance: no hardware ray tracing; GI is off");
 
     // --- The scene ---
-    const std::vector<Block> blocks = sponza ? std::vector<Block>{} : cornellBox();
+    std::vector<Block> blocks = sponza ? std::vector<Block>{} : cornellBox();
+    if (night) {
+        // Two glowing panels standing in the courtyard: they're the light.
+        blocks.push_back({{-6.0f, 1.0f, 2.2f}, {2.4f, 2.0f, 0.1f}, {0.2f, 0.2f, 0.2f}, {9.0f, 4.2f, 1.2f}});
+        blocks.push_back({{6.0f, 1.0f, -2.2f}, {2.4f, 2.0f, 0.1f}, {0.2f, 0.2f, 0.2f}, {0.8f, 4.5f, 9.0f}});
+    }
     struct Drawn {
         iron::MeshHandle mesh;
         iron::Material   material;
@@ -163,6 +173,7 @@ int main(int argc, char** argv) {
         m.roughness = 0.9f;
         m.metallic = 0.0f;
         m.emissive = b.emissive;
+        if (!sponza) m.giEmissiveScale = 0.0f;  // The Cornell panel's spot light already lights the room.
         m.heightScale = 0.0f;
         drawn.push_back({renderer.createMesh(data), m});
     }
@@ -188,6 +199,7 @@ int main(int argc, char** argv) {
     panel.spotSoftness = 0.6f;
 
     // --- The camera: in front of the open side, looking in ---
+    bool wiping = sceneHas("wipe");
     Vec3 eye = sponza ? Vec3{9.5f, 1.7f, -0.6f} : Vec3{0.0f, 2.75f, 10.5f};
     float yaw = sponza ? 1.62f : 0.0f, pitch = sponza ? 0.12f : 0.0f;
     if (sponza && sceneHas("floor")) {
@@ -197,7 +209,6 @@ int main(int argc, char** argv) {
     // The sun's shadows in cascades: sharp near the eye, wide across the courtyard.
     if (sponza) renderer.setShadowCascades(60.0f);
     const capture::FrameFn frame = [&](float seconds, float dt, int width, int height) {
-        (void)seconds;
         if (app.window().consumeResized()) renderer.setViewport(width, height);
         iron::Input& input = app.input();
         if (!scripted) {
@@ -205,6 +216,7 @@ int main(int argc, char** argv) {
                 giView = (giView + 1) % 3;
                 renderer.setGiView(static_cast<iron::GiView>(giView));
             }
+            if (input.keyPressed(GLFW_KEY_V)) wiping = !wiping;
             if (input.mouseButtonDown(GLFW_MOUSE_BUTTON_RIGHT)) {
                 yaw -= static_cast<float>(input.mouseDeltaX()) * 0.003f;
                 pitch = std::clamp(pitch - static_cast<float>(input.mouseDeltaY()) * 0.003f, -1.4f, 1.4f);
@@ -217,6 +229,14 @@ int main(int argc, char** argv) {
             if (input.keyDown(GLFW_KEY_D)) eye = eye + right * speed;
             if (input.keyDown(GLFW_KEY_A)) eye = eye - right * speed;
         }
+        // The wipe follows the mouse (or sweeps, in a capture).
+        if (wiping) {
+            const float x = scripted ? 0.5f + 0.32f * std::sin(seconds * 0.8f)
+                                     : static_cast<float>(app.input().mouseX()) / static_cast<float>(std::max(width, 1));
+            renderer.setGiWipe(std::clamp(x, 0.0f, 1.0f));
+        } else {
+            renderer.setGiWipe(-1.0f);
+        }
         const Vec3 fwd{-std::sin(yaw) * std::cos(pitch), std::sin(pitch), -std::cos(yaw) * std::cos(pitch)};
         const Mat4 view = iron::lookAt(eye, eye + fwd, {0.0f, 1.0f, 0.0f});
         const float aspect = static_cast<float>(width) / static_cast<float>(std::max(height, 1));
@@ -224,10 +244,16 @@ int main(int argc, char** argv) {
 
         iron::DirectionalLight sun;  // In the Cornell box, none: the panel lights the room.
         sun.direction = sponza ? iron::normalize(Vec3{-0.3f, -0.94f, -0.12f}) : Vec3{0.0f, -1.0f, 0.0f};
-        sun.color = sponza ? Vec3{5.5f, 5.0f, 4.3f} : Vec3{0.0f, 0.0f, 0.0f};
+        sun.color = sponza && !night ? Vec3{5.5f, 5.0f, 4.3f} : Vec3{0.0f, 0.0f, 0.0f};
         sun.ambient = 0.0f;
-        const iron::PointLight lights[] = {panel};
-        renderer.beginFrame({0.0f, 0.0f, 0.0f}, sun, std::span<const iron::PointLight>(lights, sponza ? 0 : 1),
+        // At night, a lantern circling the courtyard.
+        iron::PointLight lantern;
+        lantern.position = {std::sin(seconds * 0.6f) * 9.0f, 1.6f, std::cos(seconds * 0.6f) * 2.5f};
+        lantern.color = {1.0f, 0.25f, 0.85f};
+        lantern.intensity = 6.0f;
+        lantern.range = 12.0f;
+        const iron::PointLight lights[] = {sponza ? lantern : panel};
+        renderer.beginFrame({0.0f, 0.0f, 0.0f}, sun, std::span<const iron::PointLight>(lights, !sponza || night ? 1 : 0),
                             iron::Fog{}, view, projection);
         for (std::size_t i = 0; i < drawn.size(); ++i) {
             iron::DrawCall call;

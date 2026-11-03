@@ -337,6 +337,8 @@ public:
     virtual void setGiVolume(const GiVolume& volume) { (void)volume; }
     virtual void clearGiVolume() {}
     virtual void setGiView(GiView view) { (void)view; }
+    // A wipe across the screen: GI on left of `x` (0..1), off right of it; < 0 none.
+    virtual void setGiWipe(float x) { (void)x; }
 
     // --- Instance groups: GPU-driven drawing (see InstanceGroup.h) ---
     // A shader for instance groups: its vertex stage reads each instance's transform

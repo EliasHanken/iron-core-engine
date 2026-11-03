@@ -36,6 +36,7 @@ public:
     void clearVolume(VkContext& ctx);
     bool live() const { return live_; }
     void setView(GiView view) { view_ = view; }
+    void setWipe(float x) { wipe_ = x; }
 
     // What the frame's lighting is, for the probes' rays to see by.
     struct Lighting {
@@ -77,6 +78,7 @@ private:
     GiVolume       volume_;
     bool           live_ = false;
     GiView         view_ = GiView::On;
+    float          wipe_ = -1.0f;
     std::uint32_t  counts_[3] = {2, 2, 2};
     std::uint32_t  rays_ = 32;
     std::uint32_t  framesSinceReset_ = 0;

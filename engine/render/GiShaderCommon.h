@@ -22,7 +22,7 @@ inline const char* giParamsMembersGlsl() {
     vec4  sun;        // xyz toward the sun; w = hysteresis
     vec4  sunColor;   // rgb; w = light count
     vec4  misc;       // x = max ray distance; y = view (GiView); z = energy; w = frames since reset
-    vec4  boundsMin;  // The volume's box: xyz min
+    vec4  boundsMin;  // The volume's box: xyz min; w = the wipe (screen x, 0..1; < 0 none)
     vec4  boundsMax;  // xyz max
 )GLSL";
 }
@@ -56,6 +56,12 @@ vec2 giAtlasUv(ivec3 c, vec3 dir, int texels, vec2 atlasSize) {
     vec2 o = giOctEncode(dir) * 0.5 + 0.5;
     vec2 px = vec2(giTile(c)) * float(texels + 2) + 1.0 + o * float(texels);
     return px / atlasSize;
+}
+
+// Whether this pixel shows GI off: GiView::Off, or right of the wipe.
+bool giOffAt(vec2 fragCoord, float screenWidth) {
+    if (gi.misc.y > 0.5 && gi.misc.y < 1.5) return true;
+    return gi.boundsMin.w >= 0.0 && fragCoord.x / screenWidth > gi.boundsMin.w;
 }
 
 // How much the volume lights `p`: fully anywhere within its probes, fading to

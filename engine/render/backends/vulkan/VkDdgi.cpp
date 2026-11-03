@@ -497,6 +497,7 @@ void VkDdgi::update(VulkanRenderer& renderer, VkCommandBuffer cb, std::uint32_t 
     p.boundsMin[0] = volume_.min.x;
     p.boundsMin[1] = volume_.min.y;
     p.boundsMin[2] = volume_.min.z;
+    p.boundsMin[3] = wipe_;
     p.boundsMax[0] = volume_.min.x + spacing * static_cast<float>(counts_[0] - 1);
     p.boundsMax[1] = volume_.min.y + spacing * static_cast<float>(counts_[1] - 1);
     p.boundsMax[2] = volume_.min.z + spacing * static_cast<float>(counts_[2] - 1);

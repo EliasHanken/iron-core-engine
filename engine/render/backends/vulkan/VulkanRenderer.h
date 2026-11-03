@@ -146,6 +146,7 @@ public:
         bindGi();
     }
     void setGiView(GiView view) override { ddgi_.setView(view); }
+    void setGiWipe(float x) override { ddgi_.setWipe(x); }
 
     std::span<const GpuTiming> gpuTimings() const override { return profiler_.latest(); }
 
@@ -399,6 +400,15 @@ private:
             c = {c.x * t.average[0], c.y * t.average[1], c.z * t.average[2]};
         }
         return c;
+    }
+    // Its glow as GI sees it: emissive times its emissive map's average.
+    Vec3 emissiveOf(const Material& material) const {
+        Vec3 e = material.emissive * material.giEmissiveScale;
+        if (textures_.has(material.emissiveMap)) {
+            const auto& t = textures_.get(material.emissiveMap);
+            e = {e.x * t.average[0], e.y * t.average[1], e.z * t.average[2]};
+        }
+        return e;
     }
     // traceDebugRay: one ray-query thread, its answer read back frames later.
     VkComputeStage rtDebugStage_;

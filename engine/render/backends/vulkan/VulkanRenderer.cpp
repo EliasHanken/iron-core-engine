@@ -1386,18 +1386,16 @@ void VulkanRenderer::endFrame() {
             rtStatics_.clear();
             std::uint32_t staticId = 0;
             instanceGroups_.forEachOccluder([&](MeshHandle mesh, const Mat4& m, const Material& material) {
-                rtStatics_.push_back({mesh, m, staticId++, albedoOf(material), {}});
+                rtStatics_.push_back({mesh, m, staticId++, albedoOf(material), emissiveOf(material)});
             });
             rtStaticsGeneration_ = instanceGroups_.generation();
         }
         rtPlacements_.clear();
         std::uint32_t id = static_cast<std::uint32_t>(rtStatics_.size());
         for (const DrawCall& d : sceneDraws_) {
-            // What glows lights things; it doesn't stand in their light.
-            if (d.mesh == kInvalidHandle || d.material.emissive.x + d.material.emissive.y + d.material.emissive.z > 0.0f) {
-                continue;
-            }
-            rtPlacements_.push_back({d.mesh, d.model, id++, albedoOf(d.material), {}});
+            if (d.mesh == kInvalidHandle) continue;
+            // What glows is in it too: rays that find it carry its light on (GI).
+            rtPlacements_.push_back({d.mesh, d.model, id++, albedoOf(d.material), emissiveOf(d.material)});
         }
         rayTracing_.build(context_, cb, frames_.currentIndex(), meshes_, rtStatics_, rtStaticsGeneration_,
                           rtPlacements_);

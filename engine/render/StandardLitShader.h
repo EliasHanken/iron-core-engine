@@ -511,7 +511,7 @@ vec2 parallaxOcclusionUV(vec2 uv, vec3 viewTS, float heightScale) {
         vec3  diffuseIBL  = skyIrradiance * albedo;
         // GI: the light bounced here instead of the sky's, where the volume reaches;
         // and the sky's reflection dimmed as much as the place is darker than the sky.
-        float giW = (gi.misc.y > 0.5 && gi.misc.y < 1.5) ? 0.0 : giVolumeWeight(vWorldPos);
+        float giW = giOffAt(gl_FragCoord.xy, cl.screen.x) ? 0.0 : giVolumeWeight(vWorldPos);
         float specularOcclusion = 1.0;
         if (giW > 0.0) {
             vec3 giLight = giIrradiance(uGiIrradiance, uGiDistance, vWorldPos, N_, V) * gi.misc.z;
@@ -542,7 +542,7 @@ vec2 parallaxOcclusionUV(vec2 uv, vec3 viewTS, float heightScale) {
         ambient = (kD * diffuseIBL + specularIBL) * ao;
     } else {
         vec3 flatAmbient = u.ambient.xyz * albedo;
-        float giW = (gi.misc.y > 0.5 && gi.misc.y < 1.5) ? 0.0 : giVolumeWeight(vWorldPos);
+        float giW = giOffAt(gl_FragCoord.xy, cl.screen.x) ? 0.0 : giVolumeWeight(vWorldPos);
         if (giW > 0.0) {
             vec3 giLight = giIrradiance(uGiIrradiance, uGiDistance, vWorldPos, N_, V) * gi.misc.z;
             flatAmbient = mix(flatAmbient, giLight * albedo * (1.0 - metallic), giW);
@@ -563,6 +563,8 @@ vec2 parallaxOcclusionUV(vec2 uv, vec3 viewTS, float heightScale) {
     emissive += decalGlow;  // Its own line: the surface hooks below replace the one above.
     vec3 color = ambient + Lo + emissive;
     if (gi.misc.y > 1.5) color = ambient;  // GiView::IndirectOnly.
+    // The wipe's line.
+    if (gi.boundsMin.w >= 0.0 && abs(gl_FragCoord.x - gi.boundsMin.w * cl.screen.x) < 1.5) color = vec3(1.0);
 
     // M17 — planar reflection (preferred when active) with M16 cubemap fallback.
     float reflectivity = u.materialParams.z;
