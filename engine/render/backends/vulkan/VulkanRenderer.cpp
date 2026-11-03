@@ -847,7 +847,7 @@ void VulkanRenderer::recordSceneDraw(VkCommandBuffer cb, const DrawCall& call, c
         pendingFog_.density,
     };
     ubo.lightCounts = Vec4{
-        static_cast<float>(pendingPointLightCount_), 0.0f, 0.0f, 0.0f,
+        static_cast<float>(pendingPointLightCount_), 0.0f, 0.0f, call.material.alphaCutoff,  // w: masked
     };
     for (int i = 0; i < pendingPointLightCount_; ++i) {
         const PointLight& pl = pendingPointLights_[i];
@@ -1133,7 +1133,7 @@ void VulkanRenderer::recordSkinnedDraw(VkCommandBuffer cb,
         pendingFog_.density,
     };
     ubo.lightCounts = Vec4{
-        static_cast<float>(pendingPointLightCount_), 0.0f, 0.0f, 0.0f,
+        static_cast<float>(pendingPointLightCount_), 0.0f, 0.0f, call.material.alphaCutoff,  // w: masked
     };
     for (int i = 0; i < pendingPointLightCount_; ++i) {
         const PointLight& pl = pendingPointLights_[i];

@@ -411,7 +411,9 @@ vec2 parallaxOcclusionUV(vec2 uv, vec3 viewTS, float heightScale) {
     vec3 perturbedN = normalize(TBN * tangentNormal);
 
     // PBR material parameters.
-    vec3  albedo    = texture(uDiffuse, uv).rgb * u.baseColorFactor.xyz;
+    vec4  albedoTexel = texture(uDiffuse, uv);
+    if (u.lightCounts.w > 0.0 && albedoTexel.a < u.lightCounts.w) discard;  // Masked.
+    vec3  albedo    = albedoTexel.rgb * u.baseColorFactor.xyz;
     float roughness = clamp(u.materialParams.y * texture(uMetallicRoughnessMap, uv).g, 0.04, 1.0);
     float metallic  = clamp(u.materialParams2.x * texture(uMetallicRoughnessMap, uv).b, 0.0, 1.0);
     float ao        = u.materialParams2.y * texture(uAoMap, uv).r;

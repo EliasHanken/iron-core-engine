@@ -8,10 +8,13 @@
 // --scene picks what's shown (captures: --shot <seconds> <file>):
 //   cornell   the Cornell box: a white room, a red wall and a green, light from
 //             above; the red and green should bleed onto the white
+//   sponza    Crytek Sponza (the standard GI test; its licence keeps it out of the
+//             repo: set IRON_SPONZA to its Sponza.gltf), the sun through its roof
 //   gioff / gionly  start with GI off, or showing only the bounced light
 
 #include "common/CaptureLoop.h"
 
+#include "asset/GltfLoader.h"
 #include "core/Application.h"
 #include "core/Log.h"
 #include "math/Transform.h"
@@ -25,6 +28,8 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdlib>
+#include <map>
 #include <string>
 #include <vector>
 
@@ -32,6 +37,19 @@ using iron::Mat4;
 using iron::Vec3;
 
 namespace {
+
+// A clear day: deep blue overhead, paler to the horizon, the sun's disc.
+const char* const kDaySky = R"GLSL(
+vec3 skyColor(vec3 d) {
+    vec3 sun = normalize(vec3(0.3, 0.94, 0.12));
+    float h = max(d.y, 0.0);
+    vec3 c = mix(vec3(0.55, 0.68, 0.85), vec3(0.16, 0.32, 0.65), pow(h, 0.45));
+    float s = max(dot(d, sun), 0.0);
+    c += vec3(1.0, 0.9, 0.75) * pow(s, 400.0) * 40.0 + vec3(1.0, 0.85, 0.6) * pow(s, 8.0) * 0.25;
+    if (d.y < 0.0) c = mix(c, vec3(0.2, 0.18, 0.16), clamp(-d.y * 4.0, 0.0, 1.0));
+    return c;
+}
+)GLSL";
 
 // A flat sky: dark, faintly blue, so the room's light is the light.
 const char* const kDarkSky = R"GLSL(
@@ -80,18 +98,51 @@ int main(int argc, char** argv) {
     if (!vulkan) return 1;
     iron::Renderer& renderer = *rendererPtr;
     renderer.setViewport(app.window().width(), app.window().height());
-    vulkan->setExposure(1.0f);
-    renderer.setSkybox(vulkan->bakeSky(kDarkSky, 64));
+    vulkan->setExposure(sceneHas("sponza") ? 1.5f : 1.0f);
+    const bool sponza = sceneHas("sponza");
+    renderer.setSkybox(vulkan->bakeSky(sponza ? kDaySky : kDarkSky, sponza ? 256 : 64));
     renderer.setShadowBounds({0.0f, 2.75f, 0.0f}, 6.0f);
     if (!renderer.rayTracing()) iron::Log::warn("radiance: no hardware ray tracing; GI is off");
 
     // --- The scene ---
-    const std::vector<Block> blocks = cornellBox();
+    const std::vector<Block> blocks = sponza ? std::vector<Block>{} : cornellBox();
     struct Drawn {
         iron::MeshHandle mesh;
         iron::Material   material;
     };
     std::vector<Drawn> drawn;
+    iron::Aabb bounds{{-3.0f, -0.3f, -3.0f}, {3.0f, 5.8f, 3.6f}};
+    if (sponza) {
+        const char* path = std::getenv("IRON_SPONZA");
+        const auto model = iron::loadGltfStaticModel(path ? path : "");
+        if (!model) {
+            iron::Log::error("radiance: set IRON_SPONZA to Crytek Sponza's Sponza.gltf");
+            return 1;
+        }
+        std::map<std::string, iron::TextureHandle> textures;
+        const auto texture = [&](const std::string& p, bool srgb) {
+            if (p.empty()) return iron::kInvalidHandle;
+            const std::string key = p + (srgb ? "|s" : "|l");
+            const auto found = textures.find(key);
+            return found != textures.end() ? found->second : (textures[key] = renderer.loadTexture(p, srgb));
+        };
+        for (const iron::GltfSection& s : model->sections) {
+            iron::Material m;
+            m.texture = texture(s.materialPaths.albedo, true);
+            m.normalMap = texture(s.materialPaths.normal, false);
+            m.metallicRoughnessMap = texture(s.materialPaths.metalRoughness, false);
+            m.metallic = s.metallicFactor;
+            m.roughness = s.roughnessFactor;
+            m.baseColorFactor = s.baseColorFactor;
+            m.normalScale = s.normalScale;
+            m.alphaCutoff = s.alphaCutoff;
+            m.heightScale = 0.0f;
+            drawn.push_back({renderer.createMesh(s.mesh), m});
+        }
+        bounds = model->bounds;
+        iron::Log::info("radiance: Sponza, %zu sections, %.1f x %.1f x %.1f m", model->sections.size(),
+                        bounds.max.x - bounds.min.x, bounds.max.y - bounds.min.y, bounds.max.z - bounds.min.z);
+    }
     for (const Block& b : blocks) {
         iron::MeshData data;
         iron::appendBox(data, b.center, b.size);
@@ -106,11 +157,11 @@ int main(int argc, char** argv) {
     }
     const iron::ShaderHandle lit = renderer.createStandardLitShader();
     iron::GiVolume gi;
-    // Probes over the whole box, walls and all: those inside them move out.
-    gi.min = {-3.0f, -0.3f, -3.0f};
-    gi.max = {3.0f, 5.8f, 3.6f};
-    gi.spacing = 0.6f;
-    gi.raysPerProbe = 192;
+    // Probes over the whole scene, walls and all: those inside them move out.
+    gi.min = bounds.min;
+    gi.max = bounds.max;
+    gi.spacing = sponza ? 1.0f : 0.6f;
+    gi.raysPerProbe = sponza ? 128 : 192;
     renderer.setGiVolume(gi);
     int giView = sceneHas("gioff") ? 1 : sceneHas("gionly") ? 2 : 0;
     renderer.setGiView(static_cast<iron::GiView>(giView));
@@ -126,8 +177,9 @@ int main(int argc, char** argv) {
     panel.spotSoftness = 0.6f;
 
     // --- The camera: in front of the open side, looking in ---
-    Vec3 eye{0.0f, 2.75f, 10.5f};
-    float yaw = 0.0f, pitch = 0.0f;
+    Vec3 eye = sponza ? Vec3{9.5f, 1.7f, -0.6f} : Vec3{0.0f, 2.75f, 10.5f};
+    float yaw = sponza ? 1.62f : 0.0f, pitch = sponza ? 0.12f : 0.0f;
+    if (sponza) renderer.setShadowBounds((bounds.min + bounds.max) * 0.5f, 22.0f);
     const capture::FrameFn frame = [&](float seconds, float dt, int width, int height) {
         (void)seconds;
         if (app.window().consumeResized()) renderer.setViewport(width, height);
@@ -154,12 +206,13 @@ int main(int argc, char** argv) {
         const float aspect = static_cast<float>(width) / static_cast<float>(std::max(height, 1));
         const Mat4 projection = iron::perspective(40.0f * 3.14159265f / 180.0f, aspect, 0.05f, 200.0f);
 
-        iron::DirectionalLight sun;  // None: the panel lights the room.
-        sun.direction = {0.0f, -1.0f, 0.0f};
-        sun.color = {0.0f, 0.0f, 0.0f};
+        iron::DirectionalLight sun;  // In the Cornell box, none: the panel lights the room.
+        sun.direction = sponza ? iron::normalize(Vec3{-0.3f, -0.94f, -0.12f}) : Vec3{0.0f, -1.0f, 0.0f};
+        sun.color = sponza ? Vec3{5.5f, 5.0f, 4.3f} : Vec3{0.0f, 0.0f, 0.0f};
         sun.ambient = 0.0f;
         const iron::PointLight lights[] = {panel};
-        renderer.beginFrame({0.0f, 0.0f, 0.0f}, sun, lights, iron::Fog{}, view, projection);
+        renderer.beginFrame({0.0f, 0.0f, 0.0f}, sun, std::span<const iron::PointLight>(lights, sponza ? 0 : 1),
+                            iron::Fog{}, view, projection);
         for (std::size_t i = 0; i < drawn.size(); ++i) {
             iron::DrawCall call;
             call.mesh = drawn[i].mesh;

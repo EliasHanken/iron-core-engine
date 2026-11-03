@@ -1182,8 +1182,9 @@ int main(int argc, char** argv) {
             iron::InstanceGroupDesc d;
             d.lods = {cardMesh};
             d.shader = renderer.createInstancedShader(foundry::environment::impostorVertex(views, w, h),
-                                                      foundry::environment::cutoutFragment());
+                                                      iron::standardLitFragSource());
             d.material.texture = renderer.loadTexture(base + ".png", true);
+            d.material.alphaCutoff = 0.5f;  // Masked.
             d.material.roughness = 1.0f;
             d.material.metallic = 0.0f;
             d.material.heightScale = 0.0f;
@@ -1194,10 +1195,9 @@ int main(int argc, char** argv) {
             renderer.setInstances(group, firs[static_cast<std::size_t>(v)]);
             trees += firs[static_cast<std::size_t>(v)].size();
         }
-        // Poly Haven's grass_medium_01 (its dry colour, cut by its alpha), five of its clumps.
+        // Poly Haven's grass_medium_01 (its dry colour, masked by its alpha), five of its clumps.
         const iron::ShaderHandle grassShader =
-            renderer.createInstancedShader(foundry::environment::swayingVertex(0.5f),
-                                          foundry::environment::cutoutFragment());
+            renderer.createInstancedShader(foundry::environment::swayingVertex(0.5f), iron::standardLitFragSource());
         std::vector<const foundry::InstancedModel*> clumps;
         std::vector<Vec3> centres;
         for (const char* node : {"mid_a", "tall_a", "large_a", "small_a", "mid_b"}) {

@@ -26,7 +26,10 @@ struct Material {
     float ao          = 1.0f;
     float normalScale = 1.0f;                            // glTF normalTexture.scale
     float heightScale = 0.05f;                           // M50a — POM depth scale; 0 = POM off
-    bool excludeFromProbeCapture = false;  // M49: skip this draw when baking reflection probes (chrome objects / probe markers)
+    bool excludeFromProbeCapture = false;
+    // Masked, as Unreal says: where the albedo texture's alpha is under this, the
+    // surface isn't there (leaves, chain links, a fence). 0 is opaque.
+    float alphaCutoff = 0.0f;  // M49: skip this draw when baking reflection probes (chrome objects / probe markers)
 };
 
 } // namespace iron

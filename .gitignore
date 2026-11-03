@@ -47,6 +47,8 @@ games/19-kindle/assets/audio-hq/
 .wrangler/
 .dev.vars
 games/20-foundry/assets/audio-hq/
+# Test scenes under licences we can't redistribute (Crytek Sponza), kept local.
+games/21-radiance/assets-local/
 
 # Python bytecode from the content tools
 __pycache__/

@@ -127,6 +127,7 @@ public:
         m.baseColorFactor = s.baseColorFactor;
         m.emissive = s.emissiveFactor;
         m.normalScale = s.normalScale;
+        m.alphaCutoff = s.alphaCutoff;
         m.heightScale = 0.0f;
         return m;
     }
