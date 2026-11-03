@@ -339,6 +339,8 @@ public:
     virtual void setGiView(GiView view) { (void)view; }
     // A wipe across the screen: GI on left of `x` (0..1), off right of it; < 0 none.
     virtual void setGiWipe(float x) { (void)x; }
+    // Frees a cubemap (a sky no longer needed) once no frame still uses it.
+    virtual void destroyCubemap(CubemapHandle cube) { (void)cube; }
 
     // --- Instance groups: GPU-driven drawing (see InstanceGroup.h) ---
     // A shader for instance groups: its vertex stage reads each instance's transform

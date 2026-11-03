@@ -4,6 +4,7 @@
 //
 //   WASD / right-drag  fly       F7  GI on / off / bounced light only
 //   V             the wipe: GI on left of the mouse, off right (V again to drop it)
+//   [ ]           (sponza, day) the time of day, earlier or later; T plays a timelapse
 //   Esc           quit
 //
 // --scene picks what's shown (captures: --shot <seconds> <file>):
@@ -15,6 +16,8 @@
 //   gioff / gionly  start with GI off, or showing only the bounced light
 //   floor     look down at the courtyard floor's shadow edge (with sponza)
 //   wipe      start with the wipe at the middle, sweeping slowly back and forth
+//   timelapse (with sponza) the sun crossing the sky, morning to dusk, in 20 s
+//   sunset    (with sponza) start at sunset
 //   night     (with sponza) no sun: two glowing panels and a lantern circling the
 //             courtyard light it, all through GI
 
@@ -46,18 +49,38 @@ using iron::Vec3;
 
 namespace {
 
-// A clear day: deep blue overhead, paler to the horizon, the sun's disc.
+// The sky by its sun (skyParams.xyz, toward it): deep blue at noon, gold along
+// the horizon round the sun as it sets, dark blue once it's gone.
 const char* const kDaySky = R"GLSL(
 vec3 skyColor(vec3 d) {
-    vec3 sun = normalize(vec3(0.3, 0.94, 0.12));
+    vec3 sun = normalize(skyParams.xyz);
+    float e = sun.y;
+    float day = smoothstep(-0.12, 0.3, e);
+    float golden = exp(-pow((e - 0.04) / 0.14, 2.0));
     float h = max(d.y, 0.0);
-    vec3 c = mix(vec3(0.55, 0.68, 0.85), vec3(0.16, 0.32, 0.65), pow(h, 0.45));
+    vec3 zenith = mix(vec3(0.004, 0.007, 0.018), vec3(0.16, 0.32, 0.65), day);
+    vec3 horizon = mix(vec3(0.015, 0.02, 0.045), vec3(0.55, 0.68, 0.85), day);
+    vec3 c = mix(horizon, zenith, pow(h, 0.45));
+    vec2 flatD = normalize(d.xz + vec2(1e-4));
+    vec2 flatS = normalize(sun.xz + vec2(1e-4));
+    float toward = pow(max(dot(flatD, flatS), 0.0), 3.0);
+    c += vec3(1.0, 0.42, 0.12) * golden * toward * pow(1.0 - h, 4.0) * 1.4;   // The sunset band.
+    c = mix(c, c * vec3(1.0, 0.75, 0.6), golden * 0.5);                       // Warmer all round.
     float s = max(dot(d, sun), 0.0);
-    c += vec3(1.0, 0.9, 0.75) * pow(s, 400.0) * 40.0 + vec3(1.0, 0.85, 0.6) * pow(s, 8.0) * 0.25;
-    if (d.y < 0.0) c = mix(c, vec3(0.2, 0.18, 0.16), clamp(-d.y * 4.0, 0.0, 1.0));
+    float up = smoothstep(-0.04, 0.02, e);
+    vec3 sunTint = mix(vec3(1.0, 0.45, 0.15), vec3(1.0, 0.92, 0.8), smoothstep(0.0, 0.35, e));
+    c += sunTint * (pow(s, 400.0) * 40.0 + pow(s, 8.0) * 0.25 * day) * up;
+    if (d.y < 0.0) c = mix(c, vec3(0.2, 0.18, 0.16) * (0.1 + 0.9 * day), clamp(-d.y * 4.0, 0.0, 1.0));
     return c;
 }
 )GLSL";
+
+// Where the sun is at time `t` of the day (0 dawn, 0.5 noon, 1 dusk): toward it.
+Vec3 sunAt(float t) {
+    const float a = (t - 0.5f) * 3.14159265f;  // -90 to 90 degrees from noon.
+    const float elevation = std::cos(a) * 1.25f - 0.12f;
+    return iron::normalize(Vec3{std::sin(a) * 0.95f, elevation, 0.25f + 0.2f * std::cos(a)});
+}
 
 // A flat sky: dark, faintly blue, so the room's light is the light.
 const char* const kDarkSky = R"GLSL(
@@ -119,9 +142,20 @@ int main(int argc, char** argv) {
     }
     const bool sponza = sponzaModel.has_value();
     const bool night = sponza && sceneHas("night");
-    renderer.setSkybox(vulkan->bakeSky(sponza && !night ? kDaySky : kDarkSky, sponza ? 256 : 64));
+    // The time of day (Sponza by day): the sky is baked again as the sun moves.
+    float dayTime = sceneHas("sunset") ? 0.93f : sceneHas("timelapse") ? 0.05f : 0.42f;
+    bool timelapse = sceneHas("timelapse");
+    const bool daylight = sponza && !night;
+    iron::CubemapHandle sky = vulkan->bakeSky(daylight ? kDaySky : kDarkSky, sponza ? 128 : 64,
+                                              iron::Vec4{sunAt(dayTime).x, sunAt(dayTime).y, sunAt(dayTime).z, 0.0f});
+    renderer.setSkybox(sky);
+    Vec3 bakedSun = sunAt(dayTime);
     renderer.setShadowBounds({0.0f, 2.75f, 0.0f}, 6.0f);
-    if (sponza) vulkan->setExposure(night ? 2.2f : 1.5f);
+    // Eyes adapt: noon, sunset and night all read; the compensation on top.
+    if (sponza) {
+        vulkan->setAutoExposure(true, -3.0f, night ? 3.0f : 5.0f);
+        vulkan->setExposure(night ? 0.4f : 1.1f);  // Night stays night.
+    }
     renderer.setAntiAliasing(iron::AntiAliasing::Temporal);
     if (!renderer.rayTracing()) iron::Log::warn("radiance: no hardware ray tracing; GI is off");
 
@@ -217,6 +251,9 @@ int main(int argc, char** argv) {
                 renderer.setGiView(static_cast<iron::GiView>(giView));
             }
             if (input.keyPressed(GLFW_KEY_V)) wiping = !wiping;
+            if (input.keyPressed(GLFW_KEY_T)) timelapse = !timelapse;
+            if (input.keyDown(GLFW_KEY_LEFT_BRACKET)) dayTime -= dt * 0.08f;
+            if (input.keyDown(GLFW_KEY_RIGHT_BRACKET)) dayTime += dt * 0.08f;
             if (input.mouseButtonDown(GLFW_MOUSE_BUTTON_RIGHT)) {
                 yaw -= static_cast<float>(input.mouseDeltaX()) * 0.003f;
                 pitch = std::clamp(pitch - static_cast<float>(input.mouseDeltaY()) * 0.003f, -1.4f, 1.4f);
@@ -228,6 +265,19 @@ int main(int argc, char** argv) {
             if (input.keyDown(GLFW_KEY_S)) eye = eye - fwd * speed;
             if (input.keyDown(GLFW_KEY_D)) eye = eye + right * speed;
             if (input.keyDown(GLFW_KEY_A)) eye = eye - right * speed;
+        }
+        // The day goes on; the sky follows the sun when it's moved a little.
+        if (timelapse) dayTime += dt * 0.05f;
+        if (dayTime > 1.0f) dayTime -= 1.0f;
+        if (dayTime < 0.0f) dayTime += 1.0f;
+        const Vec3 towardSun = sunAt(dayTime);
+        if (daylight && iron::dot(towardSun, bakedSun) < 0.99995f) {
+            const iron::CubemapHandle next =
+                vulkan->bakeSky(kDaySky, 128, iron::Vec4{towardSun.x, towardSun.y, towardSun.z, 0.0f});
+            renderer.setSkybox(next);
+            renderer.destroyCubemap(sky);
+            sky = next;
+            bakedSun = towardSun;
         }
         // The wipe follows the mouse (or sweeps, in a capture).
         if (wiping) {
@@ -243,8 +293,15 @@ int main(int argc, char** argv) {
         const Mat4 projection = iron::perspective(40.0f * 3.14159265f / 180.0f, aspect, 0.05f, 200.0f);
 
         iron::DirectionalLight sun;  // In the Cornell box, none: the panel lights the room.
-        sun.direction = sponza ? iron::normalize(Vec3{-0.3f, -0.94f, -0.12f}) : Vec3{0.0f, -1.0f, 0.0f};
-        sun.color = sponza && !night ? Vec3{5.5f, 5.0f, 4.3f} : Vec3{0.0f, 0.0f, 0.0f};
+        sun.direction = sponza ? towardSun * -1.0f : Vec3{0.0f, -1.0f, 0.0f};
+        {
+            // Warm and weak low down, white high up, gone below the horizon.
+            const float e = towardSun.y;
+            const float up = std::clamp((e + 0.03f) / 0.12f, 0.0f, 1.0f);
+            const float high = std::clamp(e / 0.4f, 0.0f, 1.0f);
+            const Vec3 tint = Vec3{1.0f, 0.5f, 0.22f} + (Vec3{1.0f, 0.93f, 0.8f} - Vec3{1.0f, 0.5f, 0.22f}) * high;
+            sun.color = daylight ? tint * (5.5f * up * (0.45f + 0.55f * high)) : Vec3{0.0f, 0.0f, 0.0f};
+        }
         sun.ambient = 0.0f;
         // At night, a lantern circling the courtyard.
         iron::PointLight lantern;

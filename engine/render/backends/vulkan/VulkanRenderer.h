@@ -235,6 +235,16 @@ public:
     // Linear exposure multiply applied before the ACES tonemap in the composite
     // step (M44). Default 1.0. Auto-exposure is deferred.
     void setExposure(float exposure) { pendingExposure_ = exposure; }
+    // Auto-exposure (eye adaptation): the scene's brightness is measured each
+    // frame and the exposure eases toward what makes it read as mid-grey, over
+    // about a second; setExposure then scales on top (exposure compensation).
+    // `minEv`/`maxEv` bound how far it adapts (log2 of the exposure multiply).
+    void setAutoExposure(bool on, float minEv = -4.0f, float maxEv = 6.0f) {
+        autoExposure_ = on;
+        autoMinEv_ = minEv;
+        autoMaxEv_ = maxEv;
+    }
+    float currentAutoExposure() const { return autoExposure_ ? autoMultiply_ : 1.0f; }
 
     // M47 bloom knobs (VulkanRenderer-only, mirror setExposure). Threshold/knee
     // gate the bright-pass; intensity scales the bloom added before ACES;
@@ -254,7 +264,9 @@ public:
 
     // Bakes `skyGlsl`, which defines `vec3 skyColor(vec3 dir);`, into an HDR
     // cubemap usable with setSkybox. Blocks until the GPU finishes.
-    CubemapHandle bakeSky(const std::string& skyGlsl, int faceSize);
+    CubemapHandle bakeSky(const std::string& skyGlsl, int faceSize, Vec4 params = {});
+    // Frees a cubemap once no frame in flight can still be using it.
+    void destroyCubemap(CubemapHandle cube) override { retiredCubes_.push_back({cube, frameNumber_}); }
 
     // Applies a film camera to the composite. See CinematicSettings.
     void setCinematic(const CinematicSettings& settings) { cinematic_ = settings; }
@@ -488,6 +500,20 @@ private:
     // Used by submit() for Blinn-Phong specular highlights in the lit shader.
     Vec3 pendingCameraPos_ = {0.0f, 0.0f, 0.0f};
     float shaderTime_ = 0.0f;  // setShaderTime: cameraPos.w in the lit UBO.
+    // Auto-exposure: the measure, one readable result per frame in flight.
+    bool  autoExposure_ = false;
+    float autoMinEv_ = -4.0f, autoMaxEv_ = 6.0f;
+    float autoMultiply_ = 1.0f;
+    double autoLastTime_ = 0.0;
+    VkComputeStage exposureMeasure_;
+    std::array<VkBuffer, VkFrameRing::kFramesInFlight>      exposureOut_{};
+    std::array<VmaAllocation, VkFrameRing::kFramesInFlight> exposureAlloc_{};
+    std::array<void*, VkFrameRing::kFramesInFlight>         exposureMapped_{};
+    std::array<bool, VkFrameRing::kFramesInFlight>          exposureWritten_{};
+    // Cubemaps to free once the frames that may read them are done.
+    struct RetiredCube { CubemapHandle cube; std::uint64_t frame; };
+    std::vector<RetiredCube> retiredCubes_;
+    std::uint64_t frameNumber_ = 0;
 
     // M14 — directional-light shadow state.
     Vec3  pendingShadowCenter_  = {0.0f, 0.0f, 0.0f};

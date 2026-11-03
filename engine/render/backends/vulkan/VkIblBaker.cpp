@@ -351,6 +351,11 @@ bool VkIblBaker::init(VkContext& ctx) {
 }
 
 void VkIblBaker::destroy(VkContext& ctx) {
+    for (auto& [source, sp] : skyPipelines_) {
+        sp.pipeline.destroy(ctx);
+        vkDestroyDescriptorSetLayout(ctx.device(), sp.setLayout, nullptr);
+    }
+    skyPipelines_.clear();
     brdfPipeline_.destroy(ctx);
     if (brdfSetLayout_)  { vkDestroyDescriptorSetLayout(ctx.device(), brdfSetLayout_, nullptr); brdfSetLayout_=VK_NULL_HANDLE; }
     if (brdfLutSampler_) { vkDestroySampler(ctx.device(), brdfLutSampler_, nullptr); brdfLutSampler_=VK_NULL_HANDLE; }
@@ -599,6 +604,7 @@ std::string composeSkyBakeSource(const std::string& skyGlsl) {
     return std::string(R"(#version 450
 layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
 layout(binding = 0, rgba16f) uniform writeonly image2DArray uOut;
+layout(push_constant) uniform SkyPush { vec4 skyParams; };
 )") + skyGlsl + R"(
 // Cube-face direction, matching ProceduralSky / Ibl.h face convention.
 vec3 faceDir(int face, float u, float v) {
@@ -624,34 +630,38 @@ void main() {
 }
 
 CubemapHandle VkIblBaker::bakeSky(VkContext& ctx, VkCubemapStore& store,
-                                  const std::string& skyGlsl, int faceSize) {
-    const auto spirv = compileGlsl(VK_SHADER_STAGE_COMPUTE_BIT, composeSkyBakeSource(skyGlsl));
-    if (spirv.empty()) {
-        Log::error("VkIblBaker: sky shader compile failed");
-        return kInvalidHandle;
+                                  const std::string& skyGlsl, int faceSize, Vec4 params) {
+    // Compiled once per source.
+    auto cached = skyPipelines_.find(skyGlsl);
+    if (cached == skyPipelines_.end()) {
+        const auto spirv = compileGlsl(VK_SHADER_STAGE_COMPUTE_BIT, composeSkyBakeSource(skyGlsl));
+        if (spirv.empty()) {
+            Log::error("VkIblBaker: sky shader compile failed");
+            return kInvalidHandle;
+        }
+        SkyPipeline sp;
+        VkDescriptorSetLayoutBinding binding{};
+        binding.binding         = 0;
+        binding.descriptorType  = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+        binding.descriptorCount = 1;
+        binding.stageFlags      = VK_SHADER_STAGE_COMPUTE_BIT;
+        VkDescriptorSetLayoutCreateInfo layoutInfo{};
+        layoutInfo.sType        = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+        layoutInfo.bindingCount = 1;
+        layoutInfo.pBindings    = &binding;
+        VK_CHECK(vkCreateDescriptorSetLayout(ctx.device(), &layoutInfo, nullptr, &sp.setLayout));
+        if (!sp.pipeline.init(ctx, spirv, sp.setLayout, sizeof(float) * 4)) {
+            vkDestroyDescriptorSetLayout(ctx.device(), sp.setLayout, nullptr);
+            return kInvalidHandle;
+        }
+        cached = skyPipelines_.emplace(skyGlsl, std::move(sp)).first;
     }
+    VkDescriptorSetLayout setLayout = cached->second.setLayout;
+    VkComputePipeline& pipeline = cached->second.pipeline;
 
     const CubemapHandle handle = store.createHdr(ctx, faceSize, /*mipLevels=*/1);
     if (handle == kInvalidHandle) return kInvalidHandle;
     const VkCubemapResource& cube = store.get(handle);
-
-    VkDescriptorSetLayoutBinding binding{};
-    binding.binding         = 0;
-    binding.descriptorType  = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
-    binding.descriptorCount = 1;
-    binding.stageFlags      = VK_SHADER_STAGE_COMPUTE_BIT;
-    VkDescriptorSetLayoutCreateInfo layoutInfo{};
-    layoutInfo.sType        = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-    layoutInfo.bindingCount = 1;
-    layoutInfo.pBindings    = &binding;
-    VkDescriptorSetLayout setLayout = VK_NULL_HANDLE;
-    VK_CHECK(vkCreateDescriptorSetLayout(ctx.device(), &layoutInfo, nullptr, &setLayout));
-
-    VkComputePipeline pipeline;
-    if (!pipeline.init(ctx, spirv, setLayout)) {
-        vkDestroyDescriptorSetLayout(ctx.device(), setLayout, nullptr);
-        return kInvalidHandle;
-    }
 
     VkDescriptorPoolSize poolSize{VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1};
     VkDescriptorPoolCreateInfo poolInfo{};
@@ -723,6 +733,8 @@ CubemapHandle VkIblBaker::bakeSky(VkContext& ctx, VkCubemapStore& store,
     vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline.pipeline());
     vkCmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline.pipelineLayout(), 0, 1,
                             &set, 0, nullptr);
+    const float push[4] = {params.x, params.y, params.z, params.w};
+    vkCmdPushConstants(cb, pipeline.pipelineLayout(), VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(push), push);
     const std::uint32_t groups = (static_cast<std::uint32_t>(faceSize) + 7u) / 8u;
     vkCmdDispatch(cb, groups, groups, 6);
 
@@ -740,8 +752,6 @@ CubemapHandle VkIblBaker::bakeSky(VkContext& ctx, VkCubemapStore& store,
 
     vkDestroyCommandPool(ctx.device(), commandPool, nullptr);
     vkDestroyDescriptorPool(ctx.device(), descriptorPool, nullptr);
-    pipeline.destroy(ctx);
-    vkDestroyDescriptorSetLayout(ctx.device(), setLayout, nullptr);
     return handle;
 }
 

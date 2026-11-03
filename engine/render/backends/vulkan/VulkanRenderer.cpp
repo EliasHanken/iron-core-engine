@@ -14,11 +14,49 @@
 
 #include <vulkan/vulkan.h>
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 
 namespace iron {
 
 namespace {
+const char* const kExposureMeasureGlsl = R"GLSL(#version 450
+// The scene's mean log2 luminance, over a 64 x 64 grid, the middle counting most.
+layout(local_size_x = 16, local_size_y = 16) in;
+layout(set = 0, binding = 0) uniform sampler2D scene;
+layout(std430, set = 0, binding = 1) writeonly buffer Out { float meanLog; float weight; } result;
+shared float sums[256];
+shared float weights[256];
+void main() {
+    uint i = gl_LocalInvocationIndex;
+    float s = 0.0, w = 0.0;
+    for (int y = 0; y < 4; ++y) {
+        for (int x = 0; x < 4; ++x) {
+            vec2 uv = (vec2(gl_LocalInvocationID.xy * 4u + uvec2(x, y)) + 0.5) / 64.0;
+            vec3 c = textureLod(scene, uv, 0.0).rgb;
+            float l = dot(c, vec3(0.2126, 0.7152, 0.0722));
+            vec2 d = uv - 0.5;
+            float centre = exp(-dot(d, d) * 6.0);
+            s += log2(max(l, 1e-4)) * centre;
+            w += centre;
+        }
+    }
+    sums[i] = s;
+    weights[i] = w;
+    barrier();
+    for (uint stride = 128u; stride > 0u; stride >>= 1u) {
+        if (i < stride) {
+            sums[i] += sums[i + stride];
+            weights[i] += weights[i + stride];
+        }
+        barrier();
+    }
+    if (i == 0u) {
+        result.meanLog = sums[0] / weights[0];
+        result.weight = weights[0];
+    }
+}
+)GLSL";
 // traceDebugRay's one thread: where a ray first meets the ray-traced scene.
 const char* const kRtDebugGlsl = R"GLSL(#version 460
 #extension GL_EXT_ray_query : require
@@ -70,6 +108,10 @@ VulkanRenderer::~VulkanRenderer() {
         ddgi_.destroy(context_);
         std::fprintf(stderr, "[exit] ray tracing gone\n");
         rtDebugStage_.destroy(context_);
+        exposureMeasure_.destroy(context_);
+        for (std::uint32_t i = 0; i < VkFrameRing::kFramesInFlight; ++i) {
+            if (exposureOut_[i]) vmaDestroyBuffer(context_.allocator(), exposureOut_[i], exposureAlloc_[i]);
+        }
         for (std::uint32_t i = 0; i < VkFrameRing::kFramesInFlight; ++i) {
             if (rtDebugOut_[i]) vmaDestroyBuffer(context_.allocator(), rtDebugOut_[i], rtDebugAlloc_[i]);
         }
@@ -337,6 +379,9 @@ void VulkanRenderer::setSkybox(CubemapHandle sky) {
     // submit inside bakeIrradiance; safe here — the device is initialized by
     // the time games set a skybox).
     if (sky != lastBakedSkybox_) {
+        // The last sky's lighting goes when the frames still reading it are done.
+        if (pendingIrradiance_ != kInvalidHandle) retiredCubes_.push_back({pendingIrradiance_, frameNumber_});
+        if (pendingPrefiltered_ != kInvalidHandle) retiredCubes_.push_back({pendingPrefiltered_, frameNumber_});
         pendingIrradiance_ = cubemaps_.has(sky)
             ? iblBaker_.bakeIrradiance(context_, cubemaps_, sky, /*faceSize=*/32)
             : kInvalidHandle;
@@ -1369,6 +1414,12 @@ void VulkanRenderer::recordMaskDraw(VkCommandBuffer cb, const DrawCall& call) {
 }
 
 void VulkanRenderer::endFrame() {
+    ++frameNumber_;
+    std::erase_if(retiredCubes_, [&](const RetiredCube& r) {
+        if (frameNumber_ < r.frame + VkFrameRing::kFramesInFlight + 1) return false;
+        cubemaps_.destroy(context_, r.cube);
+        return true;
+    });
     if (skipFrame_) {
         frames_.advance();
         return;
@@ -1796,6 +1847,52 @@ void VulkanRenderer::endFrame() {
                                          pendingBloomKnee_, pendingBloomScatter_);
     profiler_.end(cb);
 
+    // --- Auto-exposure: last time this slot ran it measured the scene; adapt to
+    // that, and measure this frame for next time. ---
+    if (autoExposure_ && postProcess_.sceneColorView()) {
+        const std::uint32_t slot = frames_.currentIndex();
+        if (!exposureOut_[slot]) {
+            exposureMeasure_.init(context_, kExposureMeasureGlsl,
+                                  {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER});
+            for (std::uint32_t i = 0; i < VkFrameRing::kFramesInFlight; ++i) {
+                VkBufferCreateInfo info{VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
+                info.size = 16;
+                info.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
+                VmaAllocationCreateInfo alloc{};
+                alloc.usage = VMA_MEMORY_USAGE_AUTO;
+                alloc.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_RANDOM_BIT | VMA_ALLOCATION_CREATE_MAPPED_BIT;
+                VmaAllocationInfo out{};
+                VK_CHECK(vmaCreateBuffer(context_.allocator(), &info, &alloc, &exposureOut_[i], &exposureAlloc_[i], &out));
+                exposureMapped_[i] = out.pMappedData;
+            }
+        }
+        const double now = std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count();
+        const float dt = autoLastTime_ > 0.0 ? static_cast<float>(std::min(now - autoLastTime_, 0.25)) : 0.0f;
+        autoLastTime_ = now;
+        if (exposureWritten_[slot]) {
+            vmaInvalidateAllocation(context_.allocator(), exposureAlloc_[slot], 0, VK_WHOLE_SIZE);
+            // Measured under the exposure of the time: what it was before any multiply.
+            const float meanLog = *static_cast<const float*>(exposureMapped_[slot]);
+            // Mid-grey (0.18) after the multiply; a little lower in the dark, as eyes do.
+            const float targetEv = std::clamp(std::log2(0.18f) - meanLog - 0.25f * std::max(-meanLog - 2.0f, 0.0f),
+                                              autoMinEv_, autoMaxEv_);
+            const float currentEv = std::log2(autoMultiply_);
+            // Quicker into the light than out of it.
+            const float rate = targetEv < currentEv ? 2.2f : 1.2f;
+            autoMultiply_ = std::exp2(currentEv + (targetEv - currentEv) * (1.0f - std::exp(-dt * rate)));
+        }
+        exposureMeasure_.dispatch(*this, cb,
+                                  {VkComputeResource::sampled(postProcess_.sceneColorView(), postProcess_.viewportSampler()),
+                                   VkComputeResource::bufferRange(exposureOut_[slot])},
+                                  nullptr, 1);
+        VkMemoryBarrier toHost{VK_STRUCTURE_TYPE_MEMORY_BARRIER};
+        toHost.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+        toHost.dstAccessMask = VK_ACCESS_HOST_READ_BIT;
+        vkCmdPipelineBarrier(cb, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_HOST_BIT, 0, 1, &toHost, 0,
+                             nullptr, 0, nullptr);
+        exposureWritten_[slot] = true;
+    }
+
     // --- M48: SSAO pre-pass. Also records its own render passes, so it must run
     // OUTSIDE the viewport pass. Update the per-frame UBO (projection + kernel +
     // knobs) first, then record the SSAO + blur passes into ssaoBlurView_. ---
@@ -1830,8 +1927,8 @@ void VulkanRenderer::endFrame() {
 
             const std::vector<PostPass> passes = planPostChain(activeKindsThisFrame);
             postProcess_.runChain(cb, passes, effects_, postProcess_.viewportExtent(),
-                                  pendingExposure_, pendingBloomIntensity_,
-                                  pendingSsaoStrength_);
+                                  pendingExposure_ * (autoExposure_ ? autoMultiply_ : 1.0f),
+                                  pendingBloomIntensity_, pendingSsaoStrength_);
         }
 
         // Debug-line + HUD overlays now render into the viewport target (they
@@ -2068,8 +2165,8 @@ void VulkanRenderer::destroyCaptureBuffer() {
     captureBytes_  = 0;
 }
 
-CubemapHandle VulkanRenderer::bakeSky(const std::string& skyGlsl, int faceSize) {
-    return iblBaker_.bakeSky(context_, cubemaps_, skyGlsl, faceSize);
+CubemapHandle VulkanRenderer::bakeSky(const std::string& skyGlsl, int faceSize, Vec4 params) {
+    return iblBaker_.bakeSky(context_, cubemaps_, skyGlsl, faceSize, params);
 }
 
 void VulkanRenderer::setPointShadow(VkImageView map, Vec3 center, float strength) {
