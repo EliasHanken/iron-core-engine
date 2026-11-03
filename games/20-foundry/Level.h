@@ -156,6 +156,9 @@ inline void crateStack(Level& level, Vec3 base, int wide, int high) {
 // ladder down on the hole's -z side, its room running back under +z. The hatch
 // and ladder are an interaction (Interaction.h), modelled with their frame.
 constexpr Vec3 kBunkerHatch{-22.0f, 0.0f, 4.2f};
+// A rope hanging from the hall's roof truss beside the catwalk, to climb up onto
+// it through a gap in its rail (an interaction, Interaction.h); where it meets the floor.
+constexpr Vec3 kRope{-11.1f, 0.0f, -40.0f};
 constexpr float kBunkerFloor = -3.2f;
 
 // A slab with a square hole through it at `hole` (half-width `half`): four boxes.
@@ -422,9 +425,13 @@ inline Level buildLevel() {
 
     // A catwalk down the left side, with a thin rail: a test for edge quality.
     box(level, {-hw + kWall * 0.5f, 5.0f, -58.0f}, {-11.5f, 5.2f, -24.0f}, Look::Steel);
-    box(level, {-11.6f, 6.05f, -58.0f}, {-11.5f, 6.1f, -24.0f}, Look::Steel);
-    box(level, {-11.6f, 5.55f, -58.0f}, {-11.5f, 5.58f, -24.0f}, Look::Steel);
+    // Its rail, with a gap where the rope comes up.
+    for (auto [z0, z1] : {std::pair{-58.0f, kRope.z - 1.5f}, std::pair{kRope.z + 1.5f, -24.0f}}) {
+        box(level, {-11.6f, 6.05f, z0}, {-11.5f, 6.1f, z1}, Look::Steel);
+        box(level, {-11.6f, 5.55f, z0}, {-11.5f, 5.58f, z1}, Look::Steel);
+    }
     for (float z = -58.0f; z <= -24.0f; z += 1.5f) {
+        if (std::abs(z - kRope.z) < 1.4f) continue;
         box(level, {-11.6f, 5.2f, z - 0.025f}, {-11.5f, 6.1f, z + 0.025f}, Look::Steel);
     }
     for (float z = -56.0f; z <= -26.0f; z += 6.0f) {
