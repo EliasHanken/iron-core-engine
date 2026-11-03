@@ -39,6 +39,7 @@
 //            opening, with stage2..stage7 from that stage on (2 the schematics,
 //            3 the breach, 4 the hall, 5 the charge, 6 the escape, 7 the outro)
 //   duel     aim at the nearest soldier in view and fire bursts
+//   pausemenu  pause after a second, to show the menu
 
 #include "common/CaptureLoop.h"
 #include "common/TrackedText.h"
@@ -51,6 +52,7 @@
 #include "Arsenal.h"
 #include "Interaction.h"
 #include "Mission.h"
+#include "Settings.h"
 #include "Soldier.h"
 #include "Squad.h"
 #include "Sound.h"
@@ -452,6 +454,9 @@ public:
         std::string captionBig, captionSmall, captionHint;
         float captionAlpha = 0.0f;
         bool  story = false;       // Title or cutscene: no crosshair, no ammo.
+        std::array<std::string, 6> menu;  // The pause menu's rows.
+        int   menuItem = 0;
+        float menuTop = 0.0f;
         bool  paused = false;
         bool  showFrame = false;
         bool  showMotion = false;
@@ -674,9 +679,14 @@ public:
 
         if (s.paused) {
             rect(bars, 0.0f, 0.0f, w, h, {0.0f, 0.0f, 0.0f, 0.55f});
-            text::appendCentered(bigText, big_, "PAUSED", cx, h * 0.45f, 1.0f, 0.5f, warm);
-            text::appendCentered(smallText, small_, "CLICK TO PLAY       Q TO QUIT", cx, h * 0.45f + 50.0f * unit,
-                                 1.0f, 0.3f, {0.8f, 0.84f, 0.9f, 0.9f});
+            text::appendCentered(bigText, big_, "PAUSED", cx, s.menuTop - 80.0f * unit, 1.0f, 0.5f, warm);
+            for (int i = 0; i < static_cast<int>(s.menu.size()); ++i) {
+                const float y = s.menuTop + 44.0f * unit * static_cast<float>(i);
+                const bool on = i == s.menuItem;
+                if (on) rect(bars, cx - 330.0f * unit, y - 30.0f * unit, 660.0f * unit, 40.0f * unit, {1.0f, 0.8f, 0.5f, 0.14f});
+                text::appendCentered(smallText, small_, s.menu[static_cast<std::size_t>(i)], cx, y, 1.2f, 0.3f,
+                                     on ? Vec4{1.0f, 0.86f, 0.6f, 1.0f} : Vec4{0.8f, 0.84f, 0.9f, 0.8f});
+            }
         }
 
         iron::HudBatch batch;
@@ -1412,6 +1422,8 @@ int main(int argc, char** argv) {
     float storyStart = 0.0f;  // When play began after the intro, for the controls hint.
     // The player's health: rounds take it, and it comes back after a few quiet
     // seconds; no bar, the screen says it (darker, greyer, redder the worse).
+    foundry::Settings settings;  // Settings.h: the pause menu's.
+    if (!scripted) settings.load();
     float health = 100.0f;
     float sinceHurt = 100.0f;
     float hurtFlash = 0.0f;
@@ -1421,6 +1433,7 @@ int main(int argc, char** argv) {
     int enemyRounds = 0;
     const auto hurtPlayer = [&](float amount, Vec3 from) {
         if (downed || sceneHas("god")) return;
+        amount *= settings.damageTaken();
         health -= amount;
         if (squad.log) iron::Log::info("player hit for %.0f, health %.0f", amount, health);
         sinceHurt = 0.0f;
@@ -1465,6 +1478,7 @@ int main(int argc, char** argv) {
         squad.addAlerted(soldierLook, "KOHL", {0.5f, 0.0f, -25.0f}, "wave", hatchTop);
         squad.addAlerted(soldierLook, "LANE", {3.0f, 0.0f, -24.0f}, "wave", hatchTop);
         sound.foley("grab");
+        sound.alarm({0.0f, 11.0f, foundry::layout::kHallFront - 2.0f});  // On the hall's roof.
     };
     hooks.hallLeft = [&]() { return squad.alive("hall"); };
     hooks.chargeSet = [&]() {
@@ -1514,6 +1528,9 @@ int main(int argc, char** argv) {
     bool escapePressed = false;
     bool quitPressed = false;
     bool clicked = false;
+    int menuStep = 0;     // Up (-1) or down (+1) the pause menu this frame.
+    int menuChange = 0;   // Left (-1) or right (+1) on its setting.
+    bool menuEnter = false;
     bool showFrame = sceneHas("frame");
     bool showMotion = sceneHas("motion");
     bool showLods = sceneHas("lod");
@@ -1544,6 +1561,11 @@ int main(int argc, char** argv) {
         escapePressed = escapePressed || input.keyPressed(GLFW_KEY_ESCAPE);
         quitPressed = quitPressed || input.keyPressed(GLFW_KEY_Q);
         clicked = clicked || input.mouseButtonPressed(GLFW_MOUSE_BUTTON_LEFT);
+        if (input.keyPressed(GLFW_KEY_UP) || input.keyPressed(GLFW_KEY_W)) menuStep = -1;
+        if (input.keyPressed(GLFW_KEY_DOWN) || input.keyPressed(GLFW_KEY_S)) menuStep = 1;
+        if (input.keyPressed(GLFW_KEY_LEFT) || input.keyPressed(GLFW_KEY_A)) menuChange = -1;
+        if (input.keyPressed(GLFW_KEY_RIGHT) || input.keyPressed(GLFW_KEY_D)) menuChange = 1;
+        menuEnter = menuEnter || input.keyPressed(GLFW_KEY_ENTER);
         if (input.keyPressed(GLFW_KEY_F1)) showFrame = !showFrame;
         if (input.keyPressed(GLFW_KEY_F2)) showMotion = !showMotion;
         if (input.keyPressed(GLFW_KEY_F3)) frozen = !frozen;
@@ -1553,6 +1575,18 @@ int main(int argc, char** argv) {
         if (input.keyPressed(GLFW_KEY_TAB)) engineView = !engineView;
     };
     if (!scripted) app.window().setCursorCaptured(true);
+
+    // --- Settings (Settings.h), and the pause menu over them ---
+    float hipFov = settings.fovDegrees * kPi / 180.0f;
+    const auto applySettings = [&]() {
+        hipFov = settings.fovDegrees * kPi / 180.0f;
+        sound.setVolume(settings.volume);
+        squad.accuracy = settings.enemyAccuracy();
+    };
+    applySettings();
+    constexpr int kMenuItems = 6;
+    int menuItem = 0;
+    const auto menuTop = [](int height) { return static_cast<float>(height) * 0.42f; };
 
     // --- Scripted walk state ---
     const std::vector<Waypoint>& route = tour(startInHall);
@@ -1575,15 +1609,46 @@ int main(int argc, char** argv) {
                 paused = !paused;
                 app.window().setCursorCaptured(!paused);
             }
-            if (paused && clicked) {
-                paused = false;
-                app.window().setCursorCaptured(true);
+            if (paused) {
+                // The pause menu: arrows or the mouse to pick, left and right (or a
+                // click on either half of a row) to change, Enter or a click to do.
+                const float unit = static_cast<float>(height) / 1080.0f;
+                const float mx = static_cast<float>(input.mouseX()), my = static_cast<float>(input.mouseY());
+                const int hovered = static_cast<int>(std::floor((my - (menuTop(height) - 30.0f * unit)) / (44.0f * unit)));
+                if (std::abs(mx - static_cast<float>(width) * 0.5f) < 330.0f * unit && hovered >= 0 && hovered < kMenuItems &&
+                    (input.mouseDeltaX() != 0.0 || input.mouseDeltaY() != 0.0)) {
+                    menuItem = hovered;
+                }
+                menuItem = (menuItem + menuStep + kMenuItems) % kMenuItems;
+                int change = menuChange;
+                bool act = menuEnter;
+                if (clicked && hovered == menuItem) {
+                    act = true;
+                    change = mx < static_cast<float>(width) * 0.5f ? -1 : 1;
+                }
+                if (menuItem == 0 && act) {
+                    paused = false;
+                    app.window().setCursorCaptured(true);
+                } else if (menuItem == kMenuItems - 1 && act) {
+                    glfwSetWindowShouldClose(app.window().handle(), GLFW_TRUE);
+                } else if (change != 0) {
+                    if (menuItem == 1) settings.sensitivity = std::clamp(settings.sensitivity + 0.1f * change, 0.2f, 3.0f);
+                    if (menuItem == 2) settings.volume = std::clamp(settings.volume + 0.1f * change, 0.0f, 1.0f);
+                    if (menuItem == 3) settings.fovDegrees = std::clamp(settings.fovDegrees + 2.0f * change, 50.0f, 80.0f);
+                    if (menuItem == 4) settings.difficulty = (settings.difficulty + change + 3) % 3;
+                    applySettings();
+                    settings.save();
+                }
                 clicked = false;
             }
             if (paused && quitPressed) glfwSetWindowShouldClose(app.window().handle(), GLFW_TRUE);
         }
+        if (sceneHas("pausemenu") && seconds > 1.0f) paused = true;  // To see the menu in a capture.
         escapePressed = false;
         quitPressed = false;
+        menuStep = 0;
+        menuChange = 0;
+        menuEnter = false;
         const float simDt = paused ? 0.0f : dt;
 
         // --- The weapon in hand: switching puts one away and draws the next ---
@@ -1717,7 +1782,7 @@ int main(int argc, char** argv) {
         } else if (!paused) {
             // Zoomed in, the mouse turns the view less, so the aim moves across the
             // screen as it does at the hip.
-            const float zoom = std::tan(lastFov * 0.5f) / std::tan(kHipFov * 0.5f);
+            const float zoom = std::tan(lastFov * 0.5f) / std::tan(hipFov * 0.5f) * settings.sensitivity;
             look = {-mouseX * kMouseRadiansPerPixel * zoom, -mouseY * kMouseRadiansPerPixel * zoom};
             const auto down = [&](int k) { return input.keyDown(k) ? 1.0f : 0.0f; };
             forward = down(GLFW_KEY_W) - down(GLFW_KEY_S);
@@ -1994,7 +2059,7 @@ int main(int argc, char** argv) {
         const float aimBlend = gun.aim() * gun.aim() * (3.0f - 2.0f * gun.aim());
         // A scope zooms in late, as the eye meets it; iron sights narrow the view a little.
         const float zoomIn = weapon.scoped ? aimBlend * aimBlend * aimBlend : aimBlend;
-        const float fov = kHipFov + (weapon.aimFov - kHipFov) * zoomIn + punch.z * (1.0f - 0.8f * zoomIn);
+        const float fov = hipFov + (weapon.aimFov - hipFov) * zoomIn + punch.z * (1.0f - 0.8f * zoomIn);
         lastFov = fov;
         const float scopeView = weapon.scoped ? std::clamp((aimBlend - 0.82f) / 0.14f, 0.0f, 1.0f) : 0.0f;
         const float aspect = static_cast<float>(width) / static_cast<float>(std::max(height, 1));
@@ -2460,7 +2525,7 @@ int main(int argc, char** argv) {
             engineEye = engineEyeSet ? engineEye + (want - engineEye) * (1.0f - std::exp(-dt * 3.0f)) : want;
             engineEyeSet = true;
             renderView = iron::lookAt(engineEye, eye + flat * 10.0f, {0.0f, 1.0f, 0.0f});
-            renderProjection = iron::perspective(kHipFov, aspect, 0.1f, 600.0f);
+            renderProjection = iron::perspective(hipFov, aspect, 0.1f, 600.0f);
             const iron::CullingCamera player{view, projection, eye};
             renderer.setCullingCamera(&player);
         } else {
@@ -2731,6 +2796,21 @@ int main(int argc, char** argv) {
         state.seconds = seconds;
         state.spread = gun.spread();
         state.fov = fov;
+        if (paused) {
+            char line[64];
+            state.menu[0] = "RESUME";
+            std::snprintf(line, sizeof(line), "SENSITIVITY   <  %.1f  >", settings.sensitivity);
+            state.menu[1] = line;
+            std::snprintf(line, sizeof(line), "VOLUME   <  %d%%  >", static_cast<int>(std::lround(settings.volume * 100.0f)));
+            state.menu[2] = line;
+            std::snprintf(line, sizeof(line), "FIELD OF VIEW   <  %.0f  >", settings.fovDegrees);
+            state.menu[3] = line;
+            std::snprintf(line, sizeof(line), "DIFFICULTY   <  %s  >", foundry::Settings::kDifficulty[settings.difficulty]);
+            state.menu[4] = line;
+            state.menu[5] = "QUIT";
+            state.menuItem = menuItem;
+            state.menuTop = menuTop(height);
+        }
         state.aim = gun.aim();
         state.rounds = gun.rounds();
         state.reloading = gun.reloading();

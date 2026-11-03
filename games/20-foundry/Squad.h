@@ -129,6 +129,7 @@ public:
     float yaw = 0.0f;
     float headYaw = 0.0f;  // Where he's looking (body and spine).
     float speed = 0.0f;
+    float turnSteps = 0.0f;  // A walk's steps while turning on the spot.
     float aim = 0.0f, crouch = 0.0f, lookAround = 0.0f;
     Vec2  aimOffset{0.0f, 0.0f};
 
@@ -451,6 +452,7 @@ public:
     const std::vector<std::unique_ptr<Enemy>>& enemies() const { return enemies_; }
     const std::vector<CoverPoint>& cover() const { return cover_; }
     bool log = false;  // Each change of what a soldier's doing, to the log.
+    float accuracy = 1.0f;  // How well they shoot: the difficulty.
 
 private:
     // --- The blackboard, from perception and the squad ---
@@ -751,7 +753,12 @@ private:
                 if (to.x * to.x + to.z * to.z > 0.01f) wantYaw = std::atan2(-to.x, -to.z);
             }
             const float turn = wrap(wantYaw - e.yaw);
-            e.yaw = wrap(e.yaw + std::clamp(turn, -3.0f * dt, 3.0f * dt));
+            const float step = std::clamp(turn, -3.0f * dt, 3.0f * dt);
+            e.yaw = wrap(e.yaw + step);
+            // Turning on the spot, he steps round rather than spinning on his heels.
+            const float turning = std::abs(step) / std::max(dt, 1e-4f);
+            e.turnSteps += ((turning > 0.6f && ground < 0.3f ? 0.35f + 0.25f * std::min(turning / 3.0f, 1.0f) : 0.0f) -
+                            e.turnSteps) * std::min(dt * 8.0f, 1.0f);
             // He slows while he turns into a new leg.
             if (ground > 0.1f) nav_.setMaxSpeed(e.agent, e.movePace * std::clamp(1.0f - std::abs(turn) / 1.6f, 0.2f, 1.0f));
         }
@@ -771,7 +778,7 @@ private:
         Soldier::Pose pose;
         pose.feet = e.at;
         pose.yaw = e.yaw;
-        pose.speed = e.speed;
+        pose.speed = std::max(e.speed, e.turnSteps);
         pose.aim = e.aim;
         pose.crouch = e.crouch;
         pose.lookAround = e.lookAround;
@@ -799,7 +806,8 @@ private:
         const float distance = iron::length(target - from);
         const Vec3 v = senses_->playerVelocity;
         const float moving = std::min(std::sqrt(v.x * v.x + v.z * v.z) / 5.0f, 1.0f);
-        const float spread = 0.012f + 0.0009f * distance + 0.03f * moving + 0.055f * (1.0f - e.focus);
+        const float spread =
+            (0.012f + 0.0009f * distance + 0.03f * moving + 0.055f * (1.0f - e.focus)) / std::max(accuracy, 0.1f);
         const Vec3 way = iron::normalize(target - from);
         const Vec3 right = iron::normalize(iron::cross(way, Vec3{0.0f, 1.0f, 0.0f}));
         const Vec3 up = iron::cross(right, way);
