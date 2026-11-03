@@ -12,6 +12,7 @@
 //             repo): from assets-local/Sponza next to the exe, or IRON_SPONZA. The
 //             sun through its roof. Without it, the Cornell box.
 //   gioff / gionly  start with GI off, or showing only the bounced light
+//   floor     look down at the courtyard floor's shadow edge (with sponza)
 
 #include "common/CaptureLoop.h"
 
@@ -116,6 +117,7 @@ int main(int argc, char** argv) {
     renderer.setSkybox(vulkan->bakeSky(sponza ? kDaySky : kDarkSky, sponza ? 256 : 64));
     renderer.setShadowBounds({0.0f, 2.75f, 0.0f}, 6.0f);
     if (sponza) vulkan->setExposure(1.5f);
+    renderer.setAntiAliasing(iron::AntiAliasing::Temporal);
     if (!renderer.rayTracing()) iron::Log::warn("radiance: no hardware ray tracing; GI is off");
 
     // --- The scene ---
@@ -170,7 +172,7 @@ int main(int argc, char** argv) {
     gi.min = bounds.min;
     gi.max = bounds.max;
     gi.spacing = sponza ? 1.0f : 0.6f;
-    gi.raysPerProbe = sponza ? 128 : 192;
+    gi.raysPerProbe = sponza ? 192 : 192;
     renderer.setGiVolume(gi);
     int giView = sceneHas("gioff") ? 1 : sceneHas("gionly") ? 2 : 0;
     renderer.setGiView(static_cast<iron::GiView>(giView));
@@ -188,7 +190,12 @@ int main(int argc, char** argv) {
     // --- The camera: in front of the open side, looking in ---
     Vec3 eye = sponza ? Vec3{9.5f, 1.7f, -0.6f} : Vec3{0.0f, 2.75f, 10.5f};
     float yaw = sponza ? 1.62f : 0.0f, pitch = sponza ? 0.12f : 0.0f;
-    if (sponza) renderer.setShadowBounds((bounds.min + bounds.max) * 0.5f, 22.0f);
+    if (sponza && sceneHas("floor")) {
+        eye = {2.0f, 1.2f, -0.2f};
+        pitch = -0.75f;
+    }
+    // The sun's shadows in cascades: sharp near the eye, wide across the courtyard.
+    if (sponza) renderer.setShadowCascades(60.0f);
     const capture::FrameFn frame = [&](float seconds, float dt, int width, int height) {
         (void)seconds;
         if (app.window().consumeResized()) renderer.setViewport(width, height);

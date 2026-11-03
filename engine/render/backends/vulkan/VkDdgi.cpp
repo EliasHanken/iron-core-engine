@@ -185,9 +185,26 @@ void main() {
     }
     ivec2 px = giTile(giProbeCoord(probe)) * (TEXELS + 2) + 1 + local;
     vec3 fresh = sum / max(total, 1e-4);
-    float keep = gi.misc.w < 0.5 ? 0.0 : gi.sun.w;
-    if (DISTANCE) keep = gi.misc.w < 0.5 ? 0.0 : min(gi.sun.w, 0.95);
     vec4 old = imageLoad(atlas, px);
+    float keep;
+    if (DISTANCE) {
+        keep = gi.misc.w < 0.5 ? 0.0 : min(gi.sun.w, 0.95);
+    } else {
+        // Light is blended as irradiance^(1/5), as RTXGI does: in that space a
+        // single bright ray can't spike a dark probe, so the noise doesn't flicker.
+        // Small changes are noise: blend them slowly. Big ones are the light
+        // really changing (a lamp on, the sun moving): let them through quickly.
+        // Judged in linear light, relative to how bright it is.
+        vec3 oldLinear = old.rgb * old.rgb;
+        oldLinear = oldLinear * oldLinear * old.rgb;
+        const vec3 lum = vec3(0.2126, 0.7152, 0.0722);
+        float a = dot(fresh, lum), b = dot(oldLinear, lum);
+        float change = abs(a - b) / max(max(a, b), 0.02);
+        float settled = clamp(gi.sun.w + 0.015, 0.0, 0.995);
+        keep = mix(settled, 0.85, smoothstep(0.7, 1.0, change));
+        fresh = pow(max(fresh, vec3(0.0)), vec3(0.2));
+        if (gi.misc.w < 0.5) keep = 0.0;
+    }
     imageStore(atlas, px, vec4(mix(fresh, old.rgb, keep), 1.0));
 }
 )GLSL";

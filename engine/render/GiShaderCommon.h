@@ -103,7 +103,10 @@ vec3 giIrradiance(sampler2D irradianceAtlas, sampler2D distanceAtlas, vec3 p, ve
         const float crush = 0.2;
         if (weight < crush) weight *= weight * weight / (crush * crush);
         weight *= tri.x * tri.y * tri.z;
-        vec3 irradiance = textureLod(irradianceAtlas, giAtlasUv(c, n, GI_IRRADIANCE_TEXELS, gi.atlas.xy), 0.0).rgb;
+        // Stored as irradiance^(1/5) (see the blend): back to light.
+        vec3 encoded = textureLod(irradianceAtlas, giAtlasUv(c, n, GI_IRRADIANCE_TEXELS, gi.atlas.xy), 0.0).rgb;
+        vec3 e2 = encoded * encoded;
+        vec3 irradiance = e2 * e2 * encoded;
         sum += irradiance * weight;
         total += weight;
     }
