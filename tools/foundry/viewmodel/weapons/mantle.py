@@ -27,33 +27,39 @@ MAGAZINE = None
 EYE_FOV = 60.0
 
 
+def make_ledge(height, depth=0.7):
+    """The ledge as a prop: a block `height` high and `depth` deep, its top edge at
+    the origin, bound to one LEDGE bone. Only for the hands to land on in Blender."""
+    data = bpy.data.armatures.new("ledge_rig")
+    skeleton = bpy.data.objects.new("ledge_rig", data)
+    bpy.context.scene.collection.objects.link(skeleton)
+    rig.select_only(skeleton)
+    bpy.ops.object.mode_set(mode="EDIT")
+    bone = data.edit_bones.new("LEDGE")
+    bone.head, bone.tail = Vector(), Vector((0.0, 0.1, 0.0))
+    bpy.ops.object.mode_set(mode="OBJECT")
+    bm = bmesh.new()
+    lo, hi = Vector((-0.9, 0.0, -height)), Vector((0.9, depth, 0.0))
+    verts = [bm.verts.new(Vector((x, y, z))) for x in (lo.x, hi.x) for y in (lo.y, hi.y) for z in (lo.z, hi.z)]
+    for quad in ((0, 1, 3, 2), (4, 6, 7, 5), (0, 4, 5, 1), (2, 3, 7, 6), (0, 2, 6, 4), (1, 5, 7, 3)):
+        bm.faces.new([verts[i] for i in quad])
+    bmesh.ops.recalc_face_normals(bm, faces=bm.faces[:])
+    mesh = bpy.data.meshes.new("ledge")
+    bm.to_mesh(mesh)
+    bm.free()
+    gun = bpy.data.objects.new("ledge", mesh)
+    bpy.context.scene.collection.objects.link(gun)
+    gun.vertex_groups.new(name="LEDGE").add(range(len(mesh.vertices)), 1.0, "REPLACE")
+    gun.modifiers.new("Armature", "ARMATURE").object = skeleton
+    mesh.materials.append(flat_material("ledge", (0.5, 0.5, 0.5), 0.0, 0.8))
+    return skeleton, gun
+
+
 def build(name, height):
     """The module's contents for a ledge `height` metres above the player's feet."""
     def load(pack):
         del pack
-        data = bpy.data.armatures.new("ledge_rig")
-        skeleton = bpy.data.objects.new("ledge_rig", data)
-        bpy.context.scene.collection.objects.link(skeleton)
-        rig.select_only(skeleton)
-        bpy.ops.object.mode_set(mode="EDIT")
-        bone = data.edit_bones.new("LEDGE")
-        bone.head, bone.tail = Vector(), Vector((0.0, 0.1, 0.0))
-        bpy.ops.object.mode_set(mode="OBJECT")
-        bm = bmesh.new()
-        lo, hi = Vector((-0.9, 0.0, -height)), Vector((0.9, 0.7, 0.0))
-        verts = [bm.verts.new(Vector((x, y, z))) for x in (lo.x, hi.x) for y in (lo.y, hi.y) for z in (lo.z, hi.z)]
-        for quad in ((0, 1, 3, 2), (4, 6, 7, 5), (0, 4, 5, 1), (2, 3, 7, 6), (0, 2, 6, 4), (1, 5, 7, 3)):
-            bm.faces.new([verts[i] for i in quad])
-        bmesh.ops.recalc_face_normals(bm, faces=bm.faces[:])
-        mesh = bpy.data.meshes.new("ledge")
-        bm.to_mesh(mesh)
-        bm.free()
-        gun = bpy.data.objects.new("ledge", mesh)
-        bpy.context.scene.collection.objects.link(gun)
-        gun.vertex_groups.new(name="LEDGE").add(range(len(mesh.vertices)), 1.0, "REPLACE")
-        gun.modifiers.new("Armature", "ARMATURE").object = skeleton
-        mesh.materials.append(flat_material("ledge", (0.5, 0.5, 0.5), 0.0, 0.8))
-        return skeleton, gun
+        return make_ledge(height)
 
     def move_parts(pose, weapon, p):
         del pose, weapon, p

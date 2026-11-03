@@ -65,6 +65,7 @@
 #include <string>
 #include <map>
 #include <optional>
+#include <tuple>
 #include <unordered_map>
 #include <vector>
 
@@ -91,21 +92,24 @@ constexpr std::uint32_t kGunMotionId = 1;  // And the next few, one per section.
 constexpr std::uint32_t kDoorMotionId = 30;  // Interactions (the door, the mantles), ten ids each.
 
 // A ledge the player can climb onto: where its top edge is, which way is over it
-// (as a yaw), and how high it stands above the feet.
+// (as a yaw), how high it stands above the feet, how deep it is (front to back,
+// to its far face), and whether there's ground to land on just beyond it.
 struct Ledge {
     iron::Vec3 edge;
     float      yaw;
     float      height;
+    float      depth;
+    bool       landing;
 };
 
-// Looks for a ledge just ahead: a wall at waist height, its top from above, and
-// room to stand on it. Nothing if there's no wall, it's too low to bother or too
-// high to reach, or something's overhead.
-std::optional<Ledge> findLedge(const iron::PhysicsWorld& world, iron::Vec3 feet, float yaw) {
+// Looks for a ledge within `reach` ahead: a wall at waist height, its top from
+// above, and room to stand on it. Nothing if there's no wall, it's too low to
+// bother or too high to reach, or something's overhead.
+std::optional<Ledge> findLedge(const iron::PhysicsWorld& world, iron::Vec3 feet, float yaw, float reach = 0.55f) {
     const iron::Vec3 ahead{-std::sin(yaw), 0.0f, -std::cos(yaw)};
     const iron::Vec3 up{0.0f, 1.0f, 0.0f};
     // Just outside the body's capsule, so the ray doesn't start inside it.
-    const iron::PhysicsWorld::RaycastHit wall = world.raycast(feet + up * 0.55f + ahead * 0.32f, ahead, 0.55f);
+    const iron::PhysicsWorld::RaycastHit wall = world.raycast(feet + up * 0.55f + ahead * 0.32f, ahead, reach);
     if (!wall.hit || std::abs(wall.normal.y) > 0.4f) return std::nullopt;
     iron::Vec3 facing{-wall.normal.x, 0.0f, -wall.normal.z};
     facing = iron::normalize(facing);
@@ -119,7 +123,16 @@ std::optional<Ledge> findLedge(const iron::PhysicsWorld& world, iron::Vec3 feet,
     // Room for a body on it.
     if (world.raycast(top.point + up * 0.05f + facing * 0.25f, up, 1.8f).hit) return std::nullopt;
     const iron::Vec3 edge{wall.point.x, top.point.y, wall.point.z};
-    return Ledge{edge, std::atan2(-facing.x, -facing.z), height};
+    // Its depth: back from beyond it to its far face, just under the top.
+    const iron::Vec3 beyond = wall.point + facing * 1.6f;
+    const iron::PhysicsWorld::RaycastHit back =
+        world.raycast({beyond.x, top.point.y - 0.12f, beyond.z}, facing * -1.0f, 1.6f);
+    const float depth = back.hit ? 1.6f - back.t * 1.6f : 9.0f;
+    // Ground to land on a stride past it, about level with where the run started.
+    const iron::Vec3 land = wall.point + facing * (depth + 0.9f);
+    const iron::PhysicsWorld::RaycastHit ground = world.raycast({land.x, top.point.y + 0.1f, land.z}, up * -1.0f, 2.5f);
+    const bool landing = ground.hit && std::abs(ground.point.y - feet.y) < 0.35f;
+    return Ledge{edge, std::atan2(-facing.x, -facing.z), height, depth, landing};
 }
 constexpr std::uint32_t kPropMotionBase = 100;
 constexpr std::uint32_t kPlateMotionBase = 400;
@@ -960,16 +973,21 @@ int main(int argc, char** argv) {
     }
     // Mantling: Space at a ledge from waist to head high climbs onto it, a clip
     // for each played against the real geometry wherever it is.
+    // At a run, Space at something low and thin vaults it instead, keeping the run.
     foundry::Interaction mantleLow;
     foundry::Interaction mantleHigh;
-    for (auto [act, file] : {std::pair{&mantleLow, "mantle_low.gltf"}, std::pair{&mantleHigh, "mantle_high.gltf"}}) {
+    foundry::Interaction vault;
+    for (auto [act, file, clip] : {std::tuple{&mantleLow, "mantle_low.gltf", "mantle"},
+                                   std::tuple{&mantleHigh, "mantle_high.gltf", "mantle"},
+                                   std::tuple{&vault, "vault.gltf", "vault"}}) {
         if (!act->load(renderer, models, iron::executableDir() + "/assets/models/viewmodel/" + file, Mat4::identity(),
-                       {"LEDGE"}, "before", "mantle", "after")) {
+                       {"LEDGE"}, "before", clip, "after")) {
             return 1;
         }
         act->showProp(false);
     }
-    foundry::Interaction* const acts[] = {&door, &mantleLow, &mantleHigh};
+    float vaultSpeed = 0.0f;  // The run going into a vault, carried on after it.
+    foundry::Interaction* const acts[] = {&door, &mantleLow, &mantleHigh, &vault};
     const auto acting = [&]() {
         return std::any_of(std::begin(acts), std::end(acts), [](const foundry::Interaction* a) { return a->busy(); });
     };
@@ -1072,16 +1090,20 @@ int main(int argc, char** argv) {
     bodyConfig.gravity = -16.0f;
     const bool startInHall = sceneHas("hall");
     // --scene door starts in front of the pump house door, facing its lever;
-    // --scene mantle in front of a concrete barrier, to climb over it.
+    // --scene mantle in front of a concrete barrier, to climb over it; --scene
+    // vault a few strides back from it, to sprint at it and vault it.
     const bool atDoor = sceneHas("door");
-    const bool atBarrier = sceneHas("mantle");
+    const bool runUp = sceneHas("vault");
+    const bool atBarrier = sceneHas("mantle") || runUp;
+    bool vaultTried = false;
     const Vec3 spawn = startInHall ? Vec3{0.0f, 0.0f, -30.0f}
                      : atDoor      ? foundry::layout::kPumpDoor + Vec3{-0.2f, 0.0f, -1.3f}
+                     : runUp       ? Vec3{-10.8f, 0.0f, 21.0f}
                      : atBarrier   ? Vec3{-10.8f, 0.0f, 17.25f}
                                    : level.spawn;
     if (!body.create(world, bodyConfig, spawn)) return 1;
     float yaw = atDoor ? kPi : 0.0f;
-    float pitch = startInHall ? 0.0f : atDoor ? -0.35f : atBarrier ? -0.15f : -0.02f;
+    float pitch = startInHall ? 0.0f : atDoor ? -0.35f : runUp ? -0.08f : atBarrier ? -0.15f : -0.02f;
     bool grounded = true;
     float physicsClock = 0.0f;
     Vec3 feetBeforeStep = spawn;  // Where the body was before the last physics step, to draw between.
@@ -1277,7 +1299,8 @@ int main(int argc, char** argv) {
             // Door and mantle checks: stand still in front of it; E or Space is pressed below.
             if (atDoor || atBarrier) {
                 look = {0.0f, 0.0f};
-                forward = 0.0f;
+                forward = runUp ? 1.0f : 0.0f;
+                running = runUp;
                 strafe = 0.0f;
                 trigger = false;
                 aiming = false;
@@ -1315,7 +1338,8 @@ int main(int argc, char** argv) {
             strafe = down(GLFW_KEY_D) - down(GLFW_KEY_A);
             trigger = input.mouseButtonDown(GLFW_MOUSE_BUTTON_LEFT);
             aiming = input.mouseButtonDown(GLFW_MOUSE_BUTTON_RIGHT);
-            running = input.keyDown(GLFW_KEY_LEFT_SHIFT) && forward > 0.0f && !aiming;
+            // Firing or aiming drops a sprint.
+            running = input.keyDown(GLFW_KEY_LEFT_SHIFT) && forward > 0.0f && !aiming && !trigger;
         }
         mouseX = 0.0f;
         mouseY = 0.0f;
@@ -1323,11 +1347,24 @@ int main(int argc, char** argv) {
         if (paused) look = {0.0f, 0.0f};
         // --scene door walks up to the pump house door and opens it.
         if (sceneHas("door") && seconds > 0.5f && seconds < 0.55f) usePressed = true;
-        if (atBarrier && seconds > 0.6f && seconds < 0.65f) jumpPressed = true;
+        if (atBarrier && !runUp && seconds > 0.6f && seconds < 0.65f) jumpPressed = true;
+        if (runUp && !vaultTried && body.footPosition().z < 18.0f) {
+            jumpPressed = true;
+            vaultTried = true;
+        }
         // An interaction under way has the controls.
-        // Space at a ledge climbs onto it.
+        // Space at a ledge climbs onto it; at a run, at something low and thin, it
+        // vaults over and runs on.
         if (jumpPressed && grounded && !paused && !acting()) {
-            if (const auto ledge = findLedge(world, body.footPosition(), yaw)) {
+            const float runSpeed = iron::length(horizontal);
+            const bool sprinting = running && runSpeed > 0.7f * kRunSpeed;
+            const auto ledge = findLedge(world, body.footPosition(), yaw, sprinting ? 1.1f : 0.55f);
+            if (ledge && sprinting && ledge->height <= 1.25f && ledge->depth <= 0.9f && ledge->landing) {
+                vault.place(iron::translation(ledge->edge) * iron::rotationY(ledge->yaw));
+                vault.begin(lastCamera, 0.08f);
+                vaultSpeed = runSpeed;
+                jumpPressed = false;
+            } else if (ledge && iron::length(ledge->edge - body.footPosition() - Vec3{0.0f, ledge->height, 0.0f}) < 0.95f) {
                 foundry::Interaction& m = ledge->height > 1.3f ? mantleHigh : mantleLow;
                 m.place(iron::translation(ledge->edge) * iron::rotationY(ledge->yaw));
                 m.begin(lastCamera);
@@ -1367,6 +1404,10 @@ int main(int argc, char** argv) {
                     doorBody = world.createStaticBox({hinge + 0.05f, 1.025f, doorAt.z + 0.42f}, {0.03f, 1.025f, 0.45f});
                 } else {
                     act->reset();  // A mantle's played again at the next ledge.
+                }
+                if (act == &vault) {
+                    // Over it at a run: the run carries on.
+                    horizontal = Vec3{ahead.x, 0.0f, ahead.z} * (vaultSpeed / std::max(std::hypot(ahead.x, ahead.z), 1e-3f));
                 }
                 arsenal.current().viewModel.redraw();
             }
@@ -1430,8 +1471,12 @@ int main(int argc, char** argv) {
 
         // --- The gun ---
         const bool switching = arsenal.busy();
-        const int shots = gun.update(simDt, trigger && !paused && !switching, aiming && !switching,
-                                     reloadPressed && !switching, look, speed / kRunSpeed, grounded);
+        // Out of a sprint, the gun has to come up from across the chest before it
+        // fires or aims.
+        const bool raised = sprintBlend < 0.2f;
+        const int shots = gun.update(simDt, trigger && !paused && !switching && raised,
+                                     aiming && !switching && sprintBlend < 0.5f, reloadPressed && !switching, look,
+                                     speed / kRunSpeed, grounded);
         reloadPressed = false;
         // The gun says what its hands do next: a reload, a round at a time, the bolt.
         switch (gun.takeCue()) {

@@ -97,18 +97,20 @@ public:
     // Where the camera is when the clip starts (the mark to line up on).
     const iron::Mat4& startCamera() const { return start_; }
 
-    // Starts: the player's camera, now at `camera`, eases onto the clip's first frame.
-    void begin(const iron::Mat4& camera) {
+    // Starts: the player's camera, now at `camera`, eases onto the clip's first
+    // frame over `lineUpSeconds` (quick, for something done at a run).
+    void begin(const iron::Mat4& camera, float lineUpSeconds = 0.35f) {
         if (state_ != State::Ready) return;
         from_ = camera;
         state_ = State::LiningUp;
         lineUp_ = 0.0f;
+        lineUpSeconds_ = std::max(lineUpSeconds, 1e-3f);
     }
 
     // Advances; returns the clip's events crossed, for sounds.
     const std::vector<iron::SkeletalAnimator::Fired>& update(float dt) {
         if (state_ == State::LiningUp) {
-            lineUp_ += dt / kLineUpSeconds;
+            lineUp_ += dt / lineUpSeconds_;
             if (lineUp_ >= 1.0f) {
                 state_ = State::Playing;
                 animator_.setBaseWeight(before_, 0.0f);
@@ -157,8 +159,6 @@ public:
     }
 
 private:
-    static constexpr float kLineUpSeconds = 0.35f;
-
     // Between two camera places: positions mixed, orientations by their forward and up.
     static iron::Mat4 blend(const iron::Mat4& a, const iron::Mat4& b, float s) {
         const auto column = [](const iron::Mat4& m, int c) { return iron::Vec3{m.at(0, c), m.at(1, c), m.at(2, c)}; };
@@ -187,6 +187,7 @@ private:
     iron::Mat4                 from_ = iron::Mat4::identity();
     State                      state_ = State::Ready;
     float                      lineUp_ = 0.0f;
+    float                      lineUpSeconds_ = 0.35f;
     float                      played_ = 0.0f;
     bool                       showProp_ = true;
 };

@@ -1,0 +1,30 @@
+{
+  "fps": 30,
+  "clips": {
+    "before": {
+      "loop": true,
+      "events": []
+    },
+    "vault": {
+      "loop": false,
+      "events": [
+        {
+          "time": 0.11,
+          "name": "plant"
+        },
+        {
+          "time": 0.45,
+          "name": "step"
+        },
+        {
+          "time": 0.58,
+          "name": "step"
+        }
+      ]
+    },
+    "after": {
+      "loop": true,
+      "events": []
+    }
+  }
+}
