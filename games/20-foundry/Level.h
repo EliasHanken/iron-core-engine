@@ -152,6 +152,32 @@ inline void crateStack(Level& level, Vec3 base, int wide, int high) {
     }
 }
 
+// The pump house's doorway: on the floor in the middle of it, the way in along +z.
+// Its steel door is an interaction (Interaction.h), modelled with its frame.
+constexpr Vec3 kPumpDoor{20.0f, 0.0f, 30.0f};
+
+// A small concrete pump house against the yard's back wall, a steel door in its
+// front, a warm lamp and the plant inside.
+inline void pumpHouse(Level& level) {
+    const float x0 = kPumpDoor.x - 2.75f, x1 = kPumpDoor.x + 2.75f;
+    const float front = kPumpDoor.z - 0.06f, back = 34.5f, height = 2.9f;
+    const float t = 0.25f;
+    const float jamb0 = kPumpDoor.x - 0.55f, jamb1 = kPumpDoor.x + 0.55f;  // The door's frame, outside.
+    box(level, {x0, 0.0f, front}, {jamb0, height, front + t}, Look::ConcreteWall);
+    box(level, {jamb1, 0.0f, front}, {x1, height, front + t}, Look::ConcreteWall);
+    box(level, {jamb0, 2.15f, front}, {jamb1, height, front + t}, Look::ConcreteWall);
+    box(level, {x0, 0.0f, front + t}, {x0 + t, height, back}, Look::ConcreteWall);
+    box(level, {x1 - t, 0.0f, front + t}, {x1, height, back}, Look::ConcreteWall);
+    box(level, {x0 - 0.15f, height, front - 0.15f}, {x1 + 0.15f, height + 0.2f, back}, Look::ConcreteWall);
+    level.lamps.push_back({{kPumpDoor.x, height - 0.3f, kPumpDoor.z + 2.2f}, {1.0f, 0.68f, 0.38f}, 2.5f, 6.0f});
+    auto& p = level.placed;
+    p.push_back({"old_military_compressor", {kPumpDoor.x + 1.3f, 0.0f, kPumpDoor.z + 3.1f}, 3.1416f, 1.0f, 0.0f,
+                 Surface::Metal});
+    p.push_back({"Barrel_01", {kPumpDoor.x - 1.8f, 0.0f, kPumpDoor.z + 3.6f}, 0.4f, 1.0f, 30.0f, Surface::Metal});
+    p.push_back({"power_box_01", {x0 + t + 0.05f, 1.4f, kPumpDoor.z + 2.0f}, 1.5708f, 1.0f, 0.0f, Surface::Metal,
+                 false});
+}
+
 inline void lampPost(Level& level, Vec3 base, float height) {
     // A steel post with an arm, and a modelled flood on the end, sodium-lit.
     box(level, {base.x - 0.09f, 0.0f, base.z - 0.09f}, {base.x + 0.09f, height, base.z + 0.09f}, Look::Steel);
@@ -445,6 +471,7 @@ inline Level buildLevel() {
         lampPost(level, at, 6.5f);
     }
 
+    pumpHouse(level);
     placeProps(level);
     return level;
 }

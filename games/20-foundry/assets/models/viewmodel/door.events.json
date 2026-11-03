@@ -1,0 +1,50 @@
+{
+  "fps": 30,
+  "clips": {
+    "closed": {
+      "loop": true,
+      "events": []
+    },
+    "open": {
+      "loop": false,
+      "events": [
+        {
+          "time": 0.3,
+          "name": "reach"
+        },
+        {
+          "time": 0.55,
+          "name": "lever"
+        },
+        {
+          "time": 0.8,
+          "name": "push"
+        },
+        {
+          "time": 2.0,
+          "name": "swing"
+        },
+        {
+          "time": 1.6,
+          "name": "step"
+        },
+        {
+          "time": 2.05,
+          "name": "step"
+        },
+        {
+          "time": 2.5,
+          "name": "step"
+        },
+        {
+          "time": 2.95,
+          "name": "step"
+        }
+      ]
+    },
+    "opened": {
+      "loop": true,
+      "events": []
+    }
+  }
+}

@@ -66,8 +66,9 @@ for name, length, fn, loop, events in CLIPS:
 # --- Materials: the gun's own maps on its first slot (a module may add more) ---
 work = os.path.join(out_dir, "_work")
 os.makedirs(work, exist_ok=True)
-gun.material_slots[0].material = make_weapon_material(
-    os.path.join(pack, os.path.dirname(gun_def.FBX)), work, name=gun_def.NAME, **gun_def.TEXTURES)
+if hasattr(gun_def, "TEXTURES"):  # A modelled prop (a door) brings its own materials.
+    gun.material_slots[0].material = make_weapon_material(
+        os.path.join(pack, os.path.dirname(gun_def.FBX)), work, name=gun_def.NAME, **gun_def.TEXTURES)
 skin = next(o for o in bpy.data.objects if o.type == "MESH" and o is not gun)
 skin.name = "arms"
 gun.name = gun_def.NAME
@@ -133,7 +134,9 @@ if "--report" in args:
 if preview:
     # The game draws the view model 42 degrees tall; at 16:9 on Blender's 36 mm
     # sensor that's this lens.
-    EYE_LENS = 18.0 / math.tan(math.atan(math.tan(math.radians(21.0)) * 16.0 / 9.0))
+    # (An interaction drawn in the world uses the world's 60 degrees: EYE_FOV.)
+    half = math.radians(getattr(gun_def, "EYE_FOV", 42.0) * 0.5)
+    EYE_LENS = 18.0 / math.tan(math.atan(math.tan(half) * 16.0 / 9.0))
     HIP, AIM = gun_def.HIP, gun_def.AIM
     # Each clip at a moment, from the eye and from around the hands.
     hand_l = HIP.matrix() @ gun_def.SUPPORT.socket

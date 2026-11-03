@@ -185,6 +185,14 @@ LAYERED = [
                           0.06)]),
     ("bolt-down", 1, [("Smith_&_Wesson_M29", "onset:1", 0.25, -15.0, (300, 14000), -3.0, 0.0, 0.06),
                       ("SUB", 110.0, 70.0, -26.0, (40, 220), 0.0, 0.0, 0.05)]),
+    # A steel door: the lever's latch, then the heavy leaf swinging open on dry
+    # hinges, with a low thump of its weight.
+    ("door-latch", 1, [("Lock03_outdoor_opening_solid03", "onset:0", 0.4, -15.0, (300, 14000), 0.0, 0.0, None),
+                       ("door_open_004", "onset:0", 0.3, -19.0, (200, 12000), 0.0, 0.0, 0.08)]),
+    ("door-open", 1, [("WR_EXT_Troop Door Open_Mono", "onset:0", 1.6, -15.0, (80, 10000), -1.0, 0.0, None),
+                      ("MR - Metal Shelf D, Bright Tonal Creak", "onset:1", 1.4, -21.0, (300, 9000), -2.0, 0.1,
+                       None),
+                      ("SUB", 70.0, 45.0, -27.0, (30, 150), 0.0, 0.0, 0.2)]),
     # A round pressed down into the magazine.
     ("round-in", 1, [("Shell Load_Round Eject", "onset:0", 0.3, -15.0, (300, 14000), 4.0, 0.0, None),
                      ("Steyr_TMP_9mm_foley", "onset:1", 0.12, -20.0, (1000, 14000), 5.0, 0.0, 0.02)]),
