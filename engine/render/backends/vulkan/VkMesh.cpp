@@ -17,6 +17,13 @@ VkBuffer VkMeshStore::makeBuffer(VkContext& ctx, VkDeviceSize size,
     info.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
     info.size = size;
     info.usage = usage;
+    // With ray tracing, every mesh can go into an acceleration structure, and a
+    // shader can read its vertices where a ray hits.
+    if (ctx.rayTracing()) {
+        info.usage |= VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT |
+                      VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR |
+                      VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
+    }
     info.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
 
     VmaAllocationCreateInfo alloc{};

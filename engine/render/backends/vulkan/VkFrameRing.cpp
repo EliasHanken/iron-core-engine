@@ -58,11 +58,12 @@ bool VkFrameRing::initFrame(VkContext& ctx, Frame& f) {
         {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 14 * kMaxDescriptorSetsPerFrame},  // 14 samplers per lit set (M73: light volume and point shadow)
         {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,         kMaxDescriptorSetsPerFrame},
         {VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,          4 * kMaxDescriptorSetsPerFrame},  // M73: volume compute stages
+        {VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR, 16},  // Ray-traced passes (GI): the scene's TLAS.
     };
     VkDescriptorPoolCreateInfo dpInfo{};
     dpInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
     dpInfo.maxSets = kMaxDescriptorSetsPerFrame;
-    dpInfo.poolSizeCount = 4;
+    dpInfo.poolSizeCount = ctx.rayTracing() ? 5 : 4;
     dpInfo.pPoolSizes = sizes;
     VK_CHECK(vkCreateDescriptorPool(ctx.device(), &dpInfo, nullptr, &f.descriptorPool));
 

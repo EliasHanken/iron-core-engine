@@ -24,6 +24,7 @@
 #include "render/backends/vulkan/VkGpuProfiler.h"
 #include "render/backends/vulkan/VkClusters.h"
 #include "render/backends/vulkan/VkInstanceGroups.h"
+#include "render/backends/vulkan/VkRayTracing.h"
 #include "render/ReflectionPlane.h"
 #include "render/ReflectionProbe.h"
 
@@ -360,6 +361,9 @@ private:
     CinematicSettings  cinematic_;
     VkGpuProfiler      profiler_;
     VkInstanceGroups   instanceGroups_;
+    // The scene for ray queries (GI), when the GPU traces rays; rebuilt each frame.
+    VkRayTracing       rayTracing_;
+    std::vector<VkRayTracing::Placement> rtPlacements_;
     VkClusters         clusters_;
     std::vector<PointLight> pendingAllLights_;  // Every light this frame, for the clusters.
     std::vector<Decal>      pendingDecals_;

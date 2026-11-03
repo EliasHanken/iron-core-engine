@@ -6,10 +6,13 @@
 #include "render/backends/vulkan/VkContext.h"
 #include "render/backends/vulkan/VkUtils.h"
 
+#include "core/Log.h"
 #include "core/Window.h"
 
 #include <GLFW/glfw3.h>
 
+#include <algorithm>
+#include <cstdlib>
 #include <cstring>
 #include <vector>
 
@@ -199,7 +202,42 @@ bool VkContext::createLogicalDevice() {
     queueInfo.queueCount = 1;
     queueInfo.pQueuePriorities = &priority;
 
-    const char* deviceExtensions[] = { VK_KHR_SWAPCHAIN_EXTENSION_NAME };
+    std::vector<const char*> deviceExtensions = { VK_KHR_SWAPCHAIN_EXTENSION_NAME };
+
+    // Ray tracing: ray queries over acceleration structures, which need buffer
+    // device addresses. Only where the GPU offers all of it.
+    {
+        std::uint32_t count = 0;
+        vkEnumerateDeviceExtensionProperties(phys_, nullptr, &count, nullptr);
+        std::vector<VkExtensionProperties> available(count);
+        vkEnumerateDeviceExtensionProperties(phys_, nullptr, &count, available.data());
+        const auto has = [&](const char* name) {
+            for (const auto& e : available) {
+                if (std::strcmp(e.extensionName, name) == 0) return true;
+            }
+            return false;
+        };
+        VkPhysicalDeviceRayQueryFeaturesKHR rq{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_RAY_QUERY_FEATURES_KHR};
+        VkPhysicalDeviceAccelerationStructureFeaturesKHR as{
+            VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ACCELERATION_STRUCTURE_FEATURES_KHR, &rq};
+        VkPhysicalDeviceVulkan12Features v12{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES, &as};
+        VkPhysicalDeviceFeatures2 query{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, &v12};
+        vkGetPhysicalDeviceFeatures2(phys_, &query);
+        rayTracing_ = has(VK_KHR_ACCELERATION_STRUCTURE_EXTENSION_NAME) && has(VK_KHR_RAY_QUERY_EXTENSION_NAME) &&
+                      has(VK_KHR_DEFERRED_HOST_OPERATIONS_EXTENSION_NAME) && v12.bufferDeviceAddress &&
+                      as.accelerationStructure && rq.rayQuery && std::getenv("IRON_NO_RT") == nullptr;
+        if (rayTracing_) {
+            deviceExtensions.push_back(VK_KHR_ACCELERATION_STRUCTURE_EXTENSION_NAME);
+            deviceExtensions.push_back(VK_KHR_RAY_QUERY_EXTENSION_NAME);
+            deviceExtensions.push_back(VK_KHR_DEFERRED_HOST_OPERATIONS_EXTENSION_NAME);
+            VkPhysicalDeviceAccelerationStructurePropertiesKHR asProps{
+                VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ACCELERATION_STRUCTURE_PROPERTIES_KHR};
+            VkPhysicalDeviceProperties2 props{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2, &asProps};
+            vkGetPhysicalDeviceProperties2(phys_, &props);
+            asScratchAlignment_ = std::max(asProps.minAccelerationStructureScratchOffsetAlignment, 1u);
+        }
+        Log::info("VkContext: hardware ray tracing %s", rayTracing_ ? "on" : "off");
+    }
 
     // M17 — enable shaderClipDistance so gl_ClipDistance[0] in the
     // reflection-pass vertex shader hardware-clips geometry on the
@@ -229,17 +267,44 @@ bool VkContext::createLogicalDevice() {
     samplerAnisotropy_ = (supported.samplerAnisotropy == VK_TRUE);
     features.samplerAnisotropy = samplerAnisotropy_ ? VK_TRUE : VK_FALSE;
 
+    // Features go through the 1.1+ chain, so the ray-tracing ones can ride along.
+    VkPhysicalDeviceRayQueryFeaturesKHR rayQuery{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_RAY_QUERY_FEATURES_KHR};
+    rayQuery.rayQuery = VK_TRUE;
+    VkPhysicalDeviceAccelerationStructureFeaturesKHR accel{
+        VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ACCELERATION_STRUCTURE_FEATURES_KHR, &rayQuery};
+    accel.accelerationStructure = VK_TRUE;
+    VkPhysicalDeviceVulkan12Features v12{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES,
+                                         rayTracing_ ? static_cast<void*>(&accel) : nullptr};
+    v12.bufferDeviceAddress = rayTracing_ ? VK_TRUE : VK_FALSE;
+    VkPhysicalDeviceFeatures2 features2{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, &v12};
+    features2.features = features;
+
     VkDeviceCreateInfo info{};
     info.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO;
+    info.pNext = &features2;
     info.queueCreateInfoCount = 1;
     info.pQueueCreateInfos = &queueInfo;
-    info.enabledExtensionCount = 1;
-    info.ppEnabledExtensionNames = deviceExtensions;
-    info.pEnabledFeatures = &features;
+    info.enabledExtensionCount = static_cast<std::uint32_t>(deviceExtensions.size());
+    info.ppEnabledExtensionNames = deviceExtensions.data();
+    info.pEnabledFeatures = nullptr;
 
     VK_CHECK(vkCreateDevice(phys_, &info, nullptr, &device_));
     if (device_ == VK_NULL_HANDLE) return false;
 
+    if (rayTracing_) {
+        const auto load = [&](const char* name) { return vkGetDeviceProcAddr(device_, name); };
+        rt_.create = reinterpret_cast<PFN_vkCreateAccelerationStructureKHR>(load("vkCreateAccelerationStructureKHR"));
+        rt_.destroy = reinterpret_cast<PFN_vkDestroyAccelerationStructureKHR>(load("vkDestroyAccelerationStructureKHR"));
+        rt_.buildSizes =
+            reinterpret_cast<PFN_vkGetAccelerationStructureBuildSizesKHR>(load("vkGetAccelerationStructureBuildSizesKHR"));
+        rt_.cmdBuild = reinterpret_cast<PFN_vkCmdBuildAccelerationStructuresKHR>(load("vkCmdBuildAccelerationStructuresKHR"));
+        rt_.address = reinterpret_cast<PFN_vkGetAccelerationStructureDeviceAddressKHR>(
+            load("vkGetAccelerationStructureDeviceAddressKHR"));
+        if (!rt_.create || !rt_.destroy || !rt_.buildSizes || !rt_.cmdBuild || !rt_.address) {
+            Log::error("VkContext: ray tracing entry points missing; turning it off");
+            rayTracing_ = false;
+        }
+    }
     vkGetDeviceQueue(device_, graphicsFamily_, 0, &graphicsQ_);
     presentQ_ = graphicsQ_;  // combined family
     return true;
@@ -251,6 +316,7 @@ bool VkContext::createAllocator() {
     info.device = device_;
     info.instance = instance_;
     info.vulkanApiVersion = VK_API_VERSION_1_3;
+    if (rayTracing_) info.flags |= VMA_ALLOCATOR_CREATE_BUFFER_DEVICE_ADDRESS_BIT;
 
     VK_CHECK(vmaCreateAllocator(&info, &allocator_));
     return allocator_ != VK_NULL_HANDLE;

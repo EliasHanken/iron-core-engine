@@ -39,6 +39,9 @@ public:
 
     InstanceGroupHandle create(VkContext& ctx, const InstanceGroupDesc& desc, const VkMeshStore& meshes);
     void setInstances(VkContext& ctx, InstanceGroupHandle group, std::span<const Mat4> transforms);
+    // Every instance of every group that casts shadows, with its finest mesh: what
+    // blocks light, for ray tracing.
+    void forEachOccluder(const std::function<void(MeshHandle, const Mat4&)>& visit) const;
     bool empty() const { return groups_.empty(); }
 
     // Freezes the camera culling sees, so that walking away shows what it skipped.

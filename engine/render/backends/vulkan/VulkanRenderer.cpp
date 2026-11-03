@@ -40,6 +40,7 @@ VulkanRenderer::~VulkanRenderer() {
         debugLines_.destroy(context_);
         profiler_.destroy(context_);
         instanceGroups_.destroy(context_);
+        rayTracing_.destroy(context_);
         clusters_.destroy(context_);
         if (reflectionPipeline_)       vkDestroyPipeline(context_.device(), reflectionPipeline_, nullptr);
         if (reflectionPipelineLayout_) vkDestroyPipelineLayout(context_.device(), reflectionPipelineLayout_, nullptr);
@@ -1339,6 +1340,24 @@ void VulkanRenderer::endFrame() {
     VkFrameRing::Frame& f = frames_.current();
     VkCommandBuffer cb = f.commandBuffer;
     profiler_.end(cb);  // Simulation
+
+    // --- Pass 0a: the scene for ray queries, before anything traces against it ---
+    if (context_.rayTracing()) {
+        profiler_.begin(cb, "Ray tracing scene");
+        rtPlacements_.clear();
+        std::uint32_t id = 0;
+        for (const DrawCall& d : sceneDraws_) {
+            // What glows lights things; it doesn't stand in their light.
+            if (d.mesh == kInvalidHandle || d.material.emissive.x + d.material.emissive.y + d.material.emissive.z > 0.0f) {
+                continue;
+            }
+            rtPlacements_.push_back({d.mesh, d.model, id++});
+        }
+        instanceGroups_.forEachOccluder(
+            [&](MeshHandle mesh, const Mat4& m) { rtPlacements_.push_back({mesh, m, id++}); });
+        rayTracing_.build(context_, cb, frames_.currentIndex(), meshes_, rtPlacements_);
+        profiler_.end(cb);
+    }
 
     // --- Pass 0: culling, before anything draws instance groups ---
     if (!instanceGroups_.empty()) {
