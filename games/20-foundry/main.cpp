@@ -51,6 +51,7 @@
 #include "Models.h"
 #include "Arsenal.h"
 #include "Interaction.h"
+#include "Environment.h"
 #include "Mission.h"
 #include "Settings.h"
 #include "Soldier.h"
@@ -76,6 +77,8 @@
 
 #include <algorithm>
 #include <array>
+#include <fstream>
+#include <nlohmann/json.hpp>
 #include <chrono>
 #include <cmath>
 #include <cstdio>
@@ -108,6 +111,7 @@ constexpr float kRecordSeconds = 34.0f;
 constexpr std::uint32_t kGunMotionId = 1;  // And the next few, one per section.
 constexpr std::uint32_t kSoldierMotionBase = 200;
 constexpr std::uint32_t kIntelMotionId = 395;
+constexpr std::uint32_t kTerrainMotionId = 396;
 const Vec3 kMissionStart{-26.0f, 0.0f, 33.0f};  // The south wall, where the raid comes in.  // Ten ids each (their sections).
 constexpr std::uint32_t kDoorMotionId = 30;  // Interactions (the door, the mantles), ten ids each.
 
@@ -166,21 +170,57 @@ constexpr float kBlastRadius = 9.0f;  // How far a grenade shoves things.
 const Vec3 kTowardSun = iron::normalize(Vec3{0.84f, 0.3f, 0.45f});
 
 const char* const kSkyGlsl = R"GLSL(
+// Dawn over the works: cold blue overhead, the sunrise warming the horizon on the
+// sun's side, and a broken layer of cloud lit from below and behind by the low
+// sun (each cloud's sunward edge silvered, its body shaded by the cloud between
+// it and the sun).
+float skyHash(vec2 p) { return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }
+float skyNoise(vec2 p) {
+    vec2 i = floor(p), f = fract(p);
+    vec2 u = f * f * (3.0 - 2.0 * f);
+    return mix(mix(skyHash(i), skyHash(i + vec2(1.0, 0.0)), u.x),
+               mix(skyHash(i + vec2(0.0, 1.0)), skyHash(i + vec2(1.0, 1.0)), u.x), u.y);
+}
+float skyFbm(vec2 p) {
+    float a = 0.5, s = 0.0;
+    for (int i = 0; i < 6; ++i) {
+        s += a * skyNoise(p);
+        p = p * 2.03 + vec2(1.7, 9.2);
+        a *= 0.5;
+    }
+    return s;
+}
+float skyCloud(vec2 uv) {
+    return skyFbm(uv * 1.1 + vec2(3.0, 1.0)) * 0.8 + skyFbm(uv * 3.3 + vec2(7.0, 2.0)) * 0.28;
+}
 vec3 skyColor(vec3 d) {
     vec3 sun = normalize(vec3(0.84, 0.3, 0.45));
     float h = clamp(d.y, -1.0, 1.0);
-    // A pale winter sky: grey-blue overhead, washed out towards a misty horizon.
-    vec3 zenith = vec3(0.09, 0.13, 0.20);
-    vec3 horizon = vec3(0.44, 0.48, 0.54);
-    vec3 color = mix(horizon, zenith, pow(max(h, 0.0), 0.5));
     float s = max(dot(d, sun), 0.0);
-    color += vec3(1.0, 0.97, 0.92) * pow(s, 6.0) * 0.35;
-    color += vec3(1.0, 0.95, 0.88) * pow(s, 80.0) * 1.6;
-    color += vec3(34.0, 33.0, 31.0) * smoothstep(0.99935, 0.99965, s);
-    // A bank of cloud along the horizon, the sun silvering its top.
-    float band = exp(-pow((h - 0.07) * 14.0, 2.0)) * (0.6 + 0.4 * sin(d.x * 9.0 + d.z * 5.0));
-    color = mix(color, vec3(0.30, 0.33, 0.38) + vec3(0.7, 0.7, 0.68) * pow(s, 5.0), band * 0.6);
-    if (h < 0.0) color = mix(color, vec3(0.05, 0.055, 0.06), clamp(-h * 5.0, 0.0, 1.0));
+    float up = max(h, 0.0);
+    float low = pow(1.0 - up, 5.0);
+    float side = pow(max(dot(normalize(vec3(d.x, 0.0, d.z) + vec3(1e-4)), normalize(vec3(sun.x, 0.0, sun.z))), 0.0), 2.5);
+    vec3 zenith = vec3(0.06, 0.10, 0.19);
+    vec3 horizon = vec3(0.47, 0.50, 0.55);
+    vec3 color = mix(zenith, horizon, pow(1.0 - up, 2.6));
+    color = mix(color, vec3(1.0, 0.60, 0.36), low * side * 0.6);       // The sunrise along the horizon.
+    color += vec3(1.0, 0.78, 0.55) * pow(s, 7.0) * 0.45;                // Haze about the sun.
+    color += vec3(1.0, 0.9, 0.78) * pow(s, 160.0) * 1.8;
+    color += vec3(34.0, 32.0, 28.0) * smoothstep(0.99935, 0.99965, s);  // Its disc.
+    if (h > 0.0) {
+        vec2 uv = d.xz / (h + 0.1) * 1.25;
+        float n = skyCloud(uv);
+        float cover = smoothstep(0.5, 0.82, n);
+        // Lit where less cloud lies between it and the sun.
+        float toward = skyCloud(uv + normalize(sun.xz) * 0.09);
+        float lit = clamp(0.55 + (n - toward) * 5.0, 0.0, 1.0);
+        vec3 shade = mix(vec3(0.24, 0.26, 0.32), vec3(0.42, 0.33, 0.33), low * side);
+        vec3 bright = mix(vec3(0.92, 0.9, 0.9), vec3(1.0, 0.7, 0.48), clamp(low * 1.5 + side * 0.3, 0.0, 1.0));
+        vec3 cloud = mix(shade, bright, lit);
+        cloud += vec3(1.0, 0.78, 0.55) * pow(s, 5.0) * (1.0 - cover) * 1.2;  // Silver at the edges near the sun.
+        color = mix(color, cloud, cover * smoothstep(0.0, 0.16, h) * 0.95);
+    }
+    if (h < 0.0) color = mix(color, vec3(0.16, 0.17, 0.19), clamp(-h * 6.0, 0.0, 1.0));
     return color;
 }
 )GLSL";
@@ -1119,6 +1159,64 @@ int main(int argc, char** argv) {
         }
         iron::Log::info("foundry: stockyard of %zu instances", instances);
     }
+    // The country round the works (Environment.h): the hills, firs on them, grass
+    // in the yard's cracks.
+    const iron::Material groundLook =
+        loadMaterial(renderer, {"textures/aerial_grass_rock", "jpg", true}, 1.0f, 0.0f, {0.78f, 0.8f, 0.76f});
+    const iron::MeshHandle terrainMesh = renderer.createMesh(foundry::environment::terrain());
+    {
+        // Poly Haven's fir_tree_01, its three trees as impostors (bake_impostors.py).
+        const iron::MeshHandle cardMesh = renderer.createMesh(foundry::environment::card());
+        const auto firs = foundry::environment::forest(3, 7u);
+        std::size_t trees = 0;
+        for (int v = 0; v < 3; ++v) {
+            const std::string base = iron::executableDir() + "/assets/textures/impostors/fir_" + std::string(1, "abc"[v]);
+            std::ifstream sidecar(base + ".json");
+            if (!sidecar) {
+                iron::Log::error("foundry: no impostor %s.json", base.c_str());
+                continue;
+            }
+            const nlohmann::json about = nlohmann::json::parse(sidecar);
+            const int views = about.value("views", 8);
+            const float w = about.value("frameWidth", 8.0f), h = about.value("frameHeight", 16.0f);
+            iron::InstanceGroupDesc d;
+            d.lods = {cardMesh};
+            d.shader = renderer.createInstancedShader(foundry::environment::impostorVertex(views, w, h),
+                                                      foundry::environment::cutoutFragment());
+            d.material.texture = renderer.loadTexture(base + ".png", true);
+            d.material.roughness = 1.0f;
+            d.material.metallic = 0.0f;
+            d.material.heightScale = 0.0f;
+            d.bounds = {{-w * 0.5f, 0.0f, -w * 0.5f}, {w * 0.5f, h, w * 0.5f}};  // Whichever way it's turned.
+            d.castShadows = false;
+            d.minPixels = 1.0f;
+            const iron::InstanceGroupHandle group = renderer.createInstanceGroup(d);
+            renderer.setInstances(group, firs[static_cast<std::size_t>(v)]);
+            trees += firs[static_cast<std::size_t>(v)].size();
+        }
+        // Poly Haven's grass_medium_01 (its dry colour, cut by its alpha), five of its clumps.
+        const iron::ShaderHandle grassShader =
+            renderer.createInstancedShader(foundry::environment::swayingVertex(0.5f),
+                                          foundry::environment::cutoutFragment());
+        std::vector<const foundry::InstancedModel*> clumps;
+        std::vector<Vec3> centres;
+        for (const char* node : {"mid_a", "tall_a", "large_a", "small_a", "mid_b"}) {
+            const foundry::InstancedModel* m = models.instanced(
+                std::string("grass_medium_01#grass_medium_01_") + node + "_LOD0", grassShader, {140.0f, 50.0f, 14.0f}, false);
+            if (!m) continue;
+            clumps.push_back(m);
+            centres.push_back(m->center());
+        }
+        std::size_t tufts = 0;
+        if (!clumps.empty()) {
+            const auto placed = foundry::environment::yardGrass(colliders, centres, 11u);
+            for (std::size_t k = 0; k < clumps.size(); ++k) {
+                for (iron::InstanceGroupHandle g : clumps[k]->groups) renderer.setInstances(g, placed[k]);
+                tufts += placed[k].size();
+            }
+        }
+        iron::Log::info("foundry: %zu firs on the hills, %zu clumps of grass in the yard", trees, tufts);
+    }
     // The rifle, the pistol and the sniper (1, 2, 3); --scene pistol or sniper starts with one.
     foundry::Arsenal arsenal;
     if (!arsenal.load(renderer, models, iron::executableDir() + "/assets/models/viewmodel/")) return 1;
@@ -1600,6 +1698,7 @@ int main(int argc, char** argv) {
 
     const capture::FrameFn frame = [&](float seconds, float dt, int width, int height) {
         const double cpuStart = glfwGetTime();
+        renderer.setShaderTime(seconds);
         if (app.window().consumeResized()) renderer.setViewport(width, height);
         iron::Input& input = app.input();
 
@@ -2564,6 +2663,15 @@ int main(int argc, char** argv) {
             call.shader = lit;
             call.material = looks[static_cast<std::size_t>(s.look)];
             renderer.submit(call);
+            ++draws;
+        }
+        {
+            iron::DrawCall ground;
+            ground.mesh = terrainMesh;
+            ground.shader = lit;
+            ground.material = groundLook;
+            ground.motionId = kTerrainMotionId;
+            renderer.submit(ground);
             ++draws;
         }
         const auto drawModel = [&](const foundry::Model& model, const Mat4& transform, std::uint32_t motionId) {

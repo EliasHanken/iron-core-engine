@@ -1,0 +1,4 @@
+Fir Tree 01 by Rob Tuytel, Rico Cilliers
+Source: https://polyhaven.com/a/fir_tree_01
+License: CC0 (https://creativecommons.org/publicdomain/zero/1.0/)
+Baked from eight sides into fir_a/b/c.png by tools/foundry/bake_impostors.py (shaded, with its twig alpha map).

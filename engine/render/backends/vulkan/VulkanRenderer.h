@@ -129,6 +129,7 @@ public:
                  int framebufferHeight) override;
 
     void setViewport(int width, int height) override;
+    void setShaderTime(float seconds) override { shaderTime_ = seconds; }
 
     std::span<const GpuTiming> gpuTimings() const override { return profiler_.latest(); }
 
@@ -432,6 +433,7 @@ private:
     // M13 — camera world position, extracted from view matrix at beginFrame.
     // Used by submit() for Blinn-Phong specular highlights in the lit shader.
     Vec3 pendingCameraPos_ = {0.0f, 0.0f, 0.0f};
+    float shaderTime_ = 0.0f;  // setShaderTime: cameraPos.w in the lit UBO.
 
     // M14 — directional-light shadow state.
     Vec3  pendingShadowCenter_  = {0.0f, 0.0f, 0.0f};

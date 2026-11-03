@@ -80,12 +80,18 @@ public:
 
     // The model as instance groups, loading it on first use. `lodPixels` are the
     // heights on screen at which each level gives way to the next.
+    // `name` may be "folder#node", as for get(); `shadows` false for what's too
+    // small or too far to cast one worth drawing.
     const InstancedModel* instanced(const std::string& name, iron::ShaderHandle shader,
-                                    std::array<float, 3> lodPixels = {160.0f, 60.0f, 20.0f}) {
+                                    std::array<float, 3> lodPixels = {160.0f, 60.0f, 20.0f}, bool shadows = true) {
         const auto found = instanced_.find(name);
         if (found != instanced_.end()) return found->second.get();
         auto& slot = instanced_[name];
-        const auto loaded = iron::loadGltfStaticModel(folder_ + name + "/" + name + ".gltf");
+        const std::size_t hash = name.find('#');
+        const std::string folder = name.substr(0, hash);
+        iron::GltfStaticOptions chosen;
+        if (hash != std::string::npos) chosen.onlyNodes.push_back(name.substr(hash + 1));
+        const auto loaded = iron::loadGltfStaticModel(folder_ + folder + "/" + folder + ".gltf", chosen);
         if (!loaded) {
             iron::Log::error("foundry: model '%s' didn't load", name.c_str());
             return nullptr;
@@ -99,6 +105,7 @@ public:
             desc.shader = shader;
             desc.material = materialFor(s);
             desc.bounds = loaded->bounds;  // Every section culls with the whole model.
+            desc.castShadows = shadows;
             model->triangles += s.mesh.indices.size() / 3;
             const iron::InstanceGroupHandle group = renderer_.createInstanceGroup(desc);
             if (group != iron::kInvalidInstanceGroup) model->groups.push_back(group);
