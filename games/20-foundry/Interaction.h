@@ -12,7 +12,9 @@
 //
 // States: ready (the prop at rest in its first pose, drawn without the arms),
 // lining up (the player's camera eased onto the clip's first frame), playing, and
-// done (the prop left in its last pose).
+// done (the prop left in its last pose). One that's played wherever it's needed
+// (a mantle, against whatever ledge) is placed, begun, and reset when done; its
+// prop is only there for the hands to land on in Blender, and isn't drawn.
 
 #include "Models.h"
 #include "asset/GltfLoader.h"
@@ -73,6 +75,24 @@ public:
     }
 
     State state() const { return state_; }
+
+    // Moves the prop (and so the whole clip) to `propToWorld`.
+    void place(const iron::Mat4& propToWorld) {
+        propToWorld_ = propToWorld;
+        start_ = cameraToWorld();
+    }
+    // Back to ready, to be played again.
+    void reset() {
+        state_ = State::Ready;
+        animator_.setBaseWeight(after_, 0.0f);
+        animator_.setBaseWeight(before_, 1.0f);
+        animator_.stopOneShot(0.0f);
+        animator_.update(0.0f);
+        animator_.evaluate();
+        start_ = cameraToWorld();
+    }
+    // Whether the prop is drawn (a door), or only stands in for real geometry (a ledge).
+    void showProp(bool show) { showProp_ = show; }
     bool busy() const { return state_ == State::LiningUp || state_ == State::Playing; }
     // Where the camera is when the clip starts (the mark to line up on).
     const iron::Mat4& startCamera() const { return start_; }
@@ -122,7 +142,7 @@ public:
         const iron::Mat4 model = cameraToWorld();
         int draws = 0;
         for (std::size_t i = 0; i < parts_.size(); ++i) {
-            if (!parts_[i].prop && state_ != State::Playing) continue;
+            if (parts_[i].prop ? !showProp_ : state_ != State::Playing) continue;
             iron::SkinnedDrawCall call;
             call.skinnedMesh = parts_[i].mesh;
             call.shader = shader_;
@@ -168,6 +188,7 @@ private:
     State                      state_ = State::Ready;
     float                      lineUp_ = 0.0f;
     float                      played_ = 0.0f;
+    bool                       showProp_ = true;
 };
 
 }  // namespace foundry

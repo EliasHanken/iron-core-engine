@@ -64,6 +64,7 @@
 #include <cstdio>
 #include <string>
 #include <map>
+#include <optional>
 #include <unordered_map>
 #include <vector>
 
@@ -87,7 +88,39 @@ constexpr float kMouseRadiansPerPixel = 0.0011f;  // Raw counts: about 0.063 deg
 constexpr float kPhysicsStep = 1.0f / 60.0f;
 constexpr float kRecordSeconds = 34.0f;
 constexpr std::uint32_t kGunMotionId = 1;  // And the next few, one per section.
-constexpr std::uint32_t kDoorMotionId = 30;  // The pump house door and the arms that open it.
+constexpr std::uint32_t kDoorMotionId = 30;  // Interactions (the door, the mantles), ten ids each.
+
+// A ledge the player can climb onto: where its top edge is, which way is over it
+// (as a yaw), and how high it stands above the feet.
+struct Ledge {
+    iron::Vec3 edge;
+    float      yaw;
+    float      height;
+};
+
+// Looks for a ledge just ahead: a wall at waist height, its top from above, and
+// room to stand on it. Nothing if there's no wall, it's too low to bother or too
+// high to reach, or something's overhead.
+std::optional<Ledge> findLedge(const iron::PhysicsWorld& world, iron::Vec3 feet, float yaw) {
+    const iron::Vec3 ahead{-std::sin(yaw), 0.0f, -std::cos(yaw)};
+    const iron::Vec3 up{0.0f, 1.0f, 0.0f};
+    // Just outside the body's capsule, so the ray doesn't start inside it.
+    const iron::PhysicsWorld::RaycastHit wall = world.raycast(feet + up * 0.55f + ahead * 0.32f, ahead, 0.55f);
+    if (!wall.hit || std::abs(wall.normal.y) > 0.4f) return std::nullopt;
+    iron::Vec3 facing{-wall.normal.x, 0.0f, -wall.normal.z};
+    facing = iron::normalize(facing);
+    if (iron::dot(facing, ahead) < 0.6f) return std::nullopt;
+    const iron::Vec3 over = wall.point + facing * 0.2f;
+    const iron::PhysicsWorld::RaycastHit top =
+        world.raycast({over.x, feet.y + 2.05f, over.z}, up * -1.0f, 2.0f);
+    if (!top.hit || top.normal.y < 0.8f) return std::nullopt;
+    const float height = top.point.y - feet.y;
+    if (height < 0.5f || height > 1.85f) return std::nullopt;
+    // Room for a body on it.
+    if (world.raycast(top.point + up * 0.05f + facing * 0.25f, up, 1.8f).hit) return std::nullopt;
+    const iron::Vec3 edge{wall.point.x, top.point.y, wall.point.z};
+    return Ledge{edge, std::atan2(-facing.x, -facing.z), height};
+}
 constexpr std::uint32_t kPropMotionBase = 100;
 constexpr std::uint32_t kPlateMotionBase = 400;
 constexpr std::uint32_t kPlacedMotionBase = 600;
@@ -925,6 +958,22 @@ int main(int argc, char** argv) {
                    "opened")) {
         return 1;
     }
+    // Mantling: Space at a ledge from waist to head high climbs onto it, a clip
+    // for each played against the real geometry wherever it is.
+    foundry::Interaction mantleLow;
+    foundry::Interaction mantleHigh;
+    for (auto [act, file] : {std::pair{&mantleLow, "mantle_low.gltf"}, std::pair{&mantleHigh, "mantle_high.gltf"}}) {
+        if (!act->load(renderer, models, iron::executableDir() + "/assets/models/viewmodel/" + file, Mat4::identity(),
+                       {"LEDGE"}, "before", "mantle", "after")) {
+            return 1;
+        }
+        act->showProp(false);
+    }
+    foundry::Interaction* const acts[] = {&door, &mantleLow, &mantleHigh};
+    const auto acting = [&]() {
+        return std::any_of(std::begin(acts), std::end(acts), [](const foundry::Interaction* a) { return a->busy(); });
+    };
+    Mat4 lastCamera = Mat4::identity();  // Last frame's camera, for an interaction to start from.
     // The leaf's collider, swapped for one along the wall once it stands open.
     iron::BodyId doorBody = world.createStaticBox(doorAt + Vec3{0.0f, 1.025f, -0.025f}, {0.45f, 1.025f, 0.025f});
     float sprintBlend = 0.0f;
@@ -1022,14 +1071,17 @@ int main(int argc, char** argv) {
     bodyConfig.jumpVelocity = 4.8f;
     bodyConfig.gravity = -16.0f;
     const bool startInHall = sceneHas("hall");
-    // --scene door starts in front of the pump house door, facing its lever.
+    // --scene door starts in front of the pump house door, facing its lever;
+    // --scene mantle in front of a concrete barrier, to climb over it.
     const bool atDoor = sceneHas("door");
+    const bool atBarrier = sceneHas("mantle");
     const Vec3 spawn = startInHall ? Vec3{0.0f, 0.0f, -30.0f}
                      : atDoor      ? foundry::layout::kPumpDoor + Vec3{-0.2f, 0.0f, -1.3f}
+                     : atBarrier   ? Vec3{-10.8f, 0.0f, 17.25f}
                                    : level.spawn;
     if (!body.create(world, bodyConfig, spawn)) return 1;
     float yaw = atDoor ? kPi : 0.0f;
-    float pitch = startInHall ? 0.0f : atDoor ? -0.35f : -0.02f;
+    float pitch = startInHall ? 0.0f : atDoor ? -0.35f : atBarrier ? -0.15f : -0.02f;
     bool grounded = true;
     float physicsClock = 0.0f;
     Vec3 feetBeforeStep = spawn;  // Where the body was before the last physics step, to draw between.
@@ -1222,8 +1274,8 @@ int main(int argc, char** argv) {
             }
             // Steam check: stand still and watch the pipes along the hall's left wall,
             // then the furnace's heat rising.
-            // Door check: stand still in front of it; E is pressed for it below.
-            if (atDoor) {
+            // Door and mantle checks: stand still in front of it; E or Space is pressed below.
+            if (atDoor || atBarrier) {
                 look = {0.0f, 0.0f};
                 forward = 0.0f;
                 strafe = 0.0f;
@@ -1271,8 +1323,18 @@ int main(int argc, char** argv) {
         if (paused) look = {0.0f, 0.0f};
         // --scene door walks up to the pump house door and opens it.
         if (sceneHas("door") && seconds > 0.5f && seconds < 0.55f) usePressed = true;
+        if (atBarrier && seconds > 0.6f && seconds < 0.65f) jumpPressed = true;
         // An interaction under way has the controls.
-        if (door.busy()) {
+        // Space at a ledge climbs onto it.
+        if (jumpPressed && grounded && !paused && !acting()) {
+            if (const auto ledge = findLedge(world, body.footPosition(), yaw)) {
+                foundry::Interaction& m = ledge->height > 1.3f ? mantleHigh : mantleLow;
+                m.place(iron::translation(ledge->edge) * iron::rotationY(ledge->yaw));
+                m.begin(lastCamera);
+                jumpPressed = false;
+            }
+        }
+        if (acting()) {
             look = {0.0f, 0.0f};
             forward = 0.0f;
             strafe = 0.0f;
@@ -1282,15 +1344,16 @@ int main(int argc, char** argv) {
             jumpPressed = false;
             reloadPressed = false;
         }
-        {
-            const bool wasPlaying = door.state() == foundry::Interaction::State::Playing;
-            for (const auto& fired : door.update(simDt)) {
-                if (fired.name == "step") sound.step(foundry::Floor::Concrete, body.footPosition(), 0.55f);
+        for (foundry::Interaction* act : acts) {
+            const bool wasPlaying = act->state() == foundry::Interaction::State::Playing;
+            for (const auto& fired : act->update(simDt)) {
+                if (fired.name == "step") sound.step(floorAt(body.footPosition()), body.footPosition(), 0.55f);
+                else if (fired.name == "plant") sound.step(floorAt(body.footPosition()), body.footPosition(), 0.35f);
                 else sound.door(fired.name);
             }
-            if (wasPlaying && door.state() == foundry::Interaction::State::Done) {
+            if (wasPlaying && act->state() == foundry::Interaction::State::Done) {
                 // Done: the player stands where the clip left the camera, facing on.
-                const Mat4 cam = door.cameraToWorld();
+                const Mat4 cam = act->cameraToWorld();
                 const Vec3 at{cam.at(0, 3), cam.at(1, 3), cam.at(2, 3)};
                 const Vec3 ahead{-cam.at(0, 2), -cam.at(1, 2), -cam.at(2, 2)};
                 body.setFootPosition(at - Vec3{0.0f, kEyeHeight, 0.0f});
@@ -1298,9 +1361,13 @@ int main(int argc, char** argv) {
                 horizontal = {0.0f, 0.0f, 0.0f};
                 yaw = std::atan2(-ahead.x, -ahead.z);
                 pitch = std::asin(std::clamp(ahead.y, -1.0f, 1.0f));
-                world.destroyBody(doorBody);
-                const float hinge = doorAt.x + 0.45f;
-                doorBody = world.createStaticBox({hinge + 0.05f, 1.025f, doorAt.z + 0.42f}, {0.03f, 1.025f, 0.45f});
+                if (act == &door) {
+                    world.destroyBody(doorBody);
+                    const float hinge = doorAt.x + 0.45f;
+                    doorBody = world.createStaticBox({hinge + 0.05f, 1.025f, doorAt.z + 0.42f}, {0.03f, 1.025f, 0.45f});
+                } else {
+                    act->reset();  // A mantle's played again at the next ledge.
+                }
                 arsenal.current().viewModel.redraw();
             }
         }
@@ -1432,8 +1499,10 @@ int main(int argc, char** argv) {
             }
         }
         usePressed = false;
-        if (door.busy()) {
-            cameraToWorld = door.camera();
+        lastCamera = cameraToWorld;
+        for (const foundry::Interaction* act : acts) {
+            if (!act->busy()) continue;
+            cameraToWorld = act->camera();
             view = iron::inverse(cameraToWorld);
             eye = {cameraToWorld.at(0, 3), cameraToWorld.at(1, 3), cameraToWorld.at(2, 3)};
             aimDir = Vec3{-cameraToWorld.at(0, 2), -cameraToWorld.at(1, 2), -cameraToWorld.at(2, 2)};
@@ -1868,7 +1937,9 @@ int main(int argc, char** argv) {
             renderer.submit(call);
             draws += 2;
         }
-        draws += door.draw(renderer, kDoorMotionId);
+        for (std::size_t i = 0; i < std::size(acts); ++i) {
+            draws += acts[i]->draw(renderer, kDoorMotionId + 10u * static_cast<std::uint32_t>(i));
+        }
         // The effects, lit by roughly where the player is: open daylight or the hall.
         {
             const float lightLevel = 1.0f - 0.55f * indoorAt(eye);
@@ -1937,7 +2008,7 @@ int main(int argc, char** argv) {
             // Looking through the scope, the rifle is behind the eye's view of it.
             // Looking through the scope, or with the hands busy opening something,
             // the gun isn't drawn.
-            if (scopeView < 0.5f && !door.busy()) draws += viewModel.draw(renderer, viewModelToWorld, kGunMotionId);
+            if (scopeView < 0.5f && !acting()) draws += viewModel.draw(renderer, viewModelToWorld, kGunMotionId);
             if (gun.flash() > 0.0f && scopeView < 0.5f) {
                 iron::DrawCall flash;
                 flash.mesh = flashMesh;

@@ -1,0 +1,30 @@
+{
+  "fps": 30,
+  "clips": {
+    "before": {
+      "loop": true,
+      "events": []
+    },
+    "mantle": {
+      "loop": false,
+      "events": [
+        {
+          "time": 0.3,
+          "name": "plant"
+        },
+        {
+          "time": 0.33999999999999997,
+          "name": "plant"
+        },
+        {
+          "time": 0.8049999999999999,
+          "name": "step"
+        }
+      ]
+    },
+    "after": {
+      "loop": true,
+      "events": []
+    }
+  }
+}
