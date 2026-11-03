@@ -38,10 +38,13 @@ struct NavMesh::Impl {
     dtQueryFilter   filter;
     float           agentRadius = 0.35f;
     float           agentHeight = 1.8f;
+    // Each polygon's island, by tile then polygon; filled on first asking.
+    mutable std::vector<std::vector<int>> islands;
 
     ~Impl() { clear(); }
 
     void clear() {
+        islands.clear();
         dtFreeCrowd(crowd);
         dtFreeNavMeshQuery(query);
         dtFreeNavMesh(mesh);
@@ -228,6 +231,48 @@ bool NavMesh::randomPointNear(Vec3 around, float radius, std::uint32_t seed, Vec
     dtPolyRef picked = 0;
     return dtStatusSucceed(impl_->query->findRandomPointAroundCircle(ref, xyz(start), radius, &impl_->filter,
                                                                       nextRandom, &picked, &out.x));
+}
+
+int NavMesh::island(Vec3 point) const {
+    Vec3 on;
+    const dtPolyRef ref = impl_->nearest(point, {2.0f, 4.0f, 2.0f}, on);
+    if (!ref) return -1;
+    const dtNavMesh& mesh = *impl_->mesh;
+    auto& islands = impl_->islands;
+    if (islands.empty()) {
+        // Flood each unvisited polygon's island through its links.
+        islands.resize(static_cast<std::size_t>(mesh.getMaxTiles()));
+        for (int t = 0; t < mesh.getMaxTiles(); ++t) {
+            const dtMeshTile* tile = mesh.getTile(t);
+            if (tile && tile->header) islands[t].assign(static_cast<std::size_t>(tile->header->polyCount), -1);
+        }
+        int next = 0;
+        std::vector<std::pair<unsigned int, unsigned int>> open;
+        for (int t = 0; t < mesh.getMaxTiles(); ++t) {
+            for (std::size_t p = 0; p < islands[t].size(); ++p) {
+                if (islands[t][p] >= 0) continue;
+                islands[t][p] = next;
+                open.push_back({static_cast<unsigned int>(t), static_cast<unsigned int>(p)});
+                while (!open.empty()) {
+                    const auto [ct, cp] = open.back();
+                    open.pop_back();
+                    const dtMeshTile* tile = mesh.getTile(static_cast<int>(ct));
+                    for (unsigned int k = tile->polys[cp].firstLink; k != DT_NULL_LINK; k = tile->links[k].next) {
+                        unsigned int salt = 0, nt = 0, np = 0;
+                        mesh.decodePolyId(tile->links[k].ref, salt, nt, np);
+                        if (nt < islands.size() && np < islands[nt].size() && islands[nt][np] < 0) {
+                            islands[nt][np] = next;
+                            open.push_back({nt, np});
+                        }
+                    }
+                }
+                ++next;
+            }
+        }
+    }
+    unsigned int salt = 0, t = 0, p = 0;
+    mesh.decodePolyId(ref, salt, t, p);
+    return t < islands.size() && p < islands[t].size() ? islands[t][p] : -1;
 }
 
 void NavMesh::edges(std::vector<std::pair<Vec3, Vec3>>& out) const {

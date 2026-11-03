@@ -115,6 +115,41 @@ public:
         return std::any_of(slots_.begin(), slots_.end(), [](const Slot& s) { return s.active; });
     }
 
+    // How much of a sight line from `a` to `b` gets through the smoke (1 clear, 0
+    // none), for the AI. The fluid lives on the GPU, so this is its shape as a
+    // stand-in: each cloud a column spreading from the canister as it pours and
+    // thinning as it goes, about as wide and tall as the fluid's.
+    float sightThrough(Vec3 a, Vec3 b) const {
+        float depth = 0.0f;
+        for (const Slot& s : slots_) {
+            if (!s.active) continue;
+            const bool canister = s.kind == Kind::Canister;
+            const float life = canister ? kLife : kSootLife;
+            const float radius = canister ? std::min(1.2f + s.age * 0.9f, 6.5f) : std::min(1.5f + s.age * 2.0f, 3.5f);
+            const float top = s.origin.y + (canister ? std::min(0.6f + s.age * 0.5f, 3.6f) : 3.0f);
+            const float thin = std::clamp((life - s.age) / kFadeOut, 0.0f, 1.0f);
+            const float density = (canister ? 1.4f : 0.6f) * thin;  // Per metre.
+            // Where the line runs through the column, in plan.
+            const float dx = b.x - a.x, dz = b.z - a.z;
+            const float fx = a.x - s.emitter.x, fz = a.z - s.emitter.z;
+            const float qa = dx * dx + dz * dz;
+            if (qa < 1e-6f) continue;
+            const float qb = 2.0f * (fx * dx + fz * dz);
+            const float qc = fx * fx + fz * fz - radius * radius;
+            const float disc = qb * qb - 4.0f * qa * qc;
+            if (disc <= 0.0f) continue;
+            const float root = std::sqrt(disc);
+            const float t0 = std::max((-qb - root) / (2.0f * qa), 0.0f);
+            const float t1 = std::min((-qb + root) / (2.0f * qa), 1.0f);
+            if (t1 <= t0) continue;
+            // Over it, if the line passes above the top there.
+            const float y = a.y + (b.y - a.y) * (t0 + t1) * 0.5f;
+            if (y > top || y < s.origin.y - 0.5f) continue;
+            depth += (t1 - t0) * std::sqrt(qa + (b.y - a.y) * (b.y - a.y)) * density;
+        }
+        return std::exp(-depth);
+    }
+
     // Advances every smoke by `dt` (call between beginFrame and endFrame), then
     // hands each to the fog.
     void update(iron::Renderer& renderer, const iron::PhysicsWorld& world, std::span<const SmokeCollider> colliders,

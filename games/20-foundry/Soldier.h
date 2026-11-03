@@ -40,7 +40,7 @@ public:
         for (const auto& section : model_.sections) {
             parts_.push_back({renderer.createSkinnedMesh(section.mesh), models.materialFor(section)});
         }
-        for (const char* name : {"idle", "walk", "walk_fast", "run", "aim", "aim_walk"}) {
+        for (const char* name : {"idle", "look", "walk", "walk_fast", "run", "aim", "aim_walk", "crouch_aim"}) {
             if (!model_.findClip(name)) {
                 iron::Log::error("foundry: %s lacks the clip %s", path.c_str(), name);
                 return false;
@@ -77,15 +77,31 @@ public:
         animator_.evaluate();
     }
 
-    // Where it stands and faces (radians; 0 faces -z), how fast it's going over
-    // the ground (m/s), how far it has its rifle up (0 low ready, 1 shouldered),
-    // and where it aims relative to where it faces (yaw left, pitch up; radians).
-    void update(float dt, iron::Vec3 feet, float yaw, float speed, float aim, iron::Vec2 aimOffset) {
-        feet_ = feet;
-        yaw_ = yaw;
-        aim = std::clamp(aim, 0.0f, 1.0f);
-        // Low ready: idle, walk, fast walk, run, by speed between the speeds they
-        // were captured at. Shouldered: aim, aim_walk.
+    // How a soldier stands this frame. Where (feet) and which way (yaw; radians,
+    // 0 faces -z); how fast over the ground (m/s); how far the rifle is up (0 low
+    // ready, 1 shouldered); how far down into a crouch (aiming over cover); how
+    // much he's looking about (standing idle); and where he aims relative to
+    // where he faces (yaw left, pitch up; radians), taken up by the spine.
+    struct Pose {
+        iron::Vec3 feet{0.0f, 0.0f, 0.0f};
+        float      yaw = 0.0f;
+        float      speed = 0.0f;
+        float      aim = 0.0f;
+        float      crouch = 0.0f;
+        float      lookAround = 0.0f;
+        iron::Vec2 aimOffset{0.0f, 0.0f};
+    };
+
+    void update(float dt, const Pose& pose) {
+        feet_ = pose.feet;
+        yaw_ = pose.yaw;
+        const float speed = pose.speed;
+        const float aim = std::clamp(pose.aim, 0.0f, 1.0f);
+        const float crouch = std::clamp(pose.crouch, 0.0f, 1.0f);
+        const float lookAround = std::clamp(pose.lookAround, 0.0f, 1.0f);
+        // Low ready: idle (or looking about), walk, fast walk, run, by speed between
+        // the speeds they were captured at. Shouldered: aim, aim_walk. Crouched:
+        // crouch_aim, the rifle up over cover.
         struct Step {
             const char* name;
             float       at;
@@ -104,17 +120,24 @@ public:
                     w = i + 1 == count ? 1.0f : std::clamp((hi - speed) / std::max(hi - steps[i].at, 1e-3f), 0.0f, 1.0f);
                 }
                 const iron::AnimationClip* clip = look_->clip(steps[i].name);
-                animator_.setBaseWeight(clip, w * carry);
                 // Matched to the ground: a walk played at its captured pace or faster.
                 const float captured = clip->speed;
                 animator_.setBaseRate(clip, captured > 0.0f ? std::max(speed / captured, 0.6f) : 1.0f);
+                if (i == 0 && count == 4) {
+                    // Standing about, he looks round now and then.
+                    animator_.setBaseWeight(clip, w * carry * (1.0f - lookAround));
+                    animator_.setBaseWeight(look_->clip("look"), w * carry * lookAround);
+                } else {
+                    animator_.setBaseWeight(clip, w * carry);
+                }
             }
         };
-        blend(ready, 4, 1.0f - aim);
-        blend(shouldered, 2, aim);
+        blend(ready, 4, (1.0f - aim) * (1.0f - crouch));
+        blend(shouldered, 2, aim * (1.0f - crouch));
+        animator_.setBaseWeight(look_->clip("crouch_aim"), crouch);
         // The spine takes up to about 70 degrees of turn and 40 of tilt, shared down it.
-        const float turn = std::clamp(aimOffset.x, -1.2f, 1.2f) / 3.0f;
-        const float tilt = std::clamp(aimOffset.y, -0.7f, 0.7f) / 3.0f;
+        const float turn = std::clamp(pose.aimOffset.x, -1.2f, 1.2f) / 3.0f;
+        const float tilt = std::clamp(pose.aimOffset.y, -0.7f, 0.7f) / 3.0f;
         const iron::Quat q = iron::Quat::fromAxisAngle({0.0f, 1.0f, 0.0f}, turn) *
                              iron::Quat::fromAxisAngle({1.0f, 0.0f, 0.0f}, tilt);
         for (int bone : look_->spine()) animator_.setBoneTurn(bone, q);
