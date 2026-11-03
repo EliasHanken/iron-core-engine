@@ -152,6 +152,39 @@ inline void crateStack(Level& level, Vec3 base, int wide, int high) {
     }
 }
 
+// A bunker under the yard: its hatch in the ground (the middle of the hole), the
+// ladder down on the hole's -z side, its room running back under +z. The hatch
+// and ladder are an interaction (Interaction.h), modelled with their frame.
+constexpr Vec3 kBunkerHatch{-22.0f, 0.0f, 4.2f};
+constexpr float kBunkerFloor = -3.2f;
+
+// A slab with a square hole through it at `hole` (half-width `half`): four boxes.
+inline void slabWithHole(Level& level, Vec3 lo, Vec3 hi, Vec3 hole, float half, Look look) {
+    const float x0 = hole.x - half, x1 = hole.x + half, z0 = hole.z - half, z1 = hole.z + half;
+    box(level, lo, {hi.x, hi.y, z0}, look);
+    box(level, {lo.x, lo.y, z1}, hi, look);
+    box(level, {lo.x, lo.y, z0}, {x0, hi.y, z1}, look);
+    box(level, {x1, lo.y, z0}, {hi.x, hi.y, z1}, look);
+}
+
+// The bunker's room: concrete, a little under the slab, a dim lamp, stores.
+inline void bunker(Level& level) {
+    const Vec3 h = kBunkerHatch;
+    const float x0 = h.x - 2.2f, x1 = h.x + 2.2f, z0 = h.z - 0.55f, z1 = h.z + 6.2f;
+    const float floor = kBunkerFloor, ceiling = -0.6f, t = 0.2f;
+    box(level, {x0 - t, floor - t, z0 - t}, {x1 + t, floor, z1 + t}, Look::ConcreteFloor);
+    box(level, {x0 - t, floor, z0 - t}, {x0, ceiling, z1 + t}, Look::ConcreteWall);
+    box(level, {x1, floor, z0 - t}, {x1 + t, ceiling, z1 + t}, Look::ConcreteWall);
+    box(level, {x0, floor, z0 - t}, {x1, ceiling, z0}, Look::ConcreteWall);
+    box(level, {x0, floor, z1}, {x1, ceiling, z1 + t}, Look::ConcreteWall);
+    level.lamps.push_back({{h.x, ceiling - 0.25f, h.z + 3.4f}, {1.0f, 0.72f, 0.45f}, 2.2f, 7.0f});
+    auto& p = level.placed;
+    p.push_back({"metal_tool_chest", {x1 - 0.5f, floor, h.z + 4.8f}, -1.5708f, 1.0f, 0.0f, Surface::Metal});
+    p.push_back({"Barrel_02", {x0 + 0.5f, floor, h.z + 5.4f}, 0.7f, 1.0f, 30.0f, Surface::Metal});
+    p.push_back({"plastic_crate_03", {x0 + 0.45f, floor, h.z + 2.6f}, 0.3f, 1.0f, 2.0f, Surface::Wood});
+    p.push_back({"power_box_01", {x1 - 0.06f, floor + 1.5f, h.z + 2.0f}, -1.5708f, 1.0f, 0.0f, Surface::Metal, false});
+}
+
 // The pump house's doorway: on the floor in the middle of it, the way in along +z.
 // Its steel door is an interaction (Interaction.h), modelled with its frame.
 constexpr Vec3 kPumpDoor{20.0f, 0.0f, 30.0f};
@@ -343,10 +376,12 @@ inline Level buildLevel() {
     using namespace layout;
     Level level;
 
-    // Ground: one slab under the yard and the hall.
-    box(level, {-34.0f, -0.5f, -68.0f}, {34.0f, 0.0f, 36.0f}, Look::ConcreteFloor);
+    // Ground: one slab under the yard and the hall, the bunker's hatch through it.
+    slabWithHole(level, {-34.0f, -0.5f, -68.0f}, {34.0f, 0.0f, 36.0f}, kBunkerHatch, 0.45f, Look::ConcreteFloor);
     // The stockyard around the walls, a little lower so that the two never fight.
-    box(level, {-170.0f, -0.6f, -110.0f}, {170.0f, -0.03f, 175.0f}, Look::ConcreteFloor);
+    slabWithHole(level, {-170.0f, -0.6f, -110.0f}, {170.0f, -0.03f, 175.0f}, kBunkerHatch, 0.45f,
+                 Look::ConcreteFloor);
+    bunker(level);
 
     // The yard's walls, low enough to see the sky over.
     box(level, {-34.0f, 0.0f, 34.5f}, {34.0f, 3.6f, 35.5f}, Look::ConcreteWall);
