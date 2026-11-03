@@ -39,6 +39,7 @@
 #include "Stockyard.h"
 #include "Models.h"
 #include "Arsenal.h"
+#include "Interaction.h"
 #include "Sound.h"
 
 #include "audio/AudioEngine.h"
@@ -86,6 +87,7 @@ constexpr float kMouseRadiansPerPixel = 0.0011f;  // Raw counts: about 0.063 deg
 constexpr float kPhysicsStep = 1.0f / 60.0f;
 constexpr float kRecordSeconds = 34.0f;
 constexpr std::uint32_t kGunMotionId = 1;  // And the next few, one per section.
+constexpr std::uint32_t kDoorMotionId = 30;  // The pump house door and the arms that open it.
 constexpr std::uint32_t kPropMotionBase = 100;
 constexpr std::uint32_t kPlateMotionBase = 400;
 constexpr std::uint32_t kPlacedMotionBase = 600;
@@ -326,6 +328,7 @@ public:
         float reloadProgress = 1.0f;
         const char* weapon = "AK-47";
         float scope = 0.0f;     // 0 none .. 1 looking through a scope.
+        const char* prompt = nullptr;  // What E does here, if anything.
         float hitMarker = 0.0f;
         bool  paused = false;
         bool  showFrame = false;
@@ -417,6 +420,11 @@ public:
                 line(bars, {cx + std::cos(ang) * r0, cy + std::sin(ang) * r0},
                      {cx + std::cos(ang) * r1, cy + std::sin(ang) * r1}, 2.0f * unit, {1.0f, 0.95f, 0.85f, a});
             }
+        }
+
+        // What E does here.
+        if (s.prompt && !s.paused) {
+            text::appendCentered(smallText, small_, s.prompt, cx, cy + 70.0f * unit, 1.0f, 0.3f, warm);
         }
 
         // Ammo, low in the corner.
@@ -908,6 +916,17 @@ int main(int argc, char** argv) {
     foundry::Arsenal arsenal;
     if (!arsenal.load(renderer, models, iron::executableDir() + "/assets/models/viewmodel/")) return 1;
     arsenal.equip(sceneHas("pistol") ? 1 : sceneHas("sniper") ? 2 : 0);
+    // The pump house's steel door: walk up to it and E, and the hands open it and
+    // take the player through. Its prop space has the way in along -z.
+    const Vec3 doorAt = foundry::layout::kPumpDoor;
+    foundry::Interaction door;
+    if (!door.load(renderer, models, iron::executableDir() + "/assets/models/viewmodel/door.gltf",
+                   iron::translation(doorAt) * iron::rotationY(kPi), {"FRAME", "DOOR", "LEVER"}, "closed", "open",
+                   "opened")) {
+        return 1;
+    }
+    // The leaf's collider, swapped for one along the wall once it stands open.
+    iron::BodyId doorBody = world.createStaticBox(doorAt + Vec3{0.0f, 1.025f, -0.025f}, {0.45f, 1.025f, 0.025f});
     float sprintBlend = 0.0f;
     // Winter mist over the yard, drifting in wisps, with the hall full of smoke; lit by
     // the low sun through the shadows and by every lamp (--scene nofog for none).
@@ -1003,10 +1022,14 @@ int main(int argc, char** argv) {
     bodyConfig.jumpVelocity = 4.8f;
     bodyConfig.gravity = -16.0f;
     const bool startInHall = sceneHas("hall");
-    const Vec3 spawn = startInHall ? Vec3{0.0f, 0.0f, -30.0f} : level.spawn;
+    // --scene door starts in front of the pump house door, facing its lever.
+    const bool atDoor = sceneHas("door");
+    const Vec3 spawn = startInHall ? Vec3{0.0f, 0.0f, -30.0f}
+                     : atDoor      ? foundry::layout::kPumpDoor + Vec3{-0.2f, 0.0f, -1.3f}
+                                   : level.spawn;
     if (!body.create(world, bodyConfig, spawn)) return 1;
-    float yaw = 0.0f;
-    float pitch = startInHall ? 0.0f : -0.02f;
+    float yaw = atDoor ? kPi : 0.0f;
+    float pitch = startInHall ? 0.0f : atDoor ? -0.35f : -0.02f;
     bool grounded = true;
     float physicsClock = 0.0f;
     Vec3 feetBeforeStep = spawn;  // Where the body was before the last physics step, to draw between.
@@ -1057,6 +1080,7 @@ int main(int argc, char** argv) {
     bool grenadePressed = false;
     bool smokePressed = false;
     int  selectPressed = -1;  // A weapon picked by its number.
+    bool usePressed = false;  // E: open what's in front.
     int  cycleSteps = 0;      // Weapons stepped through on the wheel.
     bool escapePressed = false;
     bool quitPressed = false;
@@ -1079,6 +1103,7 @@ int main(int argc, char** argv) {
         inspectPressed = inspectPressed || input.keyPressed(GLFW_KEY_I);
         grenadePressed = grenadePressed || input.keyPressed(GLFW_KEY_G);
         smokePressed = smokePressed || input.keyPressed(GLFW_KEY_F);
+        usePressed = usePressed || input.keyPressed(GLFW_KEY_E);
         for (int i = 0; i < foundry::Arsenal::kCount; ++i) {
             if (input.keyPressed(GLFW_KEY_1 + i)) selectPressed = i;
         }
@@ -1197,6 +1222,14 @@ int main(int argc, char** argv) {
             }
             // Steam check: stand still and watch the pipes along the hall's left wall,
             // then the furnace's heat rising.
+            // Door check: stand still in front of it; E is pressed for it below.
+            if (atDoor) {
+                look = {0.0f, 0.0f};
+                forward = 0.0f;
+                strafe = 0.0f;
+                trigger = false;
+                aiming = false;
+            }
             if (sceneHas("steam")) {
                 const Vec3 target = seconds < 12.0f ? Vec3{-13.0f, 2.5f, -40.0f} : Vec3{0.0f, 4.0f, -58.0f};
                 const Vec3 to = target - eye;
@@ -1236,6 +1269,41 @@ int main(int argc, char** argv) {
         mouseY = 0.0f;
         clicked = false;
         if (paused) look = {0.0f, 0.0f};
+        // --scene door walks up to the pump house door and opens it.
+        if (sceneHas("door") && seconds > 0.5f && seconds < 0.55f) usePressed = true;
+        // An interaction under way has the controls.
+        if (door.busy()) {
+            look = {0.0f, 0.0f};
+            forward = 0.0f;
+            strafe = 0.0f;
+            trigger = false;
+            aiming = false;
+            running = false;
+            jumpPressed = false;
+            reloadPressed = false;
+        }
+        {
+            const bool wasPlaying = door.state() == foundry::Interaction::State::Playing;
+            for (const auto& fired : door.update(simDt)) {
+                if (fired.name == "step") sound.step(foundry::Floor::Concrete, body.footPosition(), 0.55f);
+                else sound.door(fired.name);
+            }
+            if (wasPlaying && door.state() == foundry::Interaction::State::Done) {
+                // Done: the player stands where the clip left the camera, facing on.
+                const Mat4 cam = door.cameraToWorld();
+                const Vec3 at{cam.at(0, 3), cam.at(1, 3), cam.at(2, 3)};
+                const Vec3 ahead{-cam.at(0, 2), -cam.at(1, 2), -cam.at(2, 2)};
+                body.setFootPosition(at - Vec3{0.0f, kEyeHeight, 0.0f});
+                feetBeforeStep = body.footPosition();
+                horizontal = {0.0f, 0.0f, 0.0f};
+                yaw = std::atan2(-ahead.x, -ahead.z);
+                pitch = std::asin(std::clamp(ahead.y, -1.0f, 1.0f));
+                world.destroyBody(doorBody);
+                const float hinge = doorAt.x + 0.45f;
+                doorBody = world.createStaticBox({hinge + 0.05f, 1.025f, doorAt.z + 0.42f}, {0.03f, 1.025f, 0.45f});
+                arsenal.current().viewModel.redraw();
+            }
+        }
         // The first click after a pause only takes the mouse back.
         yaw += look.x;
         pitch = std::clamp(pitch + look.y, -1.45f, 1.45f);
@@ -1343,14 +1411,33 @@ int main(int argc, char** argv) {
         // sixty times a second: smooth at any frame rate.
         const float between = std::clamp(physicsClock / kPhysicsStep, 0.0f, 1.0f);
         const Vec3 drawnFeet = feetBeforeStep + (feet - feetBeforeStep) * between;
-        const Vec3 eye = drawnFeet + Vec3{0.0f, kEyeHeight + landDip + bob, 0.0f};
-        const Vec3 aimDir = lookDirection(viewYaw, viewPitch);
+        Vec3 eye = drawnFeet + Vec3{0.0f, kEyeHeight + landDip + bob, 0.0f};
+        Vec3 aimDir = lookDirection(viewYaw, viewPitch);
         // Rolled about the line of sight (Rodrigues' rotation of the world's up).
         const Vec3 worldUp{0.0f, 1.0f, 0.0f};
         const Vec3 rolledUp = worldUp * std::cos(roll) + iron::cross(aimDir, worldUp) * std::sin(roll) +
                               aimDir * (iron::dot(aimDir, worldUp) * (1.0f - std::cos(roll)));
-        const Mat4 view = iron::lookAt(eye, eye + aimDir, rolledUp);
-        const Mat4 cameraToWorld = iron::inverse(view);
+        Mat4 view = iron::lookAt(eye, eye + aimDir, rolledUp);
+        Mat4 cameraToWorld = iron::inverse(view);
+        // The door: close to it and facing its lever, E opens it; then the clip has
+        // the camera.
+        const char* prompt = nullptr;
+        if (door.state() == foundry::Interaction::State::Ready && !paused) {
+            const Vec3 lever = doorAt + Vec3{-0.36f, 1.0f, -0.1f};
+            const Vec3 toLever = lever - eye;
+            const float away = iron::length(toLever);
+            if (away < 1.8f && iron::dot(aimDir, toLever * (1.0f / away)) > 0.7f) {
+                prompt = "E   OPEN";
+                if (usePressed) door.begin(cameraToWorld);
+            }
+        }
+        usePressed = false;
+        if (door.busy()) {
+            cameraToWorld = door.camera();
+            view = iron::inverse(cameraToWorld);
+            eye = {cameraToWorld.at(0, 3), cameraToWorld.at(1, 3), cameraToWorld.at(2, 3)};
+            aimDir = Vec3{-cameraToWorld.at(0, 2), -cameraToWorld.at(1, 2), -cameraToWorld.at(2, 2)};
+        }
         const float aimBlend = gun.aim() * gun.aim() * (3.0f - 2.0f * gun.aim());
         // A scope zooms in late, as the eye meets it; iron sights narrow the view a little.
         const float zoomIn = weapon.scoped ? aimBlend * aimBlend * aimBlend : aimBlend;
@@ -1781,6 +1868,7 @@ int main(int argc, char** argv) {
             renderer.submit(call);
             draws += 2;
         }
+        draws += door.draw(renderer, kDoorMotionId);
         // The effects, lit by roughly where the player is: open daylight or the hall.
         {
             const float lightLevel = 1.0f - 0.55f * indoorAt(eye);
@@ -1847,7 +1935,9 @@ int main(int argc, char** argv) {
             renderer.flushDebugLines(renderView, renderProjection);
         } else {
             // Looking through the scope, the rifle is behind the eye's view of it.
-            if (scopeView < 0.5f) draws += viewModel.draw(renderer, viewModelToWorld, kGunMotionId);
+            // Looking through the scope, or with the hands busy opening something,
+            // the gun isn't drawn.
+            if (scopeView < 0.5f && !door.busy()) draws += viewModel.draw(renderer, viewModelToWorld, kGunMotionId);
             if (gun.flash() > 0.0f && scopeView < 0.5f) {
                 iron::DrawCall flash;
                 flash.mesh = flashMesh;
@@ -1875,6 +1965,7 @@ int main(int argc, char** argv) {
         state.reloadProgress = gun.reloadProgress();
         state.weapon = weapon.label;
         state.scope = scopeView;
+        state.prompt = prompt;
         state.hitMarker = hitMarker;
         state.paused = paused;
         state.showFrame = showFrame;

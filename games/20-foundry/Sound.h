@@ -58,6 +58,8 @@ public:
         boltForward_ = load("bolt-forward");
         boltDown_ = load("bolt-down");
         roundIn_ = load("round-in");
+        doorLatch_ = load("door-latch");
+        doorOpen_ = load("door-open");
         for (int i = 0; i < 3; ++i) {
             shotTailsHall_.push_back(load("tailshot-hall" + std::to_string(i + 1)));
             shotTailsYard_.push_back(load("tailshot-yard" + std::to_string(i + 1)));
@@ -241,6 +243,16 @@ public:
         if (h) audio_.playSoundLocal(h, kHeadroom * gain, pitch);
     }
 
+    // A door's sounds, on its interaction's events: the lever's latch, the leaf
+    // swinging open on its hinges.
+    void door(std::string_view event) {
+        if (!aloud_) return;
+        const float pitch = 0.97f + random() * 0.06f;
+        if (event == "lever" && doorLatch_) audio_.playSoundLocal(doorLatch_, kHeadroom * 0.8f, pitch);
+        if (event == "push" && doorOpen_) audio_.playSoundLocal(doorOpen_, kHeadroom * 0.85f, pitch);
+        if (event == "reach") foley("grab");
+    }
+
     void impact(Surface surface, bool plate, Vec3 at) {
         if (!aloud_) return;
         const float pitch = 0.92f + random() * 0.16f;
@@ -351,6 +363,8 @@ private:
     iron::SoundHandle boltForward_ = iron::kInvalidSound;
     iron::SoundHandle boltDown_ = iron::kInvalidSound;
     iron::SoundHandle roundIn_ = iron::kInvalidSound;
+    iron::SoundHandle doorLatch_ = iron::kInvalidSound;
+    iron::SoundHandle doorOpen_ = iron::kInvalidSound;
     iron::SoundHandle tailHall_ = iron::kInvalidSound;
     iron::SoundHandle tailYard_ = iron::kInvalidSound;
     iron::SoundHandle magOut_ = iron::kInvalidSound;
