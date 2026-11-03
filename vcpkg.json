@@ -6,6 +6,7 @@
     "joltphysics",
     "meshoptimizer",
     "openal-soft",
+    "recastnavigation",
     "tinygltf",
     "vulkan-headers",
     "vulkan-loader",

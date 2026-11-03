@@ -8,6 +8,7 @@
 //   F       throw a smoke grenade
 //   F1      GPU frame breakdown
 //   F2      motion vectors  Esc           pause (Q then quits)
+//   F6      the navmesh the soldiers walk, and where each is headed
 //   Tab     engine view: watch from outside what the player's camera draws
 //
 // Any capture flag (--shot, --record, --benchmark) plays a scripted walk instead.
@@ -29,6 +30,7 @@
 //   freeze   freeze culling at the start
 //   noaa     start with anti-aliasing off
 //   engine   start in the engine view
+//   navmesh  show the navmesh (F6)
 
 #include "common/CaptureLoop.h"
 #include "common/TrackedText.h"
@@ -43,6 +45,7 @@
 #include "Soldier.h"
 #include "Sound.h"
 
+#include "ai/NavMesh.h"
 #include "audio/AudioEngine.h"
 #include "forge/ForgePlayer.h"
 #include "core/Application.h"
@@ -61,6 +64,7 @@
 
 #include <algorithm>
 #include <array>
+#include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <string>
@@ -503,7 +507,7 @@ public:
                                  "WASD  MOVE     CLICK  FIRE     RIGHT CLICK  AIM     R  RELOAD     1 2 3  WEAPONS     "
                                  "I  INSPECT     "
                                  "F1  FRAME     F2  MOTION     F3  FREEZE CULLING     F4  LODS     F5  AA     "
-                                 "TAB  ENGINE VIEW",
+                                 "F6  NAVMESH     TAB  ENGINE VIEW",
                                  cx, y + 29.0f * unit, 1.0f, 0.24f, {1.0f, 0.93f, 0.84f, hint});
         }
 
@@ -1024,6 +1028,7 @@ int main(int argc, char** argv) {
         float             yaw = 0.0f;
         float             speed = 0.0f;
         float             aim = 0.0f;
+        int               agent = -1;  // In the navmesh's crowd.
     };
     std::vector<Patrol> patrols;
     const auto patrol = [&](std::vector<Vec3> route, float pace) {
@@ -1047,6 +1052,49 @@ int main(int argc, char** argv) {
     Mat4 lastCamera = Mat4::identity();  // Last frame's camera, for an interaction to start from.
     // The leaf's collider, swapped for one along the wall once it stands open.
     iron::BodyId doorBody = world.createStaticBox(doorAt + Vec3{0.0f, 1.025f, -0.025f}, {0.45f, 1.025f, 0.025f});
+
+    // Where the soldiers can walk: a navmesh (Recast) of everything solid in the
+    // yard and the hall, the pump house door shut. What stands on top of things
+    // (container roofs, the catwalk, the bunker below) is meshed too, as islands
+    // nothing walks to; a DetourCrowd steers each soldier along his path and round
+    // the others.
+    iron::NavMesh nav;
+    {
+        std::vector<Vec3> verts;
+        std::vector<std::uint32_t> tris;
+        const auto addBox = [&](Vec3 centre, Vec3 half, float yaw) {
+            const auto base = static_cast<std::uint32_t>(verts.size());
+            const float c = std::cos(yaw), s = std::sin(yaw);
+            for (int i = 0; i < 8; ++i) {
+                const Vec3 l{(i & 1) ? half.x : -half.x, (i & 2) ? half.y : -half.y, (i & 4) ? half.z : -half.z};
+                verts.push_back(centre + Vec3{l.x * c + l.z * s, l.y, -l.x * s + l.z * c});
+            }
+            // Wound outward, so the tops face up.
+            static constexpr std::uint32_t kFaces[6][4] = {{0, 4, 6, 2}, {1, 3, 7, 5}, {0, 1, 5, 4},
+                                                           {2, 6, 7, 3}, {0, 2, 3, 1}, {4, 5, 7, 6}};
+            for (const auto& f : kFaces) {
+                tris.insert(tris.end(),
+                            {base + f[0], base + f[1], base + f[2], base + f[0], base + f[2], base + f[3]});
+            }
+        };
+        for (const foundry::SmokeCollider& c : colliders) addBox(c.centre, c.half, c.yaw);
+        addBox(doorAt + Vec3{0.0f, 1.025f, -0.025f}, {0.45f, 1.025f, 0.025f}, 0.0f);
+        iron::NavMeshSettings settings;
+        settings.boundsMin = {-36.0f, -4.0f, -70.0f};
+        settings.boundsMax = {36.0f, 16.0f, 38.0f};
+        const auto started = std::chrono::steady_clock::now();
+        if (nav.build(verts, tris, settings)) {
+            iron::Log::info("foundry: navmesh in %.0f ms",
+                            std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - started).count());
+        }
+        for (Patrol& p : patrols) {
+            p.agent = nav.addAgent(p.at, 0.35f, std::max(p.pace, 0.5f));
+            if (p.agent >= 0 && p.route.size() > 1) nav.setTarget(p.agent, p.route[1]);
+        }
+    }
+    bool showNav = sceneHas("navmesh");
+    std::vector<std::pair<Vec3, Vec3>> navEdges;
+    nav.edges(navEdges);
     float sprintBlend = 0.0f;
     // Winter mist over the yard, drifting in wisps, with the hall full of smoke; lit by
     // the low sun through the shadows and by every lamp (--scene nofog for none).
@@ -1265,6 +1313,7 @@ int main(int argc, char** argv) {
         if (input.keyPressed(GLFW_KEY_F3)) frozen = !frozen;
         if (input.keyPressed(GLFW_KEY_F4)) showLods = !showLods;
         if (input.keyPressed(GLFW_KEY_F5)) antiAliased = !antiAliased;
+        if (input.keyPressed(GLFW_KEY_F6)) showNav = !showNav;
         if (input.keyPressed(GLFW_KEY_TAB)) engineView = !engineView;
     };
     if (!scripted) app.window().setCursorCaptured(true);
@@ -2111,27 +2160,31 @@ int main(int argc, char** argv) {
         for (std::size_t i = 0; i < std::size(acts); ++i) {
             draws += acts[i]->draw(renderer, kDoorMotionId + 10u * static_cast<std::uint32_t>(i));
         }
-        // The soldiers: along their routes, turning into each leg; the guard (a
-        // route of one point) watches the player and shoulders his rifle when he's near.
+        // The soldiers: the crowd walks them along their routes on the navmesh; each
+        // faces the way he's going, and slows while he turns into a new leg. The
+        // guard (a route of one point) watches the player and shoulders his rifle
+        // when he's near.
+        nav.updateCrowd(simDt);
         for (std::size_t i = 0; i < patrols.size(); ++i) {
             Patrol& p = patrols[i];
-            float wantSpeed = 0.0f;
             float wantYaw = p.yaw;
             Vec2 aimOffset{0.0f, 0.0f};
+            if (p.agent >= 0) {
+                p.at = nav.agentPosition(p.agent);
+                const Vec3 v = nav.agentVelocity(p.agent);
+                const float ground = std::sqrt(v.x * v.x + v.z * v.z);
+                if (ground > 0.1f) wantYaw = std::atan2(-v.x, -v.z);
+                p.speed += (ground - p.speed) * std::min(simDt * 6.0f, 1.0f);
+            }
             if (p.route.size() > 1) {
-                Vec3 to = p.route[p.next] - p.at;
-                to.y = 0.0f;
-                if (iron::length(to) < 0.35f) {
+                if (nav.arrived(p.agent, 0.6f)) {
                     p.next = (p.next + 1) % p.route.size();
-                    to = p.route[p.next] - p.at;
-                    to.y = 0.0f;
+                    nav.setTarget(p.agent, p.route[p.next]);
                 }
-                wantYaw = std::atan2(-to.x, -to.z);
-                // Slows into each turn.
                 float turn = wantYaw - p.yaw;
                 while (turn > kPi) turn -= 2.0f * kPi;
                 while (turn < -kPi) turn += 2.0f * kPi;
-                wantSpeed = p.pace * std::clamp(1.0f - std::abs(turn) / 1.6f, 0.15f, 1.0f);
+                nav.setMaxSpeed(p.agent, p.pace * std::clamp(1.0f - std::abs(turn) / 1.6f, 0.15f, 1.0f));
                 p.aim += (0.0f - p.aim) * std::min(simDt * 3.0f, 1.0f);
             } else {
                 const Vec3 toPlayer = eye - (p.at + Vec3{0.0f, 1.5f, 0.0f});
@@ -2145,8 +2198,6 @@ int main(int argc, char** argv) {
             while (turn > kPi) turn -= 2.0f * kPi;
             while (turn < -kPi) turn += 2.0f * kPi;
             p.yaw += std::clamp(turn, -2.6f * simDt, 2.6f * simDt);
-            p.speed += (wantSpeed - p.speed) * std::min(simDt * 2.5f, 1.0f);
-            p.at = p.at + Vec3{-std::sin(p.yaw), 0.0f, -std::cos(p.yaw)} * (p.speed * simDt);
             p.soldier.update(simDt, p.at, p.yaw, p.speed, p.aim, aimOffset);
             draws += p.soldier.draw(renderer, kSoldierMotionBase + 10u * static_cast<std::uint32_t>(i));
         }
@@ -2215,6 +2266,20 @@ int main(int argc, char** argv) {
             }
             renderer.flushDebugLines(renderView, renderProjection);
         } else {
+            // The navmesh, coloured by height, and a line from each soldier to where he's headed.
+            if (showNav) {
+                const Vec3 lift{0.0f, 0.06f, 0.0f};
+                for (const auto& [a, b] : navEdges) {
+                    const float h = std::clamp((a.y + 3.5f) / 12.0f, 0.0f, 1.0f);
+                    renderer.drawLineOverlay(a + lift, b + lift, Vec3{0.2f + 0.8f * h, 0.9f, 1.0f - 0.7f * h});
+                }
+                for (const Patrol& p : patrols) {
+                    if (p.route.size() > 1) {
+                        renderer.drawLineOverlay(p.at + lift, p.route[p.next] + lift, {1.0f, 0.45f, 0.2f});
+                    }
+                }
+                renderer.flushDebugLines(renderView, renderProjection);
+            }
             // Looking through the scope, the rifle is behind the eye's view of it.
             // Looking through the scope, or with the hands busy opening something,
             // the gun isn't drawn.

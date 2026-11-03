@@ -38,6 +38,7 @@ add_library(ironcore STATIC
   physics/Ballistics.cpp
   physics/Ragdoll.cpp
   physics/CharacterController.cpp
+  ai/NavMesh.cpp
   asset/GltfLoader.cpp
   asset/AnimationPlayer.cpp
   asset/Pose.cpp
@@ -98,6 +99,11 @@ target_link_libraries(ironcore PRIVATE
 # Level-of-detail meshes are simplified with meshoptimizer (MIT).
 find_package(meshoptimizer CONFIG REQUIRED)
 target_link_libraries(ironcore PRIVATE meshoptimizer::meshoptimizer)
+
+# Navigation meshes, paths and crowds: Recast/Detour (zlib), behind NavMesh's pimpl.
+find_package(recastnavigation CONFIG REQUIRED)
+target_link_libraries(ironcore PRIVATE
+  RecastNavigation::Recast RecastNavigation::Detour RecastNavigation::DetourCrowd)
 
 # M29 — scene serialization uses nlohmann/json (header-only, vendored).
 # PUBLIC: M39 ReflectionIO.h includes <nlohmann/json.hpp> in its template
