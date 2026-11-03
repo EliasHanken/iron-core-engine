@@ -55,9 +55,33 @@ static void paths_go_round_walls() {
     for (const Vec3& c : corners) passedEnd = passedEnd || c.x > 6.0f;
     CHECK(passedEnd);
 
+    // Both sides of the wall are one island (joined round its end); a box too
+    // high to climb is an island of its own on top.
+    CHECK(nav.island({-5.0f, 0.0f, -5.0f}) == nav.island({-5.0f, 0.0f, 5.0f}));
+    CHECK(nav.island({-5.0f, 0.0f, -5.0f}) >= 0);
+    CHECK(nav.island({50.0f, 0.0f, 0.0f}) == -1);
+
     // No path onto the top of the wall (too high a step).
     Vec3 on;
     CHECK(!nav.nearest({0.0f, 3.0f, 0.0f}, on, {0.1f, 0.1f, 0.1f}));
+}
+
+static void a_shut_room_is_its_own_island() {
+    std::vector<Vec3> v;
+    std::vector<std::uint32_t> idx;
+    box(v, idx, {-10.0f, -0.2f, -10.0f}, {10.0f, 0.0f, 10.0f});
+    // Four walls round a 4 x 4 m room, no door.
+    box(v, idx, {2.0f, 0.0f, 2.0f}, {8.0f, 3.0f, 2.3f});
+    box(v, idx, {2.0f, 0.0f, 7.7f}, {8.0f, 3.0f, 8.0f});
+    box(v, idx, {2.0f, 0.0f, 2.0f}, {2.3f, 3.0f, 8.0f});
+    box(v, idx, {7.7f, 0.0f, 2.0f}, {8.0f, 3.0f, 8.0f});
+    NavMesh nav;
+    CHECK(nav.build(v, idx));
+    const int outside = nav.island({-5.0f, 0.0f, -5.0f});
+    const int inside = nav.island({5.0f, 0.0f, 5.0f});
+    CHECK(outside >= 0 && inside >= 0 && outside != inside);
+    std::vector<Vec3> corners;
+    CHECK(!nav.findPath({-5.0f, 0.0f, -5.0f}, {5.0f, 0.0f, 5.0f}, corners));
 }
 
 static void a_crowd_agent_walks_to_its_target() {
@@ -102,6 +126,7 @@ static void random_points_land_on_the_mesh() {
 
 int main() {
     paths_go_round_walls();
+    a_shut_room_is_its_own_island();
     a_crowd_agent_walks_to_its_target();
     random_points_land_on_the_mesh();
     return iron_test_result();

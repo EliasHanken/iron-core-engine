@@ -39,6 +39,8 @@ add_library(ironcore STATIC
   physics/Ragdoll.cpp
   physics/CharacterController.cpp
   ai/NavMesh.cpp
+  ai/BehaviorTree.cpp
+  ai/Perception.cpp
   asset/GltfLoader.cpp
   asset/AnimationPlayer.cpp
   asset/Pose.cpp

@@ -8,7 +8,7 @@
 //   F       throw a smoke grenade
 //   F1      GPU frame breakdown
 //   F2      motion vectors  Esc           pause (Q then quits)
-//   F6      the navmesh the soldiers walk, and where each is headed
+//   F6      the AI: the navmesh, cover, and what each soldier sees and is doing
 //   Tab     engine view: watch from outside what the player's camera draws
 //
 // Any capture flag (--shot, --record, --benchmark) plays a scripted walk instead.
@@ -30,7 +30,9 @@
 //   freeze   freeze culling at the start
 //   noaa     start with anti-aliasing off
 //   engine   start in the engine view
-//   navmesh  show the navmesh (F6)
+//   navmesh  show the AI view (F6)
+//   ailog    log each change in what each soldier's doing
+//   followN  watch soldier N (0-4) over his shoulder
 
 #include "common/CaptureLoop.h"
 #include "common/TrackedText.h"
@@ -43,6 +45,7 @@
 #include "Arsenal.h"
 #include "Interaction.h"
 #include "Soldier.h"
+#include "Squad.h"
 #include "Sound.h"
 
 #include "ai/NavMesh.h"
@@ -392,6 +395,12 @@ public:
         float cpuMs = 0.0f;
         int   draws = 0;
         iron::CullStats cull;
+        struct Label {
+            float       x, y;  // Pixels.
+            std::string text;
+            Vec3        colour;
+        };
+        std::vector<Label> labels;
     };
 
     void draw(iron::Renderer& renderer, const State& s, std::span<const iron::GpuTiming> timings, int width,
@@ -509,6 +518,11 @@ public:
                                  "F1  FRAME     F2  MOTION     F3  FREEZE CULLING     F4  LODS     F5  AA     "
                                  "F6  NAVMESH     TAB  ENGINE VIEW",
                                  cx, y + 29.0f * unit, 1.0f, 0.24f, {1.0f, 0.93f, 0.84f, hint});
+        }
+
+        for (const State::Label& l : s.labels) {
+            text::appendCentered(smallText, small_, l.text.c_str(), l.x, l.y, 1.25f, 0.16f,
+                                 {l.colour.x, l.colour.y, l.colour.z, 0.95f});
         }
 
         // What the debug views show, one line at the top.
@@ -1014,37 +1028,10 @@ int main(int argc, char** argv) {
         act->showProp(false);
     }
     float vaultSpeed = 0.0f;  // The run going into a vault, carried on after it.
-    // Soldiers (Rocketbox, mocap'd; tools/foundry/npc). For now they walk patrol
-    // loops round the yard, and the guard by the hall door raises his rifle at the
-    // player when he's close: the AI comes next.
+    // Soldiers (Rocketbox, mocap'd; tools/foundry/npc), the squad (Squad.h) made
+    // below once there's a navmesh for them to walk.
     foundry::SoldierLook soldierLook;
     if (!soldierLook.load(renderer, models, iron::executableDir() + "/assets/models/npc/soldier.gltf")) return 1;
-    struct Patrol {
-        foundry::Soldier  soldier;
-        std::vector<Vec3> route;   // Walked round in order; one point stands guard.
-        float             pace;    // m/s.
-        std::size_t       next = 1;
-        Vec3              at{};
-        float             yaw = 0.0f;
-        float             speed = 0.0f;
-        float             aim = 0.0f;
-        int               agent = -1;  // In the navmesh's crowd.
-    };
-    std::vector<Patrol> patrols;
-    const auto patrol = [&](std::vector<Vec3> route, float pace) {
-        Patrol p{foundry::Soldier(soldierLook), std::move(route), pace};
-        p.at = p.route.front();
-        if (p.route.size() > 1) {
-            const Vec3 d = p.route[1] - p.at;
-            p.yaw = std::atan2(-d.x, -d.z);
-        }
-        patrols.push_back(std::move(p));
-    };
-    patrol({{-4.0f, 0.0f, 12.0f}, {6.5f, 0.0f, 12.0f}, {6.5f, 0.0f, 3.0f}, {-4.0f, 0.0f, 3.0f}}, 1.0f);
-    patrol({{6.5f, 0.0f, 3.5f}, {-4.0f, 0.0f, 3.5f}, {-4.0f, 0.0f, 12.5f}, {6.5f, 0.0f, 12.5f}}, 1.0f);
-    patrol({{13.0f, 0.0f, 22.0f}, {13.0f, 0.0f, -8.0f}}, 1.5f);
-    patrol({{-26.0f, 0.0f, -9.0f}, {26.0f, 0.0f, -9.0f}}, 2.9f);
-    patrol({{3.0f, 0.0f, -16.5f}}, 0.0f);
     foundry::Interaction* const acts[] = {&door, &hatch, &rope, &mantleLow, &mantleHigh, &vault};
     const auto acting = [&]() {
         return std::any_of(std::begin(acts), std::end(acts), [](const foundry::Interaction* a) { return a->busy(); });
@@ -1087,11 +1074,19 @@ int main(int argc, char** argv) {
             iron::Log::info("foundry: navmesh in %.0f ms",
                             std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - started).count());
         }
-        for (Patrol& p : patrols) {
-            p.agent = nav.addAgent(p.at, 0.35f, std::max(p.pace, 0.5f));
-            if (p.agent >= 0 && p.route.size() > 1) nav.setTarget(p.agent, p.route[1]);
-        }
     }
+    // The squad: two pairs walking the crate yard, one up and down the yard's
+    // east side, one along the hall front, and a guard on the hall door.
+    foundry::Squad squad(nav, foundry::findCover(colliders, nav));
+    iron::Log::info("foundry: %zu cover points", squad.cover().size());
+    squad.log = sceneHas("ailog");
+    squad.add(soldierLook, "ADAMS", {{-4.0f, 0.0f, 12.0f}, {6.5f, 0.0f, 12.0f}, {6.5f, 0.0f, 3.0f}, {-4.0f, 0.0f, 3.0f}},
+              1.0f);
+    squad.add(soldierLook, "BAKER", {{6.5f, 0.0f, 3.5f}, {-4.0f, 0.0f, 3.5f}, {-4.0f, 0.0f, 12.5f}, {6.5f, 0.0f, 12.5f}},
+              1.0f);
+    squad.add(soldierLook, "CRUZ", {{11.0f, 0.0f, 22.0f}, {11.0f, 0.0f, -8.0f}}, 1.4f);
+    squad.add(soldierLook, "DIAZ", {{-26.0f, 0.0f, -9.0f}, {26.0f, 0.0f, -9.0f}}, 1.2f);
+    squad.add(soldierLook, "EVANS", {{3.0f, 0.0f, -16.5f}}, 0.0f, kPi);
     bool showNav = sceneHas("navmesh");
     std::vector<std::pair<Vec3, Vec3>> navEdges;
     nav.edges(navEdges);
@@ -1152,6 +1147,18 @@ int main(int argc, char** argv) {
         }
     }
     foundry::Smoke smoke;
+    // What a soldier can see of a point: rays to it and half a metre below (head
+    // and chest, for the player), stopping short of the body itself; then smoke.
+    foundry::Senses senses;
+    senses.visibility = [&](Vec3 from, Vec3 to) {
+        float clear = 0.0f;
+        for (const Vec3 point : {to, to - Vec3{0.0f, 0.5f, 0.0f}}) {
+            const Vec3 d = point - from;
+            const float dist = iron::length(d);
+            if (dist < 0.5f || !world.raycast(from, d * (1.0f / dist), dist - 0.45f).hit) clear += 0.5f;
+        }
+        return clear > 0.0f ? clear * smoke.sightThrough(from, to) : 0.0f;
+    };
     {
         // The hall's air: the furnace's door at the back, steam pipes along the left wall.
         using namespace foundry::layout;
@@ -1604,6 +1611,7 @@ int main(int argc, char** argv) {
             if (stepDistance > stride) {
                 stepDistance -= stride;
                 sound.step(floorAt(feet), feet, running ? 0.8f : 0.55f);
+                squad.noise(feet, running ? 11.0f : 4.0f, false, true);
             }
         }
 
@@ -1796,6 +1804,7 @@ int main(int argc, char** argv) {
         smokePressed = false;
         for (const Vec3& at : grenadeEvents.smokes) {
             smoke.start(at);
+            squad.noise(at, 18.0f, false, false);
             sound.smoke(at);
         }
         for (const Vec3& at : grenadeEvents.blasts) {
@@ -1833,6 +1842,7 @@ int main(int argc, char** argv) {
             smoke.start(at, foundry::Smoke::Kind::Soot);
             const float distance = iron::length(at - eye);
             sound.blast(at, distance);
+            squad.noise(at, 110.0f, true, false);
             sound.deafen(std::clamp(1.0f - distance / 16.0f, 0.0f, 1.0f));
             trauma = std::min(trauma + 1.1f * std::clamp(1.0f - distance / 28.0f, 0.0f, 1.0f), 1.0f);
             blastKick = std::min(blastKick + std::clamp(1.0f - distance / 22.0f, 0.0f, 1.0f), 1.0f);
@@ -1851,6 +1861,7 @@ int main(int argc, char** argv) {
             ++shotCount;
             flashRoll = noise.next() * kPi;
             sound.shot(weapon.arm);
+            squad.noise(eye, 90.0f, true, true);
             vfx.emit("muzzle", muzzle, aimDir, weapon.arm == foundry::Arm::Sniper ? 14u : 4u);
             const Vec2 dev = gun.shotDeviation();
             const Vec3 dir = lookDirection(viewYaw + dev.x, viewPitch + dev.y);
@@ -2042,6 +2053,17 @@ int main(int argc, char** argv) {
             const Vec3 side = transformPoint(cameraToWorld, {sceneHas("left") ? -0.5f : 0.55f, 0.0f, -0.2f});
             const Vec3 at = transformPoint(cameraToWorld, {0.05f, -0.2f, -0.3f});
             renderView = iron::lookAt(side, at, {0.0f, 1.0f, 0.0f});
+        } else if (sceneHas("follow")) {
+            // --scene followN: over the shoulder of soldier N, to watch him work.
+            int k = 0;
+            for (int n = 0; n < 5; ++n) {
+                if (sceneHas(("follow" + std::to_string(n)).c_str())) k = n;
+            }
+            const foundry::Enemy& e = *squad.enemies()[static_cast<std::size_t>(k)];
+            const Vec3 back{std::sin(e.yaw), 0.0f, std::cos(e.yaw)};
+            const Vec3 right{std::cos(e.yaw), 0.0f, -std::sin(e.yaw)};
+            renderView = iron::lookAt(e.at + back * 3.2f + right * 1.6f + Vec3{0.0f, 1.9f, 0.0f},
+                                      e.at + Vec3{0.0f, 1.1f, 0.0f}, {0.0f, 1.0f, 0.0f});
         } else if (sceneHas("overview")) {
             // High over the yard's back wall, turning slowly to take in the stockyard.
             const float a = 0.6f + seconds * 0.05f;
@@ -2160,47 +2182,10 @@ int main(int argc, char** argv) {
         for (std::size_t i = 0; i < std::size(acts); ++i) {
             draws += acts[i]->draw(renderer, kDoorMotionId + 10u * static_cast<std::uint32_t>(i));
         }
-        // The soldiers: the crowd walks them along their routes on the navmesh; each
-        // faces the way he's going, and slows while he turns into a new leg. The
-        // guard (a route of one point) watches the player and shoulders his rifle
-        // when he's near.
-        nav.updateCrowd(simDt);
-        for (std::size_t i = 0; i < patrols.size(); ++i) {
-            Patrol& p = patrols[i];
-            float wantYaw = p.yaw;
-            Vec2 aimOffset{0.0f, 0.0f};
-            if (p.agent >= 0) {
-                p.at = nav.agentPosition(p.agent);
-                const Vec3 v = nav.agentVelocity(p.agent);
-                const float ground = std::sqrt(v.x * v.x + v.z * v.z);
-                if (ground > 0.1f) wantYaw = std::atan2(-v.x, -v.z);
-                p.speed += (ground - p.speed) * std::min(simDt * 6.0f, 1.0f);
-            }
-            if (p.route.size() > 1) {
-                if (nav.arrived(p.agent, 0.6f)) {
-                    p.next = (p.next + 1) % p.route.size();
-                    nav.setTarget(p.agent, p.route[p.next]);
-                }
-                float turn = wantYaw - p.yaw;
-                while (turn > kPi) turn -= 2.0f * kPi;
-                while (turn < -kPi) turn += 2.0f * kPi;
-                nav.setMaxSpeed(p.agent, p.pace * std::clamp(1.0f - std::abs(turn) / 1.6f, 0.15f, 1.0f));
-                p.aim += (0.0f - p.aim) * std::min(simDt * 3.0f, 1.0f);
-            } else {
-                const Vec3 toPlayer = eye - (p.at + Vec3{0.0f, 1.5f, 0.0f});
-                const float away = iron::length(toPlayer);
-                const bool alert = away < 15.0f;
-                if (alert) wantYaw = std::atan2(-toPlayer.x, -toPlayer.z);
-                p.aim += ((alert ? 1.0f : 0.0f) - p.aim) * std::min(simDt * 3.0f, 1.0f);
-                aimOffset.y = std::asin(std::clamp(toPlayer.y / std::max(away, 1e-3f), -1.0f, 1.0f));
-            }
-            float turn = wantYaw - p.yaw;
-            while (turn > kPi) turn -= 2.0f * kPi;
-            while (turn < -kPi) turn += 2.0f * kPi;
-            p.yaw += std::clamp(turn, -2.6f * simDt, 2.6f * simDt);
-            p.soldier.update(simDt, p.at, p.yaw, p.speed, p.aim, aimOffset);
-            draws += p.soldier.draw(renderer, kSoldierMotionBase + 10u * static_cast<std::uint32_t>(i));
-        }
+        // The squad: sees, hears, thinks, moves.
+        senses.playerEye = eye;
+        squad.update(simDt, senses);
+        draws += squad.draw(renderer, kSoldierMotionBase);
         // The effects, lit by roughly where the player is: open daylight or the hall.
         {
             const float lightLevel = 1.0f - 0.55f * indoorAt(eye);
@@ -2273,11 +2258,7 @@ int main(int argc, char** argv) {
                     const float h = std::clamp((a.y + 3.5f) / 12.0f, 0.0f, 1.0f);
                     renderer.drawLineOverlay(a + lift, b + lift, Vec3{0.2f + 0.8f * h, 0.9f, 1.0f - 0.7f * h});
                 }
-                for (const Patrol& p : patrols) {
-                    if (p.route.size() > 1) {
-                        renderer.drawLineOverlay(p.at + lift, p.route[p.next] + lift, {1.0f, 0.45f, 0.2f});
-                    }
-                }
+                squad.debugLines(renderer);
                 renderer.flushDebugLines(renderView, renderProjection);
             }
             // Looking through the scope, the rifle is behind the eye's view of it.
@@ -2342,6 +2323,19 @@ int main(int argc, char** argv) {
         state.cull = renderer.cullStats();
         state.cpuMs = static_cast<float>((glfwGetTime() - cpuStart) * 1000.0);
         state.draws = draws;
+        if (showNav) {
+            std::vector<foundry::Squad::Label> labels;
+            squad.labels(labels);
+            const Mat4 viewProjection = renderProjection * renderView;
+            for (const auto& l : labels) {
+                const iron::Vec4 clip = viewProjection * iron::Vec4{l.at.x, l.at.y, l.at.z, 1.0f};
+                if (clip.w < 0.5f || clip.w > 60.0f) continue;
+                const float x = (clip.x / clip.w * 0.5f + 0.5f) * static_cast<float>(width);
+                const float y = (0.5f - clip.y / clip.w * 0.5f) * static_cast<float>(height);
+                state.labels.push_back({x, y + (static_cast<float>(l.line) - 0.5f) * 20.0f * height / 1080.0f, l.text,
+                                        l.colour});
+            }
+        }
         screen.draw(renderer, state, renderer.gpuTimings(), width, height);
     };
 

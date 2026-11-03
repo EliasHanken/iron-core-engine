@@ -51,6 +51,10 @@ public:
     bool nearest(Vec3 point, Vec3& onMesh, Vec3 reach = {2.0f, 4.0f, 2.0f}) const;
     // A random point on the mesh, reachable from `around`, within `radius` of it.
     bool randomPointNear(Vec3 around, float radius, std::uint32_t seed, Vec3& out) const;
+    // Which connected piece of the mesh `point` stands on (the yard, a roof, a
+    // shut room): two points can reach each other only on the same island. -1 off
+    // the mesh. Cheap after the first call.
+    int island(Vec3 point) const;
     // Every polygon's edges, for drawing the mesh.
     void edges(std::vector<std::pair<Vec3, Vec3>>& out) const;
     int polygonCount() const;
