@@ -9,6 +9,8 @@ Fetched at build time through vcpkg or CMake, unless the table says otherwise.
 | Library | Used for | Licence |
 |---|---|---|
 | [Jolt Physics](https://github.com/jrouwe/JoltPhysics) | Rigid bodies and character physics | MIT |
+| [Recast & Detour](https://github.com/recastnavigation/recastnavigation) | Navigation meshes, paths and crowds | Zlib |
+| [meshoptimizer](https://github.com/zeux/meshoptimizer) | Level-of-detail meshes | MIT |
 | [GameNetworkingSockets](https://github.com/ValveSoftware/GameNetworkingSockets) | Networking | BSD-3-Clause |
 | [OpenAL Soft](https://github.com/kcat/openal-soft) | Audio, linked as a replaceable DLL | LGPL-2.1-or-later |
 | [Dear ImGui](https://github.com/ocornut/imgui) | Editor UI | MIT |
