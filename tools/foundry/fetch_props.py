@@ -23,6 +23,8 @@ PROPS = [
     "metal_trash_can", "rusted_wheel_rim_01", "water_manhole_cover", "covered_car", "security_camera_01",
     "modular_chainlink_fence", "metal_jerrycan_green", "plastic_jerrycan", "industrial_caged_sconce",
     "industrial_pastic_container",
+    # The environment pass: winter grass through the yard's cracks.
+    "grass_medium_01",
 ]
 RESOLUTION = "1k"
 

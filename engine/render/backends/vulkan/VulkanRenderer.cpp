@@ -788,7 +788,7 @@ void VulkanRenderer::recordSceneDraw(VkCommandBuffer cb, const DrawCall& call, c
     ubo.cameraPos = Vec4{pendingCameraPos_.x,
                          pendingCameraPos_.y,
                          pendingCameraPos_.z,
-                         0.0f};
+                         shaderTime_};
     ubo.materialParams = Vec4{
         call.material.uvScale,
         call.material.roughness,
@@ -1074,7 +1074,7 @@ void VulkanRenderer::recordSkinnedDraw(VkCommandBuffer cb,
     ubo.cameraPos = Vec4{pendingCameraPos_.x,
                          pendingCameraPos_.y,
                          pendingCameraPos_.z,
-                         0.0f};
+                         shaderTime_};
     ubo.materialParams = Vec4{
         call.material.uvScale,
         call.material.roughness,

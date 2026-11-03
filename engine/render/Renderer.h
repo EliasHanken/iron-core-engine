@@ -321,6 +321,10 @@ public:
     // ran. A frame or two old, so reading it never waits. Empty where unsupported.
     virtual std::span<const GpuTiming> gpuTimings() const { return {}; }
 
+    // A clock for shaders that move vertices (grass in the wind, water), in
+    // seconds: lit shaders read it as u.cameraPos.w. Set once a frame.
+    virtual void setShaderTime(float seconds) { (void)seconds; }
+
     // --- Instance groups: GPU-driven drawing (see InstanceGroup.h) ---
     // A shader for instance groups: its vertex stage reads each instance's transform
     // from bindings 16 and 17. kInvalidHandle where unsupported.
