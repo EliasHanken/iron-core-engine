@@ -46,6 +46,11 @@ void SkeletalAnimator::setBaseWeight(const AnimationClip* clip, float weight) {
     }
 }
 
+void SkeletalAnimator::setBaseUnsynced(const AnimationClip* clip, bool unsynced) {
+    std::erase(unsynced_, clip);
+    if (unsynced) unsynced_.push_back(clip);
+}
+
 void SkeletalAnimator::setBaseRate(const AnimationClip* clip, float rate) {
     for (Base& b : base_) {
         if (b.clip == clip) b.rate = std::max(rate, 0.0f);
@@ -124,14 +129,18 @@ const std::vector<SkeletalAnimator::Fired>& SkeletalAnimator::update(float dt) {
         // One phase for all: it moves at the weighted average of their laps a second.
         float weights = 0.0f;
         float laps = 0.0f;
+        const auto apart = [&](const AnimationClip* c) {
+            return std::find(unsynced_.begin(), unsynced_.end(), c) != unsynced_.end();
+        };
         for (const Base& b : base_) {
+            if (apart(b.clip)) continue;
             weights += b.weight;
             laps += b.weight * b.rate / std::max(b.clip->duration, 1e-4f);
         }
-        phase_ = wrap(phase_ + dt * laps / std::max(weights, 1e-6f), 1.0f);
+        if (weights > 1e-6f) phase_ = wrap(phase_ + dt * laps / weights, 1.0f);
         for (Base& b : base_) {
             const float from = b.time;
-            b.time = phase_ * b.clip->duration;
+            b.time = apart(b.clip) ? wrap(b.time + dt * b.rate, b.clip->duration) : phase_ * b.clip->duration;
             if (dt > 0.0f) collect(b.clip, from, b.time, true);
         }
     } else {

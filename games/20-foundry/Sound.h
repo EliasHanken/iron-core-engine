@@ -78,6 +78,9 @@ public:
         hits_[static_cast<int>(Surface::Wood)] = {load("hit-wood1", "hit"), load("hit-wood2", "hit"),
                                                   load("hit-wood3", "hit")};
         ricochet_ = load("ricochet");
+        for (const char* n : {"flyby1", "flyby2", "flyby3"}) flybys_.push_back(load(n, "ricochet"));
+        for (const char* n : {"hit-body1", "hit-body2", "hit-body3"}) bodyHits_.push_back(load(n, "hit"));
+        for (const char* n : {"bodyfall1", "bodyfall2"}) bodyfalls_.push_back(load(n));
         for (const char* n : {"plate1", "plate2", "plate3"}) plates_.push_back(load(n, "hit"));
         steps_[static_cast<int>(Floor::Ground)] = {load("step-ground1", "footstep-01"), load("step-ground2", "footstep-02")};
         steps_[static_cast<int>(Floor::Concrete)] = {load("step-concrete1", "footstep-03"),
@@ -271,6 +274,49 @@ public:
         }
     }
 
+    // An enemy rifle `distance` metres off: the same takes as the player's, at the
+    // shooter, and the space answering louder against it the further off it is.
+    void enemyShot(Vec3 at, float distance) {
+        if (!aloud_ || shots_.empty()) return;
+        const auto h = pick(shots_);
+        if (h) audio_.playSoundAt(h, at, kHeadroom * 2.2f, 0.95f + random() * 0.08f);
+        const float far = std::clamp(distance / 50.0f, 0.0f, 1.0f);
+        const std::size_t tail = static_cast<std::size_t>(random() * 2.99f);
+        if (tail < shotTailsYard_.size() && shotTailsYard_[tail] && indoor_ < 0.98f) {
+            audio_.playSoundLocal(shotTailsYard_[tail], kHeadroom * (0.15f + 0.3f * far) * (1.0f - indoor_),
+                                  0.95f + random() * 0.06f);
+        }
+        if (tail < shotTailsHall_.size() && shotTailsHall_[tail] && indoor_ > 0.02f) {
+            audio_.playSoundLocal(shotTailsHall_[tail], kHeadroom * (0.15f + 0.25f * far) * indoor_,
+                                  0.95f + random() * 0.06f);
+        }
+    }
+
+    // A round going past the head, from where it passed closest.
+    void flyby(Vec3 at) {
+        if (aloud_ && !flybys_.empty()) {
+            if (const auto h = pick(flybys_)) audio_.playSoundAt(h, at, kHeadroom * 1.8f, 0.94f + random() * 0.12f);
+        }
+    }
+
+    // A round into a body: a soldier's, or (at the ear) the player's own.
+    void bodyHit(Vec3 at) {
+        if (aloud_ && !bodyHits_.empty()) {
+            if (const auto h = pick(bodyHits_)) audio_.playSoundAt(h, at, kHeadroom * 1.5f, 0.92f + random() * 0.14f);
+        }
+    }
+    void hurt() {
+        if (aloud_ && !bodyHits_.empty()) {
+            if (const auto h = pick(bodyHits_)) audio_.playSoundLocal(h, kHeadroom * 1.6f, 0.85f + random() * 0.1f);
+        }
+        duck_ = std::max(duck_, 0.6f);
+    }
+    void bodyfall(Vec3 at) {
+        if (aloud_ && !bodyfalls_.empty()) {
+            if (const auto h = pick(bodyfalls_)) audio_.playSoundAt(h, at, kHeadroom * 1.3f, 0.93f + random() * 0.1f);
+        }
+    }
+
     // A grenade going off `distance` metres away: the blast, the beds pushed right
     // down, the space's tail, then what it threw coming back down.
     void blast(Vec3 at, float distance) {
@@ -323,6 +369,10 @@ public:
     }
 
 private:
+    iron::SoundHandle pick(const std::vector<iron::SoundHandle>& set) {
+        return set[static_cast<std::size_t>(random() * (static_cast<float>(set.size()) - 0.01f))];
+    }
+
     iron::SoundHandle load(const std::string& name, const std::string& fallback = "") {
         const auto packed = pak_.find(name);
         if (packed != pak_.end()) {
@@ -388,6 +438,9 @@ private:
     std::vector<iron::SoundHandle> shotTailsHall_;
     std::vector<iron::SoundHandle> shotTailsYard_;
     std::vector<iron::SoundHandle> casings_;
+    std::vector<iron::SoundHandle> flybys_;
+    std::vector<iron::SoundHandle> bodyHits_;
+    std::vector<iron::SoundHandle> bodyfalls_;
     std::vector<iron::SoundHandle> plates_;
     std::vector<iron::SoundHandle> works_;
     std::array<std::vector<iron::SoundHandle>, static_cast<int>(Surface::Count)> hits_;

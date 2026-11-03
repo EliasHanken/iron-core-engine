@@ -163,6 +163,22 @@ LAYERED = [
         ("Impacts Hard - Short Wobbly", 0.0, 0.6, -15.0, (100, 6000)),
         ("Rustles - Pile, Debris 22", 0.0, 0.6, -24.0, (500, 12000), 0.03), s))
       for i, s in enumerate([0.0, -1.5, 1.0])],
+    # Enemy rounds going past the head: a supersonic round's whip through the air,
+    # with the crack of its shock wave on the front of it.
+    *[(f"flyby{i + 1}", 1, [(f"bullet_flyby_fast_0{src}", 0.0, 0.5, -14.0, (300, 15000), semis, 0.0, None),
+                            (L85_1M, f"onset:{k}", 0.06, -21.0, (2500, 16000), semis + 3.0, 0.0, 0.015)])
+      for i, (src, semis, k) in enumerate([(6, 0.0, 0), (5, 1.0, 1), (6, -1.5, 2)])],
+    # A round into a body: the slap of the strike, the thump through it, something wet.
+    *[(f"hit-body{i + 1}", 1, [("bullet_impact_body_thump_02", 0.0, 0.45, -14.0, (150, 12000), s, 0.0, None),
+                               ("punch_general_body_impact_03", 0.0, 0.4, -17.0, (60, 3000), s, 0.0, None),
+                               ("GORE Impact stab dagger", "onset:0", 0.3, -25.0, (800, 12000), s, 0.0, 0.05)])
+      for i, s in enumerate([0.0, -1.5, 1.5])],
+    # A body coming down on concrete, with a dirt fall's weight under it.
+    *[(f"bodyfall{i + 1}", 1, [("RL_bodyfall_Concrete_Generic_Feet_Mid_Mono_Med_Impact_02", 0.0, 1.1, -14.0,
+                                (60, 12000), s, 0.0, None),
+                               ("RL_bodyfall_Dirt_M4_Close_Stereo_Hard_Impact_10", 0.0, 1.1, -19.0, (40, 4000),
+                                s - 1.0, 0.0, None)])
+      for i, s in enumerate([0.0, -2.0])],
     # Handling for the pistol and the bolt-action, layered the same way; a start of
     # "onset:k" is the source's k-th transient, found by onsets().
     # The pistol's slide: racked back, and let fly home.

@@ -177,7 +177,32 @@ static void looping_events_fire_every_lap() {
     CHECK(anim.update(0.9f).size() == 1);
 }
 
+static void unsynced_clips_keep_their_own_time() {
+    const Skeleton sk = oneBone();
+    const AnimationClip walk = slide("walk", 0.0f, 1.0f, 1.0f);
+    const AnimationClip idle = slide("idle", 0.0f, 1.0f, 10.0f);
+    SkeletalAnimator anim;
+    anim.setSkeleton(&sk);
+    anim.setSyncedBase(true);
+    anim.setBaseUnsynced(&idle);
+    anim.setBaseWeight(&walk, 0.5f);
+    anim.setBaseWeight(&idle, 0.5f);
+    anim.update(0.25f);
+    anim.evaluate();
+    // The walk is a quarter through (not slowed by the long idle), the idle a
+    // fortieth: their mean x is (0.25 + 0.025) / 2.
+    CHECK_NEAR(x(anim), 0.1375f);
+    // Out of the list at weight 0 and back, it's still out of the group.
+    anim.setBaseWeight(&idle, 0.0f);
+    anim.setBaseWeight(&idle, 1.0f);
+    anim.setBaseWeight(&walk, 0.0f);
+    anim.update(0.5f);
+    anim.evaluate();
+    CHECK_NEAR(x(anim), 0.05f);
+}
+
 int main() {
+    unsynced_clips_keep_their_own_time();
     base_weights_average();
     base_rates_and_sync();
     bone_turns_rotate_in_skeleton_space();

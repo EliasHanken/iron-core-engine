@@ -129,6 +129,9 @@ inline Quat slerp(const Quat& a, const Quat& b, float t) {
 // quatLookAt test for the +Y look-direction case).
 Quat quatLookAt(Vec3 eye, Vec3 target, Vec3 up);
 
+// The rotation in a transform (its upper 3x3, any scale divided out).
+Quat quatFromRotation(const Mat4& m);
+
 // --- Euler (degrees, intrinsic XYZ) <-> quaternion, for editor rotation UI ---
 // Not for animation/runtime math (use quaternions directly); these exist so a
 // Details-panel can show/edit rotation as human-readable degrees.

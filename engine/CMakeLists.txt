@@ -37,6 +37,7 @@ add_library(ironcore STATIC
   physics/PhysicsWorld.cpp
   physics/Ballistics.cpp
   physics/Ragdoll.cpp
+  physics/SkinnedRagdoll.cpp
   physics/CharacterController.cpp
   ai/NavMesh.cpp
   ai/BehaviorTree.cpp

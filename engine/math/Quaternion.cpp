@@ -75,4 +75,11 @@ Quat quatLookAt(Vec3 eye, Vec3 target, Vec3 up) {
     return quatFromBasis(xAxis, yAxis, zAxis);
 }
 
+Quat quatFromRotation(const Mat4& m) {
+    const Vec3 x = normalize(Vec3{m.at(0, 0), m.at(1, 0), m.at(2, 0)});
+    const Vec3 y = normalize(Vec3{m.at(0, 1), m.at(1, 1), m.at(2, 1)});
+    const Vec3 z = normalize(Vec3{m.at(0, 2), m.at(1, 2), m.at(2, 2)});
+    return quatFromBasis(x, y, z);
+}
+
 }  // namespace iron

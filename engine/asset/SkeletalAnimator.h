@@ -35,6 +35,9 @@ public:
     // run, say, so blending them never crosses the feet): a sync group, in
     // Unreal's terms. The phase advances at the weighted average of their rates.
     void setSyncedBase(bool synced) { synced_ = synced; }
+    // Keeps a base clip out of the sync group (an idle, an aim: not a cycle of
+    // steps); it runs on its own clock at its own rate. Clips are in by default.
+    void setBaseUnsynced(const AnimationClip* clip, bool unsynced = true);
     // Turns a bone (and everything under it) by `rotation` in the skeleton's
     // space, on top of the clips: an aim offset twisting the spine, say. An
     // identity rotation removes it.
@@ -101,6 +104,7 @@ private:
     void collect(const AnimationClip* clip, float from, float to, bool wraps);
 
     const Skeleton*       skeleton_ = nullptr;
+    std::vector<const AnimationClip*> unsynced_;  // Out of the sync group, weighted or not.
     std::vector<Base>     base_;
     std::vector<Turn>     turns_;
     bool                  synced_ = false;
