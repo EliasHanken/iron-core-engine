@@ -18,6 +18,29 @@
 
 namespace iron {
 
+namespace {
+// traceDebugRay's one thread: where a ray first meets the ray-traced scene.
+const char* const kRtDebugGlsl = R"GLSL(#version 460
+#extension GL_EXT_ray_query : require
+layout(local_size_x = 1) in;
+layout(set = 0, binding = 0) uniform accelerationStructureEXT scene;
+layout(std430, set = 0, binding = 1) buffer Result { float t; uint instance; } result;
+layout(push_constant) uniform Ray { vec4 origin; vec4 direction; } ray;
+void main() {
+    rayQueryEXT q;
+    rayQueryInitializeEXT(q, scene, gl_RayFlagsOpaqueEXT, 0xFF, ray.origin.xyz, 0.001, normalize(ray.direction.xyz), 2000.0);
+    while (rayQueryProceedEXT(q)) {}
+    if (rayQueryGetIntersectionTypeEXT(q, true) == gl_RayQueryCommittedIntersectionTriangleEXT) {
+        result.t = rayQueryGetIntersectionTEXT(q, true);
+        result.instance = rayQueryGetIntersectionInstanceCustomIndexEXT(q, true);
+    } else {
+        result.t = -1.0;
+        result.instance = 0xFFFFFFFFu;
+    }
+}
+)GLSL";
+}  // namespace
+
 VulkanRenderer::VulkanRenderer() = default;
 
 VulkanRenderer::~VulkanRenderer() {
@@ -41,6 +64,10 @@ VulkanRenderer::~VulkanRenderer() {
         profiler_.destroy(context_);
         instanceGroups_.destroy(context_);
         rayTracing_.destroy(context_);
+        rtDebugStage_.destroy(context_);
+        for (std::uint32_t i = 0; i < VkFrameRing::kFramesInFlight; ++i) {
+            if (rtDebugOut_[i]) vmaDestroyBuffer(context_.allocator(), rtDebugOut_[i], rtDebugAlloc_[i]);
+        }
         clusters_.destroy(context_);
         if (reflectionPipeline_)       vkDestroyPipeline(context_.device(), reflectionPipeline_, nullptr);
         if (reflectionPipelineLayout_) vkDestroyPipelineLayout(context_.device(), reflectionPipelineLayout_, nullptr);
@@ -1344,8 +1371,16 @@ void VulkanRenderer::endFrame() {
     // --- Pass 0a: the scene for ray queries, before anything traces against it ---
     if (context_.rayTracing()) {
         profiler_.begin(cb, "Ray tracing scene");
+        // Instance groups first, gathered again only when they change; then this frame's draws.
+        if (rtStaticsGeneration_ != instanceGroups_.generation()) {
+            rtStatics_.clear();
+            std::uint32_t staticId = 0;
+            instanceGroups_.forEachOccluder(
+                [&](MeshHandle mesh, const Mat4& m) { rtStatics_.push_back({mesh, m, staticId++}); });
+            rtStaticsGeneration_ = instanceGroups_.generation();
+        }
         rtPlacements_.clear();
-        std::uint32_t id = 0;
+        std::uint32_t id = static_cast<std::uint32_t>(rtStatics_.size());
         for (const DrawCall& d : sceneDraws_) {
             // What glows lights things; it doesn't stand in their light.
             if (d.mesh == kInvalidHandle || d.material.emissive.x + d.material.emissive.y + d.material.emissive.z > 0.0f) {
@@ -1353,9 +1388,48 @@ void VulkanRenderer::endFrame() {
             }
             rtPlacements_.push_back({d.mesh, d.model, id++});
         }
-        instanceGroups_.forEachOccluder(
-            [&](MeshHandle mesh, const Mat4& m) { rtPlacements_.push_back({mesh, m, id++}); });
-        rayTracing_.build(context_, cb, frames_.currentIndex(), meshes_, rtPlacements_);
+        rayTracing_.build(context_, cb, frames_.currentIndex(), meshes_, rtStatics_, rtStaticsGeneration_,
+                          rtPlacements_);
+        // The debug ray: last time this frame slot ran, its answer was written; read it, ask again.
+        const std::uint32_t slot = frames_.currentIndex();
+        if (!rtDebugOut_[slot]) {
+            if (!rtDebugStage_.init(context_, kRtDebugGlsl,
+                                    {VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER},
+                                    32)) {
+                Log::error("VulkanRenderer: the debug-ray shader didn't build");
+            }
+            for (std::uint32_t i = 0; i < VkFrameRing::kFramesInFlight; ++i) {
+                VkBufferCreateInfo info{VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
+                info.size = 16;
+                info.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
+                VmaAllocationCreateInfo alloc{};
+                alloc.usage = VMA_MEMORY_USAGE_AUTO;
+                alloc.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_RANDOM_BIT | VMA_ALLOCATION_CREATE_MAPPED_BIT;
+                VmaAllocationInfo out{};
+                VK_CHECK(vmaCreateBuffer(context_.allocator(), &info, &alloc, &rtDebugOut_[i], &rtDebugAlloc_[i], &out));
+                rtDebugMapped_[i] = out.pMappedData;
+            }
+        }
+        if (rtDebugWritten_[slot]) {
+            vmaInvalidateAllocation(context_.allocator(), rtDebugAlloc_[slot], 0, VK_WHOLE_SIZE);
+            debugRayHit_ = *static_cast<const float*>(rtDebugMapped_[slot]);
+            rtDebugWritten_[slot] = false;
+        }
+        if (debugRayPending_ && rayTracing_.scene(slot)) {
+            const float push[8] = {debugRay_.first.x, debugRay_.first.y, debugRay_.first.z, 0.0f,
+                                   debugRay_.second.x, debugRay_.second.y, debugRay_.second.z, 0.0f};
+            rtDebugStage_.dispatch(*this, cb,
+                                   {VkComputeResource::accelerationStructure(rayTracing_.scene(slot)),
+                                    VkComputeResource::bufferRange(rtDebugOut_[slot])},
+                                   push, 1);
+            VkMemoryBarrier toHost{VK_STRUCTURE_TYPE_MEMORY_BARRIER};
+            toHost.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+            toHost.dstAccessMask = VK_ACCESS_HOST_READ_BIT;
+            vkCmdPipelineBarrier(cb, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_HOST_BIT, 0, 1, &toHost, 0,
+                                 nullptr, 0, nullptr);
+            rtDebugWritten_[slot] = true;
+            debugRayPending_ = false;
+        }
         profiler_.end(cb);
     }
 

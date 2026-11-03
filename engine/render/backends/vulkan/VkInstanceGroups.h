@@ -42,6 +42,8 @@ public:
     // Every instance of every group that casts shadows, with its finest mesh: what
     // blocks light, for ray tracing.
     void forEachOccluder(const std::function<void(MeshHandle, const Mat4&)>& visit) const;
+    // Changes whenever any group's instances do (to rebuild what's cached from them).
+    std::uint64_t generation() const { return generation_; }
     bool empty() const { return groups_.empty(); }
 
     // Freezes the camera culling sees, so that walking away shows what it skipped.
@@ -122,6 +124,7 @@ private:
     struct Retired { Buffer buffer; std::uint64_t frame; };
     std::vector<Retired> retired_;
     std::uint64_t frameCount_ = 0;
+    std::uint64_t generation_ = 1;
 
     std::array<Buffer, VkFrameRing::kFramesInFlight> statBuffers_;
     std::array<bool, VkFrameRing::kFramesInFlight> statsWritten_{};

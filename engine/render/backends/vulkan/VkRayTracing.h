@@ -44,10 +44,11 @@ public:
     void destroy(VkContext& ctx);
 
     // Builds any BLAS still missing, then frame `frameIndex`'s TLAS over
-    // `placements`. Records into `cb`, ending with a barrier that makes the
-    // TLAS readable by compute and fragment shaders.
+    // `statics` (placed rarely: written again only when `staticGeneration`
+    // changes) and `dynamics` (this frame's). Records into `cb`, ending with a
+    // barrier that makes the TLAS readable by compute and fragment shaders.
     void build(VkContext& ctx, VkCommandBuffer cb, std::uint32_t frameIndex, const VkMeshStore& meshes,
-               std::span<const Placement> placements);
+               std::span<const Placement> statics, std::uint64_t staticGeneration, std::span<const Placement> dynamics);
 
     // The TLAS built for this frame, or null if nothing has been.
     VkAccelerationStructureKHR scene(std::uint32_t frameIndex) const { return tlas_[frameIndex].as; }
@@ -75,6 +76,8 @@ private:
         Buffer                     scratch;
         std::uint32_t              capacity = 0;
         std::uint32_t              count = 0;
+        std::uint64_t              staticGeneration = 0;  // Of the statics written at its front.
+        std::uint32_t              staticCount = 0;
     };
 
     Buffer makeBuffer(VkContext& ctx, VkDeviceSize size, VkBufferUsageFlags usage, bool hostVisible);

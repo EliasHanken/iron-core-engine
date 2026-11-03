@@ -2730,6 +2730,15 @@ int main(int argc, char** argv) {
         for (std::size_t i = 0; i < std::size(acts); ++i) {
             draws += acts[i]->draw(renderer, kDoorMotionId + 10u * static_cast<std::uint32_t>(i));
         }
+        // --scene rtcheck: the ray-traced scene against the physics, along the aim.
+        if (sceneHas("rtcheck")) {
+            renderer.traceDebugRay(eye, aimDir);
+            if (std::fmod(seconds, 0.5f) < simDt) {
+                const iron::PhysicsWorld::RaycastHit hit = world.raycast(eye, aimDir, 400.0f);
+                iron::Log::info("rtcheck %.1fs: traced %.2f m, physics %.2f m (aim %.2f %.2f %.2f)", seconds,
+                                renderer.debugRayHit(), hit.hit ? hit.t * 400.0f : -1.0f, aimDir.x, aimDir.y, aimDir.z);
+            }
+        }
         // The squad: sees, hears, thinks, moves.
         // --scene kill: soldier 0 takes a round through the chest at two seconds, to watch him fall.
         if (sceneHas("kill") && seconds >= 2.0f && seconds - simDt < 2.0f && !squad.enemies().empty()) {

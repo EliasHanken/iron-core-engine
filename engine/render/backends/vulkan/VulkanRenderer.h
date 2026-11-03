@@ -130,6 +130,12 @@ public:
 
     void setViewport(int width, int height) override;
     void setShaderTime(float seconds) override { shaderTime_ = seconds; }
+    bool rayTracing() const override { return context_.rayTracing(); }
+    void traceDebugRay(Vec3 origin, Vec3 direction) override {
+        debugRay_ = {origin, direction};
+        debugRayPending_ = true;
+    }
+    float debugRayHit() const override { return debugRayHit_; }
 
     std::span<const GpuTiming> gpuTimings() const override { return profiler_.latest(); }
 
@@ -364,7 +370,18 @@ private:
     VkInstanceGroups   instanceGroups_;
     // The scene for ray queries (GI), when the GPU traces rays; rebuilt each frame.
     VkRayTracing       rayTracing_;
-    std::vector<VkRayTracing::Placement> rtPlacements_;
+    std::vector<VkRayTracing::Placement> rtPlacements_;  // This frame's draws.
+    std::vector<VkRayTracing::Placement> rtStatics_;     // The instance groups', as of rtStaticsGeneration_.
+    std::uint64_t rtStaticsGeneration_ = 0;
+    // traceDebugRay: one ray-query thread, its answer read back frames later.
+    VkComputeStage rtDebugStage_;
+    std::array<VkBuffer, VkFrameRing::kFramesInFlight>      rtDebugOut_{};
+    std::array<VmaAllocation, VkFrameRing::kFramesInFlight> rtDebugAlloc_{};
+    std::array<void*, VkFrameRing::kFramesInFlight>         rtDebugMapped_{};
+    std::array<bool, VkFrameRing::kFramesInFlight>          rtDebugWritten_{};
+    std::pair<Vec3, Vec3> debugRay_{};
+    bool  debugRayPending_ = false;
+    float debugRayHit_ = -1.0f;
     VkClusters         clusters_;
     std::vector<PointLight> pendingAllLights_;  // Every light this frame, for the clusters.
     std::vector<Decal>      pendingDecals_;

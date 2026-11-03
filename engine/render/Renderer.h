@@ -325,6 +325,13 @@ public:
     // seconds: lit shaders read it as u.cameraPos.w. Set once a frame.
     virtual void setShaderTime(float seconds) { (void)seconds; }
 
+    // --- Ray tracing (where the GPU has it) ---
+    virtual bool rayTracing() const { return false; }
+    // One ray through the ray-traced scene, to check it against the physics: its
+    // hit distance (or -1 for a miss) comes back from debugRayHit a frame or two later.
+    virtual void traceDebugRay(Vec3 origin, Vec3 direction) { (void)origin; (void)direction; }
+    virtual float debugRayHit() const { return -1.0f; }
+
     // --- Instance groups: GPU-driven drawing (see InstanceGroup.h) ---
     // A shader for instance groups: its vertex stage reads each instance's transform
     // from bindings 16 and 17. kInvalidHandle where unsupported.

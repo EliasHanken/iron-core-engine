@@ -357,6 +357,7 @@ void VkInstanceGroups::forEachOccluder(const std::function<void(MeshHandle, cons
 void VkInstanceGroups::setInstances(VkContext& ctx, InstanceGroupHandle handle, std::span<const Mat4> transforms) {
     if (handle == kInvalidInstanceGroup || handle > groups_.size()) return;
     Group& g = groups_[handle - 1];
+    ++generation_;
     // The old buffers may still be read by a frame in flight, so they're retired, not freed.
     retire(g.instances);
     for (auto& view : g.visible) for (auto& b : view) retire(b);

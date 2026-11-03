@@ -88,7 +88,8 @@ void VkRayTracing::destroy(VkContext& ctx) {
 }
 
 void VkRayTracing::build(VkContext& ctx, VkCommandBuffer cb, std::uint32_t frameIndex, const VkMeshStore& meshes,
-                         std::span<const Placement> placements) {
+                         std::span<const Placement> statics, std::uint64_t staticGeneration,
+                         std::span<const Placement> dynamics) {
     if (!ctx.rayTracing()) return;
     ++frameCount_;
     collect(ctx);
@@ -105,13 +106,13 @@ void VkRayTracing::build(VkContext& ctx, VkCommandBuffer cb, std::uint32_t frame
     };
     std::vector<Pending> pending;
     VkDeviceSize scratchTotal = 0;
-    for (const Placement& p : placements) {
-        if (!meshes.has(p.mesh)) continue;
+    const auto needs = [&](const Placement& p) {
+        if (!meshes.has(p.mesh)) return;
         const VkMeshResource& m = meshes.get(p.mesh);
-        if (m.indexCount < 3) continue;
+        if (m.indexCount < 3) return;
         const auto found = blas_.find(p.mesh);
-        if (found != blas_.end() && found->second.source == m.vertexBuffer) continue;
-        if (std::any_of(pending.begin(), pending.end(), [&](const Pending& q) { return q.mesh == p.mesh; })) continue;
+        if (found != blas_.end() && found->second.source == m.vertexBuffer) return;
+        if (std::any_of(pending.begin(), pending.end(), [&](const Pending& q) { return q.mesh == p.mesh; })) return;
         if (found != blas_.end()) {
             retire(ctx, found->second.as);
             retire(ctx, found->second.storage);
@@ -136,7 +137,14 @@ void VkRayTracing::build(VkContext& ctx, VkCommandBuffer cb, std::uint32_t frame
         tri.indexData.deviceAddress = vkGetBufferDeviceAddress(ctx.device(), &iaddr);
         q.range.primitiveCount = m.indexCount / 3;
         pending.push_back(q);
+    };
+    // Statics only when they've changed: their meshes were seen the last time.
+    Tlas& t = tlas_[frameIndex];
+    const bool staticsChanged = t.staticGeneration != staticGeneration;
+    if (staticsChanged) {
+        for (const Placement& p : statics) needs(p);
     }
+    for (const Placement& p : dynamics) needs(p);
     for (Pending& q : pending) {
         q.info.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_GEOMETRY_INFO_KHR;
         q.info.type = VK_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL_KHR;
@@ -188,10 +196,12 @@ void VkRayTracing::build(VkContext& ctx, VkCommandBuffer cb, std::uint32_t frame
         Log::info("VkRayTracing: built %zu BLAS (%zu in all)", pending.size(), blas_.size());
     }
 
-    // --- Top level: every placement, this frame. ---
-    Tlas& t = tlas_[frameIndex];
-    const std::uint32_t count = static_cast<std::uint32_t>(placements.size());
+    // --- Top level: the statics at the front (rewritten when they change), this frame's after. ---
+    const std::uint32_t count = static_cast<std::uint32_t>(statics.size() + dynamics.size());
+    // A rebuilt BLAS has a new address, which statics written before don't know.
+    bool rewriteStatics = staticsChanged || !pending.empty();
     if (count > t.capacity) {
+        rewriteStatics = true;
         retire(ctx, t.instances);
         retire(ctx, t.storage);
         retire(ctx, t.scratch);
@@ -201,10 +211,9 @@ void VkRayTracing::build(VkContext& ctx, VkCommandBuffer cb, std::uint32_t frame
                                  VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR, true);
     }
     auto* out = static_cast<VkAccelerationStructureInstanceKHR*>(t.instances.mapped);
-    std::uint32_t written = 0;
-    for (const Placement& p : placements) {
+    const auto write = [&](const Placement& p, std::uint32_t& written) {
         const auto found = blas_.find(p.mesh);
-        if (found == blas_.end()) continue;
+        if (found == blas_.end()) return;
         VkAccelerationStructureInstanceKHR& inst = out[written++];
         for (int r = 0; r < 3; ++r) {
             for (int c = 0; c < 4; ++c) inst.transform.matrix[r][c] = p.transform.at(r, c);
@@ -214,9 +223,17 @@ void VkRayTracing::build(VkContext& ctx, VkCommandBuffer cb, std::uint32_t frame
         inst.instanceShaderBindingTableRecordOffset = 0;
         inst.flags = VK_GEOMETRY_INSTANCE_TRIANGLE_FACING_CULL_DISABLE_BIT_KHR;
         inst.accelerationStructureReference = found->second.address;
+    };
+    if (rewriteStatics) {
+        t.staticCount = 0;
+        for (const Placement& p : statics) write(p, t.staticCount);
+        t.staticGeneration = staticGeneration;
     }
+    std::uint32_t written = t.staticCount;
+    for (const Placement& p : dynamics) write(p, written);
     vmaFlushAllocation(ctx.allocator(), t.instances.alloc, 0, VK_WHOLE_SIZE);
     t.count = written;
+    if (frameCount_ % 300 == 1) Log::info("VkRayTracing: %u instances in the scene", written);
 
     VkAccelerationStructureGeometryKHR geometry{VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_KHR};
     geometry.geometryType = VK_GEOMETRY_TYPE_INSTANCES_KHR;
