@@ -5,6 +5,7 @@ Blender, exported as one skinned glTF.
     blender -b --disable-autoexec --factory-startup <wrad>/arms.blend \
         --python build_viewmodel.py -- <gun> <WeaponsPack dir> <out.gltf> \
         [--preview <prefix>] [--only idle,aim] [--report [clip@time]] [--joints]
+        [--save <gun>.blend]
 
 <gun> names a module in weapons/ (ak47, m1911, m700): how the gun is imported, how
 it's held, how its parts move and its clips. Poses are set on the arms' control
@@ -13,9 +14,11 @@ themselves onto the gun's surface, fingers closed round it (rig.grasp). The
 exporter samples the rig, IK and all, into the deforming bones. Each clip is its
 own glTF animation, and a sidecar <out>.events.json lists the moments sounds hang
 on (magazine out, bolt back...).
+
+--save writes the finished scene as a .blend (textures packed in) to look at and
+edit by hand; export_blend.py exports it back to the game.
 """
 import importlib
-import json
 import math
 import os
 import sys
@@ -27,6 +30,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 sys.path.insert(0, os.path.dirname(HERE))
 import rig  # noqa: E402
+import export  # noqa: E402
 from clips import FPS, Rig, bake_clip  # noqa: E402
 from weapon_material import make_weapon_material  # noqa: E402
 
@@ -177,19 +181,21 @@ if preview:
     arms.animation_data.action = None
 
 # --- Export: the deforming skeleton, sampled from the rig every frame ---
-bpy.context.scene.render.fps = FPS
-bpy.ops.object.select_all(action="DESELECT")
-for o in (arms, skin, gun):
-    o.select_set(True)
-bpy.ops.export_scene.gltf(
-    filepath=out_path, export_format="GLTF_SEPARATE", use_selection=True, export_yup=True,
-    export_apply=False, export_tangents=True, export_skins=True, export_def_bones=True,
-    export_animations=True, export_animation_mode="NLA_TRACKS", export_force_sampling=True,
-    export_frame_step=1, export_optimize_animation_size=False, export_image_format="JPEG",
-    export_image_quality=92)
-with open(os.path.splitext(out_path)[0] + ".events.json", "w", encoding="utf-8") as f:
-    json.dump({"fps": FPS, "clips": EVENTS}, f, indent=2)
+export.remember(gun_def.NAME, EVENTS)
+if "--save" in args:
+    # The scene as built, to open and edit: clips on their NLA tracks, the first
+    # one active so it plays; textures packed so the file stands alone.
+    blend = os.path.abspath(args[args.index("--save") + 1])
+    bpy.context.scene.render.fps = FPS
+    bpy.ops.file.pack_all()
+    first = next(iter(EVENTS), None)
+    if first:
+        arms.animation_data.action = bpy.data.actions[first]
+        bpy.context.scene.frame_end = int(bpy.data.actions[first].frame_range[1])
+    bpy.ops.wm.save_as_mainfile(filepath=blend, compress=True)
+    arms.animation_data.action = None
+    print("saved", blend)
+export.export(arms, skin, gun, out_path, EVENTS)
 for name in os.listdir(work):
     os.remove(os.path.join(work, name))
 os.rmdir(work)
-print("wrote", out_path)
