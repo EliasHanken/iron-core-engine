@@ -1,0 +1,104 @@
+{
+  "fps": 30,
+  "clips": {
+    "closed": {
+      "loop": true,
+      "events": []
+    },
+    "opened": {
+      "loop": true,
+      "events": []
+    },
+    "hatch_down": {
+      "loop": false,
+      "events": [
+        {
+          "time": 0.55,
+          "name": "kneel"
+        },
+        {
+          "time": 0.95,
+          "name": "lid"
+        },
+        {
+          "time": 1.85,
+          "name": "lid_down"
+        },
+        {
+          "time": 2.6,
+          "name": "grab"
+        },
+        {
+          "time": 2.95,
+          "name": "rung"
+        },
+        {
+          "time": 3.5100000000000002,
+          "name": "rung"
+        },
+        {
+          "time": 4.07,
+          "name": "rung"
+        },
+        {
+          "time": 4.630000000000001,
+          "name": "rung"
+        }
+      ]
+    },
+    "ladder_down": {
+      "loop": false,
+      "events": [
+        {
+          "time": 0.25,
+          "name": "grab"
+        },
+        {
+          "time": 0.6,
+          "name": "rung"
+        },
+        {
+          "time": 1.1600000000000001,
+          "name": "rung"
+        },
+        {
+          "time": 1.7200000000000002,
+          "name": "rung"
+        },
+        {
+          "time": 2.2800000000000002,
+          "name": "rung"
+        }
+      ]
+    },
+    "ladder_up": {
+      "loop": false,
+      "events": [
+        {
+          "time": 0.6,
+          "name": "grab"
+        },
+        {
+          "time": 0.7,
+          "name": "rung"
+        },
+        {
+          "time": 1.26,
+          "name": "rung"
+        },
+        {
+          "time": 1.82,
+          "name": "rung"
+        },
+        {
+          "time": 2.38,
+          "name": "rung"
+        },
+        {
+          "time": 3.827272727272727,
+          "name": "step"
+        }
+      ]
+    }
+  }
+}

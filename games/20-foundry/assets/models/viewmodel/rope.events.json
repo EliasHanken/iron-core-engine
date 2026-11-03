@@ -1,0 +1,94 @@
+{
+  "fps": 30,
+  "clips": {
+    "hanging": {
+      "loop": true,
+      "events": []
+    },
+    "rope_up": {
+      "loop": false,
+      "events": [
+        {
+          "time": 0.4,
+          "name": "grab"
+        },
+        {
+          "time": 0.55,
+          "name": "pull"
+        },
+        {
+          "time": 0.8600000000000001,
+          "name": "pull"
+        },
+        {
+          "time": 1.17,
+          "name": "pull"
+        },
+        {
+          "time": 1.48,
+          "name": "pull"
+        },
+        {
+          "time": 1.79,
+          "name": "pull"
+        },
+        {
+          "time": 2.1,
+          "name": "pull"
+        },
+        {
+          "time": 2.41,
+          "name": "pull"
+        },
+        {
+          "time": 2.7199999999999998,
+          "name": "pull"
+        },
+        {
+          "time": 3.0300000000000002,
+          "name": "pull"
+        },
+        {
+          "time": 3.34,
+          "name": "pull"
+        },
+        {
+          "time": 3.6500000000000004,
+          "name": "pull"
+        },
+        {
+          "time": 3.96,
+          "name": "pull"
+        },
+        {
+          "time": 4.27,
+          "name": "pull"
+        },
+        {
+          "time": 4.58,
+          "name": "pull"
+        },
+        {
+          "time": 4.89,
+          "name": "pull"
+        },
+        {
+          "time": 5.2,
+          "name": "pull"
+        },
+        {
+          "time": 5.51,
+          "name": "pull"
+        },
+        {
+          "time": 6.449999999999999,
+          "name": "plant"
+        },
+        {
+          "time": 7.1,
+          "name": "step"
+        }
+      ]
+    }
+  }
+}

@@ -967,10 +967,30 @@ int main(int argc, char** argv) {
     const Vec3 doorAt = foundry::layout::kPumpDoor;
     foundry::Interaction door;
     if (!door.load(renderer, models, iron::executableDir() + "/assets/models/viewmodel/door.gltf",
-                   iron::translation(doorAt) * iron::rotationY(kPi), {"FRAME", "DOOR", "LEVER"}, "closed", "open",
-                   "opened")) {
+                   iron::translation(doorAt) * iron::rotationY(kPi), {"FRAME", "DOOR", "LEVER"}, "closed")) {
         return 1;
     }
+    bool doorOpen = false;
+    // The bunker's hatch: E to heave it open and climb down; E at the ladder's foot
+    // to climb out. Its prop space has the hole's far side along -z.
+    const Vec3 hatchAt = foundry::layout::kBunkerHatch;
+    foundry::Interaction hatch;
+    if (!hatch.load(renderer, models, iron::executableDir() + "/assets/models/viewmodel/hatch.gltf",
+                    iron::translation(hatchAt), {"FRAME", "LID"}, "closed")) {
+        return 1;
+    }
+    bool hatchOpen = false;
+    // The rope by the catwalk: E to climb it, up onto the catwalk. Its prop space
+    // faces the catwalk (world -x) along -z.
+    const Vec3 ropeAt = foundry::layout::kRope;
+    foundry::Interaction rope;
+    if (!rope.load(renderer, models, iron::executableDir() + "/assets/models/viewmodel/rope.gltf",
+                   iron::translation(ropeAt) * iron::rotationY(kPi * 0.5f), {"ROPE"}, "hanging")) {
+        return 1;
+    }
+    bool hatchOpening = false;
+    // The shut lid's collider, gone once it's open.
+    iron::BodyId lidBody = world.createStaticBox(hatchAt + Vec3{0.0f, 0.085f, 0.0f}, {0.5f, 0.03f, 0.5f});
     // Mantling: Space at a ledge from waist to head high climbs onto it, a clip
     // for each played against the real geometry wherever it is.
     // At a run, Space at something low and thin vaults it instead, keeping the run.
@@ -980,14 +1000,15 @@ int main(int argc, char** argv) {
     for (auto [act, file, clip] : {std::tuple{&mantleLow, "mantle_low.gltf", "mantle"},
                                    std::tuple{&mantleHigh, "mantle_high.gltf", "mantle"},
                                    std::tuple{&vault, "vault.gltf", "vault"}}) {
+        (void)clip;
         if (!act->load(renderer, models, iron::executableDir() + "/assets/models/viewmodel/" + file, Mat4::identity(),
-                       {"LEDGE"}, "before", clip, "after")) {
+                       {"LEDGE"}, "before")) {
             return 1;
         }
         act->showProp(false);
     }
     float vaultSpeed = 0.0f;  // The run going into a vault, carried on after it.
-    foundry::Interaction* const acts[] = {&door, &mantleLow, &mantleHigh, &vault};
+    foundry::Interaction* const acts[] = {&door, &hatch, &rope, &mantleLow, &mantleHigh, &vault};
     const auto acting = [&]() {
         return std::any_of(std::begin(acts), std::end(acts), [](const foundry::Interaction* a) { return a->busy(); });
     };
@@ -1093,17 +1114,28 @@ int main(int argc, char** argv) {
     // --scene mantle in front of a concrete barrier, to climb over it; --scene
     // vault a few strides back from it, to sprint at it and vault it.
     const bool atDoor = sceneHas("door");
+    // --scene hatch starts at the bunker's hatch and opens it; --scene bunker on the
+    // bunker's floor facing the ladder, and climbs out.
+    const bool atHatch = sceneHas("hatch");
+    const bool inBunker = sceneHas("bunker");
+    // --scene rope starts at the rope in the hall and climbs it.
+    const bool atRope = sceneHas("rope");
     const bool runUp = sceneHas("vault");
     const bool atBarrier = sceneHas("mantle") || runUp;
     bool vaultTried = false;
     const Vec3 spawn = startInHall ? Vec3{0.0f, 0.0f, -30.0f}
                      : atDoor      ? foundry::layout::kPumpDoor + Vec3{-0.2f, 0.0f, -1.3f}
+                     : atHatch     ? foundry::layout::kBunkerHatch + Vec3{0.0f, 0.0f, 1.25f}
+                     : inBunker    ? foundry::layout::kBunkerHatch + Vec3{0.0f, foundry::layout::kBunkerFloor, 0.9f}
+                     : atRope      ? foundry::layout::kRope + Vec3{0.5f, 0.0f, 0.0f}
                      : runUp       ? Vec3{-10.8f, 0.0f, 21.0f}
                      : atBarrier   ? Vec3{-10.8f, 0.0f, 17.25f}
                                    : level.spawn;
     if (!body.create(world, bodyConfig, spawn)) return 1;
-    float yaw = atDoor ? kPi : 0.0f;
-    float pitch = startInHall ? 0.0f : atDoor ? -0.35f : runUp ? -0.08f : atBarrier ? -0.15f : -0.02f;
+    float yaw = atDoor ? kPi : atRope ? kPi * 0.5f : 0.0f;
+    float pitch = startInHall ? 0.0f : atDoor ? -0.35f : atHatch ? -0.6f : inBunker ? -0.15f : atRope ? 0.15f
+                : runUp ? -0.08f
+                : atBarrier ? -0.15f : -0.02f;
     bool grounded = true;
     float physicsClock = 0.0f;
     Vec3 feetBeforeStep = spawn;  // Where the body was before the last physics step, to draw between.
@@ -1297,7 +1329,7 @@ int main(int argc, char** argv) {
             // Steam check: stand still and watch the pipes along the hall's left wall,
             // then the furnace's heat rising.
             // Door and mantle checks: stand still in front of it; E or Space is pressed below.
-            if (atDoor || atBarrier) {
+            if (atDoor || atBarrier || atHatch || inBunker || atRope) {
                 look = {0.0f, 0.0f};
                 forward = runUp ? 1.0f : 0.0f;
                 running = runUp;
@@ -1346,7 +1378,7 @@ int main(int argc, char** argv) {
         clicked = false;
         if (paused) look = {0.0f, 0.0f};
         // --scene door walks up to the pump house door and opens it.
-        if (sceneHas("door") && seconds > 0.5f && seconds < 0.55f) usePressed = true;
+        if ((atDoor || atHatch || inBunker || atRope) && seconds > 0.5f && seconds < 0.55f) usePressed = true;
         if (atBarrier && !runUp && seconds > 0.6f && seconds < 0.65f) jumpPressed = true;
         if (runUp && !vaultTried && body.footPosition().z < 18.0f) {
             jumpPressed = true;
@@ -1361,13 +1393,13 @@ int main(int argc, char** argv) {
             const auto ledge = findLedge(world, body.footPosition(), yaw, sprinting ? 1.1f : 0.55f);
             if (ledge && sprinting && ledge->height <= 1.25f && ledge->depth <= 0.9f && ledge->landing) {
                 vault.place(iron::translation(ledge->edge) * iron::rotationY(ledge->yaw));
-                vault.begin(lastCamera, 0.08f);
+                vault.begin(lastCamera, "vault", "after", 0.08f);
                 vaultSpeed = runSpeed;
                 jumpPressed = false;
             } else if (ledge && iron::length(ledge->edge - body.footPosition() - Vec3{0.0f, ledge->height, 0.0f}) < 0.95f) {
                 foundry::Interaction& m = ledge->height > 1.3f ? mantleHigh : mantleLow;
                 m.place(iron::translation(ledge->edge) * iron::rotationY(ledge->yaw));
-                m.begin(lastCamera);
+                m.begin(lastCamera, "mantle", "after");
                 jumpPressed = false;
             }
         }
@@ -1384,13 +1416,18 @@ int main(int argc, char** argv) {
         for (foundry::Interaction* act : acts) {
             const bool wasPlaying = act->state() == foundry::Interaction::State::Playing;
             for (const auto& fired : act->update(simDt)) {
-                if (fired.name == "step") sound.step(floorAt(body.footPosition()), body.footPosition(), 0.55f);
-                else if (fired.name == "plant") sound.step(floorAt(body.footPosition()), body.footPosition(), 0.35f);
+                const Vec3 at = body.footPosition();
+                if (fired.name == "step") sound.step(floorAt(at), at, 0.55f);
+                else if (fired.name == "plant" || fired.name == "kneel") sound.step(floorAt(at), at, 0.35f);
+                else if (fired.name == "rung") sound.step(foundry::Floor::Metal, at, 0.45f);
+                else if (fired.name == "lid") sound.door("push");
+                else if (fired.name == "lid_down") sound.impact(foundry::Surface::Metal, false, hatchAt);
+                else if (fired.name == "pull") sound.foley("grab");
                 else sound.door(fired.name);
             }
-            if (wasPlaying && act->state() == foundry::Interaction::State::Done) {
+            if (wasPlaying && act->done()) {
                 // Done: the player stands where the clip left the camera, facing on.
-                const Mat4 cam = act->cameraToWorld();
+                const Mat4 cam = act->endCamera();
                 const Vec3 at{cam.at(0, 3), cam.at(1, 3), cam.at(2, 3)};
                 const Vec3 ahead{-cam.at(0, 2), -cam.at(1, 2), -cam.at(2, 2)};
                 body.setFootPosition(at - Vec3{0.0f, kEyeHeight, 0.0f});
@@ -1402,8 +1439,19 @@ int main(int argc, char** argv) {
                     world.destroyBody(doorBody);
                     const float hinge = doorAt.x + 0.45f;
                     doorBody = world.createStaticBox({hinge + 0.05f, 1.025f, doorAt.z + 0.42f}, {0.03f, 1.025f, 0.45f});
+                    doorOpen = true;
+                    act->reset();
+                } else if (act == &rope) {
+                    act->reset();  // Still hanging there, to climb again.
+                } else if (act == &hatch) {
+                    if (hatchOpening) {
+                        world.destroyBody(lidBody);
+                        hatchOpen = true;
+                        hatchOpening = false;
+                    }
+                    act->reset();  // Resting open; climbed again from either end.
                 } else {
-                    act->reset();  // A mantle's played again at the next ledge.
+                    act->reset("before");  // A mantle's played again at the next ledge.
                 }
                 if (act == &vault) {
                     // Over it at a run: the run carries on.
@@ -1534,13 +1582,29 @@ int main(int argc, char** argv) {
         // The door: close to it and facing its lever, E opens it; then the clip has
         // the camera.
         const char* prompt = nullptr;
-        if (door.state() == foundry::Interaction::State::Ready && !paused) {
-            const Vec3 lever = doorAt + Vec3{-0.36f, 1.0f, -0.1f};
-            const Vec3 toLever = lever - eye;
-            const float away = iron::length(toLever);
-            if (away < 1.8f && iron::dot(aimDir, toLever * (1.0f / away)) > 0.7f) {
+        // What's close and looked at, with what E does to it.
+        const auto facing = [&](Vec3 at, float reach, float aim) {
+            const Vec3 to = at - eye;
+            const float away = iron::length(to);
+            return away < reach && iron::dot(aimDir, to * (1.0f / std::max(away, 1e-3f))) > aim;
+        };
+        if (!paused && !acting()) {
+            if (!doorOpen && facing(doorAt + Vec3{-0.36f, 1.0f, -0.1f}, 1.8f, 0.7f)) {
                 prompt = "E   OPEN";
-                if (usePressed) door.begin(cameraToWorld);
+                if (usePressed) door.begin(cameraToWorld, "open", "opened");
+            } else if (eye.y > 0.5f && facing(hatchAt + Vec3{0.0f, 0.2f, 0.0f}, 2.3f, 0.6f)) {
+                prompt = hatchOpen ? "E   CLIMB DOWN" : "E   OPEN HATCH";
+                if (usePressed) {
+                    hatchOpening = !hatchOpen;
+                    hatch.begin(cameraToWorld, hatchOpen ? "ladder_down" : "hatch_down", "opened");
+                }
+            } else if (eye.y < 3.0f && facing(ropeAt + Vec3{0.0f, 1.7f, 0.0f}, 1.3f, 0.5f)) {
+                prompt = "E   CLIMB";
+                if (usePressed) rope.begin(cameraToWorld, "rope_up", "hanging");
+            } else if (eye.y < foundry::layout::kBunkerFloor + 2.5f &&
+                       facing(hatchAt + Vec3{0.0f, foundry::layout::kBunkerFloor + 1.2f, -0.35f}, 1.9f, 0.55f)) {
+                prompt = "E   CLIMB UP";
+                if (usePressed) hatch.begin(cameraToWorld, "ladder_up", "opened");
             }
         }
         usePressed = false;
