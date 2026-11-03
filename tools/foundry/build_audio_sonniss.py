@@ -173,6 +173,10 @@ LAYERED = [
                                ("punch_general_body_impact_03", 0.0, 0.4, -17.0, (60, 3000), s, 0.0, None),
                                ("GORE Impact stab dagger", "onset:0", 0.3, -25.0, (800, 12000), s, 0.0, 0.05)])
       for i, s in enumerate([0.0, -1.5, 1.5])],
+    # The works' alarm: a hand-cranked siren winding up, and the yard throwing it
+    # back a moment later, duller.
+    ("alarm", 1, [("Sherman_M4A1_t11_foley_siren_long", 0.0, 12.0, -14.0, (150, 9000), 0.0, 0.0, None),
+                  ("Sherman_M4A1_t11_foley_siren_long", 0.0, 12.0, -25.0, (200, 2500), -0.3, 0.2, None)]),
     # A body coming down on concrete, with a dirt fall's weight under it.
     *[(f"bodyfall{i + 1}", 1, [("RL_bodyfall_Concrete_Generic_Feet_Mid_Mono_Med_Impact_02", 0.0, 1.1, -14.0,
                                 (60, 12000), s, 0.0, None),

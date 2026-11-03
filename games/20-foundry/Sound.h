@@ -81,6 +81,7 @@ public:
         for (const char* n : {"flyby1", "flyby2", "flyby3"}) flybys_.push_back(load(n, "ricochet"));
         for (const char* n : {"hit-body1", "hit-body2", "hit-body3"}) bodyHits_.push_back(load(n, "hit"));
         for (const char* n : {"bodyfall1", "bodyfall2"}) bodyfalls_.push_back(load(n));
+        alarm_ = load("alarm");
         for (const char* n : {"plate1", "plate2", "plate3"}) plates_.push_back(load(n, "hit"));
         steps_[static_cast<int>(Floor::Ground)] = {load("step-ground1", "footstep-01"), load("step-ground2", "footstep-02")};
         steps_[static_cast<int>(Floor::Concrete)] = {load("step-concrete1", "footstep-03"),
@@ -311,6 +312,15 @@ public:
         }
         duck_ = std::max(duck_, 0.6f);
     }
+    // Everything's level, from the settings.
+    void setVolume(float volume) {
+        if (aloud_) audio_.setMasterGain(volume);
+    }
+
+    // The works' siren going off, from `at`, carrying over everything.
+    void alarm(Vec3 at) {
+        if (aloud_ && alarm_) audio_.playSoundAt(alarm_, at, kHeadroom * 3.0f, 1.0f);
+    }
     void bodyfall(Vec3 at) {
         if (aloud_ && !bodyfalls_.empty()) {
             if (const auto h = pick(bodyfalls_)) audio_.playSoundAt(h, at, kHeadroom * 1.3f, 0.93f + random() * 0.1f);
@@ -441,6 +451,7 @@ private:
     std::vector<iron::SoundHandle> flybys_;
     std::vector<iron::SoundHandle> bodyHits_;
     std::vector<iron::SoundHandle> bodyfalls_;
+    iron::SoundHandle alarm_ = iron::kInvalidSound;
     std::vector<iron::SoundHandle> plates_;
     std::vector<iron::SoundHandle> works_;
     std::array<std::vector<iron::SoundHandle>, static_cast<int>(Surface::Count)> hits_;
