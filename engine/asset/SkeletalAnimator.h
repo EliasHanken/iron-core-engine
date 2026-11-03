@@ -29,6 +29,17 @@ public:
 
     // How much of `clip` the base holds. Weights are relative; zero removes it.
     void setBaseWeight(const AnimationClip* clip, float weight);
+    // How fast a base clip plays (a walk matched to how fast its owner moves).
+    void setBaseRate(const AnimationClip* clip, float rate);
+    // Synced, the base clips share one phase through their cycles (a walk and a
+    // run, say, so blending them never crosses the feet): a sync group, in
+    // Unreal's terms. The phase advances at the weighted average of their rates.
+    void setSyncedBase(bool synced) { synced_ = synced; }
+    // Turns a bone (and everything under it) by `rotation` in the skeleton's
+    // space, on top of the clips: an aim offset twisting the spine, say. An
+    // identity rotation removes it.
+    void setBoneTurn(int bone, const Quat& rotation);
+    void clearBoneTurns() { turns_.clear(); }
 
     // Plays `clip` once over the base, fading in over `blendIn` and out over its
     // last `blendOut` seconds, at `rate` times speed. Playing one while another runs
@@ -63,6 +74,11 @@ private:
         const AnimationClip* clip;
         float weight;
         float time = 0.0f;
+        float rate = 1.0f;
+    };
+    struct Turn {
+        int  bone;
+        Quat rotation;
     };
     struct OneShot {
         const AnimationClip* clip;
@@ -86,6 +102,9 @@ private:
 
     const Skeleton*       skeleton_ = nullptr;
     std::vector<Base>     base_;
+    std::vector<Turn>     turns_;
+    bool                  synced_ = false;
+    float                 phase_ = 0.0f;  // 0..1 through the synced cycles.
     std::vector<OneShot>  oneShots_;
     std::vector<Additive> additives_;
     std::vector<Fired>    fired_;

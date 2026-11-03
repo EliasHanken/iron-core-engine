@@ -71,6 +71,9 @@ struct AnimationClip {
     std::vector<AnimationChannel> channels;
     std::vector<AnimationEvent>   events;   // In time order.
     bool                          looping = true;
+    // For a locomotion clip (a walk in place), the ground speed in m/s it was
+    // captured at, from its sidecar: played at speed / this, the feet don't slide.
+    float                         speed = 0.0f;
 };
 
 // Reads a clip sidecar written next to a glTF by the content pipeline:

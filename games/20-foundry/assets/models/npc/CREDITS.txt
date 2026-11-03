@@ -1,0 +1,11 @@
+Foundry's soldiers.
+
+Military_Male_01 from Microsoft Rocketbox (https://github.com/microsoft/Microsoft-Rocketbox),
+with its motion-captured idles, walks and runs. License: MIT (LICENSE-Rocketbox.txt).
+
+AK-47 from "Free Classic Weapons Pack" v1.1 by Stein Games (https://stein-indie.itch.io/classic-weapons-pack).
+License: CC0 1.0.
+
+Built by tools/foundry/npc/build_npc.py: the mocap moved onto the avatar in place, the
+rifle on a bone riding the upper chest, the arms solved onto it each frame, baked and
+exported as glTF. soldier.events.json lists each clip's looping and captured ground speed.

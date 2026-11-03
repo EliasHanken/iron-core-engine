@@ -30,6 +30,53 @@ static AnimationClip slide(const char* name, float from, float to, float length 
 
 static float x(const SkeletalAnimator& a) { return a.pose().bones[0].translation.x; }
 
+static void base_rates_and_sync() {
+    const Skeleton sk = oneBone();
+    const AnimationClip walk = slide("walk", 0.0f, 1.0f, 1.0f);
+    const AnimationClip run = slide("run", 0.0f, 1.0f, 0.5f);
+    SkeletalAnimator anim;
+    anim.setSkeleton(&sk);
+    anim.setBaseWeight(&walk, 1.0f);
+    anim.setBaseRate(&walk, 2.0f);
+    anim.update(0.25f);
+    anim.evaluate();
+    CHECK_NEAR(x(anim), 0.5f);  // Twice as fast: halfway in a quarter second.
+    // Synced, a 1 s walk and a 0.5 s run share one phase.
+    SkeletalAnimator synced;
+    synced.setSkeleton(&sk);
+    synced.setSyncedBase(true);
+    synced.setBaseWeight(&walk, 1.0f);
+    synced.setBaseWeight(&run, 1.0f);
+    synced.update(0.2f);  // Laps a second: (1/1 + 1/0.5) / 2 = 1.5, so phase 0.3.
+    synced.evaluate();
+    CHECK_NEAR(x(synced), 0.3f);  // Both at 0.3 of their cycle.
+}
+
+static void bone_turns_rotate_in_skeleton_space() {
+    Skeleton sk = oneBone();
+    Bone child;
+    child.parentIndex = 0;
+    child.inverseBindMatrix = Mat4::identity();
+    child.localBindTransform = Mat4::identity();
+    child.name = "child";
+    sk.bones.push_back(child);
+    const AnimationClip still = slide("still", 0.0f, 0.0f);
+    SkeletalAnimator anim;
+    anim.setSkeleton(&sk);
+    anim.setBaseWeight(&still, 1.0f);
+    const Quat quarter = Quat::fromAxisAngle({0.0f, 1.0f, 0.0f}, 3.14159265f * 0.25f);
+    anim.setBoneTurn(0, quarter);
+    anim.setBoneTurn(1, quarter);
+    anim.evaluate();
+    // Two eighths of a turn down the chain: the child's turned a quarter.
+    const Mat4& m = anim.boneGlobal(1);
+    CHECK_NEAR(m.at(0, 0), 0.0f);
+    CHECK_NEAR(std::abs(m.at(2, 0)), 1.0f);
+    anim.clearBoneTurns();
+    anim.evaluate();
+    CHECK_NEAR(anim.boneGlobal(1).at(0, 0), 1.0f);
+}
+
 static void base_weights_average() {
     const Skeleton sk = oneBone();
     const AnimationClip a = slide("a", 0.0f, 0.0f);
@@ -132,6 +179,8 @@ static void looping_events_fire_every_lap() {
 
 int main() {
     base_weights_average();
+    base_rates_and_sync();
+    bone_turns_rotate_in_skeleton_space();
     one_shots_fade_in_and_out();
     a_new_one_shot_fades_the_old_out();
     additives_add_their_change();

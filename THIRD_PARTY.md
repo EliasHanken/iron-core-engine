@@ -71,6 +71,12 @@ Foundry's first-person view models (one per gun) are built from CC0 assets, rigg
 | AK-47 rifle, M1911 pistol, M700 rifle | `games/20-foundry/assets/models/viewmodel/` | Stein Games, "Free Classic Weapons Pack" ([itch.io](https://stein-indie.itch.io/classic-weapons-pack)) | CC0 1.0 |
 | WRAD ARMS | `games/20-foundry/assets/models/viewmodel/` | wriks ([GitHub](https://github.com/wwwriks/wrad-arms)) | CC0 |
 
+Foundry's soldiers are built by `tools/foundry/npc/build_npc.py` from a Rocketbox avatar and its motion capture, carrying the AK-47 above:
+
+| Model | Where | Credit | Licence |
+|---|---|---|---|
+| Military_Male_01, with its idle, walk and run motion | `games/20-foundry/assets/models/npc/` | Microsoft Rocketbox ([GitHub](https://github.com/microsoft/Microsoft-Rocketbox)) | MIT (`LICENSE-Rocketbox.txt` beside it) |
+
 The Damaged Helmet is only a viewer and editor sample. Anyone building a commercial product from this repo should remove it.
 
 ## Textures and environments
