@@ -24,6 +24,8 @@
 #include "render/backends/vulkan/VkGpuProfiler.h"
 #include "render/backends/vulkan/VkClusters.h"
 #include "render/backends/vulkan/VkInstanceGroups.h"
+#include "render/backends/vulkan/VkRayTracing.h"
+#include "render/backends/vulkan/VkDdgi.h"
 #include "render/ReflectionPlane.h"
 #include "render/ReflectionProbe.h"
 
@@ -129,6 +131,22 @@ public:
 
     void setViewport(int width, int height) override;
     void setShaderTime(float seconds) override { shaderTime_ = seconds; }
+    bool rayTracing() const override { return context_.rayTracing(); }
+    void traceDebugRay(Vec3 origin, Vec3 direction) override {
+        debugRay_ = {origin, direction};
+        debugRayPending_ = true;
+    }
+    float debugRayHit() const override { return debugRayHit_; }
+    void setGiVolume(const GiVolume& volume) override {
+        ddgi_.setVolume(context_, volume);
+        bindGi();
+    }
+    void clearGiVolume() override {
+        ddgi_.clearVolume(context_);
+        bindGi();
+    }
+    void setGiView(GiView view) override { ddgi_.setView(view); }
+    void setGiWipe(float x) override { ddgi_.setWipe(x); }
 
     std::span<const GpuTiming> gpuTimings() const override { return profiler_.latest(); }
 
@@ -217,6 +235,16 @@ public:
     // Linear exposure multiply applied before the ACES tonemap in the composite
     // step (M44). Default 1.0. Auto-exposure is deferred.
     void setExposure(float exposure) { pendingExposure_ = exposure; }
+    // Auto-exposure (eye adaptation): the scene's brightness is measured each
+    // frame and the exposure eases toward what makes it read as mid-grey, over
+    // about a second; setExposure then scales on top (exposure compensation).
+    // `minEv`/`maxEv` bound how far it adapts (log2 of the exposure multiply).
+    void setAutoExposure(bool on, float minEv = -4.0f, float maxEv = 6.0f) {
+        autoExposure_ = on;
+        autoMinEv_ = minEv;
+        autoMaxEv_ = maxEv;
+    }
+    float currentAutoExposure() const { return autoExposure_ ? autoMultiply_ : 1.0f; }
 
     // M47 bloom knobs (VulkanRenderer-only, mirror setExposure). Threshold/knee
     // gate the bright-pass; intensity scales the bloom added before ACES;
@@ -236,7 +264,9 @@ public:
 
     // Bakes `skyGlsl`, which defines `vec3 skyColor(vec3 dir);`, into an HDR
     // cubemap usable with setSkybox. Blocks until the GPU finishes.
-    CubemapHandle bakeSky(const std::string& skyGlsl, int faceSize);
+    CubemapHandle bakeSky(const std::string& skyGlsl, int faceSize, Vec4 params = {});
+    // Frees a cubemap once no frame in flight can still be using it.
+    void destroyCubemap(CubemapHandle cube) override { retiredCubes_.push_back({cube, frameNumber_}); }
 
     // Applies a film camera to the composite. See CinematicSettings.
     void setCinematic(const CinematicSettings& settings) { cinematic_ = settings; }
@@ -361,6 +391,46 @@ private:
     CinematicSettings  cinematic_;
     VkGpuProfiler      profiler_;
     VkInstanceGroups   instanceGroups_;
+    // The scene for ray queries (GI), when the GPU traces rays; rebuilt each frame.
+    VkRayTracing       rayTracing_;
+    // Dynamic GI's probes; their atlases sit in set 1 for every lit draw.
+    VkDdgi             ddgi_;
+    void bindGi() {
+        std::array<VkBuffer, VkFrameRing::kFramesInFlight> params{};
+        for (std::uint32_t i = 0; i < params.size(); ++i) params[i] = ddgi_.params(i);
+        clusters_.setGi(context_, params, ddgi_.paramsBytes(), ddgi_.irradianceView(), ddgi_.distanceView(),
+                        ddgi_.sampler(), ddgi_.offsets());
+    }
+    std::vector<VkRayTracing::Placement> rtPlacements_;  // This frame's draws.
+    std::vector<VkRayTracing::Placement> rtStatics_;     // The instance groups', as of rtStaticsGeneration_.
+    std::uint64_t rtStaticsGeneration_ = 0;
+    // A material's colour as GI sees it: its tint times its texture's average.
+    Vec3 albedoOf(const Material& material) const {
+        Vec3 c = material.baseColorFactor;
+        if (textures_.has(material.texture)) {
+            const auto& t = textures_.get(material.texture);
+            c = {c.x * t.average[0], c.y * t.average[1], c.z * t.average[2]};
+        }
+        return c;
+    }
+    // Its glow as GI sees it: emissive times its emissive map's average.
+    Vec3 emissiveOf(const Material& material) const {
+        Vec3 e = material.emissive * material.giEmissiveScale;
+        if (textures_.has(material.emissiveMap)) {
+            const auto& t = textures_.get(material.emissiveMap);
+            e = {e.x * t.average[0], e.y * t.average[1], e.z * t.average[2]};
+        }
+        return e;
+    }
+    // traceDebugRay: one ray-query thread, its answer read back frames later.
+    VkComputeStage rtDebugStage_;
+    std::array<VkBuffer, VkFrameRing::kFramesInFlight>      rtDebugOut_{};
+    std::array<VmaAllocation, VkFrameRing::kFramesInFlight> rtDebugAlloc_{};
+    std::array<void*, VkFrameRing::kFramesInFlight>         rtDebugMapped_{};
+    std::array<bool, VkFrameRing::kFramesInFlight>          rtDebugWritten_{};
+    std::pair<Vec3, Vec3> debugRay_{};
+    bool  debugRayPending_ = false;
+    float debugRayHit_ = -1.0f;
     VkClusters         clusters_;
     std::vector<PointLight> pendingAllLights_;  // Every light this frame, for the clusters.
     std::vector<Decal>      pendingDecals_;
@@ -430,6 +500,20 @@ private:
     // Used by submit() for Blinn-Phong specular highlights in the lit shader.
     Vec3 pendingCameraPos_ = {0.0f, 0.0f, 0.0f};
     float shaderTime_ = 0.0f;  // setShaderTime: cameraPos.w in the lit UBO.
+    // Auto-exposure: the measure, one readable result per frame in flight.
+    bool  autoExposure_ = false;
+    float autoMinEv_ = -4.0f, autoMaxEv_ = 6.0f;
+    float autoMultiply_ = 1.0f;
+    double autoLastTime_ = 0.0;
+    VkComputeStage exposureMeasure_;
+    std::array<VkBuffer, VkFrameRing::kFramesInFlight>      exposureOut_{};
+    std::array<VmaAllocation, VkFrameRing::kFramesInFlight> exposureAlloc_{};
+    std::array<void*, VkFrameRing::kFramesInFlight>         exposureMapped_{};
+    std::array<bool, VkFrameRing::kFramesInFlight>          exposureWritten_{};
+    // Cubemaps to free once the frames that may read them are done.
+    struct RetiredCube { CubemapHandle cube; std::uint64_t frame; };
+    std::vector<RetiredCube> retiredCubes_;
+    std::uint64_t frameNumber_ = 0;
 
     // M14 — directional-light shadow state.
     Vec3  pendingShadowCenter_  = {0.0f, 0.0f, 0.0f};

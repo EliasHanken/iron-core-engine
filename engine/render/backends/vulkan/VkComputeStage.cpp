@@ -66,6 +66,7 @@ void VkComputeStage::dispatch(VulkanRenderer& renderer, VkCommandBuffer cb,
     std::vector<VkDescriptorImageInfo>  images(count);
     std::vector<VkDescriptorBufferInfo> buffers(count);
     std::vector<VkWriteDescriptorSet>   writes(count);
+    std::vector<VkWriteDescriptorSetAccelerationStructureKHR> accels(count);
 
     std::size_t i = 0;
     for (const VkComputeResource& r : resources) {
@@ -74,7 +75,12 @@ void VkComputeStage::dispatch(VulkanRenderer& renderer, VkCommandBuffer cb,
         writes[i].dstBinding      = static_cast<std::uint32_t>(i);
         writes[i].descriptorCount = 1;
         writes[i].descriptorType  = bindings_[i];
-        if (r.buffer != VK_NULL_HANDLE) {
+        if (r.accel != VK_NULL_HANDLE) {
+            accels[i].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET_ACCELERATION_STRUCTURE_KHR;
+            accels[i].accelerationStructureCount = 1;
+            accels[i].pAccelerationStructures = &r.accel;
+            writes[i].pNext = &accels[i];
+        } else if (r.buffer != VK_NULL_HANDLE) {
             buffers[i] = {r.buffer, r.offset, r.range};
             writes[i].pBufferInfo = &buffers[i];
         } else {

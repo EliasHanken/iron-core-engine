@@ -26,7 +26,13 @@ struct Material {
     float ao          = 1.0f;
     float normalScale = 1.0f;                            // glTF normalTexture.scale
     float heightScale = 0.05f;                           // M50a — POM depth scale; 0 = POM off
-    bool excludeFromProbeCapture = false;  // M49: skip this draw when baking reflection probes (chrome objects / probe markers)
+    bool excludeFromProbeCapture = false;
+    // Masked, as Unreal says: where the albedo texture's alpha is under this, the
+    // surface isn't there (leaves, chain links, a fence). 0 is opaque.
+    float alphaCutoff = 0.0f;
+    // How much its glow lights the world through GI: a neon sign, a screen, coals.
+    // 0 where a real light already stands in for it (it'd count twice).
+    float giEmissiveScale = 1.0f;  // M49: skip this draw when baking reflection probes (chrome objects / probe markers)
 };
 
 } // namespace iron

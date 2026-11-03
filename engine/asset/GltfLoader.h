@@ -68,6 +68,7 @@ struct GltfSurface {
     Vec3  baseColorFactor{1.0f, 1.0f, 1.0f};
     Vec3  emissiveFactor{0.0f, 0.0f, 0.0f};
     float normalScale     = 1.0f;
+    float alphaCutoff     = 0.0f;  // alphaMode MASK: texels clearer than this are cut away; 0 is opaque.
 };
 
 // One part of a static model that shares a material: a material slot, in Unreal's

@@ -8,6 +8,7 @@
 #include "render/Culling.h"
 #include "render/Fog.h"
 #include "render/GpuTimings.h"
+#include "render/GlobalIllumination.h"
 #include "render/InstanceGroup.h"
 #include "render/Handles.h"
 #include "render/HudBatch.h"
@@ -324,6 +325,22 @@ public:
     // A clock for shaders that move vertices (grass in the wind, water), in
     // seconds: lit shaders read it as u.cameraPos.w. Set once a frame.
     virtual void setShaderTime(float seconds) { (void)seconds; }
+
+    // --- Ray tracing (where the GPU has it) ---
+    virtual bool rayTracing() const { return false; }
+    // One ray through the ray-traced scene, to check it against the physics: its
+    // hit distance (or -1 for a miss) comes back from debugRayHit a frame or two later.
+    virtual void traceDebugRay(Vec3 origin, Vec3 direction) { (void)origin; (void)direction; }
+    virtual float debugRayHit() const { return -1.0f; }
+    // Dynamic GI (render/GlobalIllumination.h): a volume of probes lighting what's
+    // in it with bounced light. Needs rayTracing(); ignored without it.
+    virtual void setGiVolume(const GiVolume& volume) { (void)volume; }
+    virtual void clearGiVolume() {}
+    virtual void setGiView(GiView view) { (void)view; }
+    // A wipe across the screen: GI on left of `x` (0..1), off right of it; < 0 none.
+    virtual void setGiWipe(float x) { (void)x; }
+    // Frees a cubemap (a sky no longer needed) once no frame still uses it.
+    virtual void destroyCubemap(CubemapHandle cube) { (void)cube; }
 
     // --- Instance groups: GPU-driven drawing (see InstanceGroup.h) ---
     // A shader for instance groups: its vertex stage reads each instance's transform

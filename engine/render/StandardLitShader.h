@@ -1,5 +1,7 @@
 #pragma once
 
+#include "render/GiShaderCommon.h"
+
 #include <string>
 
 namespace iron {
@@ -182,7 +184,8 @@ void main() {
 )GLSL";
 }
 
-inline const char* standardLitFragSource() {
+// The lit fragment shader as written; standardLitFragSource() adds the GI volume to it.
+inline const char* standardLitFragSourceRaw() {
     return R"GLSL(#version 450
 layout(location = 0) in vec3 vWorldPos;
 layout(location = 1) in vec3 vNormal;
@@ -408,7 +411,9 @@ vec2 parallaxOcclusionUV(vec2 uv, vec3 viewTS, float heightScale) {
     vec3 perturbedN = normalize(TBN * tangentNormal);
 
     // PBR material parameters.
-    vec3  albedo    = texture(uDiffuse, uv).rgb * u.baseColorFactor.xyz;
+    vec4  albedoTexel = texture(uDiffuse, uv);
+    if (u.lightCounts.w > 0.0 && albedoTexel.a < u.lightCounts.w) discard;  // Masked.
+    vec3  albedo    = albedoTexel.rgb * u.baseColorFactor.xyz;
     float roughness = clamp(u.materialParams.y * texture(uMetallicRoughnessMap, uv).g, 0.04, 1.0);
     float metallic  = clamp(u.materialParams2.x * texture(uMetallicRoughnessMap, uv).b, 0.0, 1.0);
     float ao        = u.materialParams2.y * texture(uAoMap, uv).r;
@@ -502,7 +507,19 @@ vec2 parallaxOcclusionUV(vec2 uv, vec3 viewTS, float heightScale) {
         float nDotV = max(dot(N_, V), 0.0);
         vec3  F     = fresnelSchlickRoughness(nDotV, F0, roughness);
         vec3  kD    = (vec3(1.0) - F) * (1.0 - metallic);
-        vec3  diffuseIBL  = texture(uIrradianceCube, N_).rgb * albedo;
+        vec3  skyIrradiance = texture(uIrradianceCube, N_).rgb;
+        vec3  diffuseIBL  = skyIrradiance * albedo;
+        // GI: the light bounced here instead of the sky's, where the volume reaches;
+        // and the sky's reflection dimmed as much as the place is darker than the sky.
+        float giW = giOffAt(gl_FragCoord.xy, cl.screen.x) ? 0.0 : giVolumeWeight(vWorldPos);
+        float specularOcclusion = 1.0;
+        if (giW > 0.0) {
+            vec3 giLight = giIrradiance(uGiIrradiance, uGiDistance, vWorldPos, N_, V) * gi.misc.z;
+            diffuseIBL = mix(diffuseIBL, giLight * albedo, giW);
+            float ratio = dot(giLight, vec3(0.2126, 0.7152, 0.0722)) /
+                          max(dot(skyIrradiance, vec3(0.2126, 0.7152, 0.0722)), 1e-3);
+            specularOcclusion = mix(1.0, clamp(ratio, 0.0, 1.0), giW);
+        }
         vec3  R           = reflect(-V, N_);
         if (u.probeCenter.w > 0.5) {  // M49 — box-projected parallax correction
             // M49 — box-projected parallax correction toward local geometry.
@@ -521,10 +538,16 @@ vec2 parallaxOcclusionUV(vec2 uv, vec3 viewTS, float heightScale) {
         float maxMip      = float(textureQueryLevels(uPrefiltered) - 1);
         vec3  prefiltered = textureLod(uPrefiltered, R, roughness * maxMip).rgb;
         vec2  brdf        = texture(uBrdfLut, vec2(nDotV, roughness)).rg;
-        vec3  specularIBL = prefiltered * (F * brdf.x + brdf.y);
+        vec3  specularIBL = prefiltered * (F * brdf.x + brdf.y) * specularOcclusion;
         ambient = (kD * diffuseIBL + specularIBL) * ao;
     } else {
-        ambient = u.ambient.xyz * albedo * ao;
+        vec3 flatAmbient = u.ambient.xyz * albedo;
+        float giW = giOffAt(gl_FragCoord.xy, cl.screen.x) ? 0.0 : giVolumeWeight(vWorldPos);
+        if (giW > 0.0) {
+            vec3 giLight = giIrradiance(uGiIrradiance, uGiDistance, vWorldPos, N_, V) * gi.misc.z;
+            flatAmbient = mix(flatAmbient, giLight * albedo * (1.0 - metallic), giW);
+        }
+        ambient = flatAmbient * ao;
     }
     // M73 — light from a LightVolume. Metals have no diffuse response, so they
     // also sample along the reflection, which is what lets them pick it up.
@@ -539,6 +562,9 @@ vec2 parallaxOcclusionUV(vec2 uv, vec3 viewTS, float heightScale) {
     vec3 emissive = u.emissive.xyz * texture(uEmissiveMap, uv).rgb;
     emissive += decalGlow;  // Its own line: the surface hooks below replace the one above.
     vec3 color = ambient + Lo + emissive;
+    if (gi.misc.y > 1.5) color = ambient;  // GiView::IndirectOnly.
+    // The wipe's line.
+    if (gi.boundsMin.w >= 0.0 && abs(gl_FragCoord.x - gi.boundsMin.w * cl.screen.x) < 1.5) color = vec3(1.0);
 
     // M17 — planar reflection (preferred when active) with M16 cubemap fallback.
     float reflectivity = u.materialParams.z;
@@ -562,6 +588,23 @@ vec2 parallaxOcclusionUV(vec2 uv, vec3 viewTS, float heightScale) {
     outColor = vec4(finalColor, 1.0);
 }
 )GLSL";
+}
+
+// The lit fragment shader: set 1 also holds the GI volume (parameters, the
+// irradiance and distance atlases) and the lookup that reads them.
+inline const char* standardLitFragSource() {
+    static const std::string source = [] {
+        std::string s = standardLitFragSourceRaw();
+        const std::string anchor = "layout(set = 1, binding = 5) uniform sampler2DArray uDecalTextures;\n";
+        s.replace(s.find(anchor), anchor.size(),
+                  anchor + "layout(std140, set = 1, binding = 6) uniform GiParams {" + giParamsMembersGlsl() +
+                      "} gi;\nlayout(set = 1, binding = 7) uniform sampler2D uGiIrradiance;\n"
+                      "layout(set = 1, binding = 8) uniform sampler2D uGiDistance;\n"
+                      "layout(std430, set = 1, binding = 9) readonly buffer GiOffsets { vec4 giOffsets[]; };\n" +
+                      giCommonGlsl());
+        return s;
+    }();
+    return source.c_str();
 }
 
 // M50b — hardware tessellation shader sources.

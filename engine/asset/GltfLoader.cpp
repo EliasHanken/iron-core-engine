@@ -906,6 +906,7 @@ void readSurface(const tinygltf::Model& model, int materialIndex, const std::fil
         out.emissiveFactor = {static_cast<float>(ef[0]), static_cast<float>(ef[1]), static_cast<float>(ef[2])};
     }
     out.normalScale = static_cast<float>(mat.normalTexture.scale);
+    if (mat.alphaMode == "MASK") out.alphaCutoff = static_cast<float>(mat.alphaCutoff);
 }
 
 }  // namespace

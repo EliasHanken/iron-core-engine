@@ -1,5 +1,9 @@
 #pragma once
 
+#include <unordered_map>
+
+#include "math/Vec.h"
+
 #ifndef IRON_RENDER_BACKEND_VULKAN
 #error "VkIblBaker is Vulkan-only."
 #endif
@@ -47,9 +51,11 @@ public:
                                         const std::string& hdrPath, int faceSize);
 
     // Bakes `skyGlsl`, which defines `vec3 skyColor(vec3 dir);`, into an RGBA16F
-    // cube. Blocks until the GPU finishes. Returns kInvalidHandle on failure.
+    // cube. It may read `skyParams` (a vec4: a sun's direction, a time of day),
+    // given here as `params`. A source is compiled once and kept, so baking it
+    // again with new parameters is quick. Blocks until the GPU finishes.
     CubemapHandle bakeSky(VkContext& ctx, VkCubemapStore& store,
-                          const std::string& skyGlsl, int faceSize);
+                          const std::string& skyGlsl, int faceSize, Vec4 params = {});
 
     // Convolves a cosine-weighted irradiance cubemap from an environment cube
     // already in `store` (e.g. the skybox). Output is an RGBA16F cube
@@ -67,6 +73,11 @@ public:
     VkSampler   brdfLutSampler() const { return brdfLutSampler_; }
 
 private:
+    struct SkyPipeline {
+        VkDescriptorSetLayout setLayout = VK_NULL_HANDLE;
+        VkComputePipeline     pipeline;
+    };
+    std::unordered_map<std::string, SkyPipeline> skyPipelines_;
     VkDescriptorSetLayout setLayout_       = VK_NULL_HANDLE;
     VkSampler             equirectSampler_ = VK_NULL_HANDLE;
     VkComputePipeline     pipeline_;

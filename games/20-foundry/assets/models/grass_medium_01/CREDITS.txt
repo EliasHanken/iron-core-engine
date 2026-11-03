@@ -1,4 +1,4 @@
 Grass Medium 01 by Rob Tuytel, Rico Cilliers
 Source: https://polyhaven.com/a/grass_medium_01
 License: CC0 (https://creativecommons.org/publicdomain/zero/1.0/)
-Its colour is the dry_diff map with the Alpha map in its alpha channel (tools/foundry/combine_alpha.py).
+Its colour is the dry_diff map with the Alpha map in its alpha channel (tools/foundry/combine_alpha.py), its material set to alphaMode MASK.

@@ -20,6 +20,7 @@ struct VkTextureResource {
     VkSampler      sampler = VK_NULL_HANDLE;  // shared with store
     std::uint32_t  width   = 0;
     std::uint32_t  height  = 0;
+    float          average[3] = {1.0f, 1.0f, 1.0f};  // Its mean colour, linear: what GI sees of it.
 };
 
 class VkTextureStore {

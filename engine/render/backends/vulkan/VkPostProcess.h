@@ -154,6 +154,8 @@ public:
     // Scene depth view (full scene depth buffer, sampleable). Used by the x-ray
     // pass to compare against the masked object's own depth.
     VkImageView sceneDepthView() const { return sceneDepthView_; }
+    // The lit scene in HDR, before the tonemap (read-only once bloom has run).
+    VkImageView sceneColorView() const { return sceneColorView_; }
 
     // Push constants for the outline pipeline.
     struct OutlinePush {

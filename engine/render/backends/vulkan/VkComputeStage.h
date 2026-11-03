@@ -23,6 +23,7 @@ struct VkComputeResource {
     VkBuffer      buffer  = VK_NULL_HANDLE;
     VkDeviceSize  offset  = 0;
     VkDeviceSize  range   = VK_WHOLE_SIZE;
+    VkAccelerationStructureKHR accel = VK_NULL_HANDLE;  // A ray-traced pass's scene.
 
     static VkComputeResource image(VkImageView view) {
         VkComputeResource r;
@@ -35,6 +36,11 @@ struct VkComputeResource {
         r.view = view;
         r.sampler = sampler;
         r.layout = layout;
+        return r;
+    }
+    static VkComputeResource accelerationStructure(VkAccelerationStructureKHR as) {
+        VkComputeResource r;
+        r.accel = as;
         return r;
     }
     static VkComputeResource bufferRange(VkBuffer buffer, VkDeviceSize offset = 0,

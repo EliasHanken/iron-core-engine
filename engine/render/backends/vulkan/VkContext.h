@@ -37,6 +37,21 @@ public:
     bool             wideLines()       const { return wideLines_; }
     bool samplerAnisotropy() const { return samplerAnisotropy_; }
 
+    // Hardware ray tracing (ray queries against acceleration structures, with
+    // buffer device addresses): on where the GPU has it, unless IRON_NO_RT is set.
+    bool rayTracing() const { return rayTracing_; }
+    // The acceleration-structure entry points (not in the loader's exports).
+    struct RtFunctions {
+        PFN_vkCreateAccelerationStructureKHR           create = nullptr;
+        PFN_vkDestroyAccelerationStructureKHR          destroy = nullptr;
+        PFN_vkGetAccelerationStructureBuildSizesKHR    buildSizes = nullptr;
+        PFN_vkCmdBuildAccelerationStructuresKHR        cmdBuild = nullptr;
+        PFN_vkGetAccelerationStructureDeviceAddressKHR address = nullptr;
+    };
+    const RtFunctions& rt() const { return rt_; }
+    // Scratch buffers must start at a multiple of this.
+    std::uint32_t asScratchAlignment() const { return asScratchAlignment_; }
+
 private:
     bool createInstance();
     bool createDebugMessenger();
@@ -56,6 +71,9 @@ private:
     VmaAllocator      allocator_      = VK_NULL_HANDLE;
     bool              wideLines_      = false;
     bool samplerAnisotropy_ = false;
+    bool rayTracing_ = false;
+    RtFunctions rt_{};
+    std::uint32_t asScratchAlignment_ = 256;
 };
 
 }  // namespace iron

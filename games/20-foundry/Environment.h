@@ -132,14 +132,6 @@ inline std::string swayingVertex(float sway) {
     return src;
 }
 
-// The standard lit fragment shader, cut where the card's texture is clear.
-inline std::string cutoutFragment() {
-    std::string src = iron::standardLitFragSource();
-    const std::string from = "    vec3  albedo    = texture(uDiffuse, uv).rgb * u.baseColorFactor.xyz;";
-    src.replace(src.find(from), from.size(), "    if (texture(uDiffuse, uv).a < 0.5) discard;\n" + from);
-    return src;
-}
-
 // Firs on the hills, thicker where the ground rises, none on the works; split
 // among `variants` (each a different tree), sized round the size they were baked.
 inline std::vector<std::vector<iron::Mat4>> forest(int variants, std::uint32_t seed) {

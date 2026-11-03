@@ -1182,8 +1182,9 @@ int main(int argc, char** argv) {
             iron::InstanceGroupDesc d;
             d.lods = {cardMesh};
             d.shader = renderer.createInstancedShader(foundry::environment::impostorVertex(views, w, h),
-                                                      foundry::environment::cutoutFragment());
+                                                      iron::standardLitFragSource());
             d.material.texture = renderer.loadTexture(base + ".png", true);
+            d.material.alphaCutoff = 0.5f;  // Masked.
             d.material.roughness = 1.0f;
             d.material.metallic = 0.0f;
             d.material.heightScale = 0.0f;
@@ -1194,10 +1195,9 @@ int main(int argc, char** argv) {
             renderer.setInstances(group, firs[static_cast<std::size_t>(v)]);
             trees += firs[static_cast<std::size_t>(v)].size();
         }
-        // Poly Haven's grass_medium_01 (its dry colour, cut by its alpha), five of its clumps.
+        // Poly Haven's grass_medium_01 (its dry colour, masked by its alpha), five of its clumps.
         const iron::ShaderHandle grassShader =
-            renderer.createInstancedShader(foundry::environment::swayingVertex(0.5f),
-                                          foundry::environment::cutoutFragment());
+            renderer.createInstancedShader(foundry::environment::swayingVertex(0.5f), iron::standardLitFragSource());
         std::vector<const foundry::InstancedModel*> clumps;
         std::vector<Vec3> centres;
         for (const char* node : {"mid_a", "tall_a", "large_a", "small_a", "mid_b"}) {
@@ -1637,6 +1637,7 @@ int main(int argc, char** argv) {
     Vec3 engineEye{};          // The engine view's camera, easing after the player.
     bool engineEyeSet = false;
     bool antiAliased = !sceneHas("noaa");
+    int giView = sceneHas("gioff") ? 1 : sceneHas("gionly") ? 2 : 0;  // F7: GI on, off, bounced light only.
     bool paused = false;
     options.onInput = [&]() {
         iron::Input& input = app.input();
@@ -1670,9 +1671,24 @@ int main(int argc, char** argv) {
         if (input.keyPressed(GLFW_KEY_F4)) showLods = !showLods;
         if (input.keyPressed(GLFW_KEY_F5)) antiAliased = !antiAliased;
         if (input.keyPressed(GLFW_KEY_F6)) showNav = !showNav;
+        if (input.keyPressed(GLFW_KEY_F7)) {
+            giView = (giView + 1) % 3;
+            renderer.setGiView(static_cast<iron::GiView>(giView));
+        }
         if (input.keyPressed(GLFW_KEY_TAB)) engineView = !engineView;
     };
     if (!scripted) app.window().setCursorCaptured(true);
+
+    // --- Dynamic GI over the yard and the hall (render/GlobalIllumination.h) ---
+    if (renderer.rayTracing() && !sceneHas("nogi")) {
+        iron::GiVolume gi;
+        gi.min = {-34.0f, -3.6f, -66.0f};  // Down to the bunker.
+        gi.max = {34.0f, 14.0f, 36.0f};
+        gi.spacing = 3.0f;
+        gi.raysPerProbe = 128;
+        renderer.setGiVolume(gi);
+        renderer.setGiView(static_cast<iron::GiView>(giView));
+    }
 
     // --- Settings (Settings.h), and the pause menu over them ---
     float hipFov = settings.fovDegrees * kPi / 180.0f;
@@ -2730,6 +2746,15 @@ int main(int argc, char** argv) {
         for (std::size_t i = 0; i < std::size(acts); ++i) {
             draws += acts[i]->draw(renderer, kDoorMotionId + 10u * static_cast<std::uint32_t>(i));
         }
+        // --scene rtcheck: the ray-traced scene against the physics, along the aim.
+        if (sceneHas("rtcheck")) {
+            renderer.traceDebugRay(eye, aimDir);
+            if (std::fmod(seconds, 0.5f) < simDt) {
+                const iron::PhysicsWorld::RaycastHit hit = world.raycast(eye, aimDir, 400.0f);
+                iron::Log::info("rtcheck %.1fs: traced %.2f m, physics %.2f m (aim %.2f %.2f %.2f)", seconds,
+                                renderer.debugRayHit(), hit.hit ? hit.t * 400.0f : -1.0f, aimDir.x, aimDir.y, aimDir.z);
+            }
+        }
         // The squad: sees, hears, thinks, moves.
         // --scene kill: soldier 0 takes a round through the chest at two seconds, to watch him fall.
         if (sceneHas("kill") && seconds >= 2.0f && seconds - simDt < 2.0f && !squad.enemies().empty()) {
@@ -2992,7 +3017,9 @@ int main(int argc, char** argv) {
     };
 
     capture::runLoop(app, renderer, *vulkan, options, frame, kRecordSeconds);
+    std::fprintf(stderr, "[exit] loop done\n");
     smoke.destroy();
     body.destroy(world);
+    std::fprintf(stderr, "[exit] main returning\n");
     return 0;
 }

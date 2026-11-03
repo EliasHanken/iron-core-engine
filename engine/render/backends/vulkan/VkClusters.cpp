@@ -149,15 +149,20 @@ bool VkClusters::init(VkContext& ctx, int framesInFlight) {
 
     // Set 1 of lit pipelines: what fragments read.
     {
-        VkDescriptorSetLayoutBinding b[6]{};
+        VkDescriptorSetLayoutBinding b[10]{};
         b[0] = {0, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr};
         for (std::uint32_t i = 1; i <= 4; ++i) {
             b[i] = {i, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr};
         }
         b[5] = {5, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr};
+        // The GI volume (VkDdgi): its parameters and its two atlases.
+        b[6] = {6, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr};
+        b[7] = {7, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr};
+        b[8] = {8, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr};
+        b[9] = {9, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr};
         VkDescriptorSetLayoutCreateInfo li{};
         li.sType        = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-        li.bindingCount = 6;
+        li.bindingCount = 10;
         li.pBindings    = b;
         VK_CHECK(vkCreateDescriptorSetLayout(device, &li, nullptr, &setLayout_));
     }
@@ -175,9 +180,9 @@ bool VkClusters::init(VkContext& ctx, int framesInFlight) {
         VK_CHECK(vkCreateDescriptorSetLayout(device, &li, nullptr, &buildSetLayout_));
     }
     const auto n = static_cast<std::uint32_t>(framesInFlight);
-    const VkDescriptorPoolSize sizes[3] = {{VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 2 * n},
-                                           {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 8 * n},
-                                           {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, n}};
+    const VkDescriptorPoolSize sizes[3] = {{VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 3 * n},
+                                           {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 9 * n},
+                                           {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 3 * n}};
     VkDescriptorPoolCreateInfo pi{};
     pi.sType         = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
     pi.maxSets       = 2 * n;
@@ -257,6 +262,33 @@ bool VkClusters::init(VkContext& ctx, int framesInFlight) {
     VK_CHECK(vkCreateComputePipelines(device, VK_NULL_HANDLE, 1, &ci, nullptr, &pipeline_));
     vkDestroyShaderModule(device, module, nullptr);
     return true;
+}
+
+void VkClusters::setGi(VkContext& ctx, std::span<const VkBuffer> params, VkDeviceSize paramsBytes,
+                       VkImageView irradiance, VkImageView distance, VkSampler sampler, VkBuffer offsets) {
+    for (std::size_t i = 0; i < frames_.size() && i < params.size(); ++i) {
+        const VkDescriptorBufferInfo buffer{params[i], 0, paramsBytes};
+        const VkDescriptorImageInfo images[2] = {{sampler, irradiance, VK_IMAGE_LAYOUT_GENERAL},
+                                                 {sampler, distance, VK_IMAGE_LAYOUT_GENERAL}};
+        const VkDescriptorBufferInfo offsetsInfo{offsets, 0, VK_WHOLE_SIZE};
+        VkWriteDescriptorSet w[4]{};
+        w[3].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        w[3].dstSet = frames_[i].set;
+        w[3].dstBinding = 9;
+        w[3].descriptorCount = 1;
+        w[3].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+        w[3].pBufferInfo = &offsetsInfo;
+        for (std::uint32_t k = 0; k < 3; ++k) {
+            w[k].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+            w[k].dstSet = frames_[i].set;
+            w[k].dstBinding = 6 + k;
+            w[k].descriptorCount = 1;
+            w[k].descriptorType = k == 0 ? VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER : VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+            if (k == 0) w[k].pBufferInfo = &buffer;
+            else w[k].pImageInfo = &images[k - 1];
+        }
+        vkUpdateDescriptorSets(ctx.device(), 4, w, 0, nullptr);
+    }
 }
 
 void VkClusters::writeSets(VkContext& ctx) {

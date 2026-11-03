@@ -41,6 +41,11 @@ public:
     bool init(VkContext& ctx, int framesInFlight);
     void destroy(VkContext& ctx);
 
+    // The GI volume's parameters (one buffer per frame in flight) and atlases, for
+    // set 1's bindings 6-8. Call before the first frame, and whenever they're remade.
+    void setGi(VkContext& ctx, std::span<const VkBuffer> params, VkDeviceSize paramsBytes, VkImageView irradiance,
+               VkImageView distance, VkSampler sampler, VkBuffer offsets);
+
     // The layout lit pipelines take as set 1.
     VkDescriptorSetLayout setLayout() const { return setLayout_; }
 
